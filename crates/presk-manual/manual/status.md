@@ -56,6 +56,48 @@ generation open 0.3.0.
 | 7 | Manual chapters `training`, `data` and `experiments` (`make experiment`), tutorial step 11 (train a model), README, CHANGELOG 0.2.0, spec questions copied to `presk-specs`, version 0.2.0; tag `v0.2.0` by the user | done (2026-09-19) |
 | 8 | Optional Cranelift spike | not done (open for 0.3.0) |
 
+## Version 0.3.0
+
+Native backend first, then e-graph rewriting, planned in
+`presk-specs/implementation/presk-plan-0.3.0.md` and built the same day
+(2026-09-19); the verification list of the plan (§5) holds, see below.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | Version `0.3.0-dev`, CHANGELOG "Unreleased", spec questions 35–42, decision D21 (the `Backend` seam) | done (2026-09-19) |
+| 1 | Crate `presk-rt`: runtime values (exact, f64, f32, i64 buffers with named axes; trees), the `Backend` trait and `Prepared` entries, `InterpBackend`, parameter I/O, `run_with`; `presk run --backend interp` and `presk train --backend interp` over the trait, goldens unchanged | done (2026-09-19) |
+| 2 | PSK-Kernel v0 (crate `presk-kernel`): one kernel per tensor primitive at concrete shapes, specialized on first use; loop-level IR with a textual form (`presk dump --stage kernel`); kernel-IR interpreter in `f64`/`f32`; the host program over PSK-Core bodies; `--backend kernel`; the conformance suite (41 primitive cases, 11 example entries, both realizations) with measured gaps | done (2026-09-19) |
+| 3 | Cranelift backend (crate `presk-cranelift`): every kernel JIT-compiled on first use, `libm` symbols, `--backend native` on `run`/`train`; the native conformance suite; `presk bench` and the first performance table (tiny MiniGPT forward 27× the reference, 20 training steps in 0.4 s) | done (2026-09-19) |
+| 4 | Training natively: `presk train --backend native --realize f64\|f32` measured against the reference (regression 200 steps: 4.4e-16 in f64, 1.6e-7 in f32, a test); `train:K` exports the native `θ_K` too and the experiments chapter's realization table gains presk's `f64`/`f32` points; `make train-examples` extended; `V=64 D=64 H=4 L=4` trains 500 steps in 159 s with the loss decreasing | done (2026-09-19) |
+| 5 | `inference serve` resolved in the checker (model, weights path, generation function by signature, `W0003`, `--summary`); crate `presk-serve` (the loop over `Backend`, greedy copy `sample → argmax`, sliding window when the parameters fix `T`); `presk serve`; `presk export --serve` (`serve.py`, `pskd.read_params` with the generated layout); greedy tokens identical on the reference, native f64/f32 and `serve.py` float64/float32; manual chapter `serve`; question 43 | done (2026-09-19) |
+| 6 | Crate `presk-opt` over `egg`: one e-graph per PSK-Core function body with the types as class analysis, rules exact over ℝ (algebra, reductions, the adjoint cleanup: `sum_to`/`broadcast_like` identities, `zeros_like`, `field`/`set_field` chains into records, `proj` of tuples), extraction by operation counts, ANF write-back (dead code disappears); `--opt` on `run`/`train`/`serve`/`bench`/`export`, `presk dump --stage core-opt` with a report; the eight run goldens and the 20-step training golden unchanged, a property test against the interpreter at 128 bits, native outputs identical with and without `--opt`; `Linear.apply.vjp` 14 → 7 lets; manual chapter `optimization`; D24, question 44 | done (2026-09-19) |
+| 7 | Cost model v0.1: work and traffic of every kernel from its IR (`presk_kernel::cost`) and of every PSK-Core node from its type (`presk_opt::model`); `presk bench --calibrate FILE.json` times every kernel natively (`TimedExec`), fits the roofline `λ + max(W/π, Q/β)` by relative least squares and writes the profile with Spearman correlations (counts 0.15, work 0.91, roofline 0.95 on the tiny MiniGPT in `f64`); `--opt --profile` extracts by predicted seconds; goldens unchanged under the profile; bench with and without the profile within the noise; manual section in `optimization`; D25 | done (2026-09-19) |
+| 8 | Version 0.3.0; tutorial step 12 (native run and training, `--opt`, `--calibrate`, `--profile`, in `make tutorial`); README, CHANGELOG 0.3.0, spec questions 35–44 copied to `presk-specs`; tag `v0.3.0` by the user | done (2026-09-19) |
+
+### Verification of 0.3.0 (plan §5)
+
+- `make test`: the whole workspace, including the kernel and native
+  conformance suites, the e-graph oracle tests (the run goldens and the
+  training golden under `--opt`, with and without a profile) and the
+  property test of the rewriting against the interpreter at 128 bits.
+- `make run-examples`: the interpreter, unchanged; `presk run … --backend
+  native --realize f32` on the tiny MiniGPT forward pass (gap 0 on the
+  argmax of the example, `native` chapter).
+- `presk train … --backend native` on the tiny MiniGPT, `presk serve … --backend
+  native` on its checkpoint (`make train-examples`, `make serve-examples`):
+  greedy tokens identical on every backend.
+- `presk bench` on forward, loss and optimizer step (`make bench`); `presk
+  train --backend native --opt --profile` on the same goldens, timed within
+  the noise (`make opt-examples`, `make calibrate`).
+- `make conformance`: the PyTorch side plus the native K-step line
+  (`conformance/native_{f64,f32}.json`); `make experiment`: the realization
+  table with presk's `f64`/`f32` points; `make tutorial`: steps 0–12.
+
+Not done in 0.3.0, carried forward: `ein` reassociation and fusion rules
+(the `(q·k)·v` decision), a fusion pass making `Q` non-additive, the
+`.pskk`/`.pskb` bundle and the Zig runtime (questions 35–36), the precision
+solver behind `--realize`, the native StableHLO emission of `--mode graph`.
+
 ## Out of 0.1.0
 
 E-graph rewriting, cost models, code generation (backend to be chosen in

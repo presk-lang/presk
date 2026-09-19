@@ -1,0 +1,51 @@
+---
+source: crates/presk-opt/tests/snapshots.rs
+assertion_line: 44
+expression: text
+---
+fn mse.vjp{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], ct : ℝ[]) -> (params MLP{D, 4*D}, ℝ[batch: B, model: D], ℝ[batch: B, model: D]) {
+  ŷ : ℝ[batch: B, D] = call MLP.apply{D = D, hidden = 4*D}(θ, x)
+  %22 : ℝ[batch: B, model: D] = sub ŷ, y
+  %23 : ℝ[batch: B, model: D] = pow 2 %22
+  %24 : ℝ[batch: B, model: D] = mean_vjp ct, %23
+  %25 : nat = 2
+  %26 : ℝ[] = real %25
+  %27 : ℝ[batch: B, model: D] = mul %26, %22
+  %28 : ℝ[batch: B, model: D] = mul %24, %27
+  %29 : ℝ[batch: B, D] = sum_to %28, ŷ
+  %30 : (params MLP{D, 4*D}, ℝ[..., D]) = call MLP.apply.vjp{D = D, hidden = 4*D}(θ, x, %29)
+  %31 : params MLP{D, 4*D} = %30.0
+  %32 : ℝ[..., D] = %30.1
+  %33 : ℝ[batch: B, model: D] = neg %28
+  %34 : (params MLP{D, 4*D}, ℝ[..., D], ℝ[batch: B, model: D]) = (%31, %32, %33)
+  return %34
+}
+
+fn MLP.apply.vjp{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D], ct : ℝ[..., D]) -> (params MLP{D, hidden}, ℝ[..., D]) {
+  l1 : params Linear{D, hidden} = θ.l1
+  l2 : params Linear{hidden, D} = θ.l2
+  %24 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %25 : ℝ[..., hidden] = gelu %24
+  %26 : (params Linear{hidden, D}, ℝ[..., hidden]) = call Linear.apply.vjp{In = hidden, Out = D}(l2, %25, ct)
+  %27 : ℝ[..., hidden] = %26.1
+  %28 : ℝ[..., hidden] = gelu' %24
+  %29 : ℝ[..., hidden] = mul %27, %28
+  %30 : (params Linear{D, hidden}, ℝ[..., D]) = call Linear.apply.vjp{In = D, Out = hidden}(l1, x, %29)
+  %31 : params Linear{D, hidden} = %30.0
+  %32 : params Linear{hidden, D} = %26.0
+  %33 : params MLP{D, hidden} = {l1 = %31, l2 = %32}
+  %34 : ℝ[..., D] = %30.1
+  %35 : (params MLP{D, hidden}, ℝ[..., D]) = (%33, %34)
+  return %35
+}
+
+fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out]) -> (params Linear{In, Out}, ℝ[..., In]) {
+  %17 : ℝ[In, Out] = dot_vjp_r x, ct
+  b : ℝ[Out] = θ.b
+  %19 : ℝ[Out] = sum_to ct, b
+  %20 : params Linear{In, Out} = {w = %17, b = %19}
+  w : ℝ[In, Out] = θ.w
+  %22 : ℝ[..., In] = dot_vjp_l ct, w
+  %23 : (params Linear{In, Out}, ℝ[..., In]) = (%20, %22)
+  return %23
+}

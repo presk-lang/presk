@@ -23,10 +23,25 @@ pub mod language {}
 #[doc = include_str!("../manual/training.md")]
 pub mod training {}
 
+/// Native execution: the `Backend` seam, PSK-Kernel v0, realizations, the
+/// conformance suite and the measured gaps.
+#[doc = include_str!("../manual/native.md")]
+pub mod native {}
+
 /// Experiments: shapes as types against silent broadcasting, and the
 /// realization gap of float32/float64 training against the exact reference.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
+
+/// Optimization: e-graph rewriting of PSK-Core (`--opt`, `presk dump --stage
+/// core-opt`), the rules, the oracle, what changes.
+#[doc = include_str!("../manual/optimization.md")]
+pub mod optimization {}
+
+/// Serving: the `inference serve` block, `presk serve` on any backend,
+/// `serve.py` in the export.
+#[doc = include_str!("../manual/serve.md")]
+pub mod serve {}
 
 /// Data files: the `.psk.d` container, `presk data`, the training pipeline.
 #[doc = include_str!("../manual/data.md")]

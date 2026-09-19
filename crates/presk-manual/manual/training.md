@@ -29,6 +29,10 @@ write ckpt/final.psk.d
 - The dimensions of every function called (`B`, `T`, the file's `dim`s) are
   those the checker bound from the pipeline and the data file (`presk check
   --summary`, `dims`); a dimension the run does not fix is an error.
+- The loop runs over the runtime seam (`presk_rt::Backend`, 0.3.0 step 1):
+  the interpreter is the executor behind `--backend interp`, and its exact
+  values cross the seam untouched, so the results are those of 0.2.0 digit
+  for digit; native backends plug in at the same point.
 - Checkpoints and `final.psk.d` are one-sample `.psk.d` files of type
   `params M`, `f64` leaves (the interpreter's extra precision is rounded
   away on the way out; spec question 31). They are written to the directory
@@ -93,9 +97,12 @@ The loss starts at `ln 64 ≈ 4.1589` (the `head` is zero-initialized, so the
 logits are uniform) and decreases slowly because the example's schedule is
 `cosine(warmup = 2000)`: at step 20 the rate is `3e-4 · 20/2000`. Twenty steps
 take about half a minute at 64 bits: the interpreter is a reference, not a
-trainer; the PyTorch export of the run (step 6 of the plan) is how the same
-program trains at speed. `make train-examples` runs both commands; the 20-step
-log is a golden output of the test suite.
+trainer. The same command with `--backend native` (and `--realize f32` for
+single precision) trains the same program on compiled kernels, in 0.4 s here
+and within the last digits of the reference (`native` chapter); the PyTorch
+export of the run is the other way to train at speed. `make train-examples`
+runs the reference commands and the native ones; the 20-step log is a golden
+output of the test suite.
 
 ## In PyTorch: `presk export --train`
 
@@ -131,7 +138,10 @@ ChaCha permutation. The **K-step conformance test** removes that difference:
 no checkpoint) and writes `θ₀`, the parameters after `K` steps and the sample
 indices of every batch (`conformance/{inputs,expected,batches}.json`);
 `test_conformance.py` loads `θ₀` into the model, replays the same batches
-with `train.py`'s optimizer and schedule in float64, and compares `θ_K`.
+with `train.py`'s optimizer and schedule in float64, and compares `θ_K`. The
+export also runs the same `K` steps on the native backend in `f64` and `f32`
+and writes `conformance/native_f64.json` and `native_f32.json`, which the
+`experiments` chapter reads.
 On the tiny MiniGPT, 20 steps with weight decay, clipping and the cosine
 warm-up agree to a worst relative gap of `1.3e-10` (tolerance `rtol 1e-6`,
 `atol 1e-9`; the test prints the measured gap). This is the "exact versus

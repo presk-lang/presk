@@ -1,0 +1,52 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/serve_no_generate.psk
+---
+[W0001] Warning: implicit dimension `B`
+   ,-[ tests/diag/serve_no_generate.psk:6:30 ]
+   |
+ 6 |   fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
+   |                              |  
+   |                              `-- not declared; taken as a dimension of this function
+   | 
+   | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+---'
+[W0001] Warning: implicit dimension `T`
+   ,-[ tests/diag/serve_no_generate.psk:6:38 ]
+   |
+ 6 |   fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
+   |                                      |  
+   |                                      `-- not declared; taken as a dimension of this function
+   | 
+   | Help: declare it with `dim T` at file level or as a type parameter `{T : dim}`
+---'
+[W0001] Warning: implicit dimension `B`
+   ,-[ tests/diag/serve_no_generate.psk:9:47 ]
+   |
+ 9 | fn logits(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = Toy.apply(θ, ctx)
+   |                                               |  
+   |                                               `-- not declared; taken as a dimension of this function
+   | 
+   | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+---'
+[W0001] Warning: implicit dimension `T`
+   ,-[ tests/diag/serve_no_generate.psk:9:55 ]
+   |
+ 9 | fn logits(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = Toy.apply(θ, ctx)
+   |                                                       |  
+   |                                                       `-- not declared; taken as a dimension of this function
+   | 
+   | Help: declare it with `dim T` at file level or as a type parameter `{T : dim}`
+---'
+[W0003] Warning: no generation function for this `inference serve`
+    ,-[ tests/diag/serve_no_generate.psk:10:1 ]
+    |
+ 10 | ,-> inference serve {
+    : :   
+ 13 | |-> }
+    | |       
+    | `------- no top-level `fn (θ : params M, ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]` in this file
+    |     
+    |     Help: `presk serve` needs `--entry FN` to name the function that produces the next token
+----'

@@ -1,0 +1,13 @@
+-- W0003: an `inference serve` whose file has no generation function
+-- `(θ : params M, ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]`.
+const V : nat = 16
+module Toy {
+  param w : ℝ[V, V]
+  fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
+}
+-- Not a generation function: returns the logits, not a token.
+fn logits(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = Toy.apply(θ, ctx)
+inference serve {
+  model   = Toy
+  weights = "ckpt/final"
+}

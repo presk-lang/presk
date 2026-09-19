@@ -16,7 +16,12 @@ presk-core.workspace = true
 presk-interp.workspace = true
 presk-data.workspace = true
 presk-train.workspace = true
+presk-rt.workspace = true
+presk-kernel.workspace = true
+presk-cranelift.workspace = true
+presk-serve.workspace = true
 presk-export-pytorch.workspace = true
+presk-opt.workspace = true
 
 [[bin]]
 name = "presk"

@@ -7,6 +7,7 @@
 mod conformance;
 mod graph;
 mod py;
+mod serve;
 mod train;
 
 use std::collections::BTreeMap;
@@ -17,6 +18,7 @@ use presk_types::elab::ElabProgram;
 
 pub use conformance::{ConformanceData, OptimizerConformance, TrainConformance, test_file};
 pub use graph::graph_driver;
+pub use serve::{ServeSpec, layout_py, serve_files};
 pub use train::{Schedule, TrainSpec, schedule_py, train_files};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

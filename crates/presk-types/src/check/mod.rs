@@ -9,6 +9,7 @@
 mod builtins;
 mod config;
 mod expr;
+pub mod inference;
 pub mod training;
 mod unify;
 
@@ -61,6 +62,8 @@ pub struct TypedProgram {
     pub call_subst: HashMap<Span, BTreeMap<DimVar, DimExpr>>,
     /// The `training run` blocks of the main file, resolved and typed.
     pub training: Vec<training::TrainingRun>,
+    /// The `inference serve` blocks of the main file, resolved.
+    pub inference: Vec<inference::InferenceServe>,
 }
 
 pub fn check(sm: &SourceMap, prog: &ElabProgram) -> (TypedProgram, Vec<Diagnostic>) {

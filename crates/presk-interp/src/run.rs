@@ -36,6 +36,21 @@ pub struct RunOutput {
 
 /// Resolve `--entry`, synthesize the inputs, run.
 pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunOutput> {
+    let (func, dims, inputs) = prepare_run(prog, elab, opts)?;
+    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
+    let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
+    let result = interp.call(func, dims.clone(), args)?;
+    let dims_named: Vec<(String, u64)> = dims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
+    Ok(RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result })
+}
+
+/// An entry resolved and its inputs synthesized: the function, its bound
+/// dimensions and the named inputs.
+pub type PreparedRun = (FuncId, Dims, Vec<(String, Value<Float>)>);
+
+/// Resolve `--entry`, bind the dimensions and synthesize the inputs (the
+/// reference's job, whatever backend then runs the entry).
+pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<PreparedRun> {
     let (func, mut dims, module_dims) = resolve_entry(prog, elab, &opts.entry)?;
     let f = prog.func(func);
     // Dimensions from --dim, by name among the function's dimensions. Names
@@ -81,7 +96,6 @@ pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunO
     let master = Key::from_seed(opts.seed);
     let keys = master.split(f.params.len());
     let mut inputs = Vec::new();
-    let mut args = Vec::new();
     let sig = match f.origin {
         Origin::Source(id) => Some(elab.function(id)),
         _ => None,
@@ -92,13 +106,10 @@ pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunO
         if matches!(f.origin, Origin::Optimizer { .. }) {
             v = optimizer_input(&p.name, v);
         }
-        inputs.push((p.name.clone(), v.clone()));
-        args.push(v);
+        inputs.push((p.name.clone(), v));
     }
     let _ = module_dims;
-    let result = interp.call(func, dims.clone(), args)?;
-    let dims_named: Vec<(String, u64)> = dims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
-    Ok(RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result })
+    Ok((func, dims, inputs))
 }
 
 /// Inputs of an optimizer entry (`adamw.step`) made meaningful: the second

@@ -13,7 +13,8 @@ presk-types.workspace = true
 presk-core.workspace = true
 presk-interp.workspace = true
 presk-data.workspace = true
-rug.workspace = true
+presk-rt.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+rug.workspace = true

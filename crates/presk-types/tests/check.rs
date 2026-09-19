@@ -68,6 +68,18 @@ fn training_corpus() {
     });
 }
 
+/// `serve_*.psk`: the `inference serve` block (0.3.0 step 5): W0003 when the
+/// file has no generation function.
+#[test]
+fn serving_corpus() {
+    insta::glob!(repo_root().join("tests/diag"), "serve_*.psk", |path| {
+        let rel = path.strip_prefix(repo_root()).unwrap().display().to_string();
+        let (sm, _summary, diags) = run(&rel);
+        assert!(!diags.is_empty(), "{rel} produced no diagnostic");
+        insta::assert_snapshot!(render_all(&diags, &sm, false));
+    });
+}
+
 /// A valid `training run` with its data file present: the record binds `B`
 /// from the pipeline and `T` from the file, and no diagnostic is emitted.
 #[test]

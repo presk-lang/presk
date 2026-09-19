@@ -27,8 +27,13 @@ impl Checker<'_> {
                 self.typed.training.push(run);
             }
         }
-        for (items, _) in &inference {
-            self.block("inference serve", "inference serve", items, &INFERENCE, &["model"]);
+        for (items, span) in &inference {
+            let model = self.block("inference serve", "inference serve", items, &INFERENCE, &["model"]);
+            if let Some(serve) = self.inference_serve(items, model, *span)
+                && unit == self.prog.main
+            {
+                self.typed.inference.push(serve);
+            }
         }
     }
 

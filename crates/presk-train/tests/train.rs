@@ -7,7 +7,8 @@ use std::sync::Once;
 
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
-use presk_train::{TrainOptions, load_params, save_params, train};
+use presk_rt::{Buf, InterpBackend, Realize, Value};
+use presk_train::{TrainOptions, load_params, prepare_training, save_params, train};
 use presk_types::check::{self, TypedProgram};
 use presk_types::elab::{self, ElabProgram, Options};
 
@@ -49,8 +50,10 @@ fn tmp(name: &str) -> PathBuf {
 fn regression_converges_and_checkpoints_round_trip() {
     let (prog, typed, mut core) = prepare("tests/train/mlp_regression.psk", &[]);
     let ckpt = tmp("reg");
-    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, ckpt: Some(ckpt.clone()), checkpoints: true };
-    let out = train(&mut core, &prog, &typed, &opts, |_| {}).unwrap();
+    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realize::F64, ckpt: Some(ckpt.clone()), checkpoints: true };
+    let fns = prepare_training(&mut core, &prog, &typed).unwrap();
+    let mut backend = InterpBackend::new(&core, &prog, 256, 0);
+    let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     assert_eq!(out.logs.len(), 200);
     assert_eq!(out.total, 200);
     let last = out.logs.last().unwrap();
@@ -59,16 +62,18 @@ fn regression_converges_and_checkpoints_round_trip() {
     assert!((out.logs[0].lr - 0.05).abs() < 1e-12, "constant schedule");
     // The weights: w ≈ (2, −1), b ≈ 0.5.
     let l = out.theta.field("l").unwrap();
-    let presk_interp::Value::Real(w) = l.field("w").unwrap() else { panic!() };
-    let presk_interp::Value::Real(b) = l.field("b").unwrap() else { panic!() };
-    assert!((w.data[0].to_f64() - 2.0).abs() < 0.05 && (w.data[1].to_f64() + 1.0).abs() < 0.05, "w = {:?}", w.data.iter().map(|x| x.to_f64()).collect::<Vec<_>>());
-    assert!((b.data[0].to_f64() - 0.5).abs() < 0.05);
+    let Value::Real(w) = l.field("w").unwrap() else { panic!() };
+    let Value::Real(b) = l.field("b").unwrap() else { panic!() };
+    assert!(matches!(w.data, Buf::Exact(_)), "the interpreter's values cross the seam exactly");
+    let (w, b) = (w.data.to_f64(), b.data.to_f64());
+    assert!((w[0] - 2.0).abs() < 0.05 && (w[1] + 1.0).abs() < 0.05, "w = {w:?}");
+    assert!((b[0] - 0.5).abs() < 0.05);
     // Checkpoints: final.psk.d reloads to the same f64 values.
     let final_path = out.final_path.clone().unwrap();
     assert_eq!(final_path, ckpt.join("final.psk.d"));
-    let back = load_params(&final_path, &out.theta, 256).unwrap();
-    let presk_interp::Value::Real(w2) = back.field("l").unwrap().field("w").unwrap() else { panic!() };
-    assert_eq!(w2.data.iter().map(|x| x.to_f64()).collect::<Vec<_>>(), w.data.iter().map(|x| x.to_f64()).collect::<Vec<_>>());
+    let back = load_params(&final_path, &out.theta).unwrap();
+    let Value::Real(w2) = back.field("l").unwrap().field("w").unwrap() else { panic!() };
+    assert_eq!(w2.data.to_f64(), w);
     let again = tmp("again.psk.d");
     save_params(&again, &out.model, &back).unwrap();
     assert_eq!(std::fs::read(&again).unwrap(), std::fs::read(&final_path).unwrap(), "saving a reloaded tree is byte-identical");
@@ -86,8 +91,10 @@ fn minigpt_twenty_steps() {
     // The example's `checkpoint every 1000 steps to "ckpt/"` would write next to the
     // example file: redirect to a temporary directory.
     let ckpt = tmp("minigpt");
-    let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, ckpt: Some(ckpt.clone()), checkpoints: true };
-    let out = train(&mut core, &prog, &typed, &opts, |_| {}).unwrap();
+    let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realize::F64, ckpt: Some(ckpt.clone()), checkpoints: true };
+    let fns = prepare_training(&mut core, &prog, &typed).unwrap();
+    let mut backend = InterpBackend::new(&core, &prog, 64, 0);
+    let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     assert_eq!(out.logs.len(), 20);
     assert!(out.logs[19].loss < out.logs[0].loss);
     assert_eq!(out.logs[15].epoch, 2, "15 batches of 32 in 510 windows: the second epoch starts at step 16");

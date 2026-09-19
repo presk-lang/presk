@@ -44,6 +44,7 @@ make conformance                 # export, then run every generated test_conform
 make tutorial                    # every command of the tutorial chapter (ends with two conformance tests)
 make train-examples              # presk train on the regression and the tiny MiniGPT
 make experiment                  # exact versus almost (manual chapter `experiments`)
+make bench                       # every backend on the tiny MiniGPT (manual chapter `native`)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
@@ -70,7 +71,12 @@ crates/presk-core            PSK-Core IR, lowering, regularity, effects, AD     
 crates/presk-interp          reference interpreter                                (step 7)
 crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
 crates/presk-data            .psk.d data files and the training pipeline           (0.2.0 step 1)
-crates/presk-train           the training loop over the interpreter, presk train    (0.2.0 step 5)
+crates/presk-rt              the runtime seam: values, the Backend trait, InterpBackend (0.3.0 step 1)
+crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program   (0.3.0 step 2)
+crates/presk-cranelift       the Cranelift JIT over the kernels, --backend native          (0.3.0 step 3)
+crates/presk-train           the training loop over a Backend, presk train           (0.2.0 step 5)
+crates/presk-serve           the generation loop over a Backend, presk serve         (0.3.0 step 5)
+crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles    (0.3.0 steps 6–7)
 crates/presk-cli             the `presk` binary
 crates/presk-manual          this manual
 tests/examples               the example programs of presk-specs (do not edit here)

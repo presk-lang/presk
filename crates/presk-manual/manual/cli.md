@@ -87,6 +87,8 @@ output format is not stable.
 | `elab` | the elaborated program: per file, imports, constants with their values, dimensions with bounds, type aliases, modules with the shapes of their parameters and sub-modules, function signatures, discharged assertions; then the table of module instances with every parameter's shape (stacked axes included) | implemented |
 | `core` | the PSK-Core intermediate representation after lowering (every function in A-normal form with its dimensions, parameters and types; `init` functions; lifted lambdas), verified before printing | implemented |
 | `core-after-ad` | PSK-Core after automatic differentiation: every `grad` rewritten, with the generated `.vjp` and `.grad` functions; verified before printing | implemented |
+| `kernel` | the PSK-Kernel v0 kernels launched by an entry, specialized on its shapes: needs `--entry` and `--dim`/`--const` as `presk run`, plus `--realize` (`native` chapter) | implemented (0.3.0 step 2) |
+| `core-opt` | PSK-Core after AD and the e-graph optimizer (`optimization` chapter); the report (functions rewritten, `let`s and cost before and after, stop reason) goes to standard error; `--profile FILE.json` makes the roofline of that profile the extraction cost, `--dim` binds the dimensions it evaluates | implemented (0.3.0 steps 6–7) |
 
 Diagnostics (if any) are reported on standard error; the exit code is 1 when
 there are errors, 0 otherwise.
@@ -117,6 +119,10 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--json` | machine-readable output: entry, seed, bits, dimensions, inputs and result, reals as decimal strings at `--digits`. |
 | `--verbose` | also print the synthesized inputs. |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
+| `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
+| `--realize f64\|f32` | the machine type of a native realization (0.3.0); ignored by the interpreter, which computes at `--bits`. |
+| `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). |
+| `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
 
 **Inputs** are synthesized from the parameter types: real tensors from a
 standard normal, index tensors uniformly in `[0, N)`, `params M` by running
@@ -158,10 +164,11 @@ python3 -m py_compile out/minigpt_pt/*.py    # syntax; `pytest out/minigpt_pt` w
 | `--mode readable` | one `nn.Module` per module (default). |
 | `--mode graph` | the specification's tool-level mode, in its light form: with `--conformance-entry Module.apply`, also writes `export.py`, a driver that builds the model with the conformance parameters and saves `model.pt2` (`torch.export`) and `model.onnx` (`torch.onnx.export`, dynamo), in float32; the generated test gains `test_onnx`, which runs `model.onnx` under ONNX Runtime against the interpreter (`rtol 1e-4`). The Presk-native StableHLO path waits for the precision solver. `--precision=solved`: not implemented. |
 | `--train` | also write `pskd.py`, `train.py` and a copy of the data file: the file's `training run` as a PyTorch loop (`training` chapter). |
+| `--serve` | also write `pskd.py` and `serve.py`: the file's `inference serve` as a PyTorch generation loop reading `final.pt` or a `.psk.d` checkpoint (`serve` chapter). |
 | `-o DIR` | output directory (created); the generated files import each other by file stem, made a Python identifier (`01_linear.psk` → `_01_linear.py`). |
 | `--shapes=check` | insert `assert x.shape == (…)` after every parameter and `let` with a closed shape. |
 | `--stack=loop\|unroll` | `stack{L}(M)` as a `for` over an `nn.ModuleList` (default) or as `L` explicit calls. |
-| `--conformance-entry ENTRY` | also run the reference interpreter on `ENTRY` (with `--dim`, `--const`, `--seed` as for `presk run`, at 256 bits) and write `conformance/inputs.json`, `conformance/expected.json` and `test_conformance.py`; `adamw.step` compares one optimizer step with `torch.optim.AdamW`; `train:K` runs `K` steps of the training run on the interpreter (implies `--train`) and generates a test that replays the same batches in PyTorch and compares the parameters (`training` chapter). |
+| `--conformance-entry ENTRY` | also run the reference interpreter on `ENTRY` (with `--dim`, `--const`, `--seed` as for `presk run`, at 256 bits) and write `conformance/inputs.json`, `conformance/expected.json` and `test_conformance.py`; `adamw.step` compares one optimizer step with `torch.optim.AdamW`; `train:K` runs `K` steps of the training run on the interpreter (implies `--train`) and generates a test that replays the same batches in PyTorch and compares the parameters (`training` chapter); the same `K` steps also run natively in `f64` and `f32`, written to `conformance/native_{f64,f32}.json` for the `experiments` chapter. |
 
 **The conformance test** loads the interpreter's inputs and expected result,
 builds the model or function (`MiniGPT(8)`, `MLP(4, 16)` — the dimension
@@ -182,10 +189,10 @@ ONNX Runtime are not dependencies of the compiler.
 
 ## `presk train FILE.psk …`
 
-Executes the file's `training run` on the reference interpreter: see the
-`training` chapter for the loop, the flags (`--const`, `--data`, `--steps`,
-`--epochs`, `--seed`, `--bits`, `--log-every`, `--ckpt`, `--json`) and two
-runs.
+Executes the file's `training run` on the backend of `--backend`/`--realize`
+(the reference interpreter by default): see the `training` chapter for the
+loop, the flags (`--const`, `--data`, `--steps`, `--epochs`, `--seed`,
+`--bits`, `--log-every`, `--ckpt`, `--json`, `--opt`) and two runs.
 
 ```sh
 presk train tests/train/mlp_regression.psk --steps 200 --ckpt out/reg_ckpt
@@ -195,6 +202,47 @@ presk train tests/examples/minigpt/train_minigpt.psk \
 
 **Exit codes**: 0; 1 a diagnostic or a run-time error; 2 no `training run`
 or an unreadable data file.
+
+## `presk serve FILE.psk --prompt "t₁ t₂ …" …`
+
+Generates tokens with the file's `inference serve`: its model, its weights
+(`--weights FILE.psk.d` overrides the block's) and its generation function
+(`--entry FN` overrides the one found by signature), on the backend of
+`--backend`/`--realize`; `--tokens N` (16), `--temperature x` (0 is greedy;
+default the function's own), `--dim NAME=N` for a dimension of the parameters
+not fixed by the prompt (`T` of a positional embedding), `--seed`, `--bits`,
+`--json`, `--opt`. The `serve` chapter has the loop and the rules.
+
+```sh
+presk serve tests/examples/minigpt/serve_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+     --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0 --backend native
+```
+
+**Exit codes**: 0; 1 a diagnostic or a run-time error; 2 no `inference
+serve`, no weights file, or a malformed `--prompt`/`--dim`.
+
+## `presk bench FILE.psk --entry ENTRY …`
+
+Times one entry on every backend (the reference at `--bits`, the kernel
+interpreter, native f64 and f32) with `--dim`/`--const` as `presk run`, and
+prints the median of `--repeat` calls with the speedup over the reference
+(`native` chapter); `--opt [--profile FILE.json]` times the rewritten
+program.
+
+`--calibrate FILE.json` instead times every kernel the entry launches on the
+native backend in the `--realize` machine type (`--repeat` calls, at least
+three; the first launch of a kernel is dropped, the median of the others
+kept), computes each kernel's work and traffic from its IR, fits the
+roofline `λ + max(W/π, Q/β)` and writes the profile; an existing profile of
+the same realization keeps its other kernels and is refitted with the new
+ones. The table printed has one line per kernel (work, bytes, measured and
+predicted microseconds), then the constants and the rank correlations of
+three predictors with the measured times (`optimization` chapter).
+
+```sh
+presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 --const D=16 --const H=2 --const L=2 \
+     --dim B=2 --dim T=8 --calibrate out/profile.json
+```
 
 ## `presk data pack | lm-windows | info | export`
 

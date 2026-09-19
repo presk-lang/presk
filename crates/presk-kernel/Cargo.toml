@@ -1,0 +1,23 @@
+[package]
+name = "presk-kernel"
+description = "PSK-Kernel v0: loop-level kernels for PSK-Core primitives at concrete shapes, and their interpreter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-rt.workspace = true
+libm = "0.2"
+rand_chacha.workspace = true
+rand_core.workspace = true
+num-traits.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+rug.workspace = true

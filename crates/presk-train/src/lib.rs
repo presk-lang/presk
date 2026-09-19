@@ -1,5 +1,5 @@
-//! `presk train`: the loop of a `training run` over the reference interpreter
-//! (plan 0.2.0, step 5).
+//! `presk train`: the loop of a `training run` over a [`Backend`] (plan 0.2.0
+//! step 5, rewritten over the runtime seam in 0.3.0 step 1).
 //!
 //! ```text
 //! θ₀ = M.init(key(seed))        s₀ = adamw.init(θ₀)        t = 0
@@ -14,22 +14,24 @@
 //!
 //! Everything with a semantics is PSK-Core (the objective, its `vjp`, the
 //! optimizer) or the documented data pipeline; this crate only sequences them
-//! and converts between `.psk.d` samples and interpreter values.
+//! through the backend and converts between `.psk.d` samples and runtime
+//! values. With the interpreter behind the seam, exact values pass through
+//! untouched and the loop reproduces the reference digit for digit.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use presk_core::{FuncId, PrimOp, Program};
+use presk_core::{FuncId, Program};
 use presk_data::{Layout, Leaf, Pipeline, Reader};
 use presk_interp::eval::Dims;
 use presk_interp::key::Key;
-use presk_interp::value::Axis;
-use presk_interp::{Interp, Tensor, Value};
+pub use presk_rt::{Backend, Buf, Realize, Tensor, Value, load_params, params_from_data, params_to_data, save_params};
+use presk_rt::{Axis, Prepared, RtError};
 use presk_syntax::Span;
 use presk_types::check::TypedProgram;
+use presk_types::check::training::TrainingRun;
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{ModRef, Ty};
-use rug::Float;
 
 #[derive(Clone, Debug)]
 pub struct TrainOptions {
@@ -41,6 +43,8 @@ pub struct TrainOptions {
     pub epochs: Option<u64>,
     pub seed: u64,
     pub bits: u32,
+    /// The machine type of a native backend (ignored by the interpreter).
+    pub realize: Realize,
     /// Overrides the run's checkpoint directory.
     pub ckpt: Option<PathBuf>,
     /// Write checkpoints and `final.psk.d` at all (the conformance replay does not).
@@ -61,11 +65,11 @@ pub struct TrainOutput {
     pub model: String,
     pub logs: Vec<StepLog>,
     /// The initial parameters (from the initializer and `--seed`).
-    pub theta0: Value<Float>,
+    pub theta0: Value,
     /// The sample indices of every batch, in step order (what the K-step
     /// conformance test replays).
     pub batches: Vec<Vec<usize>>,
-    pub theta: Value<Float>,
+    pub theta: Value,
     /// `ckpt/final.psk.d` when a checkpoint directory was known.
     pub final_path: Option<PathBuf>,
     pub checkpoints: Vec<PathBuf>,
@@ -85,9 +89,9 @@ fn err<T>(code: &'static str, message: impl Into<String>) -> Result<T> {
     Err(TrainError { code, message: message.into(), span: None })
 }
 
-impl From<presk_interp::RunError> for TrainError {
-    fn from(e: presk_interp::RunError) -> Self {
-        TrainError { code: "E7001", message: e.message, span: e.span }
+impl From<RtError> for TrainError {
+    fn from(e: RtError) -> Self {
+        TrainError { code: e.code, message: e.message, span: e.span }
     }
 }
 
@@ -97,17 +101,28 @@ impl From<presk_data::DataError> for TrainError {
     }
 }
 
-/// Runs the (first) `training run` of the program. `core` must have gone
-/// through `presk_core::ad::transform`; the objective's `vjp` is generated here.
-pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts: &TrainOptions, mut on_step: impl FnMut(&StepLog)) -> Result<TrainOutput> {
+/// The Core functions a training run needs, resolved from the typed program.
+/// `prepare_training` generates the objective's `vjp` into `core`; a backend
+/// is then built over the final program.
+#[derive(Clone, Debug)]
+pub struct TrainingFns {
+    pub model: String,
+    pub objective: FuncId,
+    pub vjp: FuncId,
+    pub init: FuncId,
+    pub opt_init: FuncId,
+    pub opt_step: FuncId,
+    pub opt_lr: FuncId,
+}
+
+pub fn prepare_training(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram) -> Result<TrainingFns> {
     let Some(run) = typed.training.first() else {
         return err("E7001", "no `training run` in this file");
     };
     let ModRef::Inst { def, .. } = &run.model else {
         return err("E7001", "the model of a training run must be a plain module");
     };
-    let model_name = elab.module(*def).name.clone();
-    // Functions.
+    let model = elab.module(*def).name.clone();
     // By origin, not by name: an imported file may define a function of the same name.
     let objective = core
         .funcs
@@ -120,12 +135,18 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
         return Err(TrainError { code: "E6001", message: format!("cannot differentiate the objective: {}", d.message), span: d.primary_span() });
     }
     presk_core::verify(core).map_err(|e| TrainError { code: "E7001", message: format!("internal error after differentiation: {}", e.join("; ")), span: None })?;
-    let init = core.find(&format!("{model_name}.init")).ok_or_else(|| TrainError { code: "E7001", message: "no initializer".into(), span: None })?;
+    let init = core.find(&format!("{model}.init")).ok_or_else(|| TrainError { code: "E7001", message: "no initializer".into(), span: None })?;
     let opt = &run.optimizer;
-    let (o_init, o_step, o_lr) = (core.find(&format!("{opt}.init")), core.find(&format!("{opt}.step")), core.find(&format!("{opt}.lr")));
-    let (Some(o_init), Some(o_step), Some(o_lr)) = (o_init, o_step, o_lr) else {
+    let (Some(opt_init), Some(opt_step), Some(opt_lr)) = (core.find(&format!("{opt}.init")), core.find(&format!("{opt}.step")), core.find(&format!("{opt}.lr"))) else {
         return err("E7001", format!("optimizer `{opt}` has no lowered functions (only `adamw` is implemented)"));
     };
+    Ok(TrainingFns { model, objective, vjp, init, opt_init, opt_step, opt_lr })
+}
+
+/// Runs the (first) `training run` of the program over `backend`, built
+/// over the program returned by [`prepare_training`].
+pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, typed: &TypedProgram, fns: &TrainingFns, opts: &TrainOptions, mut on_step: impl FnMut(&StepLog)) -> Result<TrainOutput> {
+    let run: &TrainingRun = typed.training.first().ok_or_else(|| TrainError { code: "E7001", message: "no `training run` in this file".into(), span: None })?;
     // Data.
     let Some(pipe) = &run.data else {
         return err("E7001", "the training run has no `data` field");
@@ -143,7 +164,7 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
     let total = opts.steps.unwrap_or(epochs * per_epoch).max(1);
     // Dimensions, by name, for every function called.
     let names: BTreeMap<String, u64> = run.dims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
-    let dims_of = |core: &Program, f: FuncId| -> Result<Dims> {
+    let dims_of = |f: FuncId| -> Result<Dims> {
         let mut d = Dims::new();
         for v in &core.func(f).dims {
             let name = elab.dim_name(*v);
@@ -156,9 +177,14 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
         }
         Ok(d)
     };
-    let (d_obj, d_init, d_opt) = (dims_of(core, objective)?, dims_of(core, init)?, dims_of(core, o_step)?);
-    let core: &Program = core;
-    let mut interp: Interp<Float> = Interp::new(core, elab, opts.bits, opts.seed);
+    let d_obj = dims_of(fns.objective)?;
+    let objective: Prepared = backend.prepare(fns.objective, &d_obj, opts.realize)?;
+    let vjp = backend.prepare(fns.vjp, &d_obj, opts.realize)?;
+    let init = backend.prepare(fns.init, &dims_of(fns.init)?, opts.realize)?;
+    let d_opt = dims_of(fns.opt_step)?;
+    let opt_init = backend.prepare(fns.opt_init, &d_opt, opts.realize)?;
+    let opt_step = backend.prepare(fns.opt_step, &d_opt, opts.realize)?;
+    let opt_lr = backend.prepare(fns.opt_lr, &Dims::new(), opts.realize)?;
     // Checkpoints.
     let ckpt_dir: Option<PathBuf> = if opts.checkpoints { opts.ckpt.clone().or_else(|| run.checkpoint.as_ref().map(|(_, dir)| run.dir.join(dir))) } else { None };
     let every = run.checkpoint.as_ref().map(|(k, _)| *k).filter(|k| *k > 0);
@@ -166,12 +192,11 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
         std::fs::create_dir_all(dir).map_err(|e| TrainError { code: "E9003", message: format!("{}: {e}", dir.display()), span: None })?;
     }
     // θ₀, s₀.
-    let key = Key::from_seed(opts.seed);
-    let mut theta = interp.call(init, d_init, vec![Value::Key(key)])?;
+    let mut theta = backend.call(&init, vec![Value::Key(Key::from_seed(opts.seed))])?;
     let theta0 = theta.clone();
     let mut batches: Vec<Vec<usize>> = Vec::new();
-    let mut state = interp.call(o_init, d_opt.clone(), vec![theta.clone()])?;
-    let one = Value::Real(Tensor { axes: vec![], data: vec![Float::with_val(opts.bits, 1)] });
+    let mut state = backend.call(&opt_init, vec![theta.clone()])?;
+    let one = Value::Real(Tensor::scalar_f64(1.0));
     let mut logs = Vec::new();
     let mut checkpoints = Vec::new();
     let mut t = 0u64;
@@ -181,16 +206,16 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
             batches.push(group.clone());
             let samples: Vec<presk_data::Value> = group.iter().map(|i| reader.get(*i)).collect::<std::result::Result<_, _>>()?;
             let refs: Vec<&presk_data::Value> = samples.iter().collect();
-            let batch = batch_value(&interp, &run.batch_ty, &layout, &refs, &d_obj)?;
-            let loss = interp.call(objective, d_obj.clone(), vec![theta.clone(), batch.clone()])?;
-            let cts = interp.call(vjp, d_obj.clone(), vec![theta.clone(), batch, one.clone()])?;
+            let batch = batch_value(&run.batch_ty, &layout, &refs, &d_obj)?;
+            let loss = backend.call(&objective, vec![theta.clone(), batch.clone()])?;
+            let cts = backend.call(&vjp, vec![theta.clone(), batch, one.clone()])?;
             let g = match cts {
                 Value::Tuple(mut parts) if !parts.is_empty() => parts.swap_remove(0),
                 other => return err("E7001", format!("vjp returned a {}", other.kind())),
             };
-            let n2 = interp.prim_public(&PrimOp::SumSquares, std::slice::from_ref(&g))?;
-            let lr = interp.call(o_lr, Dims::new(), vec![Value::Nat(t), Value::Nat(total)])?;
-            let next = interp.call(o_step, d_opt.clone(), vec![theta, state, g, Value::Nat(t), Value::Nat(total)])?;
+            let grad_norm = g.sum_squares_f64().sqrt();
+            let lr = backend.call(&opt_lr, vec![Value::Nat(t), Value::Nat(total)])?;
+            let next = backend.call(&opt_step, vec![theta, state, g, Value::Nat(t), Value::Nat(total)])?;
             match next {
                 Value::Tuple(mut parts) if parts.len() == 2 => {
                     state = parts.pop().unwrap();
@@ -198,14 +223,14 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
                 }
                 other => return err("E7001", format!("optimizer step returned a {}", other.kind())),
             }
-            let log = StepLog { step: t, epoch, loss: scalar_f64(&loss), lr: scalar_f64(&lr), grad_norm: scalar_f64(&n2).sqrt() };
+            let log = StepLog { step: t, epoch, loss: loss.scalar_f64(), lr: lr.scalar_f64(), grad_norm };
             on_step(&log);
             logs.push(log);
             if let (Some(dir), Some(k)) = (&ckpt_dir, every)
                 && t % k == 0
             {
                 let p = dir.join(format!("step-{t}.psk.d"));
-                save_params(&p, &model_name, &theta)?;
+                save_params(&p, &fns.model, &theta)?;
                 checkpoints.push(p);
             }
             if t >= total {
@@ -216,23 +241,17 @@ pub fn train(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts:
     let final_path = match &ckpt_dir {
         Some(dir) => {
             let p = dir.join("final.psk.d");
-            save_params(&p, &model_name, &theta)?;
+            save_params(&p, &fns.model, &theta)?;
             Some(p)
         }
         None => None,
     };
-    Ok(TrainOutput { model: model_name, logs, theta0, batches, theta, final_path, checkpoints, total })
+    Ok(TrainOutput { model: fns.model.clone(), logs, theta0, batches, theta, final_path, checkpoints, total })
 }
 
-fn scalar_f64(v: &Value<Float>) -> f64 {
-    match v {
-        Value::Real(t) if t.rank() == 0 => t.data[0].to_f64(),
-        _ => f64::NAN,
-    }
-}
-
-/// `B` samples stacked under the `batch` axis of every leaf of the batch type.
-fn batch_value(interp: &Interp<Float>, ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &Dims) -> Result<Value<Float>> {
+/// `B` samples stacked under the `batch` axis of every leaf of the batch type,
+/// as `f64` buffers (the data file's precision).
+fn batch_value(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &Dims) -> Result<Value> {
     let b = samples.len();
     match (ty, layout) {
         (Ty::Tuple(ts), Layout::Tuple(ls)) => {
@@ -245,26 +264,27 @@ fn batch_value(interp: &Interp<Float>, ty: &Ty, layout: &Layout, samples: &[&pre
                         _ => err("E9005", "sample is not a tuple"),
                     })
                     .collect::<Result<_>>()?;
-                out.push(batch_value(interp, t, l, &subs, dims)?);
+                out.push(batch_value(t, l, &subs, dims)?);
             }
             Ok(Value::Tuple(out))
         }
         (Ty::Real(shape), Layout::Leaf(Leaf::Real { .. })) => {
-            let axes = interp.axes_of(shape, dims)?;
+            let axes = presk_rt::axes_of(shape, dims)?;
             let data = fill(&axes, b, |i| match samples[i] {
-                presk_data::Value::Real(d) => Ok(d.iter().map(|x| Float::with_val(interp.prec, *x)).collect()),
+                presk_data::Value::Real(d) => Ok(d.clone()),
                 _ => err("E9005", "reals expected in the sample"),
             })?;
-            Ok(Value::Real(Tensor { axes, data }))
+            Ok(Value::Real(Tensor { axes, data: Buf::F64(data) }))
         }
         (Ty::Idx { bound, shape }, Layout::Leaf(Leaf::Idx { .. })) => {
-            let axes = interp.axes_of(shape, dims)?;
-            let bound = interp.dim(bound, dims)?;
+            let axes = presk_rt::axes_of(shape, dims)?;
+            let map: BTreeMap<_, _> = dims.iter().map(|(v, n)| (*v, presk_types::dim::rat(*n as i64))).collect();
+            let bound = bound.eval(&map).and_then(|r| r.to_integer().to_string().parse::<u64>().ok()).ok_or_else(|| TrainError { code: "E7001", message: "unbound index bound".into(), span: None })?;
             let data = fill(&axes, b, |i| match samples[i] {
                 presk_data::Value::Idx(d) => Ok(d.iter().map(|x| *x as i64).collect()),
                 _ => err("E9005", "indices expected in the sample"),
             })?;
-            Ok(Value::Idx { bound, t: Tensor { axes, data } })
+            Ok(Value::Idx { bound, t: Tensor { axes, data: Buf::I64(data) } })
         }
         _ => err("E9005", "the batch type and the file's layout disagree"),
     }
@@ -286,7 +306,6 @@ fn fill<T: Clone>(axes: &[Axis], b: usize, sample: impl Fn(usize) -> Result<Vec<
             return err("E9005", format!("sample of {} values, {n} expected", s.len()));
         }
         for (j, x) in s.into_iter().enumerate() {
-            // multi-index of j over `inner`, then the flat index with `bi` at position p
             let mut rem = j;
             let mut idx: Vec<usize> = vec![0; inner.len()];
             for k in (0..inner.len()).rev() {
@@ -295,7 +314,7 @@ fn fill<T: Clone>(axes: &[Axis], b: usize, sample: impl Fn(usize) -> Result<Vec<
             }
             let mut full = Vec::with_capacity(axes.len());
             let mut it = idx.into_iter();
-            for (k, _) in axes.iter().enumerate() {
+            for k in 0..axes.len() {
                 full.push(if k == p { bi } else { it.next().unwrap() });
             }
             let mut flat = 0;
@@ -306,56 +325,6 @@ fn fill<T: Clone>(axes: &[Axis], b: usize, sample: impl Fn(usize) -> Result<Vec<
         }
     }
     Ok(out.into_iter().map(|x| x.unwrap()).collect())
-}
-
-/// A parameter tree as a `.psk.d` sample: `f64` leaves, fields in order.
-pub fn params_to_data(v: &Value<Float>) -> Result<(Layout, presk_data::Value)> {
-    match v {
-        Value::Record(fs) => {
-            let mut ls = Vec::new();
-            let mut vs = Vec::new();
-            for (n, sub) in fs {
-                let (l, d) = params_to_data(sub)?;
-                ls.push((n.clone(), l));
-                vs.push((n.clone(), d));
-            }
-            Ok((Layout::Record(ls), presk_data::Value::Record(vs)))
-        }
-        Value::Tuple(ts) => {
-            let (ls, vs): (Vec<_>, Vec<_>) = ts.iter().map(params_to_data).collect::<Result<Vec<_>>>()?.into_iter().unzip();
-            Ok((Layout::Tuple(ls), presk_data::Value::Tuple(vs)))
-        }
-        Value::Real(t) => Ok((Layout::Leaf(Leaf::Real { shape: t.axes.iter().map(|a| a.len).collect() }), presk_data::Value::Real(t.data.iter().map(|x| x.to_f64()).collect()))),
-        other => err("E9005", format!("a parameter tree holds no {}", other.kind())),
-    }
-}
-
-/// The parameter tree read from a `.psk.d` sample, with the axes of `template`.
-pub fn params_from_data(template: &Value<Float>, d: &presk_data::Value, prec: u32) -> Result<Value<Float>> {
-    match (template, d) {
-        (Value::Record(fs), presk_data::Value::Record(ds)) if fs.len() == ds.len() => Ok(Value::Record(fs.iter().zip(ds).map(|((n, t), (_, x))| Ok((n.clone(), params_from_data(t, x, prec)?))).collect::<Result<_>>()?)),
-        (Value::Tuple(ts), presk_data::Value::Tuple(ds)) if ts.len() == ds.len() => Ok(Value::Tuple(ts.iter().zip(ds).map(|(t, x)| params_from_data(t, x, prec)).collect::<Result<_>>()?)),
-        (Value::Real(t), presk_data::Value::Real(xs)) if t.data.len() == xs.len() => Ok(Value::Real(Tensor { axes: t.axes.clone(), data: xs.iter().map(|x| Float::with_val(prec, *x)).collect() })),
-        _ => err("E9005", "the checkpoint does not have the structure of the model's parameters"),
-    }
-}
-
-/// Writes `θ` as a one-sample `.psk.d` of type `params <model>`.
-pub fn save_params(path: &Path, model: &str, theta: &Value<Float>) -> Result<()> {
-    let (layout, data) = params_to_data(theta)?;
-    presk_data::write(path, &format!("params {model}"), &layout, std::slice::from_ref(&data))?;
-    Ok(())
-}
-
-/// Reads a checkpoint written by [`save_params`], shaped like `template`.
-pub fn load_params(path: &Path, template: &Value<Float>, prec: u32) -> Result<Value<Float>> {
-    let (layout, _) = params_to_data(template)?;
-    let mut r = Reader::open(path)?.with_layout(layout)?;
-    if r.is_empty() {
-        return err("E9003", format!("{}: no sample", path.display()));
-    }
-    let d = r.get(0)?;
-    params_from_data(template, &d, prec)
 }
 
 /// One text line per step, for the terminal.

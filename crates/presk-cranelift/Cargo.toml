@@ -1,0 +1,27 @@
+[package]
+name = "presk-cranelift"
+description = "The Cranelift JIT backend: PSK-Kernel v0 kernels compiled to machine code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-rt.workspace = true
+presk-kernel.workspace = true
+cranelift-codegen = "0.131"
+cranelift-frontend = "0.131"
+cranelift-module = "0.131"
+cranelift-jit = "0.131"
+cranelift-native = "0.131"
+libm = "0.2"
+
+[dev-dependencies]
+insta.workspace = true
+rug.workspace = true
+presk-train.workspace = true

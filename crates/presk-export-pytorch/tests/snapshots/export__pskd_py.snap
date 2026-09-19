@@ -147,3 +147,68 @@ def collate(samples):
     if isinstance(samples[0], tuple):
         return tuple(collate([s[k] for s in samples]) for k in range(len(samples[0])))
     return torch.stack(list(samples))
+
+
+def _slice_tree(v, i):
+    if isinstance(v, dict):
+        return {k: _slice_tree(t, i) for k, t in v.items()}
+    return v[i] if torch.is_tensor(v) else v
+
+
+def _flatten_params(tree, module, prefix=""):
+    """A Presk parameter tree as a state dict of `module`: a stacked
+    sub-module (nn.ModuleList) splits the leading axis of its leaves."""
+    out = {}
+    for name, v in tree.items():
+        sub = getattr(module, name, None) if module is not None else None
+        key = prefix + name
+        if isinstance(sub, torch.nn.ModuleList):
+            for i, m in enumerate(sub):
+                out.update(_flatten_params(_slice_tree(v, i), m, f"{key}.{i}."))
+        elif isinstance(v, dict):
+            out.update(_flatten_params(v, sub, key + "."))
+        else:
+            out[key] = v
+    return out
+
+
+def read_params(path, layout, model):
+    """A `params M` .psk.d checkpoint of `presk train` as a state dict of
+    `model` (the exported class of `M`). `layout` is the tree written by the
+    export: a leaf is None, a module a dict of its fields in order, a
+    `stack{L}(M)` is ["stack", layout of M] (its leaves carry a leading axis
+    of length L, the length of the nn.ModuleList). Leaves are float64 in the
+    file, in the order of the tree; their shapes are the model's."""
+    with open(path, "rb") as f:
+        if f.read(4) != b"PSKD":
+            raise ValueError(f"{path}: not a .psk.d file")
+        (version,) = struct.unpack("<H", f.read(2))
+        if version != 1:
+            raise ValueError(f"{path}: .psk.d version {version}, this reader knows version 1")
+        (tlen,) = struct.unpack("<I", f.read(4))
+        type_text = f.read(tlen).decode("utf-8")
+        (count,) = struct.unpack("<Q", f.read(8))
+        data = f.read()
+    if not type_text.startswith("params ") or count != 1:
+        raise ValueError(f"{path}: expected one sample of a `params M` type, found {count} of `{type_text}`")
+    buf = np.frombuffer(data, dtype="<f8")
+    pos = [0]
+    dtype = next(model.parameters()).dtype
+
+    def take(shape):
+        n = int(np.prod(shape)) if shape else 1
+        v = buf[pos[0] : pos[0] + n].reshape(shape).copy()
+        pos[0] += n
+        return torch.from_numpy(v).to(dtype)
+
+    def read(lay, module, lead):
+        if lay is None:
+            return take(lead + list(module.shape))
+        if isinstance(lay, list):
+            return read(lay[1], module[0], lead + [len(module)])
+        return {k: read(v, getattr(module, k), lead) for k, v in lay.items()}
+
+    tree = read(layout, model, [])
+    if pos[0] != len(buf):
+        raise ValueError(f"{path}: {len(buf)} values, {pos[0]} consumed by the layout")
+    return _flatten_params(tree, model)

@@ -253,3 +253,99 @@ dtypes. Alternatives considered: a `.psk.d` writer in `train.py` for
 checkpoints interoperable with `presk` (deferred to `inference serve`), and a
 float64 ONNX check (ONNX Runtime's double coverage is uneven; float32 with
 `rtol 1e-4` is the meaningful test of a float32 deployment graph).
+
+## D21 — One `Backend` seam; exact values cross it untouched (2026-09-19)
+
+Every executor of PSK-Core (the reference interpreter today, the kernel-IR
+interpreter and the Cranelift JIT next) implements `presk_rt::Backend`:
+`prepare(entry, dims, realize) -> Prepared` then `call(&Prepared, args) ->
+Value`. The runtime `Value` is a tree (tuples, records) of tensors whose
+buffers are `f64`, `f32`, `i64` — or *exact* MPFR reals, so that the
+interpreter behind the trait loses nothing between two calls: the training
+loop written over the trait reproduces the 0.2.0 goldens digit for digit,
+and the interpreter stays the oracle of the other backends rather than an
+approximation of itself. The training loop, `presk run`, `presk serve` and
+the conformance suite are written once against the trait; input synthesis
+stays with the interpreter (`prepare_run`), since synthesizing inputs is a
+reference concern. Alternatives considered: a generic `Value<R>` (would push
+the arithmetic type into every consumer), and converting the interpreter's
+results to `f64` at the seam (would silently change the reference's
+semantics across steps).
+
+## D22 — PSK-Kernel v0: one kernel per primitive at concrete shapes; the host program is the Core body (2026-09-19)
+
+A kernel is the loop nest of one PSK-Core tensor primitive at the concrete
+shapes of its operands and one machine type, built when first launched and
+cached by its signature. The host program is not a second IR: the PSK-Core
+body is evaluated over runtime values (calls, folds, tuples, records,
+structural primitives, initializers and sampling on the host with the
+reference's ChaCha keys), and every tensor primitive is a launch. This gives
+a complete native-arithmetic realization of every program with one lowering
+table, keeps the interpreter's semantics rule for rule (the same alignment,
+contraction and adjoint definitions), and specializes on shapes that only
+become known at run time (open prefixes). What it defers: fusion across
+primitives, tiling, a static host program and the versioned `.pskk`, which
+belong with PSK-Sched. Alternatives considered: a full host IR mirroring
+Core (duplication without benefit before scheduling exists) and static
+shape inference for all kernels (impossible through `...` prefixes without
+the caller's shapes).
+
+## D23 — Cranelift JIT in process; the kernel backend's host program unchanged (2026-09-19)
+
+The native backend is the kernel backend with its launches compiled: a
+`KernelExec` seam lets the host program run kernels through the kernel-IR
+interpreter or through Cranelift-compiled functions, so the two realizations
+share every semantic decision and differ only in how a loop nest executes.
+Kernels are compiled on first use, in process, with buffers passed as an
+array of pointers; `sqrt` is native and the transcendental functions are
+`libm` calls, the same definitions as the interpreter's. No object files,
+bundles or cross-compilation yet: those belong with the `.pskk`/`.pskb`
+contract (spec question 36). Cranelift 0.131 is pinned because Cranelift's
+minimum Rust version tracks stable closely and 0.135 needs rustc 1.95.
+Alternatives considered: LLVM through `inkwell` (better vectorization, an
+LLVM installation on every machine, slower builds) and emitting C to compile
+with `zig cc` (cross-compilation for free, but a foreign toolchain in the
+inner loop of a JIT).
+
+## D24 — E-graph rewriting per function body, typed classes, extraction even under a limit (2026-09-19)
+
+`presk-opt` builds one e-graph (crate `egg`) per PSK-Core function body
+and writes the extracted term back in ANF; calls, folds and closures are
+opaque nodes, so the pass is intraprocedural and needs no inlining decision.
+Every class carries the PSK-Core type of its value as an `egg` analysis:
+rules that build a new elementwise operation fire only between equal types
+or against a real scalar, so no rule has to reason about broadcasting or
+axis alignment, and the identity `sum_to x t = x` requires equal axis names
+because the runtime tensor of `sum_to` carries the template's names
+(question 44). The rules are exact over ℝ; the interpreter's goldens and a
+property test are the oracle. Extraction is by operation counts until the
+calibrated model of step 7, over trees (`egg`'s extractor does not see
+sharing), which excluded rules that only move an operation around. The plan
+proposed to leave a function untouched when saturation hits a limit;
+extraction from a partial e-graph is sound, so the pass extracts and
+reports the stop reason instead. Alternatives considered: `egglog`
+(relational rules; not needed for a few dozen patterns), a hand-written
+peephole pass (no equational reasoning, order-dependent), interprocedural
+e-graphs with inlining (later, with the cost model).
+
+## D25 — Cost model v0.1: per-kernel roofline with constants fitted on relative error (2026-09-19)
+
+The extraction cost of `presk-opt` follows the cost-model document's
+roofline `λ + max(W/π, Q/β)` node by node — legitimate because PSK-Kernel v0
+runs one kernel per primitive, so traffic is additive; fusion groups will
+change that with a fusion pass. `W` and `Q` are computed twice from the same
+definitions: from the kernel IR at concrete shapes for calibration, from the
+PSK-Core types (dimensions bound by name from the run, 64 by default) for
+extraction, so that the profile fitted on kernels applies to the terms the
+e-graph proposes. The constants are fitted by least squares on the
+*relative* error over a refined log grid, `λ` in closed form: kernel times
+span three orders of magnitude and an absolute fit would see only the
+largest. Rank correlation (Spearman) is the reported quality, the roadmap's
+metric for cost models; on the examples it moves from 0.15 (operation
+counts) to 0.95. `λ` is the measured cost of calling a compiled kernel,
+about 50 ns; the host program's dispatch is not modelled, and the model's
+totals are not wall-time predictions of an entry. Alternatives considered:
+a linear additive model `o + W/π + Q/β` (fits as well on these samples, but
+is not the roofline the specification writes); per-primitive overheads (too
+many parameters for ninety samples); measuring whole entries rather than
+kernels (no way to attribute time to nodes).

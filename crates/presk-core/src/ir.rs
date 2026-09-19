@@ -88,7 +88,7 @@ pub struct Let {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Lit {
     Nat(u64),
     /// Decimal text, converted at the evaluator's precision.
@@ -162,7 +162,7 @@ pub fn unstack_ty(ty: &Ty) -> Ty {
 
 /// Primitive operations. Axes are designated by *name*: runtime tensors
 /// carry the axis names of their types.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PrimOp {
     // elementwise, with broadcasting
     Add,

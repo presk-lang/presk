@@ -98,6 +98,28 @@ fn training_and_graph_files() {
     let files = train_files(&spec);
     assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["pskd.py", "train.py"]);
     insta::assert_snapshot!("pskd_py", files[0].content);
+    // `--serve`: serve.py over the same module, with the parameter tree's layout.
+    use presk_export_pytorch::{ServeSpec, layout_py, serve_files};
+    use presk_types::ty::{ParamsTree, Ty};
+    let leaf = || ParamsTree::Leaf(Ty::Nat);
+    let tree = ParamsTree::Node(vec![("head".into(), leaf()), ("blocks".into(), ParamsTree::Stacked { n: presk_types::dim::DimExpr::constant(presk_types::dim::rat(2)), inner: Box::new(ParamsTree::Node(vec![("w".into(), leaf())])) })]);
+    assert_eq!(layout_py(&tree), r#"{"head": None, "blocks": ["stack", {"w": None}]}"#);
+    let sspec = ServeSpec {
+        source: "tests/examples/minigpt/serve_minigpt.psk".into(),
+        model_stem: "minigpt".into(),
+        class: "MiniGPT".into(),
+        ctor_dims: vec!["T".into()],
+        main_stem: "serve_minigpt".into(),
+        generate: Some("next_token".into()),
+        temperature: Some("0.8".into()),
+        seq_dim: Some("T".into()),
+        weights: Some("ckpt/final".into()),
+        layout: layout_py(&tree),
+        ignored: vec!["precision".into(), "target".into(), "batching".into(), "cache".into()],
+    };
+    let sfiles = serve_files(&sspec);
+    assert_eq!(sfiles.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["pskd.py", "serve.py"]);
+    insta::assert_snapshot!("serve_py", sfiles[1].content);
     insta::assert_snapshot!("train_py", files[1].content);
     let data = ConformanceData {
         entry: "MiniGPT.apply".into(),

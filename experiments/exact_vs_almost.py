@@ -73,7 +73,21 @@ def main():
     print(f"2. the realization gap ({args.export_dir})")
     for dtype in (torch.float32, torch.float64):
         k, abs_gap, scale = replay(dtype)
-        print(f"   {str(dtype).removeprefix('torch.'):8s} after {k} steps: max |θ − θ_exact| = {abs_gap:.3e}  (parameters up to {scale:.3f} in magnitude, gap/scale {abs_gap / scale:.1e})")
+        print(f"   PyTorch {str(dtype).removeprefix('torch.'):8s} after {k} steps: max |θ − θ_exact| = {abs_gap:.3e}  (parameters up to {scale:.3f} in magnitude, gap/scale {abs_gap / scale:.1e})")
+    # The native backend's parameters after the same steps (written by the export
+    # when the Cranelift backend is available): presk's own float32/float64.
+    import test_conformance as tc
+    expected = tc.to_value(tc.load("expected.json"))
+    for name in ("native_f64", "native_f32"):
+        path = os.path.join("conformance", f"{name}.json")
+        if not os.path.exists(path):
+            continue
+        got = tc.to_value(tc.load(f"{name}.json"))
+        exp = tc.flatten_params(expected, None)
+        nat = tc.flatten_params(got, None)
+        abs_gap = max((nat[n].double() - exp[n]).abs().max().item() for n in exp)
+        scale = max(exp[n].abs().max().item() for n in exp)
+        print(f"   presk   {name.removeprefix('native_'):8s} after {k} steps: max |θ − θ_exact| = {abs_gap:.3e}  (parameters up to {scale:.3f} in magnitude, gap/scale {abs_gap / scale:.1e})")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,19 @@
+[package]
+name = "presk-rt"
+description = "The runtime seam: values, the Backend trait, the interpreter behind it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-data.workspace = true
+rug.workspace = true
+
+[dev-dependencies]
+rug.workspace = true

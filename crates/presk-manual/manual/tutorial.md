@@ -951,7 +951,133 @@ loss curve differs from the interpreter's in the batches, not in the
 arithmetic. The `training` chapter has the loop, the flags and the two
 reference runs of the compiler's own tests.
 
-## 12. Testing everything
+## 12. Run it natively, then let the compiler rewrite
+
+Everything so far ran on the reference interpreter at 256 bits. Since 0.3.0
+the same programs run *natively*: every tensor primitive of PSK-Core is
+lowered to a loop-nest kernel at the shapes of the run (PSK-Kernel v0),
+compiled to machine code by Cranelift on first use, in `f64` or `f32`. The
+interpreter stays the reference; the native backend is measured against it.
+
+```sh
+presk bench tutorial/07_train.psk --entry loss --dim B=8
+```
+
+```text
+backend               median ms      best ms   speedup
+interp 64 bits            0.976        0.852      1.0x
+kernel f64                0.318        0.314      3.1x
+native f64                0.163        0.162      6.0x
+native f32                0.142        0.142      6.8x
+```
+
+Four executors of one program: the reference (here at 64 bits, its cheapest
+setting), the kernels interpreted, the kernels compiled in `f64` and in
+`f32`. Timings are one run's, and vary by a few tens of percent from run to
+run at these sizes. The speedups are modest — a batch of eight through a
+model of width four is dominated by dispatch, not arithmetic; the `native`
+chapter has the tiny MiniGPT at 27×. Train the tower of step 11 natively:
+
+```sh
+presk train tutorial/07_train.psk --steps 100 --log-every 20 --backend native --ckpt out/tutorial_ckpt_native
+```
+
+```text
+step 20  epoch 2  loss 1.472339  lr 1.000e-2  |g| 2.0695e0
+step 40  epoch 3  loss 0.843784  lr 8.536e-3  |g| 8.2585e-1
+step 60  epoch 4  loss 0.521466  lr 5.000e-3  |g| 6.9388e-1
+step 80  epoch 5  loss 0.432558  lr 1.464e-3  |g| 5.8567e-1
+step 100  epoch 7  loss 0.320685  lr 0.000e0  |g| 4.6561e-1
+presk train: 100 steps of Tower, final loss 0.320685, weights in out/tutorial_ckpt_native/final.psk.d
+```
+
+Compare with step 11: the same log, digit for digit, at the six digits
+printed. The only difference between the two runs is the arithmetic —
+correctly rounded 256-bit reals against `f64` — and here it is invisible
+(`--realize f32` prints the same six digits too). The `experiments` chapter
+measures what is invisible here: after twenty AdamW steps of the tiny
+MiniGPT the `f64` realization is 7e-16 from the reference, the `f32` one
+4e-7. The reference is what makes those numbers *measurements*.
+
+Now the other half of the compiler: rewriting. `--opt` rewrites the
+PSK-Core program before running it, by equality saturation over rules that
+are exact over ℝ — algebra, and the identities that clean the adjoints
+automatic differentiation produces (`optimization` chapter). On the
+gradient of step 4:
+
+```sh
+presk dump tutorial/04_grad.psk --stage core-opt >/dev/null
+presk run tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6 --opt
+```
+
+```text
+presk-opt: 5 of 9 functions rewritten, 59 → 45 lets, cost 97.51 → 68.78 (operation counts)
+  loss_grad: 3 → 2 lets, cost 1.01 → 1.01 (saturated, 1 iterations)
+  Linear.init: 6 → 5 lets, cost 2.03 → 2.03 (saturated, 1 iterations)
+  loss_grad.lambda0.vjp: 6 → 5 lets, cost 3.04 → 3.04 (saturated, 1 iterations)
+  loss.vjp: 17 → 13 lets, cost 37.43 → 29.73 (saturated, 7 iterations)
+  Linear.apply.vjp: 14 → 7 lets, cost 38.07 → 17.04 (saturated, 6 iterations)
+params = {
+  w = [3, 1] [[-1.30262], [0.342146], [2.7531]]
+  b = [1] [3.47884]
+}
+```
+
+The adjoint of `Linear.apply` halves: the forward pass that differentiation
+recomputed is dead and vanishes, a `sum_to` between equal types is the
+identity, and the two `set_field`s of zeros that it summed become one record
+`{w = …, b = …}`. The gradient is the one of step 4 to the last digit — the
+rules are exact, and the interpreter is the oracle that checks it (every
+golden output of the test suite is reproduced under `--opt`).
+
+Which of two equivalent programs is cheaper is the *cost model's* decision.
+Without more information it counts operations; with a machine profile it
+predicts time. `presk bench --calibrate` times every kernel the entry
+launches natively, computes each one's work and traffic from its loop nest,
+and fits the roofline `λ + max(W/π, Q/β)` to the measurements:
+
+```sh
+presk bench tutorial/07_train.psk --entry loss --dim B=8 --repeat 7 --calibrate out/tutorial_profile.json
+```
+
+```text
+kernel gelu (%0 : f64[batch: 8, model: 4]) …          384          512        0.71        0.56
+kernel dot (%0 : f64[batch: 8, 4], %1 : f64…          256          640        0.42        0.40
+kernel add (%0 : f64[batch: 8, 4], %1 : f64…           32          544        0.21        0.17
+kernel add (%0 : f64[batch: 8, model: 4], %…           32          768        0.17        0.20
+kernel sub (%0 : f64[batch: 8, model: 4], %…           32          768        0.21        0.20
+kernel mean (%0 : f64[batch: 8, model: 4]) …           33          264        0.21        0.14
+-- 12 kernels timed (0 kept from out/tutorial_profile.json), 7 calls, f64
+-- roofline: π = 8.411e8 ops/s, β = 8.119e9 bytes/s, λ = 0.10 µs per launch
+-- Spearman with the measured times: operation counts 0.336, work 0.488, roofline 0.511
+```
+
+(The last six of twelve lines.) Twelve kernels of a few dozen operations
+each make a thin sample: the constants are those of tiny loop nests, they
+move from one run to the next, and the rank correlation (0.51 here) is far
+below the 0.95 the ninety kernels of the tiny MiniGPT give (`optimization`
+chapter). The shape of the result is the point: the model's quality is a
+*number*, measured against the machine, and even on this sample it improves
+over counting operations (0.34). `--opt --profile
+out/tutorial_profile.json` then makes that profile decide the extraction:
+
+```sh
+presk bench tutorial/07_train.psk --entry loss --dim B=8 --opt --profile out/tutorial_profile.json
+```
+
+```text
+presk-opt: 5 of 12 functions rewritten, 139 → 131 lets, cost 687.5 µs → 687.3 µs (roofline, profile macos aarch64 f64)
+```
+
+On this program the profile finds almost nothing to save: the objective and
+the tower are already what the rules can make them, and the costs are now in
+the model's microseconds. The `optimization` chapter reports what the
+profile does on the MiniGPT entries — the same, within noise — and why: the
+rewrites of this version remove cheap kernels; the decisions that move time
+(the order of the attention contractions, fusing elementwise chains) are the
+next rules to write, and the model is now there to arbitrate them.
+
+## 13. Testing everything
 
 | Command | What it verifies |
 |---|---|
@@ -960,7 +1086,11 @@ reference runs of the compiler's own tests.
 | `make run-examples` | the reference `presk run` commands |
 | `make export-examples` | the exports with conformance data, under `out/`: three models, the training loss, one optimizer step, twenty training steps, the ONNX graph |
 | `make conformance` | the exports, then their `test_conformance.py` in `.venv` (after `make venv`): nine tests |
-| `make train-examples` | `presk train` on a linear regression and on the tiny MiniGPT |
+| `make train-examples` | `presk train` on a linear regression and on the tiny MiniGPT, on the reference and natively in `f64` and `f32` |
+| `make serve-examples` | `presk serve` on the tiny MiniGPT's checkpoint: greedy tokens identical on every backend, `--serve` export (`make serve-pt` runs the exported `serve.py`) |
+| `make opt-examples` | the e-graph optimizer's report on the examples; the same outputs with and without `--opt`, on the reference and natively |
+| `make calibrate` | `presk bench --calibrate` on the tiny MiniGPT's entries, then the entries timed with the profile |
+| `make bench` | `presk bench` on the tiny MiniGPT: forward, loss, optimizer step, on every backend |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
@@ -972,10 +1102,14 @@ not implemented, 3 valid but not executable in this version.
 - The `experiments` chapter for what these tools show about the approach
   (`make experiment`): a silent broadcasting bug of plain PyTorch that the
   types rule out, and the gap of float32 and float64 training to the exact
-  reference.
+  reference — and presk's own native realizations next to PyTorch's.
+- The `native` chapter for the runtime seam, PSK-Kernel v0 and the
+  Cranelift backend with their conformance suites; the `optimization`
+  chapter for the rules, the oracle and the calibrated cost model; the
+  `serve` chapter for `inference serve` and `presk serve`.
 - The `cli` chapter for every flag, the `language` chapter for the
   constructs accepted and how they are typed, `diagnostics` for the codes.
 - `docs/spec-questions.md` for the points where this implementation had to
   choose what the specification leaves open.
 - The specification itself, in the `presk-specs` repository, for the
-  design: exact semantics, error budgets, the phases after 0.1.0.
+  design: exact semantics, error budgets, the phases after 0.3.0.

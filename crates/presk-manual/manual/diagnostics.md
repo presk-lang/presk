@@ -35,10 +35,10 @@ declaration keyword.
 | `E4xxx` | effects | implemented |
 | `E5xxx` | lowering to PSK-Core | implemented |
 | `E6xxx` | automatic differentiation | implemented |
-| `E7xxx` | `presk run` (entry resolution, input synthesis, runtime) | implemented |
+| `E7xxx` | `presk run`, `train`, `serve`, `bench` (entry resolution, input synthesis, runtime — on every backend: the kernel and native backends report through `E7001` too) | implemented |
 | `E8xxx` | PyTorch export | implemented |
 | `E9xxx` | `.psk.d` data files (`presk data`, the training pipeline) | implemented (0.2.0 step 1) |
-| `W0xxx` | warnings | implemented (W0001, W0002) |
+| `W0xxx` | warnings | implemented (W0001, W0002, W0003) |
 
 ## Codes
 
@@ -113,7 +113,7 @@ report is a snapshot test; adding a code means adding such a file.
 
 | Code | Message | Cause |
 |---|---|---|
-| `E7001` | (message) | `presk run`: unknown entry or module, wrong number of module arguments, an unbound dimension (`give --dim T=N`), a `--dim` value that violates a file bound (`dim T <= 1024`), an unknown `--dim` name, a value that cannot be synthesized (a module-typed or function-typed parameter), or a runtime error of the interpreter (an index out of range, a shape the primitives cannot align), labelled with the source of the failing binding |
+| `E7001` | (message) | `presk run`: unknown entry or module, wrong number of module arguments, an unbound dimension (`give --dim T=N`), a `--dim` value that violates a file bound (`dim T <= 1024`), an unknown `--dim` name, a value that cannot be synthesized (a module-typed or function-typed parameter), or a runtime error of the interpreter (an index out of range, a shape the primitives cannot align), labelled with the source of the failing binding; on `--backend kernel\|native`, a shape with an open prefix that cannot be materialized, a dimension that does not evaluate to a natural number, or a kernel the lowering does not support |
 
 ## Export codes
 
@@ -137,3 +137,4 @@ report is a snapshot test; adding a code means adding such a file.
 |---|---|---|
 | `W0001` | implicit dimension `B` | an undeclared name in a dimension position of a function signature is taken as a dimension of that function; declare it with `dim B` or `{B : dim}` to silence the warning |
 | `W0002` | data file `path` not found | the `data` file of a `training run` is not readable at check time; its sample type is checked by `presk train` |
+| `W0003` | no generation function for this `inference serve` | the file has no top-level `fn (θ : params M, ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]`; `presk serve --entry FN` names one (`serve` chapter) |

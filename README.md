@@ -5,11 +5,14 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.2.0**: the front-end (`presk check`), an arbitrary-precision
-reference interpreter with automatic differentiation (`presk run`), training
-on that interpreter (`presk train`) from `.psk.d` data files (`presk data`),
-and a PyTorch export of models and training runs with conformance tests
-(`presk export`). See `CHANGELOG.md` and the user manual (`make doc`); its
+**Version 0.3.0**: the front-end (`presk check`), an arbitrary-precision
+reference interpreter with automatic differentiation (`presk run`), a native
+backend — PSK-Kernel v0 compiled by Cranelift, `--backend native --realize
+f64|f32`, measured against the reference — training (`presk train`) from
+`.psk.d` data files (`presk data`) and serving (`presk serve`) on either,
+an e-graph optimizer with rules exact over ℝ and a calibrated cost model
+(`--opt`, `presk bench --calibrate`), and a PyTorch export of models,
+training and serving with conformance tests (`presk export`). See `CHANGELOG.md` and the user manual (`make doc`); its
 tutorial chapter (programs in `tutorial/`, commands in `make tutorial`) is the
 place to start.
 
@@ -19,6 +22,9 @@ make test                                    # cargo test --workspace
 make check-examples                          # presk check on the five example programs
 make run-examples                            # the reference presk run commands
 make train-examples                          # presk train on a regression and the tiny MiniGPT
+make serve-examples                          # presk serve on the tiny MiniGPT's checkpoint: greedy tokens identical on every backend
+make opt-examples                            # the e-graph optimizer: report, and the same outputs with and without --opt
+make calibrate                               # time the native kernels of the tiny MiniGPT, fit the roofline profile (out/profile.json)
 make experiment                              # exact versus almost: float32/float64 training against the exact reference
 make venv && make conformance                # PyTorch/ONNX Runtime conformance of the exports
 make doc                                     # the user manual (rustdoc)
@@ -28,11 +34,13 @@ make doc                                     # the user manual (rustdoc)
 
 ```sh
 presk check FILE.psk [--const NAME=N]... [--summary] [--json]
-presk run FILE.psk --entry ENTRY [--dim NAME=N]... [--const NAME=N]... [--seed S] [--bits 256] [--digits 12] [--json] [--verbose]
-presk train FILE.psk [--const NAME=N]... [--data FILE.psk.d] [--steps N] [--epochs N] [--seed S] [--bits 256] [--log-every N] [--ckpt DIR] [--json]
-presk export FILE.psk --target pytorch --mode readable|graph -o DIR [--shapes=check] [--stack=loop|unroll] [--train] [--conformance-entry ENTRY|adamw.step|train:K ...]
+presk run FILE.psk --entry ENTRY [--dim NAME=N]... [--const NAME=N]... [--seed S] [--bits 256] [--digits 12] [--json] [--verbose] [--backend interp|kernel|native] [--realize f64|f32] [--opt [--profile FILE.json]]
+presk train FILE.psk [--const NAME=N]... [--data FILE.psk.d] [--steps N] [--epochs N] [--seed S] [--bits 256] [--log-every N] [--ckpt DIR] [--json] [--backend ...] [--realize ...] [--opt]
+presk export FILE.psk --target pytorch --mode readable|graph -o DIR [--shapes=check] [--stack=loop|unroll] [--train] [--serve] [--conformance-entry ENTRY|adamw.step|train:K ...]
+presk serve FILE.psk --prompt "t1 t2 ..." [--weights FILE.psk.d] [--tokens N] [--temperature x] [--entry FN] [--dim NAME=N]... [--backend interp|kernel|native] [--realize f64|f32] [--json] [--opt]
+presk bench FILE.psk --entry ENTRY [--dim NAME=N]... [--const NAME=N]... [--bits 64] [--repeat 5] [--opt [--profile FILE.json]] [--calibrate FILE.json [--realize f64|f32]]
 presk data pack|lm-windows|info|export ...
-presk dump FILE.psk --stage tokens|ast|elab|core|core-after-ad [--unroll-stack]
+presk dump FILE.psk --stage tokens|ast|elab|core|core-after-ad|core-opt|kernel [--unroll-stack] [--const NAME=N]...
 ```
 
 Examples:

@@ -454,7 +454,9 @@ objective optimizer data epochs parallel precision` plus `checkpoint every N
 steps to "path"` (`model`, `objective`, `optimizer` required; `objective`
 must be a top-level function whose first parameter is `params <model>`;
 `optimizer` must name an `optimizer` block); `inference serve` fields `model
-weights precision target batching cache` (`model` required). Value forms:
+weights precision target batching cache` (`model` required; the block is
+resolved with the file's generation function, `serve` chapter, `W0003`
+without one). Value forms:
 `cosine(warmup = N)`, `stream "path" |> shuffle(seed = N) |> batch(B = N)`,
 `data_parallel(replicas = auto|N) ⊗ tensor_parallel(axis a)`,
 `budget(rel_error|abs_error = ε) | quantize(int8, calibration = "path")`,

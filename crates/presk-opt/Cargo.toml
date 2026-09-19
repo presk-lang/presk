@@ -1,0 +1,25 @@
+[package]
+name = "presk-opt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "E-graph rewriting of PSK-Core programs (exact over ℝ), with extraction by operation counts"
+
+[dependencies]
+presk-syntax = { workspace = true }
+presk-types = { workspace = true }
+presk-core = { workspace = true }
+egg = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+num-traits = { workspace = true }
+
+[dev-dependencies]
+presk-interp = { workspace = true }
+presk-rt = { workspace = true }
+presk-train = { workspace = true }
+rug = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }
