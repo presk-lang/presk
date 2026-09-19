@@ -118,36 +118,13 @@ fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[50257][batch: B, seq: T]) -
   emb : params Embedding = θ.emb
   h0 : ℝ[batch: B, seq: T, model: 768] = call Embedding.apply{B = B, T = T}(emb, ids)
   blocks : params stack{12}(Block) = θ.blocks
-  %6 : params Block = slice_params 0 blocks
-  %7 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%6, h0, mask)
-  %8 : params Block = slice_params 1 blocks
-  %9 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%8, %7, mask)
-  %10 : params Block = slice_params 2 blocks
-  %11 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%10, %9, mask)
-  %12 : params Block = slice_params 3 blocks
-  %13 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%12, %11, mask)
-  %14 : params Block = slice_params 4 blocks
-  %15 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%14, %13, mask)
-  %16 : params Block = slice_params 5 blocks
-  %17 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%16, %15, mask)
-  %18 : params Block = slice_params 6 blocks
-  %19 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%18, %17, mask)
-  %20 : params Block = slice_params 7 blocks
-  %21 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%20, %19, mask)
-  %22 : params Block = slice_params 8 blocks
-  %23 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%22, %21, mask)
-  %24 : params Block = slice_params 9 blocks
-  %25 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%24, %23, mask)
-  %26 : params Block = slice_params 10 blocks
-  %27 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%26, %25, mask)
-  %28 : params Block = slice_params 11 blocks
-  hL : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%28, %27, mask)
+  hL : ℝ[batch: B, seq: T, model: 768] = fold 12 Block.apply{B = B, T = T}(stacked blocks; acc h0; mask)
   lnf : params LayerNorm{768} = θ.lnf
-  %31 : f64 = 1e-5
-  %32 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(lnf, hL, %31)
+  %8 : f64 = 1e-5
+  %9 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(lnf, hL, %8)
   head : ℝ[768, 50257] = θ.head
-  %34 : ℝ[batch: B, seq: T, 50257] = dot %32, head
-  return %34
+  %11 : ℝ[batch: B, seq: T, 50257] = dot %9, head
+  return %11
 }
 
 fn loss{B T}(θ : params MiniGPT, batch : (idx[50257][batch: B, seq: T], idx[50257][batch: B, seq: T])) -> ℝ[] {
@@ -277,4 +254,110 @@ fn MiniGPT.init{B T}(key : key) -> params MiniGPT uses Rand {
 fn mse_grad.lambda0{D B}(x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], θ : params MLP{D, 4*D}) -> ℝ[] {
   %3 : ℝ[] = call mse{D = D, B = B}(θ, x, y)
   return %3
+}
+
+fn adamw.init{B T}(θ : params MiniGPT) -> (params MiniGPT, params MiniGPT) {
+  m : params MiniGPT = zeros_like θ
+  v : params MiniGPT = zeros_like θ
+  %3 : (params MiniGPT, params MiniGPT) = (m, v)
+  return %3
+}
+
+fn adamw.lr(t : nat, total : nat) -> ℝ[] {
+  %2 : f64 = 3e-4
+  %3 : ℝ[] = real %2
+  %4 : ℝ[] = real t
+  %5 : ℝ[] = real total
+  %6 : f64 = 2000
+  %7 : ℝ[] = real %6
+  %8 : f64 = 1
+  %9 : ℝ[] = real %8
+  %10 : ℝ[] = div %4, %7
+  %11 : f64 = 1
+  %12 : ℝ[] = real %11
+  %13 : ℝ[] = sub %12, %10
+  %14 : ℝ[] = relu %13
+  %15 : ℝ[] = sub %12, %14
+  %16 : ℝ[] = sub %4, %7
+  %17 : ℝ[] = sub %5, %7
+  %18 : ℝ[] = sub %17, %9
+  %19 : ℝ[] = relu %18
+  %20 : ℝ[] = add %19, %9
+  %21 : ℝ[] = div %16, %20
+  %22 : ℝ[] = relu %21
+  %23 : f64 = 1
+  %24 : ℝ[] = real %23
+  %25 : ℝ[] = sub %24, %22
+  %26 : ℝ[] = relu %25
+  %27 : ℝ[] = sub %24, %26
+  %28 : ℝ[] = pi
+  %29 : ℝ[] = mul %28, %27
+  %30 : ℝ[] = cos %29
+  %31 : ℝ[] = add %9, %30
+  %32 : f64 = 0.5
+  %33 : ℝ[] = real %32
+  %34 : ℝ[] = mul %31, %33
+  %35 : ℝ[] = mul %15, %34
+  %36 : ℝ[] = mul %3, %35
+  return %36
+}
+
+fn adamw.step{B T}(θ : params MiniGPT, s : (params MiniGPT, params MiniGPT), g : params MiniGPT, t : nat, total : nat) -> (params MiniGPT, (params MiniGPT, params MiniGPT)) {
+  m : params MiniGPT = s.0
+  v : params MiniGPT = s.1
+  %7 : ℝ[] = sum_squares g
+  %8 : ℝ[] = sqrt %7
+  %9 : f64 = 1e-6
+  %10 : ℝ[] = real %9
+  %11 : ℝ[] = add %8, %10
+  %12 : f64 = 1.0
+  %13 : ℝ[] = real %12
+  %14 : ℝ[] = div %13, %11
+  %15 : f64 = 1
+  %16 : ℝ[] = real %15
+  %17 : ℝ[] = sub %16, %14
+  %18 : ℝ[] = relu %17
+  %19 : ℝ[] = sub %16, %18
+  %20 : params MiniGPT = mul g, %19
+  %21 : f64 = 1
+  %22 : ℝ[] = real %21
+  %23 : f64 = 0.9
+  %24 : ℝ[] = real %23
+  %25 : f64 = 0.95
+  %26 : ℝ[] = real %25
+  %27 : ℝ[] = sub %22, %24
+  %28 : ℝ[] = sub %22, %26
+  %29 : params MiniGPT = mul m, %24
+  %30 : params MiniGPT = mul %20, %27
+  m' : params MiniGPT = add %29, %30
+  %32 : params MiniGPT = mul v, %26
+  %33 : params MiniGPT = mul %20, %20
+  %34 : params MiniGPT = mul %33, %28
+  v' : params MiniGPT = add %32, %34
+  %36 : ℝ[] = real t
+  %37 : ℝ[] = log %24
+  %38 : ℝ[] = mul %36, %37
+  %39 : ℝ[] = exp %38
+  %40 : ℝ[] = sub %22, %39
+  %41 : ℝ[] = log %26
+  %42 : ℝ[] = mul %36, %41
+  %43 : ℝ[] = exp %42
+  %44 : ℝ[] = sub %22, %43
+  %45 : params MiniGPT = div m', %40
+  %46 : params MiniGPT = div v', %44
+  %47 : params MiniGPT = sqrt %46
+  %48 : f64 = 1e-8
+  %49 : ℝ[] = real %48
+  %50 : params MiniGPT = add %47, %49
+  %51 : params MiniGPT = div %45, %50
+  %52 : f64 = 0.1
+  %53 : ℝ[] = real %52
+  %54 : params MiniGPT = mul θ, %53
+  %55 : params MiniGPT = add %51, %54
+  lr : ℝ[] = call adamw.lr(t, total)
+  %57 : params MiniGPT = mul %55, lr
+  θ' : params MiniGPT = sub θ, %57
+  s' : (params MiniGPT, params MiniGPT) = (m', v')
+  %60 : (params MiniGPT, (params MiniGPT, params MiniGPT)) = (θ', s')
+  return %60
 }

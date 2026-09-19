@@ -1,0 +1,28 @@
+-- A stacked module whose body has an open prefix `...` (the tutorial's tower):
+-- the gradient through the fold must keep the axis names of the accumulator.
+dim B
+
+module Norm {
+  param γ : ℝ[4]  init = ones
+  fn apply(x : ℝ[..., model: 4]) -> ℝ[..., model: 4] =
+    let ms = mean(axis model, x^2)
+    x / sqrt(ms + real(1e-6)) * γ
+}
+
+module Block {
+  param w : ℝ[4, 4]  init = xavier_uniform
+  use norm : Norm
+  fn apply(x : ℝ[..., model: 4]) -> ℝ[..., model: 4] =
+    x + tanh(norm.apply(x) · w)
+}
+
+module Tower {
+  use blocks : stack{2}(Block)
+  fn apply(x : ℝ[..., model: 4]) -> ℝ[..., model: 4] = blocks.apply(x)
+}
+
+fn loss(θ : params Tower, x : ℝ[batch: B, model: 4], y : ℝ[batch: B, model: 4]) -> ℝ[] =
+  mean((Tower.apply(θ, x) - y)^2)
+
+fn loss_grad(θ : params Tower, x : ℝ[batch: B, model: 4], y : ℝ[batch: B, model: 4]) -> params Tower =
+  grad(λ θ. loss(θ, x, y))(θ)

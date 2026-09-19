@@ -32,6 +32,7 @@ pub fn analyze(prog: &Program, elab: &ElabProgram, diags: &mut Vec<Diagnostic>) 
             Origin::Source(_) => f.effects.clone(),
             Origin::Init(_) => vec!["Rand".into()],
             Origin::Lambda { parent } => prog.func(*parent).effects.clone(),
+            Origin::Optimizer { .. } => vec![],
         };
         for (e, span) in uses_with_spans(prog, id, &inferred) {
             if !declared.contains(&e) {
@@ -60,7 +61,7 @@ fn infer(prog: &Program, id: FuncId, out: &mut HashMap<FuncId, Vec<String>>) -> 
     for l in &prog.func(id).body.lets {
         match &l.rhs {
             Rhs::Prim { op, .. } if op.uses_rand() => push(&mut effects, "Rand"),
-            Rhs::Call { f, .. } | Rhs::Closure { f, .. } => {
+            Rhs::Call { f, .. } | Rhs::Closure { f, .. } | Rhs::Fold { body: f, .. } => {
                 for e in infer(prog, *f, out) {
                     push(&mut effects, &e);
                 }
@@ -84,7 +85,7 @@ fn uses_with_spans(prog: &Program, id: FuncId, inferred: &HashMap<FuncId, Vec<St
     for l in &prog.func(id).body.lets {
         let es: Vec<String> = match &l.rhs {
             Rhs::Prim { op, .. } if op.uses_rand() => vec!["Rand".into()],
-            Rhs::Call { f, .. } | Rhs::Closure { f, .. } => inferred.get(f).cloned().unwrap_or_default(),
+            Rhs::Call { f, .. } | Rhs::Closure { f, .. } | Rhs::Fold { body: f, .. } => inferred.get(f).cloned().unwrap_or_default(),
             _ => vec![],
         };
         for e in es {

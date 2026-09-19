@@ -88,7 +88,10 @@ pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunO
     };
     for (i, p) in f.params.iter().enumerate() {
         let default = sig.and_then(|s| s.params.iter().find(|q| q.name == p.name)).and_then(|q| q.default.clone());
-        let v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
+        let mut v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
+        if matches!(f.origin, Origin::Optimizer { .. }) {
+            v = optimizer_input(&p.name, v);
+        }
         inputs.push((p.name.clone(), v.clone()));
         args.push(v);
     }
@@ -98,9 +101,34 @@ pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunO
     Ok(RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result })
 }
 
+/// Inputs of an optimizer entry (`adamw.step`) made meaningful: the second
+/// moment `v` of the state `s` is non-negative (squared draws), the step
+/// `t` is 3 and the horizon `total` 10, so that the schedule is exercised
+/// inside its warm-up.
+fn optimizer_input<R: Real>(name: &str, v: Value<R>) -> Value<R> {
+    match (name, v) {
+        ("s", Value::Tuple(mut parts)) if parts.len() == 2 => {
+            parts[1] = parts[1].map_leaves(&mut |leaf| match leaf {
+                Value::Real(t) => Value::Real(t.map(|x: &R| x.mul(x))),
+                other => other.clone(),
+            });
+            Value::Tuple(parts)
+        }
+        ("t", Value::Nat(_)) => Value::Nat(3),
+        ("total", Value::Nat(_)) => Value::Nat(10),
+        (_, v) => v,
+    }
+}
+
 /// `fn`, `Module.fn`, `Module{8, 4}.fn`: the Core function and the module's
 /// dimension arguments.
 fn resolve_entry(prog: &Program, elab: &ElabProgram, entry: &str) -> Result<(FuncId, Dims, Vec<u64>)> {
+    // Optimizer functions (`adamw.step`) are found by their exact name.
+    if let Some(id) = prog.find(entry)
+        && matches!(prog.func(id).origin, Origin::Optimizer { .. })
+    {
+        return Ok((id, Dims::new(), vec![]));
+    }
     let (module_part, fn_name) = match entry.rsplit_once('.') {
         Some((m, f)) => (Some(m), f),
         None => (None, entry),

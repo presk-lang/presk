@@ -91,7 +91,11 @@ impl<'p, R: Real> Interp<'p, R> {
         }
         let mut closures: HashMap<VarId, (FuncId, Vec<Value<R>>)> = HashMap::new();
         for l in &func.body.lets {
-            let v = self.rhs(&l.rhs, &l.ty, &dims, &env, &closures).map_err(|e| RunError { span: e.span.or(Some(l.span)), ..e })?;
+            let v = self.rhs(&l.rhs, &l.ty, &dims, &env, &closures).map_err(|e| RunError {
+                span: e.span.or(Some(l.span)),
+                // Name the function once, from the innermost frame.
+                message: if e.message.starts_with("in `") { e.message } else { format!("in `{}` ({}): {}", func.name, l.name.clone().unwrap_or_else(|| format!("%{}", l.var.0)), e.message) },
+            })?;
             if let Rhs::Closure { f, captured } = &l.rhs {
                 closures.insert(l.var, (*f, captured.iter().map(|c| env[c].clone()).collect()));
             }
@@ -114,7 +118,12 @@ impl<'p, R: Real> Interp<'p, R> {
                 let vals: Vec<Value<R>> = args.iter().map(get).collect::<Result<_>>()?;
                 let mut callee_dims = Dims::new();
                 for (v, e) in dim_args {
-                    callee_dims.insert(*v, self.dim(e, dims)?);
+                    // A dimension the callee never uses at run time may be unconstrained
+                    // at the call site (a file-level `dim` absent from its types): leave
+                    // it unbound; a use would then fail at the use site.
+                    if let Ok(n) = self.dim(e, dims) {
+                        callee_dims.insert(*v, n);
+                    }
                 }
                 self.call(*f, callee_dims, vals)
             }
@@ -130,6 +139,43 @@ impl<'p, R: Real> Interp<'p, R> {
             },
             Rhs::Closure { f, captured } => Ok(Value::Closure { f: *f, captured: captured.iter().map(get).collect::<Result<_>>()? }),
             Rhs::Grad(_) => err("`grad` reached the interpreter: run automatic differentiation first"),
+            Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, scan } => {
+                let count = self.dim(n, dims)? as usize;
+                let sts: Vec<Value<R>> = stacked.iter().map(get).collect::<Result<_>>()?;
+                let ex: Vec<Value<R>> = extra.iter().map(get).collect::<Result<_>>()?;
+                let mut acc = get(init)?;
+                let mut callee_dims = Dims::new();
+                for (v, e) in dim_args {
+                    if let Ok(n) = self.dim(e, dims) {
+                        callee_dims.insert(*v, n);
+                    }
+                }
+                let order: Vec<usize> = if *reverse { (0..count).rev().collect() } else { (0..count).collect() };
+                let mut pre: Vec<(usize, Value<R>)> = Vec::new();
+                for i in order {
+                    if *scan {
+                        pre.push((i, acc.clone()));
+                    }
+                    let mut args = Vec::with_capacity(sts.len() + ex.len() + 2);
+                    if *index {
+                        args.push(Value::Nat(i as u64));
+                    }
+                    for s in &sts {
+                        args.push(self.slice_tree(s, i));
+                    }
+                    args.push(acc);
+                    args.extend(ex.iter().cloned());
+                    acc = self.call(*body, callee_dims.clone(), args)?;
+                }
+                if *scan {
+                    pre.sort_by_key(|(i, _)| *i);
+                    let parts: Vec<Value<R>> = pre.into_iter().map(|(_, v)| v).collect();
+                    let stacked = self.stack_trees(&parts)?;
+                    Ok(Value::Tuple(vec![acc, stacked]))
+                } else {
+                    Ok(acc)
+                }
+            }
             Rhs::Apply { fun, args } => {
                 let (f, captured) = match closures.get(fun) {
                     Some(c) => c.clone(),

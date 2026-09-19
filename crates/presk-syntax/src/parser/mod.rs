@@ -29,6 +29,22 @@ pub fn parse_file(sm: &SourceMap, file: FileId) -> (Program, Vec<Diagnostic>) {
     (Program { file, decls }, p.diags)
 }
 
+/// Parse a file holding exactly one type (`(idx[64][seq: 8], idx[64][seq: 8])`),
+/// as written in the header of a `.psk.d` data file.
+pub fn parse_type(sm: &SourceMap, file: FileId) -> (Option<crate::ast::Ty>, Vec<Diagnostic>) {
+    let lexed = lexer::lex(file, sm.text(file));
+    let mut p = Parser { toks: lexed.tokens, pos: 0, free: 1, diags: lexed.diags, file, line_starts: line_starts(sm.text(file)) };
+    p.skip_newlines();
+    let ty = p.ty().ok();
+    p.skip_newlines();
+    if ty.is_some() && !matches!(p.peek_kind(), TokKind::Eof) {
+        let span = p.peek().span;
+        let found = p.peek_kind();
+        p.error_at(span, format!("expected end of type, found {found}"), "unexpected here");
+    }
+    (ty, p.diags)
+}
+
 fn line_starts(text: &str) -> Vec<u32> {
     let mut v = vec![0];
     for (i, b) in text.bytes().enumerate() {

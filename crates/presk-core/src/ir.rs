@@ -46,6 +46,9 @@ pub enum Origin {
     Init(ModRef),
     /// A lambda lifted out of `parent` (closure conversion).
     Lambda { parent: FuncId },
+    /// A function of the optimizer `name` of a `training run` for `model`
+    /// (`adamw.init`, `adamw.lr`, `adamw.step`).
+    Optimizer { name: String, model: ModRef },
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +114,50 @@ pub enum Rhs {
     Grad(VarId),
     /// Application of a function value.
     Apply { fun: VarId, args: Vec<VarId> },
+    /// A loop over the leading axis of stacked values (`stack{n}(M)`):
+    /// `acc ← body([i,] slice_i(stacked…), acc, extra…)` for `i` in `0..n`
+    /// (`n−1..0` when `reverse`); `index` passes `i : nat` first. The result
+    /// is the final accumulator, or with `scan` the pair of the final
+    /// accumulator and the stack of the accumulators *before* each iteration
+    /// (indexed by `i` whatever the direction), which differentiation needs.
+    Fold { body: FuncId, dim_args: BTreeMap<DimVar, DimExpr>, n: DimExpr, stacked: Vec<VarId>, init: VarId, extra: Vec<VarId>, index: bool, reverse: bool, scan: bool },
+}
+
+/// The type of `n` stacked values of type `ty` along a new leading axis:
+/// `params M` → `params stack{n}(M)`, a tensor gains a leading axis, a tuple
+/// is stacked leaf by leaf. A shape with an open prefix `...` is unchanged:
+/// the prefix already covers the new leading axis (and the interpreter's
+/// retagging must not touch the axes it hides).
+pub fn stack_ty(ty: &Ty, n: &DimExpr) -> Ty {
+    use presk_types::ty::{Axis, Shape};
+    let lead = |s: &Shape| {
+        if s.prefix.is_some() {
+            return s.clone();
+        }
+        let mut axes = vec![Axis { name: None, len: n.clone() }];
+        axes.extend(s.axes.iter().cloned());
+        Shape { prefix: None, axes }
+    };
+    match ty {
+        Ty::Real(s) => Ty::Real(lead(s)),
+        Ty::Idx { bound, shape } => Ty::Idx { bound: bound.clone(), shape: lead(shape) },
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| stack_ty(t, n)).collect()),
+        Ty::Params(r) => Ty::Params(ModRef::Stack { n: n.clone(), inner: Box::new(r.clone()) }),
+        other => other.clone(),
+    }
+}
+
+/// The type of one slice of a stacked value (inverse of [`stack_ty`]).
+pub fn unstack_ty(ty: &Ty) -> Ty {
+    use presk_types::ty::Shape;
+    let drop = |s: &Shape| if s.prefix.is_some() { s.clone() } else { Shape { prefix: None, axes: s.axes.iter().skip(1).cloned().collect() } };
+    match ty {
+        Ty::Real(s) => Ty::Real(drop(s)),
+        Ty::Idx { bound, shape } => Ty::Idx { bound: bound.clone(), shape: drop(shape) },
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(unstack_ty).collect()),
+        Ty::Params(ModRef::Stack { inner, .. }) => Ty::Params((**inner).clone()),
+        other => other.clone(),
+    }
 }
 
 /// Primitive operations. Axes are designated by *name*: runtime tensors
@@ -136,6 +183,8 @@ pub enum PrimOp {
     Cos,
     /// Injection of a hyperparameter (`nat`, `f64`) into the real scalar.
     Real,
+    /// The constant π, correctly rounded at the evaluator's precision.
+    Pi,
     /// Contraction of the last axis of the left operand with the first of the right.
     Dot,
     Matmul,
@@ -173,6 +222,8 @@ pub enum PrimOp {
     // ----- adjoint primitives (emitted by automatic differentiation) -----
     /// Zeros with the structure and shape of the argument (tensor or tree).
     ZerosLike,
+    /// Sum of the squares of every element of a tensor or a tree: `ℝ[]`.
+    SumSquares,
     /// `(record, value)`: the record with one field replaced.
     SetField { name: String },
     /// `(tuple, value)`: the tuple with one element replaced.
@@ -200,6 +251,8 @@ pub enum PrimOp {
     ScatterIndex { axis: String, index: i64 },
     /// `(stacked, ct)`: zeros like the stacked tree with slice `index` set to `ct`.
     ScatterParams { index: u64 },
+    /// `(stacked, i : nat, value)`: the stacked value with slice `i` replaced.
+    SetSlice,
 }
 
 impl PrimOp {
@@ -222,6 +275,7 @@ impl PrimOp {
             PrimOp::Sin => "sin".into(),
             PrimOp::Cos => "cos".into(),
             PrimOp::Real => "real".into(),
+            PrimOp::Pi => "pi".into(),
             PrimOp::Dot => "dot".into(),
             PrimOp::Matmul => "matmul".into(),
             PrimOp::Ein { operands, output } => {
@@ -249,6 +303,8 @@ impl PrimOp {
             PrimOp::SliceParams { index } => format!("slice_params {index}"),
             PrimOp::StackParams { n } => format!("stack_params {n}"),
             PrimOp::ZerosLike => "zeros_like".into(),
+            PrimOp::SumSquares => "sum_squares".into(),
+            PrimOp::SetSlice => "set_slice".into(),
             PrimOp::SetField { name } => format!("set_field {name}"),
             PrimOp::SetElem { index } => format!("set_elem {index}"),
             PrimOp::SumTo => "sum_to".into(),

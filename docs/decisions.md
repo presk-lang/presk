@@ -174,3 +174,82 @@ test is generated from the interpreter's run (`inputs.json`,
 `expected.json`) and compares in float64 with a tight tolerance; PyTorch is
 never a dependency of the compiler, so the test is byte-compiled here and run
 where PyTorch exists.
+
+## D16 — `.psk.d`: samples of one Presk type, `f64` leaves, no windowing in the language (2026-09-19)
+
+A data file is a sequence of samples of one closed Presk type written in the
+header in Presk syntax; leaves are `f64` (injected exactly into ℝ, the
+hyperparameter rule) and `idx` at the width of their bound. Checkpoints and
+weights are one-sample files of type `params M`, whose layout comes from the
+program. The language-modelling shift between inputs and targets is a
+data-preparation step (`presk data lm-windows`), so that `batch(B)` has one
+meaning for every objective: stack `B` samples under a `batch` axis and bind
+`B`. Alternatives considered: NumPy `.npy` or safetensors (would tie the
+language to a foreign type system and offer no place for `idx` bounds or
+tuples); a windowing operator in the pipeline (would make `stream` depend on
+the objective's shape). The format is versioned and confined to one crate so
+that the specification's answer (question 28) stays a local change.
+
+## D17 — The optimizer is PSK-Core, generated per (block, model), PyTorch's AdamW (2026-09-19)
+
+`optimizer adamw { … }` is lowered to `adamw.init`, `adamw.lr` and
+`adamw.step`, ordinary Core functions over `params M` written with the
+language's primitives (`relu` for the piecewise schedules, `sum_squares` for
+the global norm), so that the interpreter, the export and later code
+generation treat the update like the model. The update rule is PyTorch's
+AdamW (decoupled decay, bias correction, `eps` outside the root, clipping
+with the `1e-6` of `clip_grad_norm_`), because the conformance test needs a
+fixed reference and PyTorch is the one users compare with. The block's name
+selects the algorithm (the spec writes `optimizer adamw`, `optimizer = adamw`).
+Alternatives considered: an interpreter-side optimizer (would not be exported
+or compiled, and would duplicate tree arithmetic), a `Select` primitive for
+the schedules (not needed: `min`/`max` of the piecewise forms are `relu`).
+
+## D18 — `fold` as the loop of PSK-Core; scan-and-backward-fold differentiation (2026-09-19)
+
+`stack{L}(M).apply` lowers to `Rhs::Fold { body, n, stacked, init, extra }`
+rather than `L` unrolled calls: the IR's size no longer depends on `L`, `L`
+may be symbolic, and code generation will emit a loop. The construct is kept
+minimal — a fold over the leading axis of stacked values with an
+accumulator — plus three flags needed by differentiation: `scan` (also
+return the accumulators before each iteration), `reverse`, and `index`
+(pass `i` to the body). The reverse rule is the classical one: the forward
+copy scans, the backward fold runs down from `L − 1`, its generated body
+applies the body's `vjp`, writes the stacked cotangent into slice `i`
+(`set_slice`, a dynamic-index primitive) and sums the extras' cotangents.
+Alternatives considered: recomputing the accumulators in the backward pass
+(quadratic, no new construct) and a general `scan` returning per-iteration
+outputs (more general than needed). Initializers of stacked modules are
+still unrolled (`L` keys, `stack_params`), a `map` form to be added when a
+symbolic `L` is actually used.
+
+## D19 — The training loop sequences PSK-Core; nothing trains inside the interpreter (2026-09-19)
+
+`presk train` is a small crate that calls, through the interpreter, the
+model's initializer, the objective and its `vjp` (generated on demand by the
+same differentiation as `grad`), and the PSK-Core optimizer, over the
+pipeline of `presk-data`. It converts `.psk.d` samples into batch values
+along the `batch` axis of the objective's type and parameter trees into
+checkpoints, and nothing else: no update rule, no schedule, no gradient
+code lives in the loop, so the export and later code generation reproduce
+training by reproducing PSK-Core. The objective is resolved by its origin
+(the elaborated function), not by name, since imports may define a function
+of the same name. Two calls per step (the loss, then the `vjp`) recompute the
+forward pass; acceptable for a reference, to be shared when speed matters.
+
+## D20 — Training in the export: `train.py` with PyTorch's shuffling, conformance by replaying batches; graph mode through PyTorch (2026-09-19)
+
+`train.py` is a real PyTorch training script over the exported objective and
+model: `DataLoader` shuffling, `torch.optim.AdamW`, the schedule as a
+multiplier, `clip_grad_norm_`, `torch.save` checkpoints. It does not
+reproduce the pipeline's ChaCha permutation (that would mean a ChaCha in
+Python for no user benefit); instead the K-step conformance test records
+the interpreter's batch indices and `θ₀` and replays them, so the two loops
+see the same data and the comparison isolates the arithmetic. Graph mode
+follows the decision on question 32: the `.pt2` and `.onnx` files come from
+PyTorch's own exporters run on the exported module loaded with the
+conformance parameters, in float32; a Presk-native graph waits for solved
+dtypes. Alternatives considered: a `.psk.d` writer in `train.py` for
+checkpoints interoperable with `presk` (deferred to `inference serve`), and a
+float64 ONNX check (ONNX Runtime's double coverage is uneven; float32 with
+`rtol 1e-4` is the meaningful test of a float32 deployment graph).

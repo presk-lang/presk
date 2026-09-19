@@ -1,0 +1,29 @@
+-- A stacked module differentiated: the gradient flows through a `Fold`
+-- (0.2.0 step 4), with a stacked parameter tree and a differentiable extra.
+const D : nat = 3
+const L : nat = 3
+dim B
+
+module Block {
+  param w : ℝ[D, D]  init = xavier_uniform
+  param b : ℝ[D]     init = normal(std = 0.5)
+
+  fn apply(x : ℝ[batch: B, model: D], scale : ℝ[]) -> ℝ[batch: B, model: D] =
+    x + tanh(x · w + b) * scale
+}
+
+module Tower {
+  use blocks : stack{L}(Block)
+
+  fn apply(x : ℝ[batch: B, model: D], scale : ℝ[]) -> ℝ[batch: B, model: D] =
+    blocks.apply(x, scale)
+}
+
+fn loss(θ : params Tower, x : ℝ[batch: B, model: D], scale : ℝ[]) -> ℝ[] =
+  mean(Tower.apply(θ, x, scale)^2)
+
+fn loss_grad(θ : params Tower, x : ℝ[batch: B, model: D], scale : ℝ[]) -> params Tower =
+  grad(λ θ. loss(θ, x, scale))(θ)
+
+fn scale_grad(θ : params Tower, x : ℝ[batch: B, model: D], scale : ℝ[]) -> ℝ[] =
+  grad(λ s. loss(θ, x, s))(scale)

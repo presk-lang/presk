@@ -9,6 +9,7 @@
 mod builtins;
 mod config;
 mod expr;
+pub mod training;
 mod unify;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -58,6 +59,8 @@ pub struct TypedProgram {
     /// implicit and file-level dims, module type parameters) mapped to the
     /// caller's dimension expressions.
     pub call_subst: HashMap<Span, BTreeMap<DimVar, DimExpr>>,
+    /// The `training run` blocks of the main file, resolved and typed.
+    pub training: Vec<training::TrainingRun>,
 }
 
 pub fn check(sm: &SourceMap, prog: &ElabProgram) -> (TypedProgram, Vec<Diagnostic>) {

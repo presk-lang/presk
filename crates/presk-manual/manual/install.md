@@ -42,6 +42,8 @@ make export-examples             # export the example files to out/ (mlp, layern
 make venv                        # once: .venv with PyTorch, NumPy and pytest (needs uv)
 make conformance                 # export, then run every generated test_conformance.py in .venv
 make tutorial                    # every command of the tutorial chapter (ends with two conformance tests)
+make train-examples              # presk train on the regression and the tiny MiniGPT
+make experiment                  # exact versus almost (manual chapter `experiments`)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
@@ -67,11 +69,16 @@ crates/presk-types           dimensions, Presburger solver, elaboration, typing 
 crates/presk-core            PSK-Core IR, lowering, regularity, effects, AD       (step 4–6)
 crates/presk-interp          reference interpreter                                (step 7)
 crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
+crates/presk-data            .psk.d data files and the training pipeline           (0.2.0 step 1)
+crates/presk-train           the training loop over the interpreter, presk train    (0.2.0 step 5)
 crates/presk-cli             the `presk` binary
 crates/presk-manual          this manual
 tests/examples               the example programs of presk-specs (do not edit here)
 tutorial                     the programs of the tutorial chapter
 tests/diag                   one erroneous program per diagnostic, with snapshots
+tests/data                   a token stream for the .psk.d tests
+tests/train                  a linear regression trained by presk train
+experiments                  the script of the `experiments` chapter
 ```
 
 The example programs are refreshed from the specification repository with

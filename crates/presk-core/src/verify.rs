@@ -53,6 +53,26 @@ pub fn verify(prog: &Program) -> Result<(), Vec<String>> {
                     v.extend(args);
                     v
                 }
+                Rhs::Fold { body, dim_args, stacked, init, extra, index, .. } => {
+                    match prog.funcs.get(body.0 as usize) {
+                        None => errors.push(format!("{where_}: fold over unknown function #{}", body.0)),
+                        Some(c) => {
+                            let expected = usize::from(*index) + stacked.len() + 1 + extra.len();
+                            if c.params.len() != expected {
+                                errors.push(format!("{where_}: fold body `{}` takes {} parameters, {} expected (index? + stacked + acc + extra)", c.name, c.params.len(), expected));
+                            }
+                            for d in &c.dims {
+                                if !dim_args.contains_key(d) {
+                                    errors.push(format!("{where_}: fold over `{}` does not instantiate dimension {d:?}", c.name));
+                                }
+                            }
+                        }
+                    }
+                    let mut v = stacked.clone();
+                    v.push(*init);
+                    v.extend(extra);
+                    v
+                }
             };
             for u in uses {
                 if !defined.contains(&u) {

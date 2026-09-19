@@ -18,12 +18,154 @@ pub struct ConformanceData {
     /// For a function entry: per `params M` parameter, the constructor call of `M`
     /// (the parameter tree is flattened against that instance).
     pub theta_modules: Vec<(String, String)>,
+    /// For an optimizer entry (`adamw.step`): the model's constructor and the
+    /// hyperparameters, compared with `torch.optim.AdamW`.
+    pub optimizer: Option<OptimizerConformance>,
+    /// For `train:K`: replay the interpreter's `K` steps with `train.py`'s
+    /// components and compare the final parameters.
+    pub train: Option<TrainConformance>,
+    /// `--mode graph`: also test `model.onnx` under ONNX Runtime.
+    pub graph: bool,
     /// Parameter names in call order (θ first for module entries).
     pub inputs: Vec<String>,
     pub seed: u64,
     pub bits: u32,
     pub rtol: f64,
     pub atol: f64,
+}
+
+/// `train:K`: the interpreter's `K` steps replayed in PyTorch (same θ₀, same
+/// batches, `train.py`'s optimizer and schedule) and compared on θ_K.
+#[derive(Clone, Debug)]
+pub struct TrainConformance {
+    pub k: u64,
+    pub ctor: String,
+    pub objective: String,
+    pub rtol: f64,
+    pub atol: f64,
+}
+
+fn train_test(t: &TrainConformance, theta: &str) -> String {
+    format!(
+        r#"    from pskd import PskdDataset, collate
+    from train import BETAS, DATA, EPS, GRAD_CLIP, LR, WEIGHT_DECAY, schedule
+    RTOL_TRAIN, ATOL_TRAIN = {rtol}, {atol}
+    model = {ctor}.to(DTYPE)
+    model.load_state_dict(flatten_params(inputs["{theta}"], model))
+    theta = dict(model.named_parameters())
+    dataset = PskdDataset(DATA, DTYPE)
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, betas=BETAS, eps=EPS, weight_decay=WEIGHT_DECAY)
+    batches = load("batches.json")
+    total = len(batches)
+    assert total == {k}
+    for t, idxs in enumerate(batches, start=1):
+        batch = collate([dataset[i] for i in idxs])
+        for group in opt.param_groups:
+            group["lr"] = LR * schedule(t, total)
+        opt.zero_grad()
+        {objective}(theta, batch).backward()
+        if GRAD_CLIP is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+        opt.step()
+    exp = flatten_params(expected, model)
+    worst = 0.0
+    for name, p in model.named_parameters():
+        e = exp[name]
+        worst = max(worst, ((p.detach() - e).abs() / (e.abs() + ATOL_TRAIN)).max().item())
+    for name, p in model.named_parameters():
+        assert torch.allclose(p.detach(), exp[name], rtol=RTOL_TRAIN, atol=ATOL_TRAIN), f"θ after {{total}} steps, {{name}}: worst relative gap {{worst:.3e}}"
+    print(f"K-step conformance: {{total}} steps, worst relative gap {{worst:.3e}}")
+    return
+"#,
+        rtol = t.rtol,
+        atol = t.atol,
+        ctor = t.ctor,
+        theta = theta,
+        k = t.k,
+        objective = t.objective,
+    )
+}
+
+/// `--mode graph`: `model.onnx` under ONNX Runtime against the interpreter (float32).
+fn onnx_test(d: &ConformanceData) -> String {
+    let names: Vec<String> = d.inputs.iter().skip(1).map(|n| format!("{n:?}")).collect();
+    format!(
+        r#"
+
+def test_onnx():
+    # `model.onnx` (from export.py, float32) against the interpreter's expected output.
+    import numpy as np
+    import onnxruntime as ort
+    from export import export_all
+    paths = export_all()
+    inputs = {{k: to_value(v) for k, v in load("inputs.json").items()}}
+    expected = to_value(load("expected.json"))
+    args = [inputs[n] for n in [{names}]]
+    session = ort.InferenceSession(paths["onnx"])
+    feeds = {{i.name: (a.to(torch.float32) if a.is_floating_point() else a).numpy() for i, a in zip(session.get_inputs(), args)}}
+    out = session.run(None, feeds)[0]
+    exp = expected.to(torch.float32).numpy()
+    assert np.allclose(out, exp, rtol=1e-4, atol=1e-5), f"onnx: max gap {{np.abs(out - exp).max()}}"
+"#,
+        names = names.join(", "),
+    )
+}
+
+/// `adamw.step` against `torch.optim.AdamW` plus `clip_grad_norm_` and the schedule.
+#[derive(Clone, Debug)]
+pub struct OptimizerConformance {
+    pub ctor: String,
+    pub lr: String,
+    pub betas: (String, String),
+    pub eps: String,
+    pub weight_decay: String,
+    pub grad_clip: Option<String>,
+    /// `constant`, `linear` or `cosine`, and the warm-up steps.
+    pub schedule: (String, u64),
+}
+
+fn optimizer_test(o: &OptimizerConformance) -> String {
+    let (kind, warmup) = &o.schedule;
+    let sched = match kind.as_str() {
+        "linear" => format!("min(1.0, t / {w}) * (1.0 - min(1.0, max(0.0, (t - {w}) / max(total - {w}, 1))))", w = *warmup as f64),
+        "cosine" => format!("min(1.0, t / {w}) * 0.5 * (1.0 + math.cos(math.pi * min(1.0, max(0.0, (t - {w}) / max(total - {w}, 1)))))", w = *warmup as f64),
+        _ => "1.0".into(),
+    };
+    let sched = if *warmup == 0 && kind != "constant" { sched.replace("min(1.0, t / 0)", "1.0") } else { sched };
+    let clip = match &o.grad_clip {
+        Some(c) => format!("    torch.nn.utils.clip_grad_norm_(model.parameters(), {c})\n"),
+        None => String::new(),
+    };
+    format!(
+        r#"    import math
+    model = {ctor}.to(DTYPE)
+    model.load_state_dict(flatten_params(inputs["θ"], model))
+    m = flatten_params(inputs["s"][0], model)
+    v = flatten_params(inputs["s"][1], model)
+    g = flatten_params(inputs["g"], model)
+    t, total = float(inputs["t"]), float(inputs["total"])
+    lr = {lr} * ({sched})
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=({b1}, {b2}), eps={eps}, weight_decay={wd})
+    for name, p in model.named_parameters():
+        p.grad = g[name].clone()
+        opt.state[p] = {{"step": torch.tensor(t - 1.0), "exp_avg": m[name].clone(), "exp_avg_sq": v[name].clone()}}
+{clip}    opt.step()
+    exp_theta = flatten_params(expected[0], model)
+    exp_m = flatten_params(expected[1][0], model)
+    exp_v = flatten_params(expected[1][1], model)
+    for name, p in model.named_parameters():
+        assert torch.allclose(p.detach(), exp_theta[name], rtol=RTOL, atol=ATOL), f"θ'.{{name}}: {{p.detach()}} vs {{exp_theta[name]}}"
+        assert torch.allclose(opt.state[p]["exp_avg"], exp_m[name], rtol=RTOL, atol=ATOL), f"m'.{{name}}"
+        assert torch.allclose(opt.state[p]["exp_avg_sq"], exp_v[name], rtol=RTOL, atol=ATOL), f"v'.{{name}}"
+    return
+"#,
+        ctor = o.ctor,
+        lr = o.lr,
+        b1 = o.betas.0,
+        b2 = o.betas.1,
+        eps = o.eps,
+        wd = o.weight_decay,
+    )
 }
 
 pub fn test_file(d: &ConformanceData) -> String {
@@ -98,7 +240,14 @@ def test_conformance():
         rtol = d.rtol,
         atol = d.atol,
     ));
+    if let Some(o) = &d.optimizer {
+        s.push_str(&optimizer_test(o));
+    }
+    if let Some(t) = &d.train {
+        s.push_str(&train_test(t, d.inputs.first().map(String::as_str).unwrap_or("θ")));
+    }
     match (&d.class, &d.function) {
+        _ if d.optimizer.is_some() || d.train.is_some() => {}
         (Some((class, args)), _) => {
             let a: Vec<String> = args.iter().map(|x| x.to_string()).collect();
             s.push_str(&format!("    torch.manual_seed(0)\n    model = {class}({}).to(DTYPE)\n", a.join(", ")));
@@ -144,5 +293,8 @@ if __name__ == "__main__":
     print("conformance: ok")
 "#,
     );
+    if d.graph && d.class.is_some() {
+        s.push_str(&onnx_test(d));
+    }
     s
 }

@@ -66,3 +66,54 @@ fn export_examples() {
     }
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// 0.2.0 step 6: the generated training loop, the `.psk.d` reader and the
+/// graph-mode driver are snapshotted; the schedule expressions are checked.
+#[test]
+fn training_and_graph_files() {
+    use presk_export_pytorch::{ConformanceData, Schedule, TrainSpec, graph_driver, schedule_py, train_files};
+    assert_eq!(schedule_py(&Schedule::Constant), "1.0");
+    assert!(schedule_py(&Schedule::Linear { warmup: 0 }).starts_with("1.0 * (1.0 - "));
+    assert!(schedule_py(&Schedule::Cosine { warmup: 2000 }).starts_with("min(1.0, t / 2000) * 0.5 * (1.0 + math.cos("));
+    let spec = TrainSpec {
+        source: "tests/examples/minigpt/train_minigpt.psk".into(),
+        model_stem: "minigpt".into(),
+        ctor: "MiniGPT(8)".into(),
+        objective_stem: "train_minigpt".into(),
+        objective: "loss".into(),
+        lr: "3e-4".into(),
+        betas: ("0.9".into(), "0.95".into()),
+        eps: "1e-8".into(),
+        weight_decay: "0.1".into(),
+        grad_clip: Some("1.0".into()),
+        schedule: Schedule::Cosine { warmup: 2000 },
+        batch: 32,
+        shuffle: Some(1234),
+        epochs: 10,
+        checkpoint_every: Some(1000),
+        checkpoint_dir: Some("ckpt/".into()),
+        dims: vec![("B".into(), 32), ("T".into(), 8)],
+        comments: vec!["The `parallel` and `precision` clauses are reproduced as comments in train_minigpt.py.".into()],
+    };
+    let files = train_files(&spec);
+    assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["pskd.py", "train.py"]);
+    insta::assert_snapshot!("pskd_py", files[0].content);
+    insta::assert_snapshot!("train_py", files[1].content);
+    let data = ConformanceData {
+        entry: "MiniGPT.apply".into(),
+        module_file: "minigpt".into(),
+        class: Some(("MiniGPT".into(), vec![8])),
+        function: None,
+        theta_modules: vec![],
+        optimizer: None,
+        train: None,
+        graph: true,
+        inputs: vec!["θ".into(), "ids".into()],
+        seed: 0,
+        bits: 256,
+        rtol: 1e-9,
+        atol: 1e-12,
+    };
+    insta::assert_snapshot!("export_py", graph_driver(&data).unwrap().content);
+    assert!(presk_export_pytorch::test_file(&data).contains("def test_onnx"));
+}

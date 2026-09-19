@@ -1,0 +1,14 @@
+-- E2010: the objective must take the batch as its second parameter.
+module Toy {
+  param w : ℝ[4]
+  fn total() -> ℝ[] = mean(w)
+}
+fn loss(θ : params Toy) -> ℝ[] = Toy.total(θ)
+optimizer adamw {
+  lr : f64 = 1e-3
+}
+training run {
+  model     = Toy
+  objective = loss
+  optimizer = adamw
+}

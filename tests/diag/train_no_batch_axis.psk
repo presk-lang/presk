@@ -1,0 +1,16 @@
+-- E2010: every tensor of the batch needs an axis named `batch`.
+dim N
+module Toy {
+  param w : ℝ[4]
+  fn apply(x : ℝ[N, 4]) -> ℝ[N, 4] = x * w
+}
+fn loss(θ : params Toy, batch : ℝ[N, 4]) -> ℝ[] = mean(Toy.apply(θ, batch))
+optimizer adamw {
+  lr : f64 = 1e-3
+}
+training run {
+  model     = Toy
+  objective = loss
+  optimizer = adamw
+  data      = stream "../data/reals.psk.d" |> batch(B = 4)
+}

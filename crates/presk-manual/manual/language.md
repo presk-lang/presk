@@ -202,8 +202,66 @@ inference serve {
 Items are `name = expr`, `name : type = expr`, or `name : expr` (the parser
 tries a type first and keeps it only if `=` follows), one per line, plus
 `checkpoint every N steps to "path"`. Field names may coincide with keywords
-(`optimizer = adamw`). `stream "path"` is sugar for `stream("path")`. The
-field names and value forms are not checked yet (step 3).
+(`optimizer = adamw`). `stream "path"` is sugar for `stream("path")`. Field
+names and value forms are checked against a schema per block (`E2010`, see
+"Typing" below).
+
+**The `training run` block against its objective** (0.2.0, step 2). Beyond
+the schema, the checker resolves the block into a typed record (printed by
+`presk check --summary` under `-- training --`):
+
+- `objective` is a function of the file whose first parameter is `θ :
+  params M` with `M` the `model`, and whose second parameter is the
+  **batch**; any further parameter must have a default.
+- The **sample type** is the batch type with the axis named `batch` removed
+  from every tensor leaf: for `batch : (idx[V][batch: B, seq: T], idx[V][batch:
+  B, seq: T])` it is `(idx[V][seq: T], idx[V][seq: T])`. A leaf without a
+  `batch` axis, or with an open prefix, is an error.
+- `data = stream "path" |> shuffle(seed = s) |> batch(B = n) [|> take(n =
+  k)]`: `batch(B = n)` binds the `batch` axis of every leaf to `n` (so the
+  objective's `B` is `n`); the path is relative to the `.psk` file. When
+  the file exists it is opened and its sample type is matched against the
+  objective's: literal dimensions must agree, symbolic ones (`T`) are bound
+  from the file; a literal index bound (`V`) must be at least the file's,
+  since samples of a smaller vocabulary are valid samples of a larger one,
+  and a symbolic one is bound to it; a mismatch is `E2010` with both
+  types and the offending axis. When the file is missing the check is
+  deferred to `presk train` with the warning `W0002`.
+- `epochs` and `checkpoint every N steps to "dir"` are recorded for the loop.
+
+The `data` chapter defines the file format and the pipeline's semantics.
+
+**The optimizer** (0.2.0, step 3). The name of an `optimizer` block is the
+algorithm; `adamw` is the only one in 0.2.0 (`E2010` otherwise). For every
+`training run`, the block is lowered to three ordinary PSK-Core functions
+over `P = params M`, visible with `presk dump --stage core` and runnable
+with `presk run --entry adamw.step`:
+
+```text
+adamw.init(θ : P) -> (P, P)                              -- moments at zero
+adamw.lr(t : nat, total : nat) -> ℝ[]                    -- the schedule
+adamw.step(θ : P, s : (P, P), g : P, t : nat, total : nat) -> (P, (P, P))
+```
+
+`step` is AdamW as PyTorch defines it: with `grad_clip = c` the gradient is
+first scaled by `min(1, c / (‖g‖₂ + 1e-6))` (the global norm over the tree,
+as `clip_grad_norm_`); then `m' = β₁ m + (1 − β₁) g`, `v' = β₂ v + (1 − β₂)
+g²`, `m̂ = m' / (1 − β₁ᵗ)`, `v̂ = v' / (1 − β₂ᵗ)`, and `θ' = θ − lr(t, total) ·
+(m̂ / (√v̂ + ε) + λ θ)` with the decoupled weight decay `λ`. `t` counts steps
+from 1 and `total = epochs × batches per epoch`. Schedules: `constant()`;
+`linear(warmup = w)`, `lr · t/w` for `t ≤ w` then `lr · (total − t)/(total −
+w)`; `cosine(warmup = w)`, `lr · t/w` then `lr · ½(1 + cos(π (t − w)/(total −
+w)))`, both reaching 0 at `total`. Defaults: `betas = (0.9, 0.999)`, `eps =
+1e-8`, `weight_decay = 0`, no clipping, `constant()`. Hyperparameters are
+decimal literals injected exactly into ℝ; the piecewise forms use `relu`
+(`min(1, x) = 1 − relu(1 − x)`); `π` is the primitive `pi`, correctly
+rounded at `--bits` (so the cosine schedule ends at 0 up to the working
+precision). The functions use only primitives of the language plus
+`sum_squares` (the squared norm of a tree) and `pi`, so the interpreter runs
+them at `--bits` and the export compares
+them with `torch.optim.AdamW` (`--conformance-entry adamw.step`). Tree-level
+arithmetic (`β₁ · m`, `θ − lr · d`) is structural: a scalar applies to every
+leaf of a parameter tree.
 
 ## Types
 
@@ -483,9 +541,15 @@ What lowering does:
   is `θ.l1`, passed as the `θ` of the sub-module's function. At top level
   `net.apply(θ, x)` passes θ itself. Module-typed parameters (`net : MLP{D,
   4*D}`) and arguments are compile-time and disappear.
-- **`stack{L}(M)` is unrolled**: `blocks.apply(h0, mask)` becomes `L` calls
-  of `Block.apply`, each on `slice_params i θ.blocks`; `L` must be a
-  constant (`E5002` otherwise).
+- **`stack{L}(M)` is a `fold`** (0.2.0, step 4): `blocks.apply(h0, mask)`
+  becomes `fold L Block.apply(stacked θ.blocks; acc h0; mask)`, a loop whose
+  iteration `i` calls the body on slice `i` of the stacked parameter tree,
+  the accumulator and the extra arguments; the program's size no longer
+  depends on `L`, which may be symbolic in the IR. `presk dump --unroll-stack`
+  and `presk run --unroll-stack` give 0.1.0's form, `L` calls on
+  `slice_params i`, for comparison. A stacked module's *initializer* still
+  splits its key `L` times and stacks `L` trees, so `L` must be a constant
+  there (`E5002`).
 - **Lambdas are lifted** (closure conversion): `grad(λ θ. mse(net, θ, x, y))`
   becomes a function `mse_grad.lambda0(x, y, θ)` whose free variables come
   first, a `closure` over `x, y`, a `grad` of that function value, and an
@@ -509,7 +573,14 @@ What lowering does:
 ## Automatic differentiation
 
 `grad` is realized as a source-to-source transformation on PSK-Core
-(`presk dump --stage core-after-ad` shows the result). It is *reverse mode*:
+(`presk dump --stage core-after-ad` shows the result). A `fold` is
+differentiated as a loop: the forward copy *scans* (it also returns the stack
+of the accumulators before each iteration), and the reverse sweep emits a
+backward `fold` running from `L − 1` down to `0` whose body, a generated
+`….fold_bwd`, applies the body's `vjp` at iteration `i` on the saved
+accumulator, passes the accumulator's cotangent to the previous iteration,
+writes the stacked inputs' cotangent into slice `i` (`set_slice`) and sums
+the extras'. It is *reverse mode*:
 for a function `f(params…) -> ℝ[]`, a function `f.vjp(params…, ct)` returns
 the adjoint of every parameter given the cotangent `ct` of the result, by
 copying the forward body and appending the reverse sweep — for each binding,
@@ -596,6 +667,9 @@ test).
   subtracts the row maximum before `exp` (a value-preserving rewrite, since
   the semantics is exact); `causal_mask` uses `−∞`, which `exp` maps to 0;
   `cross_entropy` is `−log softmax(logits)[y]` per position.
+- **Dimension arguments** of a call or a fold are evaluated in the caller;
+  one the checker left unconstrained (a file-level `dim` that the callee's
+  types do not mention) is left unbound, and only a use of it fails.
 - **Randomness** is reproducible: `--seed` derives a master ChaCha20 key,
   split into one key per entry parameter; `normal(std)` and `xavier_uniform`
   draw from their key; `sample` draws from a stream seeded by `--seed`.

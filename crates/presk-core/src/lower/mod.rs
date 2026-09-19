@@ -7,6 +7,7 @@
 
 mod expr;
 mod init;
+pub mod optim;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,8 +19,20 @@ use presk_types::ty::{ModRef, ModuleId, Ty};
 
 use crate::ir::{Block, Func, FuncId, Let, Origin, Param, Program, Rhs, VarId};
 
+/// Lowering options.
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    /// Unroll `stack{L}(M)` into `L` calls (0.1.0's form) instead of a `Fold`;
+    /// a debugging aid, `L` must then be a constant.
+    pub unroll_stack: bool,
+}
+
 pub fn lower(elab: &ElabProgram, typed: &TypedProgram) -> (Program, Vec<Diagnostic>) {
-    let mut l = Lowerer { elab, typed, funcs: vec![], diags: vec![], fn_ids: HashMap::new(), init_ids: HashMap::new() };
+    lower_with(elab, typed, &Options::default())
+}
+
+pub fn lower_with(elab: &ElabProgram, typed: &TypedProgram, opts: &Options) -> (Program, Vec<Diagnostic>) {
+    let mut l = Lowerer { elab, typed, opts: opts.clone(), funcs: vec![], diags: vec![], fn_ids: HashMap::new(), init_ids: HashMap::new() };
     // Allocate ids first so calls can refer to functions lowered later.
     for (i, f) in elab.fns.iter().enumerate() {
         let id = FuncId(l.funcs.len() as u32);
@@ -37,6 +50,7 @@ pub fn lower(elab: &ElabProgram, typed: &TypedProgram) -> (Program, Vec<Diagnost
     for i in 0..elab.modules.len() {
         l.lower_init(ModuleId(i as u32));
     }
+    l.lower_optimizers();
     (Program { funcs: l.funcs }, l.diags)
 }
 
@@ -44,7 +58,7 @@ fn placeholder(name: String, origin: Origin, span: Span) -> Func {
     Func { name, origin, dims: vec![], params: vec![], ret: Ty::Nat, effects: vec![], body: Block { lets: vec![], result: VarId(0) }, span }
 }
 
-pub(crate) fn fn_name(elab: &ElabProgram, id: FnId) -> String {
+pub fn fn_name(elab: &ElabProgram, id: FnId) -> String {
     let f = elab.function(id);
     match f.owner {
         Some(m) => format!("{}.{}", elab.module(m).name, f.name),
@@ -55,6 +69,7 @@ pub(crate) fn fn_name(elab: &ElabProgram, id: FnId) -> String {
 pub(crate) struct Lowerer<'p> {
     pub(crate) elab: &'p ElabProgram,
     pub(crate) typed: &'p TypedProgram,
+    pub(crate) opts: Options,
     pub(crate) funcs: Vec<Func>,
     pub(crate) diags: Vec<Diagnostic>,
     pub(crate) fn_ids: HashMap<FnId, FuncId>,

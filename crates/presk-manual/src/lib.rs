@@ -19,6 +19,19 @@ pub mod cli {}
 #[doc = include_str!("../manual/language.md")]
 pub mod language {}
 
+/// Training on the reference interpreter: `presk train`, the loop, checkpoints.
+#[doc = include_str!("../manual/training.md")]
+pub mod training {}
+
+/// Experiments: shapes as types against silent broadcasting, and the
+/// realization gap of float32/float64 training against the exact reference.
+#[doc = include_str!("../manual/experiments.md")]
+pub mod experiments {}
+
+/// Data files: the `.psk.d` container, `presk data`, the training pipeline.
+#[doc = include_str!("../manual/data.md")]
+pub mod data {}
+
 /// Diagnostics: how errors are reported and the list of codes.
 #[doc = include_str!("../manual/diagnostics.md")]
 pub mod diagnostics {}

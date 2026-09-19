@@ -432,7 +432,15 @@ impl Lowerer<'_> {
                 }
             }
         }
-        // `stack{L}(M)`: unroll.
+        // `stack{L}(M)`: a `Fold` over the stacked parameter tree (or `L` calls with `--unroll-stack`).
+        if let Some(ModRef::Stack { n, .. }) = &module
+            && !self.opts.unroll_stack
+        {
+            let stacked = theta?;
+            let x = *call_args.get(1)?;
+            let rest: Vec<VarId> = call_args[2..].to_vec();
+            return Some(b.emit(None, ty.clone(), Rhs::Fold { body: core, dim_args, n: n.clone(), stacked: vec![stacked], init: x, extra: rest, index: false, reverse: false, scan: false }, span));
+        }
         if let Some(ModRef::Stack { n, .. }) = &module {
             let Some(count) = n.as_nat() else {
                 self.error(Diagnostic::error("E5002", "`stack` with a symbolic count is not supported in 0.1.0").label(span, format!("the count `{}` must be a constant", n.display(&|v| self.elab.dim_name(v)))));

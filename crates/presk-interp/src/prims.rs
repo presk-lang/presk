@@ -99,6 +99,13 @@ impl<R: Real> Interp<'_, R> {
                 return Ok(if r >= 0.0 && r.fract() == 0.0 { Value::Nat(r as u64) } else { Value::Int(r as i64) });
             }
             (Value::F64(x), Value::F64(y)) => return Ok(Value::F64(f(&R::from_f64(*x, self.prec), &R::from_f64(*y, self.prec)).to_f64())),
+            // A scalar against a tree applies to every leaf (the optimizer's `lr · g`).
+            (Value::Record(_) | Value::Tuple(_), Value::Real(t)) if t.rank() == 0 => {
+                return Ok(a.map_leaves(&mut |x| self.binary(x, b, f, what).unwrap_or_else(|_| x.clone())));
+            }
+            (Value::Real(t), Value::Record(_) | Value::Tuple(_)) if t.rank() == 0 => {
+                return Ok(b.map_leaves(&mut |y| self.binary(a, y, f, what).unwrap_or_else(|_| y.clone())));
+            }
             (Value::Record(_) | Value::Tuple(_), _) | (_, Value::Record(_) | Value::Tuple(_)) => {
                 return a.zip_leaves(b, &mut |x, y| self.binary(x, y, f, what).map_err(|e| e.message)).map_err(|m| crate::eval::RunError { message: m, span: None });
             }
@@ -174,6 +181,7 @@ impl<R: Real> Interp<'_, R> {
             PrimOp::Heaviside => self.unary(a(0)?, &|x| if x.is_negative() || x.is_zero() { self.real(0) } else { self.real(1) }, "heaviside"),
             PrimOp::Sign => self.unary(a(0)?, &|x| if x.is_negative() { self.real(1).neg() } else if x.is_zero() { self.real(0) } else { self.real(1) }, "sign"),
             PrimOp::Sigmoid => self.unary(a(0)?, &|x| self.real(1).div(&self.real(1).add(&x.neg().exp())), "sigmoid"),
+            PrimOp::Pi => Ok(self.scalar(R::pi(self.prec))),
             PrimOp::Real => match a(0)? {
                 Value::Nat(n) => Ok(self.scalar(R::from_u64(*n, self.prec))),
                 Value::Int(n) => Ok(self.scalar(R::from_i64(*n, self.prec))),
@@ -448,10 +456,33 @@ impl<R: Real> Interp<'_, R> {
                 let key = self.key_of(a(0)?)?;
                 Ok(Value::Tuple(key.split(*n).into_iter().map(Value::Key).collect()))
             }
-            PrimOp::SliceParams { index } => Ok(a(0)?.map_leaves(&mut |leaf| match leaf {
-                Value::Real(t) if t.rank() >= 1 => Value::Real(self.select_pos(t, 0, *index as usize)),
-                other => other.clone(),
-            })),
+            PrimOp::SliceParams { index } => Ok(self.slice_tree(a(0)?, *index as usize)),
+            PrimOp::SetSlice => {
+                let (stacked, value) = (a(0)?, a(2)?);
+                let i = match a(1)? {
+                    Value::Nat(i) => *i as usize,
+                    other => return err(format!("set_slice: index is a {}", other.kind())),
+                };
+                let mut leaves: Vec<Value<R>> = Vec::new();
+                value.map_leaves(&mut |l| {
+                    leaves.push(l.clone());
+                    l.clone()
+                });
+                let mut k = 0;
+                Ok(stacked.map_leaves(&mut |leaf| {
+                    let v = leaves.get(k).cloned();
+                    k += 1;
+                    match (leaf, v) {
+                        (Value::Real(t), Some(Value::Real(v))) if t.rank() >= 1 && i < t.axes[0].len => {
+                            let chunk = t.data.len() / t.axes[0].len;
+                            let mut out = t.clone();
+                            out.data[i * chunk..(i + 1) * chunk].clone_from_slice(&v.data[..chunk.min(v.data.len())]);
+                            Value::Real(out)
+                        }
+                        (leaf, _) => leaf.clone(),
+                    }
+                }))
+            }
             PrimOp::StackParams { n } => {
                 if args.len() != *n as usize {
                     return err("stack_params: wrong number of parts");
@@ -480,6 +511,19 @@ impl<R: Real> Interp<'_, R> {
                         (other, _) => other.clone(),
                     }
                 }))
+            }
+            PrimOp::SumSquares => {
+                let mut acc = self.real(0);
+                let mut add = |leaf: &Value<R>| {
+                    if let Value::Real(t) = leaf {
+                        for x in &t.data {
+                            acc = acc.add(&x.mul(x));
+                        }
+                    }
+                    leaf.clone()
+                };
+                a(0)?.map_leaves(&mut add);
+                Ok(self.scalar(acc))
             }
             PrimOp::ZerosLike => Ok(a(0)?.map_leaves(&mut |leaf| match leaf {
                 Value::Real(t) => Value::Real(self.zeros_like_tensor(t)),
@@ -721,7 +765,15 @@ impl<R: Real> Interp<'_, R> {
     }
 
     /// Stack trees leaf by leaf along a new leading axis.
-    fn stack_trees(&self, parts: &[Value<R>]) -> Result<Value<R>> {
+    /// Slice `i` along the leading axis of every tensor leaf of a stacked value.
+    pub(crate) fn slice_tree(&self, v: &Value<R>, i: usize) -> Value<R> {
+        v.map_leaves(&mut |leaf| match leaf {
+            Value::Real(t) if t.rank() >= 1 => Value::Real(self.select_pos(t, 0, i)),
+            other => other.clone(),
+        })
+    }
+
+    pub(crate) fn stack_trees(&self, parts: &[Value<R>]) -> Result<Value<R>> {
         match &parts[0] {
             Value::Real(first) => {
                 let mut axes = vec![Axis { name: None, len: parts.len() }];

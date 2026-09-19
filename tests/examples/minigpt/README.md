@@ -11,6 +11,7 @@ sa compilation vers un SoC ARM+GPU. C'est le cas d'usage complet évoqué au §6
 | [`train_minigpt.psk`](train_minigpt.psk) | `loss` (cross-entropy), `optimizer adamw`, `training run`, budget + parallélisme. |
 | [`serve_minigpt.psk`](serve_minigpt.psk) | `inference serve`, quantification int8, `kv_cache`, `sample` sous effet `Rand`. |
 | [`target/jetson-agx.pskt`](target/jetson-agx.pskt) | Description matérielle pour `presk build` (§8.5). |
+| [`data/tokens.txt`](data/tokens.txt), [`data/tokens.psk.d`](data/tokens.psk.d) | Un petit flux de 2048 tokens (vocabulaire 64, phrases répétées avec un peu de bruit) et ses fenêtres `(x, y)` de longueur 8 au format `.psk.d`, pour que `training run` ait des données : `presk data lm-windows --vocab 64 --seq 8 --stride 4 data/tokens.txt -o data/tokens.psk.d`. Les bornes du fichier (64) sont inférieures à `V` (50257) : un échantillon d'un vocabulaire plus petit est un échantillon valide. |
 
 Les modules `Linear`/`MLP` et `LayerNorm` sont importés depuis [`../mlp/`](../mlp/) et
 [`../layernorm/`](../layernorm/) — un exemple réutilise les briques des précédents.

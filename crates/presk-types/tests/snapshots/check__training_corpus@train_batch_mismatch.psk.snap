@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/train_batch_mismatch.psk
+---
+[E2010] Error: `data`: the file holds samples of type `(idx[64][seq: 8], idx[64][seq: 8])` but `loss` expects batches of `(idx[64][batch: B, seq: 4], idx[64][batch: B, seq: 4])`
+    ,-[ tests/diag/train_batch_mismatch.psk:19:3 ]
+    |
+ 19 |   data      = stream "../data/windows.psk.d" |> shuffle(seed = 1) |> batch(B = 4)
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  
+    |                                          `----------------------------------------- samples must have type `(idx[64][seq: 4], idx[64][seq: 4])`
+    | 
+    | Note: axis `seq` has length `4` in the program, 8 in the file
+----'

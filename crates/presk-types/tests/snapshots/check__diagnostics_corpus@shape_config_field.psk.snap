@@ -19,3 +19,12 @@ input_file: tests/diag/shape_config_field.psk
     |                     ^|^  
     |                      `--- not of the expected form
 ----'
+[E2010] Error: `objective` `loss`: a tensor of the batch has no axis named `batch`
+    ,-[ tests/diag/shape_config_field.psk:13:15 ]
+    |
+ 13 |   objective = loss
+    |               ^^|^  
+    |                 `--- batch type `ℝ[4]`
+    | 
+    | Help: every tensor of the batch needs an axis named `batch`, e.g. `idx[V][batch: B, seq: T]`
+----'

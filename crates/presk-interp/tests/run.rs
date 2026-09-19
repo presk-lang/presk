@@ -166,3 +166,133 @@ fn set_leaf_elem(v: &Value<Float>, path: &[String], i: usize, x: Float) -> Value
         _ => v.clone(),
     }
 }
+
+/// The optimizer functions lowered from `optimizer adamw { … }` (0.2.0 step 3):
+/// the cosine schedule of `train_minigpt.psk` at chosen steps, and one AdamW
+/// step from zero moments on `tests/data/train_ok.psk`, against the closed forms.
+#[test]
+fn optimizer_schedule_and_step() {
+    use presk_interp::value::Axis;
+    let (prog, core) = prepare("tests/examples/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)]);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let lr = core.find("adamw.lr").unwrap();
+    let mut f = |t: u64, total: u64| -> f64 {
+        match interp.call(lr, Default::default(), vec![Value::Nat(t), Value::Nat(total)]).unwrap() {
+            Value::Real(x) => x.data[0].to_f64(),
+            other => panic!("{}", other.kind()),
+        }
+    };
+    // cosine(warmup = 2000), lr = 3e-4: warm-up t/2000, then ½(1 + cos(π p)).
+    assert!((f(1, 4000) - 1.5e-7).abs() < 1e-20);
+    assert!((f(2000, 4000) - 3e-4).abs() < 1e-18);
+    assert!((f(3000, 4000) - 1.5e-4).abs() < 1e-18);
+    assert!(f(4000, 4000).abs() < 1e-18);
+    assert!((f(5000, 4000)).abs() < 1e-18, "past the horizon the rate stays at 0");
+
+    let (prog, core) = prepare("tests/data/train_ok.psk", &[]);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let step = core.find("adamw.step").unwrap();
+    let tensor = |x: f64| Value::Real(presk_interp::Tensor { axes: vec![Axis { name: None, len: 64 }, Axis { name: None, len: 4 }], data: vec![Float::with_val(128, x); 256] });
+    let tree = |x: f64| Value::Record(vec![("w".to_string(), tensor(x))]);
+    let out = interp.call(step, Default::default(), vec![tree(1.0), Value::Tuple(vec![tree(0.0), tree(0.0)]), tree(0.5), Value::Nat(1), Value::Nat(10)]).unwrap();
+    let leaf = |v: &Value<Float>| -> f64 {
+        match v {
+            Value::Record(fs) => match &fs[0].1 {
+                Value::Real(t) => t.data[7].to_f64(),
+                other => panic!("{}", other.kind()),
+            },
+            other => panic!("{}", other.kind()),
+        }
+    };
+    let Value::Tuple(parts) = &out else { panic!() };
+    let Value::Tuple(state) = &parts[1] else { panic!() };
+    // lr 1e-3, betas (0.9, 0.999), eps 1e-8, no decay: m' = 0.05, v' = 0.00025,
+    // m̂ = 0.5, v̂ = 0.25, θ' = 1 − 1e-3 · 0.5 / (0.5 + 1e-8).
+    assert!((leaf(&state[0]) - 0.05).abs() < 1e-15);
+    assert!((leaf(&state[1]) - 0.00025).abs() < 1e-15);
+    let expected = 1.0 - 1e-3 * 0.5 / (0.5 + 1e-8);
+    assert!((leaf(&parts[0]) - expected).abs() < 1e-15, "{} vs {expected}", leaf(&parts[0]));
+}
+
+/// The gradient through a `Fold` (a stacked module, 0.2.0 step 4) agrees
+/// with central finite differences: with respect to the stacked parameter
+/// tree and to an extra argument of the loop.
+#[test]
+fn ad_through_fold_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/stack_grad.psk";
+    let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
+    snap("stack_grad", &out);
+    let (prog, core) = prepare(rel, &[]);
+    let loss = core.find("loss").unwrap();
+    let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
+    let theta = out.inputs[0].1.clone();
+    let x = out.inputs[1].1.clone();
+    let scale = out.inputs[2].1.clone();
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut checked = 0;
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&out.result, path) else { panic!("gradient leaf missing") };
+        assert_eq!(t.axes.len(), g.axes.len(), "stacked leaf {path:?} keeps its rank");
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, dims.clone(), vec![plus, x.clone(), scale.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, dims.clone(), vec![minus, x.clone(), scale.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale_ = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale_), "leaf {path:?}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 3 * 9 + 3 * 3, "every element of the stacked tree");
+    // The extra argument: d loss / d scale.
+    let gs = run(rel, &[], "scale_grad", &[("B", 2)], bits);
+    let s = scalar(&scale);
+    let sp = Value::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(bits, &s + &h)] });
+    let sm = Value::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(bits, &s - &h)] });
+    let fp = scalar(&interp.call(loss, dims.clone(), vec![theta.clone(), x.clone(), sp]).unwrap());
+    let fm = scalar(&interp.call(loss, dims.clone(), vec![theta.clone(), x.clone(), sm]).unwrap());
+    let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+    let g = scalar(&gs.result);
+    let err = (Float::with_val(bits, &fd - &g)).abs();
+    assert!(err <= Float::with_val(bits, &tol * Float::with_val(bits, g.clone().abs()).max(&Float::with_val(bits, 1))), "scale: ad = {g}, fd = {fd}");
+}
+
+/// A fold whose accumulator type has an open prefix (`ℝ[..., model: 4]`):
+/// the scanned accumulators keep their axis names (a regression of the
+/// tutorial's training run), and the gradient agrees with finite differences.
+#[test]
+fn ad_through_fold_with_open_prefix() {
+    let bits = 512;
+    let rel = "tests/data/stack_prefix_grad.psk";
+    let out = run(rel, &[], "loss_grad", &[("B", 3)], bits);
+    let (prog, core) = prepare(rel, &[]);
+    let loss = core.find("loss").unwrap();
+    let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, 3u64)).collect();
+    let (theta, x, y) = (out.inputs[0].1.clone(), out.inputs[1].1.clone(), out.inputs[2].1.clone());
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut checked = 0;
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&out.result, path) else { panic!() };
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, dims.clone(), vec![plus, x.clone(), y.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, dims.clone(), vec![minus, x.clone(), y.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "leaf {path:?}[{i}]: ad = {}, fd = {}", g.data[i], fd);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2 * (16 + 4));
+}

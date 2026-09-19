@@ -107,7 +107,7 @@ pub(crate) fn prim_vjp(e: &mut Emit, op: &PrimOp, args: &[VarId], tys: &[Ty], y:
         }
         // Hyperparameters and indices carry no adjoint.
         PrimOp::Real | PrimOp::Argmax | PrimOp::Sample | PrimOp::Positions { .. } | PrimOp::CausalMask { .. } => vec![],
-        PrimOp::Zeros { .. } | PrimOp::Ones { .. } | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. } => vec![],
+        PrimOp::Pi | PrimOp::Zeros { .. } | PrimOp::Ones { .. } | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. } => vec![],
         PrimOp::Dot | PrimOp::Matmul => {
             let ca = e.prim(tys[0].clone(), PrimOp::DotVjpL, vec![ct, args[1]], span);
             let cb = e.prim(tys[1].clone(), PrimOp::DotVjpR, vec![args[0], ct], span);
@@ -175,7 +175,7 @@ pub(crate) fn prim_vjp(e: &mut Emit, op: &PrimOp, args: &[VarId], tys: &[Ty], y:
             };
             vec![(0, m)]
         }
-        PrimOp::DotVjpL | PrimOp::DotVjpR | PrimOp::EmbedVjp | PrimOp::CrossEntropyVjp | PrimOp::ScatterIndex { .. } | PrimOp::ScatterParams { .. } | PrimOp::GeluDeriv | PrimOp::Heaviside | PrimOp::Sign => {
+        PrimOp::SumSquares | PrimOp::SetSlice | PrimOp::DotVjpL | PrimOp::DotVjpR | PrimOp::EmbedVjp | PrimOp::CrossEntropyVjp | PrimOp::ScatterIndex { .. } | PrimOp::ScatterParams { .. } | PrimOp::GeluDeriv | PrimOp::Heaviside | PrimOp::Sign => {
             return Err("second-order derivatives of adjoint primitives are not supported in 0.1.0".into());
         }
     })

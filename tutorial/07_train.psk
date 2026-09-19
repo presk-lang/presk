@@ -1,0 +1,22 @@
+-- 07_train.psk — a training run: the tower of 06 learns y = 2·x + 1.
+import "06_tower.psk" as t
+dim B
+
+fn loss(θ : params t.Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])) -> ℝ[] =
+  let (x, y) = batch
+  mean((t.Tower.apply(θ, x) - y)^2)
+
+optimizer adamw {
+  lr           : f64 = 0.01
+  weight_decay : f64 = 0.0
+  schedule     : cosine(warmup = 20)
+}
+
+training run {
+  model     = t.Tower
+  objective = loss
+  optimizer = adamw
+  data      = stream "data/pairs.psk.d" |> shuffle(seed = 3) |> batch(B = 8)
+  epochs    : nat = 10
+  checkpoint every 50 steps to "ckpt/"
+}

@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 presk-syntax.workspace = true
+presk-data.workspace = true
 indexmap.workspace = true
 num-bigint.workspace = true
 num-rational.workspace = true

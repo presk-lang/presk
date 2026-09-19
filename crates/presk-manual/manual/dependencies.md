@@ -15,7 +15,8 @@ adding a row here and a section there.
 | **rustdoc** (`cargo doc`) | Rust's documentation generator. | Renders this manual (crate `presk-manual`, Markdown chapters included with `#[doc = include_str!]`) and the API documentation of the crates, in one tool, with search and navigation, no extra dependency. |
 | **cargo-insta** (optional CLI) | Reviewer for `insta` snapshots. | `cargo insta review` shows the diff of every changed snapshot and accepts or rejects it; without it, `INSTA_UPDATE=always cargo test` rewrites snapshots blindly. |
 | **uv** (optional) | Python package and environment manager. | `make venv` creates `.venv` for the conformance tests in seconds; any way of installing PyTorch into `.venv` works. |
-| **PyTorch** 2.14, **NumPy**, **pytest** (optional, in `.venv`) | The framework the export targets; its array dependency; the test runner. | Needed only to *run* the generated `test_conformance.py` (`make conformance`); the compiler never imports them. PyTorch's exact `F.gelu` (erf-based) and `torch.func` (`functional_call`, `grad`) are what the export relies on. |
+| **PyTorch** 2.14, **NumPy**, **pytest** (optional, in `.venv`) | The framework the export targets; its array dependency; the test runner. | Needed only to *run* the generated `test_conformance.py` and `train.py` (`make conformance`); the compiler never imports them. PyTorch's exact `F.gelu` (erf-based) and `torch.func` (`functional_call`, `grad`) are what the export relies on. |
+| **onnx**, **onnxscript**, **onnxruntime** (optional, in `.venv`) | The ONNX graph format and its Python API; the library `torch.onnx.export(dynamo=True)` uses to build ONNX graphs; the reference runtime for ONNX models. | `--mode graph` writes `model.onnx` through PyTorch's exporter (which needs `onnxscript`), and the generated `test_onnx` runs it under ONNX Runtime against the interpreter; none of the three is imported by the compiler. |
 
 ## Libraries in use
 

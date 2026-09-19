@@ -37,7 +37,8 @@ declaration keyword.
 | `E6xxx` | automatic differentiation | implemented |
 | `E7xxx` | `presk run` (entry resolution, input synthesis, runtime) | implemented |
 | `E8xxx` | PyTorch export | implemented |
-| `W0xxx` | warnings | implemented (W0001) |
+| `E9xxx` | `.psk.d` data files (`presk data`, the training pipeline) | implemented (0.2.0 step 1) |
+| `W0xxx` | warnings | implemented (W0001, W0002) |
 
 ## Codes
 
@@ -80,7 +81,7 @@ report is a snapshot test; adding a code means adding such a file.
 | `E2007` | `ein` errors | an operand with an unnamed axis or an open prefix, an output axis absent from all operands, an ambiguous relabeling |
 | `E2008` | no axis named `a` | `axis a`, `[a: i]` on a tensor whose type has no axis of that name, or a positional index on an open shape |
 | `E2009` | index tensor mixed with reals | `+ - * /` between an `idx` tensor and a real; use `real(…)` |
-| `E2010` | configuration block errors | unknown or duplicate field, missing required field, value not of the expected form, `objective` whose parameter tree is not the model's, unknown optimizer name |
+| `E2010` | configuration block errors | unknown or duplicate field, missing required field, value not of the expected form, `objective` whose parameter tree is not the model's or that has no batch parameter, a batch tensor without a `batch` axis, a data file whose sample type does not match the objective's (both types and the offending axis are shown), an unreadable data file, an `optimizer` block whose name is not `adamw` (the name is the algorithm), unknown optimizer name |
 | `E2011` | `f` returns `U` but is declared `-> T` | the body's type does not unify with the declared return type (the unification error is reported first) |
 | `E2012` | not implemented in 0.1.0 | `vjp`, `jvp`, `concat`, `dropout`, `clamp`, `max`, `min`; ascription to a type other than `ℝ`; a function used as a value; `split_heads`/`merge_heads` without `const H` and `const HD` in scope; a function without return type called before it is checked |
 | `E2013` | invalid initializer | `init =` is not one of `xavier_uniform`, `zeros`, `ones`, `normal(std = f)` with `f` a decimal literal (the vocabulary of the clause, see the `language` chapter, "Initializers"); a `param` without `init =` is zero-initialized |
@@ -99,7 +100,7 @@ report is a snapshot test; adding a code means adding such a file.
 | Code | Message | Cause |
 |---|---|---|
 | `E5001` | not lowered / not a value of the core language | an expression the checker accepts but PSK-Core has no form for (a comparison in a body, a module used as a value, a function value applied to named arguments); internal inconsistencies are reported with this code as well |
-| `E5002` | `stack` with a symbolic count is not supported in 0.1.0 | `stack{L}(M)` is unrolled, so `L` must be a constant |
+| `E5002` | `stack` with a symbolic count is not supported | the *initializer* of `stack{L}(M)` splits its key `L` times, so `L` must be a constant there (and everywhere with `--unroll-stack`); `apply` through a stack is a `fold` and accepts a symbolic `L` |
 
 ## Differentiation codes
 
@@ -120,8 +121,19 @@ report is a snapshot test; adding a code means adding such a file.
 |---|---|---|
 | `E8001` | not exported / builtin has no PyTorch export | a construct with no readable PyTorch form (a `let` inside an expression, a builtin outside the table) |
 
+## Data codes
+
+| Code | Message | Cause |
+|---|---|---|
+| `E9001` | not a data type | the sample type of a `.psk.d` is not closed (a symbolic dimension, an open prefix `...`), is `idx[0]`, a named type, or `params M` opened without the program |
+| `E9002` | not a .psk.d file | bad magic, unsupported version, unreadable path |
+| `E9003` | truncated | fewer bytes than the header announces, a sample index beyond the count, an I/O error |
+| `E9004` | value out of bound / not an index / not a real | an index at or above its `idx[N]` bound, an unparsable text value, too few or too many values on a line of `presk data pack` |
+| `E9005` | sample does not match the type | leaf count, element count or kind (reals where indices are expected) |
+
 ## Warnings
 
 | Code | Message | Cause |
 |---|---|---|
 | `W0001` | implicit dimension `B` | an undeclared name in a dimension position of a function signature is taken as a dimension of that function; declare it with `dim B` or `{B : dim}` to silence the warning |
+| `W0002` | data file `path` not found | the `data` file of a `training run` is not readable at check time; its sample type is checked by `presk train` |

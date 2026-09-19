@@ -17,7 +17,9 @@ What you will do, in order:
 7. compose modules with imports and stacks;
 8. look at the intermediate representations;
 9. export to PyTorch and run the generated conformance test;
-10. run the reference examples, and the whole test suite.
+10. run the reference examples;
+11. train a model, on the interpreter and in PyTorch;
+12. run the whole test suite.
 
 Commands are run from the root of the repository. Presk source files use
 Unicode symbols (`ℝ`, `λ`, `·`, `θ`); each has an ASCII synonym (`Real`,
@@ -38,7 +40,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.1.0: front-end, reference interpreter, PyTorch export)
+Presk compiler (0.2.0: front-end, reference interpreter, training, PyTorch export)
 
 Usage: presk <COMMAND>
 
@@ -47,6 +49,8 @@ Commands:
   run     Evaluate an entry point on the reference interpreter
   export  Export a program to another framework
   dump    Dump an intermediate representation (development aid)
+  train   Run the `training run` of a file on the reference interpreter
+  data    Produce and inspect `.psk.d` data files
 ```
 
 Check the smallest reference program, a two-layer perceptron:
@@ -822,33 +826,142 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 ```
 
 (The logits are zero because `head` is initialized to zeros; the loss is
-`ln 64`.) A `training run` block is checked against its schema, but not
-executed in 0.1.0:
+`ln 64`.) A `training run` block is checked against its schema and its data,
+and executed by `presk train` (the `training` chapter):
 
 ```sh
 presk run tests/examples/minigpt/train_minigpt.psk
 ```
 
 ```text
-presk run: training run: not executable in 0.1.0 (no data reader, no optimizer semantics); use --entry to evaluate a function
+presk run: this file has a `training run`: use `presk train` to execute it, or --entry to evaluate one function
 ```
 
-with exit code 3. The MiniGPT export (`make export-examples`) is the most
+The MiniGPT export (`make export-examples`) is the most
 demanding one: `T` becomes a constructor argument because a parameter table
 depends on it (`MiniGPT(T)`), the tuple `batch` of `loss` is unpacked, and
 the four conformance tests of `make conformance` cover the forward pass and
 the loss.
 
-## 10. Testing everything
+## 11. Train a model
+
+A `training run` block turns a model, an objective and data into a loop that
+`presk train` executes and `presk export --train` turns into a PyTorch
+script. `tutorial/07_train.psk` teaches the tower of step 6 the function
+`y = 2·x + 1`:
+
+```text
+-- 07_train.psk — a training run: the tower of 06 learns y = 2·x + 1.
+import "06_tower.psk" as t
+dim B
+
+fn loss(θ : params t.Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])) -> ℝ[] =
+  let (x, y) = batch
+  mean((t.Tower.apply(θ, x) - y)^2)
+
+optimizer adamw {
+  lr           : f64 = 0.01
+  weight_decay : f64 = 0.0
+  schedule     : cosine(warmup = 20)
+}
+
+training run {
+  model     = t.Tower
+  objective = loss
+  optimizer = adamw
+  data      = stream "data/pairs.psk.d" |> shuffle(seed = 3) |> batch(B = 8)
+  epochs    : nat = 10
+  checkpoint every 50 steps to "ckpt/"
+}
+```
+
+- The **objective** takes the model's parameter tree, then the **batch**: a
+  tuple of tensors, each with an axis named `batch`. The **sample type** is
+  the batch type without that axis: `(ℝ[model: 4], ℝ[model: 4])`.
+- The **optimizer** block's name is the algorithm (`adamw` is the one of
+  0.2.0); its fields are hyperparameters, machine numbers as always.
+- **`data`** names a `.psk.d` file relative to this one, shuffled with its own
+  seed and cut into batches of 8, which fixes `B`.
+
+The data file holds 128 samples written as text (`tutorial/data/pairs.txt`,
+eight numbers per line: `x` then `y`) and packed with the type of one sample:
+
+```sh
+presk data pack --type '(ℝ[model: 4], ℝ[model: 4])' tutorial/data/pairs.txt -o tutorial/data/pairs.psk.d
+presk check tutorial/07_train.psk --summary
+```
+
+```text
+-- training --
+training run: model Tower, objective loss, optimizer adamw
+    batch   : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])
+    sample  : (ℝ[model: 4], ℝ[model: 4])
+    data    : data/pairs.psk.d (shuffle 3, batch 8) — file holds (ℝ[model: 4], ℝ[model: 4])
+    epochs  : 10
+    ckpt    : every 50 steps to ckpt/
+    dims    : B = 8
+```
+
+The checker opened the file, matched its sample type against the objective's
+and bound `B`. Train on the interpreter (`--ckpt` redirects the checkpoints
+the block asks for):
+
+```sh
+presk train tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
+```
+
+```text
+step 20  epoch 2  loss 1.472339  lr 1.000e-2  |g| 2.0695e0
+step 40  epoch 3  loss 0.843784  lr 8.536e-3  |g| 8.2585e-1
+step 60  epoch 4  loss 0.521466  lr 5.000e-3  |g| 6.9388e-1
+step 80  epoch 5  loss 0.432558  lr 1.464e-3  |g| 5.8567e-1
+step 100  epoch 7  loss 0.320685  lr 0.000e0  |g| 4.6561e-1
+presk train: 100 steps of Tower, final loss 0.320685, weights in out/tutorial_ckpt/final.psk.d
+```
+
+Each step evaluates the loss and its gradient (the `vjp` generated by
+differentiation, through the fold of the stacked blocks) and applies the
+AdamW step, itself a PSK-Core function; the learning rate follows the cosine
+schedule from its warm-up to 0 at step 100 (`--steps` sets the horizon). The
+weights are a one-sample `.psk.d` of type `params Tower`. Everything runs at
+256 bits: a reference, not a fast trainer. For speed, export the run:
+
+```sh
+presk export tutorial/07_train.psk --target pytorch --mode readable \
+    --conformance-entry train:10 -o out/tutorial_train
+(cd out/tutorial_train && ../../.venv/bin/python -m pytest -q -s test_conformance.py)
+(cd out/tutorial_train && ../../.venv/bin/python train.py --steps 100 --log-every 25 --ckpt ckpt)
+```
+
+```text
+K-step conformance: 10 steps, worst relative gap 1.386e-14
+1 passed in 1.29s
+step 25/100  epoch 2  loss 1.111248  lr 9.904e-03
+step 50/100  epoch 4  loss 0.727428  lr 6.913e-03
+step 75/100  epoch 5  loss 0.968215  lr 2.222e-03
+step 100/100  epoch 7  loss 0.833188  lr 0.000e+00
+train.py: 100 steps in 0.1 s, final loss 0.833188, weights in …/out/tutorial_train/ckpt/final.pt
+```
+
+`train.py` is the run as a PyTorch loop over the exported objective and
+model, with a reader of `.psk.d` files; the conformance test replays ten
+interpreter steps on the same batches in float64 and finds the parameters
+equal to fourteen digits. `train.py` itself shuffles with PyTorch, so its
+loss curve differs from the interpreter's in the batches, not in the
+arithmetic. The `training` chapter has the loop, the flags and the two
+reference runs of the compiler's own tests.
+
+## 12. Testing everything
 
 | Command | What it verifies |
 |---|---|
-| `make test` | the Rust test suite: unit tests, snapshot tests of every stage on the examples and of every diagnostic in `tests/diag/`, property tests of the shape decision procedure, the gradient of `mse` against finite differences at 512 bits, golden outputs of `presk run` in `tests/run/`, and that the generated Python byte-compiles |
+| `make test` | the Rust test suite: unit tests, snapshot tests of every stage on the examples and of every diagnostic in `tests/diag/`, property tests of the shape decision procedure, gradients against finite differences at 512 bits (`mse`, two stacked modules), golden outputs of `presk run` in `tests/run/`, the `.psk.d` container, the optimizer's schedule and step, the training loop (a regression converges, the tiny MiniGPT's 20-step log), and that the generated Python byte-compiles |
 | `make check-examples` | `presk check` on the five reference programs: no error, only `W0001` |
 | `make run-examples` | the reference `presk run` commands |
-| `make export-examples` | the four exports with conformance data, under `out/` |
-| `make conformance` | the exports, then their `test_conformance.py` in `.venv` (after `make venv`) |
-| `make tutorial` | every command of this chapter, in order, including the two conformance tests |
+| `make export-examples` | the exports with conformance data, under `out/`: three models, the training loss, one optimizer step, twenty training steps, the ONNX graph |
+| `make conformance` | the exports, then their `test_conformance.py` in `.venv` (after `make venv`): nine tests |
+| `make train-examples` | `presk train` on a linear regression and on the tiny MiniGPT |
+| `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
 Exit codes, for scripts: 0 success, 1 diagnostics with an error, 2 usage or
@@ -856,6 +969,10 @@ not implemented, 3 valid but not executable in this version.
 
 ## Where to go next
 
+- The `experiments` chapter for what these tools show about the approach
+  (`make experiment`): a silent broadcasting bug of plain PyTorch that the
+  types rule out, and the gap of float32 and float64 training to the exact
+  reference.
 - The `cli` chapter for every flag, the `language` chapter for the
   constructs accepted and how they are typed, `diagnostics` for the codes.
 - `docs/spec-questions.md` for the points where this implementation had to

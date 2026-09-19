@@ -1,0 +1,23 @@
+-- A training run whose data file exists and matches: checked with W0002-free output,
+-- dims B and T bound from the pipeline and the file (test `training_record`).
+const V : nat = 64
+dim B
+dim T
+module Toy {
+  param w : ℝ[V, 4]
+  fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, 4] = embed(w, x)
+}
+fn loss(θ : params Toy, batch : (idx[V][batch: B, seq: T], idx[V][batch: B, seq: T])) -> ℝ[] =
+  let (x, y) = batch
+  mean(Toy.apply(θ, x))
+optimizer adamw {
+  lr : f64 = 1e-3
+}
+training run {
+  model     = Toy
+  objective = loss
+  optimizer = adamw
+  data      = stream "windows.psk.d" |> shuffle(seed = 1) |> batch(B = 4) |> take(n = 2)
+  epochs    : nat = 3
+  checkpoint every 10 steps to "ckpt/"
+}

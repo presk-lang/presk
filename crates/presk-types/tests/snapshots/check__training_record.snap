@@ -1,0 +1,11 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "check::training::summary(&prog, &typed.training)"
+---
+training run: model Toy, objective loss, optimizer adamw
+    batch   : (idx[64][batch: B, seq: T], idx[64][batch: B, seq: T])
+    sample  : (idx[64][seq: T], idx[64][seq: T])
+    data    : windows.psk.d (shuffle 1, batch 4, take 2) — file holds (idx[64][seq: 8], idx[64][seq: 8])
+    epochs  : 3
+    ckpt    : every 10 steps to ckpt/
+    dims    : B = 4, T = 8

@@ -118,36 +118,13 @@ fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[50257][batch: B, seq: T]) -
   emb : params Embedding = θ.emb
   h0 : ℝ[batch: B, seq: T, model: 768] = call Embedding.apply{B = B, T = T}(emb, ids)
   blocks : params stack{12}(Block) = θ.blocks
-  %6 : params Block = slice_params 0 blocks
-  %7 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%6, h0, mask)
-  %8 : params Block = slice_params 1 blocks
-  %9 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%8, %7, mask)
-  %10 : params Block = slice_params 2 blocks
-  %11 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%10, %9, mask)
-  %12 : params Block = slice_params 3 blocks
-  %13 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%12, %11, mask)
-  %14 : params Block = slice_params 4 blocks
-  %15 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%14, %13, mask)
-  %16 : params Block = slice_params 5 blocks
-  %17 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%16, %15, mask)
-  %18 : params Block = slice_params 6 blocks
-  %19 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%18, %17, mask)
-  %20 : params Block = slice_params 7 blocks
-  %21 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%20, %19, mask)
-  %22 : params Block = slice_params 8 blocks
-  %23 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%22, %21, mask)
-  %24 : params Block = slice_params 9 blocks
-  %25 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%24, %23, mask)
-  %26 : params Block = slice_params 10 blocks
-  %27 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%26, %25, mask)
-  %28 : params Block = slice_params 11 blocks
-  hL : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%28, %27, mask)
+  hL : ℝ[batch: B, seq: T, model: 768] = fold 12 Block.apply{B = B, T = T}(stacked blocks; acc h0; mask)
   lnf : params LayerNorm{768} = θ.lnf
-  %31 : f64 = 1e-5
-  %32 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(lnf, hL, %31)
+  %8 : f64 = 1e-5
+  %9 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(lnf, hL, %8)
   head : ℝ[768, 50257] = θ.head
-  %34 : ℝ[batch: B, seq: T, 50257] = dot %32, head
-  return %34
+  %11 : ℝ[batch: B, seq: T, 50257] = dot %9, head
+  return %11
 }
 
 fn LayerNorm.init{D}(key : key) -> params LayerNorm{D} uses Rand {

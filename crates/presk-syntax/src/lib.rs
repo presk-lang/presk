@@ -13,5 +13,5 @@ pub mod source;
 pub mod token;
 
 pub use diag::{Diagnostic, Severity};
-pub use parser::parse_file;
+pub use parser::{parse_file, parse_type};
 pub use source::{FileId, SourceMap, Span};

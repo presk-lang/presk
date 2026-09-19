@@ -5,7 +5,9 @@
 //! Step 7b of the 0.1.0 plan. Error code `E8xxx`.
 
 mod conformance;
+mod graph;
 mod py;
+mod train;
 
 use std::collections::BTreeMap;
 
@@ -13,7 +15,9 @@ use presk_syntax::{Diagnostic, SourceMap};
 use presk_types::check::TypedProgram;
 use presk_types::elab::ElabProgram;
 
-pub use conformance::{ConformanceData, test_file};
+pub use conformance::{ConformanceData, OptimizerConformance, TrainConformance, test_file};
+pub use graph::graph_driver;
+pub use train::{Schedule, TrainSpec, schedule_py, train_files};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StackMode {

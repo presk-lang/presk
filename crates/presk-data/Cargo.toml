@@ -1,0 +1,17 @@
+[package]
+name = "presk-data"
+description = "The .psk.d data container: samples of one Presk type, and the training data pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+rand_chacha.workspace = true
+rand_core.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

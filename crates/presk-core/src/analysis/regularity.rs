@@ -152,6 +152,20 @@ impl Ctx<'_> {
                     }
                     acc
                 }
+                Rhs::Fold { body, stacked, init, extra, index, .. } => {
+                    // The body's parameters after the optional index: stacked slices, the
+                    // accumulator, the extras; the accumulator feeds back into itself.
+                    let s = self.summary(*body);
+                    let off = usize::from(*index);
+                    let mut acc = Deps::new();
+                    let inputs: Vec<&VarId> = stacked.iter().chain(std::iter::once(init)).chain(extra.iter()).collect();
+                    for (i, a) in inputs.iter().enumerate() {
+                        let pc = s.get(off + i).cloned().unwrap_or(ParamClass { class: Class::Smooth, witness: None });
+                        let w = pc.witness.clone().unwrap_or((self.prog.func(*body).name.clone(), l.span));
+                        acc = join(&acc, &raise(&get(&deps, a), pc.class, w));
+                    }
+                    acc
+                }
                 Rhs::Tuple(vs) => vs.iter().fold(Deps::new(), |acc, v| join(&acc, &get(&deps, v))),
                 Rhs::Record(fields) => fields.iter().fold(Deps::new(), |acc, (_, v)| join(&acc, &get(&deps, v))),
                 Rhs::Proj(v, _) | Rhs::Field(v, _) => get(&deps, v),

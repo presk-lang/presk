@@ -1,0 +1,15 @@
+-- E2010: the optimizer block's name is the algorithm; only adamw exists in 0.2.0.
+dim B
+module Toy {
+  param w : ℝ[4]
+  fn apply(x : ℝ[batch: B, 4]) -> ℝ[batch: B, 4] = x * w
+}
+fn loss(θ : params Toy, batch : ℝ[batch: B, 4]) -> ℝ[] = mean(Toy.apply(θ, batch))
+optimizer sgd {
+  lr : f64 = 0.1
+}
+training run {
+  model     = Toy
+  objective = loss
+  optimizer = sgd
+}

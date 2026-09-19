@@ -11,6 +11,8 @@ use rug::ops::Pow;
 
 pub trait Real: Clone + Debug + PartialEq {
     fn from_u64(n: u64, prec: u32) -> Self;
+    /// π, correctly rounded at `prec` bits.
+    fn pi(prec: u32) -> Self;
     fn from_i64(n: i64, prec: u32) -> Self;
     /// Exact injection of a machine double (every double is a dyadic rational).
     fn from_f64(x: f64, prec: u32) -> Self;
@@ -45,6 +47,10 @@ pub trait Real: Clone + Debug + PartialEq {
 /// `rug::Float`: every value carries its precision; binary operations take
 /// the precision of the left operand (all values of one run share it).
 impl Real for Float {
+    fn pi(prec: u32) -> Self {
+        Float::with_val(prec, rug::float::Constant::Pi)
+    }
+
     fn from_u64(n: u64, prec: u32) -> Self {
         Float::with_val(prec, n)
     }

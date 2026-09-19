@@ -57,6 +57,20 @@ pub fn pretty_func(f: &Func, prog: &Program, elab: &ElabProgram) -> String {
             Rhs::Closure { f: callee, captured } => format!("closure {}[{}]", prog.func(*callee).name, args(captured)),
             Rhs::Grad(x) => format!("grad {}", v(x)),
             Rhs::Apply { fun, args: a } => format!("apply {}({})", v(fun), args(a)),
+            Rhs::Fold { body, dim_args, n: count, stacked, init, extra, index, reverse, scan } => {
+                let d: Vec<String> = dim_args.iter().map(|(k, e)| format!("{} = {}", elab.dim_name(*k), e.display(&*n.dim))).collect();
+                let mut flags = String::new();
+                if *index {
+                    flags.push_str(" index");
+                }
+                if *reverse {
+                    flags.push_str(" reverse");
+                }
+                if *scan {
+                    flags.push_str(" scan");
+                }
+                format!("fold{flags} {} {}{}(stacked {}; acc {}{})", count.display(&*n.dim), prog.func(*body).name, if d.is_empty() { String::new() } else { format!("{{{}}}", d.join(", ")) }, args(stacked), v(init), if extra.is_empty() { String::new() } else { format!("; {}", args(extra)) })
+            }
         };
         s.push_str(&format!("  {} : {} = {}\n", var_name(f, l.var), l.ty.display(&n), rhs));
     }

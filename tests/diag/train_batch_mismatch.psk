@@ -1,0 +1,20 @@
+-- E2010: the data file holds samples of another type than the objective's batch.
+const V : nat = 64
+dim B
+dim T
+module Toy {
+  param w : ℝ[V, 4]
+  fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, 4] = embed(w, x)
+}
+fn loss(θ : params Toy, batch : (idx[V][batch: B, seq: 4], idx[V][batch: B, seq: 4])) -> ℝ[] =
+  let (x, y) = batch
+  mean(Toy.apply(θ, x))
+optimizer adamw {
+  lr : f64 = 1e-3
+}
+training run {
+  model     = Toy
+  objective = loss
+  optimizer = adamw
+  data      = stream "../data/windows.psk.d" |> shuffle(seed = 1) |> batch(B = 4)
+}

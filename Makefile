@@ -4,9 +4,11 @@
 #   make check-examples   `presk check` on every example program
 #   make run-examples     the reference `presk run` commands of the plan (§4)
 #   make export-examples  export the example files to out/ (with conformance data)
-#   make venv             create .venv with PyTorch (uv) for the conformance tests
+#   make venv             create .venv with PyTorch, ONNX Runtime (uv) for the conformance tests
 #   make conformance      export-examples, then run the generated PyTorch tests in .venv
 #   make tutorial         every command of the manual's tutorial chapter (tutorial/*.psk)
+#   make train-examples   presk train on the regression and the tiny MiniGPT (plan 0.2.0 acceptance)
+#   make experiment       exact versus almost: the realization gap of float32/float64 training (manual, `experiments`)
 #   make sync-examples    re-copy tests/examples from presk-specs and show the diff
 #   make snap             review pending insta snapshots
 #   make doc              build the user manual (crates/presk-manual) and open it
@@ -22,7 +24,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: build test check-examples run-examples export-examples venv conformance tutorial sync-examples snap doc clean
+.PHONY: build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -46,10 +48,16 @@ export-examples: build
 	    --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/minigpt_pt
 	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
 	    --conformance-entry loss --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/train_pt
+	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	    --conformance-entry adamw.step --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/adamw_pt
+	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	    --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/trainloop_pt
+	$(PRESK) export tests/examples/minigpt/minigpt.psk --target pytorch --mode graph \
+	    --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/graph_pt
 
 venv:
 	uv venv .venv --python 3.12
-	uv pip install --python .venv/bin/python torch numpy pytest
+	uv pip install --python .venv/bin/python torch numpy pytest onnx onnxscript onnxruntime
 
 conformance: export-examples
 	@for d in out/*/; do echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; done
@@ -80,6 +88,26 @@ tutorial: build
 	$(PRESK) export tutorial/04_grad.psk --target pytorch --mode readable \
 	    --conformance-entry loss_grad --dim D=3 --dim B=2 -o out/tutorial_grad
 	@for d in out/tutorial_tower out/tutorial_grad; do echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; done
+	$(PRESK) data pack --type '(ℝ[model: 4], ℝ[model: 4])' tutorial/data/pairs.txt -o tutorial/data/pairs.psk.d
+	$(PRESK) check tutorial/07_train.psk --summary
+	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
+	$(PRESK) export tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
+	(cd out/tutorial_train && ../../.venv/bin/python -m pytest -q -s test_conformance.py)
+	(cd out/tutorial_train && ../../.venv/bin/python train.py --steps 100 --log-every 25 --ckpt ckpt)
+
+train-examples: build
+	$(PRESK) train tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
+	$(PRESK) train tests/examples/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+	    --steps 20 --bits 64 --log-every 5 --ckpt out/ckpt
+	$(PRESK) data info out/ckpt/final.psk.d
+
+# The two experiments of the manual's `experiments` chapter (needs `make venv`).
+experiment: build
+	$(PRESK) export tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
+	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	    --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/trainloop_pt
+	.venv/bin/python experiments/exact_vs_almost.py out/tutorial_train
+	.venv/bin/python experiments/exact_vs_almost.py out/trainloop_pt
 
 sync-examples:
 	rsync -a --delete --exclude PROVENANCE.md $(PRESK_SPECS_DIR)/examples/ tests/examples/

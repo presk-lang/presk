@@ -8,6 +8,8 @@ Commands:
   run     Evaluate an entry point on the reference interpreter
   export  Export a program to another framework
   dump    Dump an intermediate representation (development aid)
+  train   Run the `training run` of a file on the reference interpreter
+  data    Produce and inspect `.psk.d` data files
 ```
 
 `presk --help` and `presk <command> --help` print the full option lists.
@@ -19,7 +21,7 @@ Commands:
 | 0 | success (warnings may have been printed) |
 | 1 | diagnostics with at least one error were reported |
 | 2 | not implemented in this version, or usage error (unreadable file, bad flag) |
-| 3 | the program is valid but not executable in this version (reserved for `run` on a `training run`) |
+| 3 | reserved (0.1.0 used it for `presk run` on a `training run`; that case is now a usage error pointing to `presk train`) |
 
 Diagnostics go to standard error; dumps and results go to standard output.
 Colors are used when standard error is a terminal and `NO_COLOR` is unset.
@@ -51,7 +53,7 @@ otherwise. The five example programs pass with only `W0001` warnings
 | Flag | Meaning | Status |
 |---|---|---|
 | `--const NAME=N` | override a `const` of the main file before evaluation (repeatable); `static assert`s are re-checked with the new value | implemented |
-| `--summary` | print, for every function of the file and its imports, the inferred type of its body and of each `let` binding, then (after `-- regularity and effects --`) the class of its result with respect to each parameter and the effects it uses | implemented |
+| `--summary` | print, for every function of the file and its imports, the inferred type of its body and of each `let` binding, then (after `-- regularity and effects --`) the class of its result with respect to each parameter and the effects it uses, then (after `-- training --`, when the file has a `training run`) the resolved run: model, objective, batch and sample types, pipeline, epochs, checkpoint, and the dimensions bound by the pipeline and the data file | implemented |
 | `--json` | machine-readable output on stdout: `{"file", "ok", "diagnostics": [{code, severity, message, labels: [{file, line, col, start, end, text}], notes, help}]}`; nothing is rendered on stderr; `--summary` is ignored | implemented |
 
 Example of `--summary` on `tests/examples/minigpt/minigpt.psk` (excerpt):
@@ -106,7 +108,7 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 
 | Flag | Meaning |
 |---|---|
-| `--entry ENTRY` | a top-level function (`mse`), a module function (`MiniGPT.apply`), or a module function with the module's dimension arguments (`LayerNorm{8}.apply`). Required, except that a file with a `training run` and no `--entry` exits with 3 ("not executable in 0.1.0"); a file without one lists the candidate entries. |
+| `--entry ENTRY` | a top-level function (`mse`), a module function (`MiniGPT.apply`), a module function with the module's dimension arguments (`LayerNorm{8}.apply`), or an optimizer function of a file with a `training run` (`adamw.step`, `adamw.lr`, `adamw.init`; their inputs are synthesized with a non-negative second moment, `t = 3`, `total = 10`). Required: without it, a file with a `training run` is directed to `presk train` (exit 2), and any other file lists the candidate entries. |
 | `--dim NAME=N` | binds a dimension of the entry (its type parameters, implicit dimensions, the file's `dim`s). A name that is not a dimension of the entry gives, in order, the axes of the open prefix `...` of its parameters: `--dim batch=3` makes `x : ℝ[..., model: D]` an `ℝ[batch: 3, model: 8]`. Every dimension must be bound, and the file's bounds (`dim T <= 1024`) are enforced (`E7001`). |
 | `--const NAME=N` | overrides a `const` of the file *or of its imports* (`minigpt.psk`'s `V`, `D`, `H`, `L` from `train_minigpt.psk`); `static assert`s are re-checked. This is how the MiniGPT examples run at a size the interpreter can afford. |
 | `--seed S` | seed of every random choice (default 0): synthesized inputs, initializers, `sample`. Same seed, same output, on every machine. |
@@ -114,6 +116,7 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--digits D` | significant digits when printing (default 12). |
 | `--json` | machine-readable output: entry, seed, bits, dimensions, inputs and result, reals as decimal strings at `--digits`. |
 | `--verbose` | also print the synthesized inputs. |
+| `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
 
 **Inputs** are synthesized from the parameter types: real tensors from a
 standard normal, index tensors uniformly in `[0, N)`, `params M` by running
@@ -127,7 +130,7 @@ tensors as integers.
 
 **Exit codes**: 0 success; 1 a diagnostic (including a runtime error `E7001`,
 labelled with the source of the failing operation); 2 usage or internal
-error; 3 `training run` without `--entry`.
+error, including a `training run` file without `--entry`.
 
 **Randomness**: `sample` draws from a stream seeded by `--seed` (the `Rand`
 effect has no explicit key argument in 0.1.0; see `docs/spec-questions.md`).
@@ -152,11 +155,13 @@ python3 -m py_compile out/minigpt_pt/*.py    # syntax; `pytest out/minigpt_pt` w
 | Flag | Meaning |
 |---|---|
 | `--target pytorch` | the only target. |
-| `--mode readable` | the only mode implemented (`--mode graph`, `--precision=solved` of the specification: not in 0.1.0). |
+| `--mode readable` | one `nn.Module` per module (default). |
+| `--mode graph` | the specification's tool-level mode, in its light form: with `--conformance-entry Module.apply`, also writes `export.py`, a driver that builds the model with the conformance parameters and saves `model.pt2` (`torch.export`) and `model.onnx` (`torch.onnx.export`, dynamo), in float32; the generated test gains `test_onnx`, which runs `model.onnx` under ONNX Runtime against the interpreter (`rtol 1e-4`). The Presk-native StableHLO path waits for the precision solver. `--precision=solved`: not implemented. |
+| `--train` | also write `pskd.py`, `train.py` and a copy of the data file: the file's `training run` as a PyTorch loop (`training` chapter). |
 | `-o DIR` | output directory (created); the generated files import each other by file stem, made a Python identifier (`01_linear.psk` → `_01_linear.py`). |
 | `--shapes=check` | insert `assert x.shape == (…)` after every parameter and `let` with a closed shape. |
 | `--stack=loop\|unroll` | `stack{L}(M)` as a `for` over an `nn.ModuleList` (default) or as `L` explicit calls. |
-| `--conformance-entry ENTRY` | also run the reference interpreter on `ENTRY` (with `--dim`, `--const`, `--seed` as for `presk run`, at 256 bits) and write `conformance/inputs.json`, `conformance/expected.json` and `test_conformance.py`. |
+| `--conformance-entry ENTRY` | also run the reference interpreter on `ENTRY` (with `--dim`, `--const`, `--seed` as for `presk run`, at 256 bits) and write `conformance/inputs.json`, `conformance/expected.json` and `test_conformance.py`; `adamw.step` compares one optimizer step with `torch.optim.AdamW`; `train:K` runs `K` steps of the training run on the interpreter (implies `--train`) and generates a test that replays the same batches in PyTorch and compares the parameters (`training` chapter). |
 
 **The conformance test** loads the interpreter's inputs and expected result,
 builds the model or function (`MiniGPT(8)`, `MLP(4, 16)` — the dimension
@@ -167,8 +172,41 @@ the "exact versus almost" experiment of the specification: the tolerance
 measures the gap between the exact semantics and double precision. It runs
 where PyTorch is installed: `make venv` creates `.venv` with PyTorch, and
 `make conformance` exports the examples and runs their tests
-(`mse_grad`, `LayerNorm{8}.apply`, `MiniGPT.apply` and the training `loss` pass). PyTorch is not a
-dependency of the compiler.
+(`mse_grad`, `LayerNorm{8}.apply`, `MiniGPT.apply`, the training `loss` and
+`adamw.step` against `torch.optim.AdamW` with `clip_grad_norm_` and the
+schedule, `train:20` and the ONNX graph of MiniGPT pass). PyTorch, ONNX and
+ONNX Runtime are not dependencies of the compiler.
 
 **Exit codes**: 0 written; 1 diagnostics (a construct with no PyTorch form is
 `E8001`); 2 usage.
+
+## `presk train FILE.psk …`
+
+Executes the file's `training run` on the reference interpreter: see the
+`training` chapter for the loop, the flags (`--const`, `--data`, `--steps`,
+`--epochs`, `--seed`, `--bits`, `--log-every`, `--ckpt`, `--json`) and two
+runs.
+
+```sh
+presk train tests/train/mlp_regression.psk --steps 200 --ckpt out/reg_ckpt
+presk train tests/examples/minigpt/train_minigpt.psk \
+     --const V=64 --const D=16 --const H=2 --const L=2 --steps 20 --bits 64 --ckpt out/ckpt
+```
+
+**Exit codes**: 0; 1 a diagnostic or a run-time error; 2 no `training run`
+or an unreadable data file.
+
+## `presk data pack | lm-windows | info | export`
+
+Produces and inspects `.psk.d` files (the `data` chapter has the format and
+the rules):
+
+```text
+presk data pack --type TYPE INPUT.txt -o OUT.psk.d        # one sample per line, values in leaf order
+presk data lm-windows --vocab V --seq T [--stride S] TOKENS.txt -o OUT.psk.d
+presk data info FILE.psk.d [--samples N]                  # header and first samples (default 3)
+presk data export FILE.psk.d -o OUT.json                  # samples as nested JSON lists
+```
+
+**Exit codes**: 0 written or printed; 1 a data error (`E9xxx`, see the
+`diagnostics` chapter); 2 an unreadable input file.

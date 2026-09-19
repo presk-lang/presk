@@ -1,0 +1,10 @@
+---
+source: crates/presk-data/tests/data.rs
+expression: "presk_data::info(&mut r, 2).unwrap()"
+---
+type    (idx[64][seq: 8], idx[64][seq: 8])
+count   24
+version 1
+sample  16 bytes, 2 leaves
+[0] ([41, 19, 50, 6, 9, 12, 46, 7], [19, 50, 6, 9, 12, 46, 7, 27])
+[1] ([27, 4, 11, 55, 53, 8, 30, 11], [4, 11, 55, 53, 8, 30, 11, 54])

@@ -1,0 +1,24 @@
+---
+source: crates/presk-train/tests/train.rs
+expression: text
+---
+step  1 epoch 1 loss 4.158883083 lr 1.500e-7 |g| 0.599931
+step  2 epoch 1 loss 4.158882022 lr 3.000e-7 |g| 0.554331
+step  3 epoch 1 loss 4.158880064 lr 4.500e-7 |g| 0.558540
+step  4 epoch 1 loss 4.158877704 lr 6.000e-7 |g| 0.489070
+step  5 epoch 1 loss 4.158873159 lr 7.500e-7 |g| 0.547692
+step  6 epoch 1 loss 4.158866837 lr 9.000e-7 |g| 0.551010
+step  7 epoch 1 loss 4.158865054 lr 1.050e-6 |g| 0.540713
+step  8 epoch 1 loss 4.158853917 lr 1.200e-6 |g| 0.508781
+step  9 epoch 1 loss 4.158844604 lr 1.350e-6 |g| 0.511482
+step 10 epoch 1 loss 4.158840112 lr 1.500e-6 |g| 0.542705
+step 11 epoch 1 loss 4.158822549 lr 1.650e-6 |g| 0.544524
+step 12 epoch 1 loss 4.158807753 lr 1.800e-6 |g| 0.587968
+step 13 epoch 1 loss 4.158803840 lr 1.950e-6 |g| 0.533363
+step 14 epoch 1 loss 4.158782347 lr 2.100e-6 |g| 0.585230
+step 15 epoch 1 loss 4.158776520 lr 2.250e-6 |g| 0.514382
+step 16 epoch 2 loss 4.158755736 lr 2.400e-6 |g| 0.522404
+step 17 epoch 2 loss 4.158745109 lr 2.550e-6 |g| 0.516354
+step 18 epoch 2 loss 4.158707800 lr 2.700e-6 |g| 0.561926
+step 19 epoch 2 loss 4.158700013 lr 2.850e-6 |g| 0.539536
+step 20 epoch 2 loss 4.158679673 lr 3.000e-6 |g| 0.515962

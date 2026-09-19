@@ -22,3 +22,6 @@ Block.init : [key C∞] uses Rand
 Embedding.init : [key C∞] uses Rand
 MiniGPT.init : [key C∞] uses Rand
 mse_grad.lambda0 : [x C∞, y C∞, θ C∞] uses none
+adamw.init : [θ C∞] uses none
+adamw.lr : [t C⁰⁺, total C⁰⁺] uses none
+adamw.step : [θ C∞, s C∞, g C⁰⁺, t C⁰⁺, total C⁰⁺] uses none

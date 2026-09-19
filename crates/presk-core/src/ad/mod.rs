@@ -17,7 +17,7 @@ use presk_syntax::{Diagnostic, Span};
 use presk_types::dim::DimExpr;
 use presk_types::ty::Ty;
 
-use crate::ir::{Block, Func, FuncId, Let, Lit, Origin, Param, PrimOp, Program, Rhs, VarId};
+use crate::ir::{stack_ty, unstack_ty, Block, Func, FuncId, Let, Lit, Origin, Param, PrimOp, Program, Rhs, VarId};
 
 /// Rewrite every `grad` in the program; returns the diagnostics.
 pub fn transform(prog: &mut Program) -> Vec<Diagnostic> {
@@ -55,6 +55,14 @@ pub fn transform(prog: &mut Program) -> Vec<Diagnostic> {
         }
     }
     ad.diags
+}
+
+/// `f.vjp` for a named function (the training loop's gradient of the
+/// objective), generated on demand after [`transform`].
+pub fn vjp_function(prog: &mut Program, f: FuncId) -> (FuncId, Vec<Diagnostic>) {
+    let mut ad = Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![] };
+    let id = ad.vjp_of(prog, f);
+    (id, ad.diags)
 }
 
 struct Ad {
@@ -102,6 +110,59 @@ fn identity_dims(f: &Func) -> BTreeMap<presk_types::dim::DimVar, DimExpr> {
 }
 
 impl Ad {
+    /// The body of the backward fold of `fold n body(stacked…; acc; extra…)`:
+    /// `(i, s_k[i]…, acc_i, (ct_acc, ct_s…, ct_e…), extra…)` ↦ the accumulator
+    /// after applying `body.vjp` at iteration `i`: the accumulator's cotangent
+    /// flows to the previous iteration, the stacked inputs' cotangents are
+    /// written into slice `i`, the extras' are summed.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_bwd(&mut self, prog: &mut Program, body: FuncId, dim_args: &BTreeMap<presk_types::dim::DimVar, DimExpr>, src: &Func, acc_ty: &Ty, s_tys: &[Ty], ex_tys: &[Ty], ex_d: &[usize], span: Span) -> FuncId {
+        let vjp = self.vjp_of(prog, body);
+        let bsrc = prog.func(body).clone();
+        let id = FuncId(prog.funcs.len() as u32);
+        let mut e = Emit::new();
+        let i = e.fresh();
+        let thetas: Vec<VarId> = s_tys.iter().map(|_| e.fresh()).collect();
+        let acc_i = e.fresh();
+        let a = e.fresh();
+        let exs: Vec<VarId> = ex_tys.iter().map(|_| e.fresh()).collect();
+        let mut acc_tys = vec![acc_ty.clone()];
+        acc_tys.extend(s_tys.iter().cloned());
+        acc_tys.extend(ex_d.iter().map(|j| ex_tys[*j].clone()));
+        let acc_tuple = Ty::Tuple(acc_tys);
+        let mut params = vec![Param { var: i, name: "i".into(), ty: Ty::Nat }];
+        for (k, t) in thetas.iter().zip(s_tys) {
+            params.push(Param { var: *k, name: "slice".into(), ty: unstack_ty(t) });
+        }
+        params.push(Param { var: acc_i, name: "acc".into(), ty: acc_ty.clone() });
+        params.push(Param { var: a, name: "ct".into(), ty: acc_tuple.clone() });
+        for (j, v) in exs.iter().enumerate() {
+            params.push(Param { var: *v, name: format!("extra{j}"), ty: ex_tys[j].clone() });
+        }
+        let ct_acc = e.emit(acc_ty.clone(), Rhs::Proj(a, 0), span);
+        let ct_s: Vec<VarId> = (0..s_tys.len()).map(|k| e.emit(s_tys[k].clone(), Rhs::Proj(a, 1 + k), span)).collect();
+        let ct_e: Vec<VarId> = ex_d.iter().enumerate().map(|(j, jj)| e.emit(ex_tys[*jj].clone(), Rhs::Proj(a, 1 + s_tys.len() + j), span)).collect();
+        let ptys: Vec<Ty> = bsrc.params.iter().map(|p| p.ty.subst(dim_args)).collect();
+        let mut args: Vec<VarId> = thetas.clone();
+        args.push(acc_i);
+        args.extend(exs.iter().copied());
+        args.push(ct_acc);
+        let cts = e.emit(Ty::Tuple(ptys.clone()), Rhs::Call { f: vjp, dim_args: dim_args.clone(), args }, span);
+        let k = s_tys.len();
+        let mut outs = vec![e.emit(acc_ty.clone(), Rhs::Proj(cts, k), span)];
+        for (kk, cs) in ct_s.iter().enumerate() {
+            let ct_theta = e.emit(unstack_ty(&s_tys[kk]), Rhs::Proj(cts, kk), span);
+            outs.push(e.prim(s_tys[kk].clone(), PrimOp::SetSlice, vec![*cs, i, ct_theta], span));
+        }
+        for (j, jj) in ex_d.iter().enumerate() {
+            let c = e.emit(ex_tys[*jj].clone(), Rhs::Proj(cts, k + 1 + jj), span);
+            outs.push(e.prim(ex_tys[*jj].clone(), PrimOp::Add, vec![ct_e[j], c], span));
+        }
+        let result = e.emit(acc_tuple.clone(), Rhs::Tuple(outs), span);
+        prog.funcs.push(Func { name: format!("{}.fold_bwd", src.name), origin: Origin::Lambda { parent: body }, dims: src.dims.clone(), params, ret: acc_tuple, effects: vec![], body: Block { lets: e.lets, result }, span });
+        id
+    }
+
     /// `f.grad(captured…, θ…)`: the gradient of `f` with respect to its
     /// parameters after the first `n_captured`.
     fn grad_fn(&mut self, prog: &mut Program, f: FuncId, n_captured: usize, span: Span) -> FuncId {
@@ -167,6 +228,9 @@ impl Ad {
         let rn = |rename: &HashMap<VarId, VarId>, v: &VarId| *rename.get(v).unwrap_or(v);
         // Closures defined in the body, for `apply`.
         let mut closures: HashMap<VarId, (FuncId, Vec<VarId>)> = HashMap::new();
+        // For every fold of the body: the stack of its accumulators before each
+        // iteration (the forward copy scans), read by the backward fold.
+        let mut fold_pre: HashMap<VarId, VarId> = HashMap::new();
         for l in &src.body.lets {
             let rhs = match &l.rhs {
                 Rhs::Lit(x) => Rhs::Lit(x.clone()),
@@ -186,6 +250,20 @@ impl Ad {
                     Rhs::Lit(Lit::Nat(0))
                 }
                 Rhs::Apply { fun, args } => Rhs::Apply { fun: rn(&rename, fun), args: args.iter().map(|a| rn(&rename, a)).collect() },
+                Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, .. } => {
+                    // Scanned, so that the reverse sweep can read the accumulator
+                    // before each iteration.
+                    let st: Vec<VarId> = stacked.iter().map(|a| rn(&rename, a)).collect();
+                    let ex: Vec<VarId> = extra.iter().map(|a| rn(&rename, a)).collect();
+                    let pre_ty = stack_ty(&l.ty, n);
+                    let pair_ty = Ty::Tuple(vec![l.ty.clone(), pre_ty.clone()]);
+                    let pair = e.emit(pair_ty.clone(), Rhs::Fold { body: *body, dim_args: dim_args.clone(), n: n.clone(), stacked: st, init: rn(&rename, init), extra: ex, index: *index, reverse: *reverse, scan: true }, l.span);
+                    types.insert(pair, pair_ty);
+                    let pre = e.emit(pre_ty.clone(), Rhs::Proj(pair, 1), l.span);
+                    types.insert(pre, pre_ty);
+                    fold_pre.insert(l.var, pre);
+                    Rhs::Proj(pair, 0)
+                }
             };
             let nv = e.emit(l.ty.clone(), rhs, l.span);
             e.lets.last_mut().unwrap().name = l.name.clone();
@@ -201,6 +279,46 @@ impl Ad {
             let span = l.span;
             let contributions: Vec<(VarId, VarId)> = match &l.rhs {
                 Rhs::Lit(_) | Rhs::Closure { .. } | Rhs::Grad(_) => vec![],
+                Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, .. } => {
+                    if *index || *reverse {
+                        self.diags.push(Diagnostic::error("E6001", "differentiating a backward fold is not supported").label(span, "second-order differentiation of a stacked module"));
+                        continue;
+                    }
+                    let st: Vec<VarId> = stacked.iter().map(|a| rn(&rename, a)).collect();
+                    let ex: Vec<VarId> = extra.iter().map(|a| rn(&rename, a)).collect();
+                    let x0 = rn(&rename, init);
+                    let pre = fold_pre[&l.var];
+                    let acc_ty = l.ty.clone();
+                    let s_tys: Vec<Ty> = st.iter().map(|v| types[v].clone()).collect();
+                    let ex_tys: Vec<Ty> = ex.iter().map(|v| types[v].clone()).collect();
+                    let ex_d: Vec<usize> = (0..ex.len()).filter(|j| differentiable(&ex_tys[*j])).collect();
+                    let bwd = self.fold_bwd(prog, *body, dim_args, &src, &acc_ty, &s_tys, &ex_tys, &ex_d, span);
+                    // The backward accumulator: (ct of the accumulator, ct of every stacked
+                    // input, ct of every differentiable extra), from (ct, zeros…).
+                    let mut acc_tys = vec![acc_ty.clone()];
+                    acc_tys.extend(s_tys.iter().cloned());
+                    acc_tys.extend(ex_d.iter().map(|j| ex_tys[*j].clone()));
+                    let mut init_vs = vec![ct];
+                    for v in &st {
+                        init_vs.push(e.prim(types[v].clone(), PrimOp::ZerosLike, vec![*v], span));
+                    }
+                    for j in &ex_d {
+                        init_vs.push(e.prim(ex_tys[*j].clone(), PrimOp::ZerosLike, vec![ex[*j]], span));
+                    }
+                    let acc_tuple = Ty::Tuple(acc_tys);
+                    let acc0 = e.emit(acc_tuple.clone(), Rhs::Tuple(init_vs), span);
+                    let mut st_bwd = st.clone();
+                    st_bwd.push(pre);
+                    let out = e.emit(acc_tuple, Rhs::Fold { body: bwd, dim_args: identity_dims(&src), n: n.clone(), stacked: st_bwd, init: acc0, extra: ex.clone(), index: true, reverse: true, scan: false }, span);
+                    let mut cs = vec![(x0, e.emit(acc_ty.clone(), Rhs::Proj(out, 0), span))];
+                    for (k, v) in st.iter().enumerate() {
+                        cs.push((*v, e.emit(s_tys[k].clone(), Rhs::Proj(out, 1 + k), span)));
+                    }
+                    for (j, jj) in ex_d.iter().enumerate() {
+                        cs.push((ex[*jj], e.emit(ex_tys[*jj].clone(), Rhs::Proj(out, 1 + st.len() + j), span)));
+                    }
+                    cs
+                }
                 Rhs::Prim { op, args } => {
                     let args: Vec<VarId> = args.iter().map(|a| rn(&rename, a)).collect();
                     let tys: Vec<Ty> = args.iter().map(|a| types[a].clone()).collect();

@@ -4,10 +4,10 @@
 //! 0.1.0. Error code `E2010`.
 
 use presk_syntax::ast::{Arg, BinOp, ConfigItem, Expr, Lit, Path};
-use presk_syntax::{Diagnostic, Span};
+use presk_syntax::Diagnostic;
 
 use super::Checker;
-use crate::ty::{ModRef, Ty};
+use crate::ty::ModRef;
 
 impl Checker<'_> {
     pub(crate) fn check_configs(&mut self, unit: usize) {
@@ -21,7 +21,11 @@ impl Checker<'_> {
         }
         for (items, span) in &training {
             let model = self.block("training run", "training run", items, &TRAINING, &["model", "objective", "optimizer"]);
-            self.cross_check_training(items, model, *span);
+            if let Some(run) = self.training_run(items, model, *span)
+                && unit == self.prog.main
+            {
+                self.typed.training.push(run);
+            }
         }
         for (items, _) in &inference {
             self.block("inference serve", "inference serve", items, &INFERENCE, &["model"]);
@@ -82,42 +86,6 @@ impl Checker<'_> {
             }
         }
         model
-    }
-
-    /// `objective` must be a function whose first parameter is `params <model>`;
-    /// `optimizer` must name an optimizer block.
-    fn cross_check_training(&mut self, items: &[ConfigItem], model: Option<ModRef>, _span: Span) {
-        for item in items {
-            if let ConfigItem::Field { name, value, .. } = item {
-                match (name.name.as_str(), value) {
-                    ("objective", Expr::Var { path }) => {
-                        let Some(&fid) = self.prog.units[self.unit].fns.get(&path.segs[0].name) else {
-                            self.error(Diagnostic::error("E2010", format!("`objective`: `{}` is not a function of this file", path.dotted())).label(path.span, "expected a top-level `fn`"));
-                            continue;
-                        };
-                        let f = self.prog.function(fid);
-                        match (f.params.first().and_then(|p| p.ty.clone()), &model) {
-                            (Some(Ty::Params(m)), Some(model)) => {
-                                let (m, model) = (m.clone(), model.clone());
-                                if !self.trial(|c| c.unify_modref(&m, &model, path.span)) {
-                                    let n = self.prog.names();
-                                    self.error(Diagnostic::error("E2010", format!("`objective` `{}` takes `params {}` but the model is `{}`", f.name, m.display(&n), model.display(&n))).label(path.span, "objective and model disagree"));
-                                }
-                            }
-                            (Some(_), _) | (None, _) => {
-                                self.error(Diagnostic::error("E2010", format!("`objective` `{}` must take the parameter tree first: `θ : params M`", f.name)).label(path.span, "first parameter is not `params M`"));
-                            }
-                        }
-                    }
-                    ("optimizer", Expr::Var { path }) => {
-                        if !self.prog.units[self.unit].optimizers.contains_key(&path.segs[0].name) {
-                            self.error(Diagnostic::error("E2010", format!("`optimizer`: no `optimizer {}` block in this file", path.dotted())).label(path.span, "expected the name of an optimizer block"));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
     }
 
     /// Match a value against a form; returns the module for `Form::Module`.
