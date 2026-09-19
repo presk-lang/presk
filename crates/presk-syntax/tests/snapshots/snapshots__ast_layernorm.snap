@@ -1,0 +1,801 @@
+---
+source: crates/presk-syntax/tests/snapshots.rs
+expression: "format!(\"{program:#?}\")"
+---
+Program {
+    file: f0,
+    decls: [
+        Module(
+            ModuleDecl {
+                name: Ident {
+                    name: "LayerNorm",
+                    span: 214..223,
+                },
+                typarams: [
+                    TyParam {
+                        name: Ident {
+                            name: "D",
+                            span: 224..225,
+                        },
+                        kind: Ident {
+                            name: "dim",
+                            span: 228..231,
+                        },
+                    },
+                ],
+                members: [
+                    Param {
+                        names: [
+                            Ident {
+                                name: "γ",
+                                span: 243..245,
+                            },
+                        ],
+                        ty: Real {
+                            axes: [
+                                Axis {
+                                    name: None,
+                                    dim: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "D",
+                                                    span: 252..253,
+                                                },
+                                            ],
+                                            span: 252..253,
+                                        },
+                                    },
+                                },
+                            ],
+                            span: 248..254,
+                        },
+                        init: Some(
+                            Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "ones",
+                                            span: 263..267,
+                                        },
+                                    ],
+                                    span: 263..267,
+                                },
+                            },
+                        ),
+                        span: 237..267,
+                    },
+                    Param {
+                        names: [
+                            Ident {
+                                name: "β",
+                                span: 288..290,
+                            },
+                        ],
+                        ty: Real {
+                            axes: [
+                                Axis {
+                                    name: None,
+                                    dim: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "D",
+                                                    span: 297..298,
+                                                },
+                                            ],
+                                            span: 297..298,
+                                        },
+                                    },
+                                },
+                            ],
+                            span: 293..299,
+                        },
+                        init: Some(
+                            Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "zeros",
+                                            span: 308..313,
+                                        },
+                                    ],
+                                    span: 308..313,
+                                },
+                            },
+                        ),
+                        span: 282..313,
+                    },
+                    Fn(
+                        FnDecl {
+                            name: Ident {
+                                name: "apply",
+                                span: 621..626,
+                            },
+                            typarams: [],
+                            params: [
+                                Param {
+                                    name: Ident {
+                                        name: "x",
+                                        span: 627..628,
+                                    },
+                                    ty: Some(
+                                        Real {
+                                            axes: [
+                                                Ellipsis {
+                                                    span: 635..638,
+                                                },
+                                                Axis {
+                                                    name: Some(
+                                                        Ident {
+                                                            name: "model",
+                                                            span: 640..645,
+                                                        },
+                                                    ),
+                                                    dim: Var {
+                                                        path: Path {
+                                                            segs: [
+                                                                Ident {
+                                                                    name: "D",
+                                                                    span: 647..648,
+                                                                },
+                                                            ],
+                                                            span: 647..648,
+                                                        },
+                                                    },
+                                                },
+                                            ],
+                                            span: 631..649,
+                                        },
+                                    ),
+                                    default: None,
+                                    axis: false,
+                                    span: 627..649,
+                                },
+                                Param {
+                                    name: Ident {
+                                        name: "eps",
+                                        span: 651..654,
+                                    },
+                                    ty: Some(
+                                        Named {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "f64",
+                                                        span: 657..660,
+                                                    },
+                                                ],
+                                                span: 657..660,
+                                            },
+                                            args: [],
+                                            span: 657..660,
+                                        },
+                                    ),
+                                    default: Some(
+                                        Lit {
+                                            lit: Float(
+                                                "1e-5",
+                                            ),
+                                            span: 663..667,
+                                        },
+                                    ),
+                                    axis: false,
+                                    span: 651..667,
+                                },
+                            ],
+                            ret: Some(
+                                Real {
+                                    axes: [
+                                        Ellipsis {
+                                            span: 676..679,
+                                        },
+                                        Axis {
+                                            name: Some(
+                                                Ident {
+                                                    name: "model",
+                                                    span: 681..686,
+                                                },
+                                            ),
+                                            dim: Var {
+                                                path: Path {
+                                                    segs: [
+                                                        Ident {
+                                                            name: "D",
+                                                            span: 688..689,
+                                                        },
+                                                    ],
+                                                    span: 688..689,
+                                                },
+                                            },
+                                        },
+                                    ],
+                                    span: 672..690,
+                                },
+                            ),
+                            effects: [],
+                            body: Let {
+                                pat: Ident(
+                                    Ident {
+                                        name: "μ",
+                                        span: 701..703,
+                                    },
+                                ),
+                                init: Call {
+                                    callee: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "mean",
+                                                    span: 707..711,
+                                                },
+                                            ],
+                                            span: 707..711,
+                                        },
+                                    },
+                                    args: [
+                                        Axis(
+                                            Ident {
+                                                name: "model",
+                                                span: 717..722,
+                                            },
+                                        ),
+                                        Pos(
+                                            Var {
+                                                path: Path {
+                                                    segs: [
+                                                        Ident {
+                                                            name: "x",
+                                                            span: 724..725,
+                                                        },
+                                                    ],
+                                                    span: 724..725,
+                                                },
+                                            },
+                                        ),
+                                    ],
+                                    span: 707..726,
+                                },
+                                body: Let {
+                                    pat: Ident(
+                                        Ident {
+                                            name: "σ2",
+                                            span: 763..766,
+                                        },
+                                    ),
+                                    init: Call {
+                                        callee: Var {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "mean",
+                                                        span: 769..773,
+                                                    },
+                                                ],
+                                                span: 769..773,
+                                            },
+                                        },
+                                        args: [
+                                            Axis(
+                                                Ident {
+                                                    name: "model",
+                                                    span: 779..784,
+                                                },
+                                            ),
+                                            Pos(
+                                                Binary {
+                                                    op: Pow,
+                                                    lhs: Binary {
+                                                        op: Sub,
+                                                        lhs: Var {
+                                                            path: Path {
+                                                                segs: [
+                                                                    Ident {
+                                                                        name: "x",
+                                                                        span: 787..788,
+                                                                    },
+                                                                ],
+                                                                span: 787..788,
+                                                            },
+                                                        },
+                                                        rhs: Var {
+                                                            path: Path {
+                                                                segs: [
+                                                                    Ident {
+                                                                        name: "μ",
+                                                                        span: 791..793,
+                                                                    },
+                                                                ],
+                                                                span: 791..793,
+                                                            },
+                                                        },
+                                                        span: 787..793,
+                                                    },
+                                                    rhs: Lit {
+                                                        lit: Nat(
+                                                            "2",
+                                                        ),
+                                                        span: 795..796,
+                                                    },
+                                                    span: 787..796,
+                                                },
+                                            ),
+                                        ],
+                                        span: 769..797,
+                                    },
+                                    body: Let {
+                                        pat: Ident(
+                                            Ident {
+                                                name: "x\u{302}",
+                                                span: 850..853,
+                                            },
+                                        ),
+                                        init: Binary {
+                                            op: Div,
+                                            lhs: Binary {
+                                                op: Sub,
+                                                lhs: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "x",
+                                                                span: 858..859,
+                                                            },
+                                                        ],
+                                                        span: 858..859,
+                                                    },
+                                                },
+                                                rhs: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "μ",
+                                                                span: 862..864,
+                                                            },
+                                                        ],
+                                                        span: 862..864,
+                                                    },
+                                                },
+                                                span: 858..864,
+                                            },
+                                            rhs: Call {
+                                                callee: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "sqrt",
+                                                                span: 868..872,
+                                                            },
+                                                        ],
+                                                        span: 868..872,
+                                                    },
+                                                },
+                                                args: [
+                                                    Pos(
+                                                        Binary {
+                                                            op: Add,
+                                                            lhs: Var {
+                                                                path: Path {
+                                                                    segs: [
+                                                                        Ident {
+                                                                            name: "σ2",
+                                                                            span: 873..876,
+                                                                        },
+                                                                    ],
+                                                                    span: 873..876,
+                                                                },
+                                                            },
+                                                            rhs: Call {
+                                                                callee: Var {
+                                                                    path: Path {
+                                                                        segs: [
+                                                                            Ident {
+                                                                                name: "real",
+                                                                                span: 879..883,
+                                                                            },
+                                                                        ],
+                                                                        span: 879..883,
+                                                                    },
+                                                                },
+                                                                args: [
+                                                                    Pos(
+                                                                        Var {
+                                                                            path: Path {
+                                                                                segs: [
+                                                                                    Ident {
+                                                                                        name: "eps",
+                                                                                        span: 884..887,
+                                                                                    },
+                                                                                ],
+                                                                                span: 884..887,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                ],
+                                                                span: 879..888,
+                                                            },
+                                                            span: 873..888,
+                                                        },
+                                                    ),
+                                                ],
+                                                span: 868..889,
+                                            },
+                                            span: 858..889,
+                                        },
+                                        body: Binary {
+                                            op: Add,
+                                            lhs: Binary {
+                                                op: Mul,
+                                                lhs: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "x\u{302}",
+                                                                span: 946..949,
+                                                            },
+                                                        ],
+                                                        span: 946..949,
+                                                    },
+                                                },
+                                                rhs: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "γ",
+                                                                span: 952..954,
+                                                            },
+                                                        ],
+                                                        span: 952..954,
+                                                    },
+                                                },
+                                                span: 946..954,
+                                            },
+                                            rhs: Var {
+                                                path: Path {
+                                                    segs: [
+                                                        Ident {
+                                                            name: "β",
+                                                            span: 957..959,
+                                                        },
+                                                    ],
+                                                    span: 957..959,
+                                                },
+                                            },
+                                            span: 946..959,
+                                        },
+                                        span: 846..959,
+                                    },
+                                    span: 759..959,
+                                },
+                                span: 697..959,
+                            },
+                            span: 618..959,
+                        },
+                    ),
+                ],
+                span: 207..1042,
+            },
+        ),
+        Module(
+            ModuleDecl {
+                name: Ident {
+                    name: "RMSNorm",
+                    span: 1118..1125,
+                },
+                typarams: [
+                    TyParam {
+                        name: Ident {
+                            name: "D",
+                            span: 1126..1127,
+                        },
+                        kind: Ident {
+                            name: "dim",
+                            span: 1130..1133,
+                        },
+                    },
+                ],
+                members: [
+                    Param {
+                        names: [
+                            Ident {
+                                name: "γ",
+                                span: 1145..1147,
+                            },
+                        ],
+                        ty: Real {
+                            axes: [
+                                Axis {
+                                    name: None,
+                                    dim: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "D",
+                                                    span: 1154..1155,
+                                                },
+                                            ],
+                                            span: 1154..1155,
+                                        },
+                                    },
+                                },
+                            ],
+                            span: 1150..1156,
+                        },
+                        init: Some(
+                            Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "ones",
+                                            span: 1165..1169,
+                                        },
+                                    ],
+                                    span: 1165..1169,
+                                },
+                            },
+                        ),
+                        span: 1139..1169,
+                    },
+                    Fn(
+                        FnDecl {
+                            name: Ident {
+                                name: "apply",
+                                span: 1176..1181,
+                            },
+                            typarams: [],
+                            params: [
+                                Param {
+                                    name: Ident {
+                                        name: "x",
+                                        span: 1182..1183,
+                                    },
+                                    ty: Some(
+                                        Real {
+                                            axes: [
+                                                Ellipsis {
+                                                    span: 1190..1193,
+                                                },
+                                                Axis {
+                                                    name: Some(
+                                                        Ident {
+                                                            name: "model",
+                                                            span: 1195..1200,
+                                                        },
+                                                    ),
+                                                    dim: Var {
+                                                        path: Path {
+                                                            segs: [
+                                                                Ident {
+                                                                    name: "D",
+                                                                    span: 1202..1203,
+                                                                },
+                                                            ],
+                                                            span: 1202..1203,
+                                                        },
+                                                    },
+                                                },
+                                            ],
+                                            span: 1186..1204,
+                                        },
+                                    ),
+                                    default: None,
+                                    axis: false,
+                                    span: 1182..1204,
+                                },
+                                Param {
+                                    name: Ident {
+                                        name: "eps",
+                                        span: 1206..1209,
+                                    },
+                                    ty: Some(
+                                        Named {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "f64",
+                                                        span: 1212..1215,
+                                                    },
+                                                ],
+                                                span: 1212..1215,
+                                            },
+                                            args: [],
+                                            span: 1212..1215,
+                                        },
+                                    ),
+                                    default: Some(
+                                        Lit {
+                                            lit: Float(
+                                                "1e-6",
+                                            ),
+                                            span: 1218..1222,
+                                        },
+                                    ),
+                                    axis: false,
+                                    span: 1206..1222,
+                                },
+                            ],
+                            ret: Some(
+                                Real {
+                                    axes: [
+                                        Ellipsis {
+                                            span: 1231..1234,
+                                        },
+                                        Axis {
+                                            name: Some(
+                                                Ident {
+                                                    name: "model",
+                                                    span: 1236..1241,
+                                                },
+                                            ),
+                                            dim: Var {
+                                                path: Path {
+                                                    segs: [
+                                                        Ident {
+                                                            name: "D",
+                                                            span: 1243..1244,
+                                                        },
+                                                    ],
+                                                    span: 1243..1244,
+                                                },
+                                            },
+                                        },
+                                    ],
+                                    span: 1227..1245,
+                                },
+                            ),
+                            effects: [],
+                            body: Let {
+                                pat: Ident(
+                                    Ident {
+                                        name: "ms",
+                                        span: 1256..1258,
+                                    },
+                                ),
+                                init: Call {
+                                    callee: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "mean",
+                                                    span: 1261..1265,
+                                                },
+                                            ],
+                                            span: 1261..1265,
+                                        },
+                                    },
+                                    args: [
+                                        Axis(
+                                            Ident {
+                                                name: "model",
+                                                span: 1271..1276,
+                                            },
+                                        ),
+                                        Pos(
+                                            Binary {
+                                                op: Pow,
+                                                lhs: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "x",
+                                                                span: 1278..1279,
+                                                            },
+                                                        ],
+                                                        span: 1278..1279,
+                                                    },
+                                                },
+                                                rhs: Lit {
+                                                    lit: Nat(
+                                                        "2",
+                                                    ),
+                                                    span: 1280..1281,
+                                                },
+                                                span: 1278..1281,
+                                            },
+                                        ),
+                                    ],
+                                    span: 1261..1282,
+                                },
+                                body: Binary {
+                                    op: Mul,
+                                    lhs: Binary {
+                                        op: Div,
+                                        lhs: Var {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "x",
+                                                        span: 1287..1288,
+                                                    },
+                                                ],
+                                                span: 1287..1288,
+                                            },
+                                        },
+                                        rhs: Call {
+                                            callee: Var {
+                                                path: Path {
+                                                    segs: [
+                                                        Ident {
+                                                            name: "sqrt",
+                                                            span: 1291..1295,
+                                                        },
+                                                    ],
+                                                    span: 1291..1295,
+                                                },
+                                            },
+                                            args: [
+                                                Pos(
+                                                    Binary {
+                                                        op: Add,
+                                                        lhs: Var {
+                                                            path: Path {
+                                                                segs: [
+                                                                    Ident {
+                                                                        name: "ms",
+                                                                        span: 1296..1298,
+                                                                    },
+                                                                ],
+                                                                span: 1296..1298,
+                                                            },
+                                                        },
+                                                        rhs: Call {
+                                                            callee: Var {
+                                                                path: Path {
+                                                                    segs: [
+                                                                        Ident {
+                                                                            name: "real",
+                                                                            span: 1301..1305,
+                                                                        },
+                                                                    ],
+                                                                    span: 1301..1305,
+                                                                },
+                                                            },
+                                                            args: [
+                                                                Pos(
+                                                                    Var {
+                                                                        path: Path {
+                                                                            segs: [
+                                                                                Ident {
+                                                                                    name: "eps",
+                                                                                    span: 1306..1309,
+                                                                                },
+                                                                            ],
+                                                                            span: 1306..1309,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                            ],
+                                                            span: 1301..1310,
+                                                        },
+                                                        span: 1296..1310,
+                                                    },
+                                                ),
+                                            ],
+                                            span: 1291..1311,
+                                        },
+                                        span: 1287..1311,
+                                    },
+                                    rhs: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "γ",
+                                                    span: 1314..1316,
+                                                },
+                                            ],
+                                            span: 1314..1316,
+                                        },
+                                    },
+                                    span: 1287..1316,
+                                },
+                                span: 1252..1316,
+                            },
+                            span: 1173..1316,
+                        },
+                    ),
+                ],
+                span: 1111..1318,
+            },
+        ),
+    ],
+}

@@ -1,0 +1,6 @@
+-- E2006: contraction over axes of provably different lengths.
+module M{D : dim} {
+  param w : ℝ[D, D]
+  fn apply(x : ℝ[..., 2*D]) -> ℝ[..., D] =
+    x · w
+}

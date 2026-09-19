@@ -1,0 +1,5 @@
+-- 05_sample.psk — randomness is an effect.
+dim B
+
+fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
+  sample(logits)

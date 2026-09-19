@@ -1,0 +1,8 @@
+-- 02_norm.psk — named axes, reductions, broadcasting, hyperparameters.
+module RMSNorm{D : dim} {
+  param γ : ℝ[D]  init = ones
+
+  fn apply(x : ℝ[..., model: D], eps : f64 = 1e-6) -> ℝ[..., model: D] =
+    let ms = mean(axis model, x^2)        -- ℝ[...]: the `model` axis is reduced
+    x / sqrt(ms + real(eps)) * γ          -- ms broadcasts back, γ aligns on `model`
+}

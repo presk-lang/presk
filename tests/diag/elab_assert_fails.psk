@@ -1,0 +1,4 @@
+-- E1004: a static assertion that is false with the file's constants.
+const D : nat = 768
+const H : nat = 7
+static assert D % H == 0

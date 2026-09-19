@@ -1,0 +1,8 @@
+---
+source: crates/presk-core/tests/analysis.rs
+expression: summary
+---
+LayerNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+RMSNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+LayerNorm.init : [key C∞] uses Rand
+RMSNorm.init : [key C∞] uses Rand

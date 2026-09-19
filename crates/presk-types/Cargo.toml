@@ -1,0 +1,20 @@
+[package]
+name = "presk-types"
+description = "Presk dimensions, Presburger fragment, elaboration and shape typing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+indexmap.workspace = true
+num-bigint.workspace = true
+num-rational.workspace = true
+num-traits.workspace = true
+num-integer.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true

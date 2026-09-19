@@ -1,0 +1,4 @@
+-- E2008: `axis model` selects an axis by name; this tensor has none of that name.
+dim B
+fn f(x : ℝ[batch: B, 4]) -> ℝ[batch: B] =
+  mean(axis model, x)

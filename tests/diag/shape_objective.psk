@@ -1,0 +1,18 @@
+-- E2010: the objective's parameter tree must be the model's.
+module A {
+  param w : ℝ[4]
+  fn apply(x : ℝ[4]) -> ℝ[4] = x * w
+}
+module B {
+  param v : ℝ[4]
+  fn apply(x : ℝ[4]) -> ℝ[4] = x * v
+}
+fn loss(θ : params B, x : ℝ[4]) -> ℝ[] = mean(B.apply(θ, x))
+optimizer sgd {
+  lr : f64 = 0.1
+}
+training run {
+  model     = A
+  objective = loss
+  optimizer = sgd
+}

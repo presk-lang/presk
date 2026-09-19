@@ -1,0 +1,7 @@
+-- E1003: a module instantiated with the wrong number of dimension arguments.
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]
+}
+module M {
+  use l : Linear{4}
+}

@@ -1,0 +1,5 @@
+-- E0010: an unclosed bracket in a type.
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out
+  param b : ℝ[Out]
+}

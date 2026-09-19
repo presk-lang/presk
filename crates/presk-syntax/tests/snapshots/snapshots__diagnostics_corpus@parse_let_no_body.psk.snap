@@ -1,0 +1,12 @@
+---
+source: crates/presk-syntax/tests/snapshots.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/parse_let_no_body.psk
+---
+[E0011] Error: `let` without a body
+   ,-[ tests/diag/parse_let_no_body.psk:3:3 ]
+   |
+ 3 |   let y = x * x
+   |   ^^^^^^|^^^^^^  
+   |         `-------- this binding is never used: an expression must follow on the next line
+---'

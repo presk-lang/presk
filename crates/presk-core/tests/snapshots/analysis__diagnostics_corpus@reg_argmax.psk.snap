@@ -1,0 +1,20 @@
+---
+source: crates/presk-core/tests/analysis.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/reg_argmax.psk
+---
+[E3001] Error: cannot differentiate through `argmax`: the function is discontinuous (Disc) in `l`
+   ,-[ tests/diag/reg_argmax.psk:6:3 ]
+   |
+ 4 |   mean(real(argmax(logits)))
+   |             ^^^^^^^|^^^^^^  
+   |                    `-------- `argmax` makes the result discontinuous in `l`
+   | 
+ 6 |   grad(λ l. pick(l))(logits)
+   |   ^^^^^^^^^|^^^^^^^^  
+   |            `---------- `grad` here, with respect to `l`
+   | 
+   | Help: use `softmax` for a smooth surrogate, or an explicit straight-through relaxation
+   | 
+   | Note: in `bad`; `grad` requires the class C⁰⁺ or better
+---'

@@ -1,0 +1,12 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_missing_arg.psk
+---
+[E2004] Error: missing argument `x` in call to `apply`
+   ,-[ tests/diag/shape_missing_arg.psk:8:11 ]
+   |
+ 8 |   let a = net.apply(θ)
+   |           ^^^^^^|^^^^^  
+   |                 `------- `x` is not given and has no default
+---'

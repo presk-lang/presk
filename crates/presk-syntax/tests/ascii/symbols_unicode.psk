@@ -1,0 +1,7 @@
+-- Every ASCII spelling next to its Unicode form; the two files must parse alike.
+model Ascii = stack{12}(Block) ∘ Embedding{V, D} ∘ Head
+fn f(x : ℝ[batch: B, model: D], w : ℝ[D, D]) -> ℝ[batch: B, model: D] =
+  grad(λθ. mean(x · θ))(w)
+training run {
+  parallel = data_parallel(replicas = auto) ⊗ tensor_parallel(axis model)
+}

@@ -1,0 +1,16 @@
+-- target/jetson-agx.pskt — Description du système matériel cible (§8.5.3).
+-- Séparée du modèle : versionnable, réutilisable pour tout .psk. Consommée par
+-- `presk build`, qui produit un bundle .pskb hermétique et cachable.
+
+target jetson_agx {
+  host   cpu  : aarch64(cores = 12, sve2, l2 = 3MiB)
+  device gpu0 : ampere_igpu(sms = 16, shared = 192KiB/sm)
+
+  -- Mémoire unifiée : hôte et GPU partagent l'espace ⇒ pas de transferts explicites.
+  -- PSK-Sched l'exploite via le CostModel du backend (§8.5.2).
+  memory      : unified(64GiB, bw = 204GB/s)
+  link        : nvlink_c2c
+
+  -- Le backend tiers qui implémente Target/CostModel/Codegen/Runtime (§8.5.2).
+  backend     : "mon-backend" version ">= 0.3"
+}

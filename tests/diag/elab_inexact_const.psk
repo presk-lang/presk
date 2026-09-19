@@ -1,0 +1,4 @@
+-- E1005: constants are evaluated exactly; 768 / 7 is not a natural number.
+const D : nat = 768
+const H : nat = 7
+const HD : nat = D / H

@@ -1,0 +1,21 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_config_field.psk
+---
+[E2010] Error: unknown field `momentum` in `optimizer adamw`
+   ,-[ tests/diag/shape_config_field.psk:9:3 ]
+   |
+ 9 |   momentum : f64 = 0.9
+   |   ^^^^|^^^  
+   |       `----- not a field of this block
+   | 
+   | Help: fields: `lr`, `betas`, `weight_decay`, `grad_clip`, `schedule`, `eps`
+---'
+[E2010] Error: `epochs` expects `nat`
+    ,-[ tests/diag/shape_config_field.psk:15:21 ]
+    |
+ 15 |   epochs    : nat = ten
+    |                     ^|^  
+    |                      `--- not of the expected form
+----'

@@ -1,0 +1,2 @@
+-- E1002: an import cycle (helpers/cycle_back.psk imports this file).
+import "helpers/cycle_back.psk" as back

@@ -1,0 +1,834 @@
+---
+source: crates/presk-syntax/tests/snapshots.rs
+expression: "format!(\"{program:#?}\")"
+---
+Program {
+    file: f0,
+    decls: [
+        Import {
+            path: "minigpt.psk",
+            alias: Ident {
+                name: "m",
+                span: 253..254,
+            },
+            span: 229..254,
+        },
+        Fn(
+            FnDecl {
+                name: Ident {
+                    name: "loss",
+                    span: 728..732,
+                },
+                typarams: [],
+                params: [
+                    Param {
+                        name: Ident {
+                            name: "θ",
+                            span: 733..735,
+                        },
+                        ty: Some(
+                            Params {
+                                module: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "m",
+                                            span: 745..746,
+                                        },
+                                        Ident {
+                                            name: "MiniGPT",
+                                            span: 747..754,
+                                        },
+                                    ],
+                                    span: 745..754,
+                                },
+                                span: 738..754,
+                            },
+                        ),
+                        default: None,
+                        axis: false,
+                        span: 733..754,
+                    },
+                    Param {
+                        name: Ident {
+                            name: "batch",
+                            span: 764..769,
+                        },
+                        ty: Some(
+                            Tuple {
+                                elems: [
+                                    Idx {
+                                        bound: Var {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "m",
+                                                        span: 777..778,
+                                                    },
+                                                    Ident {
+                                                        name: "V",
+                                                        span: 779..780,
+                                                    },
+                                                ],
+                                                span: 777..780,
+                                            },
+                                        },
+                                        axes: [
+                                            Axis {
+                                                name: Some(
+                                                    Ident {
+                                                        name: "batch",
+                                                        span: 782..787,
+                                                    },
+                                                ),
+                                                dim: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "B",
+                                                                span: 789..790,
+                                                            },
+                                                        ],
+                                                        span: 789..790,
+                                                    },
+                                                },
+                                            },
+                                            Axis {
+                                                name: Some(
+                                                    Ident {
+                                                        name: "seq",
+                                                        span: 792..795,
+                                                    },
+                                                ),
+                                                dim: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "T",
+                                                                span: 797..798,
+                                                            },
+                                                        ],
+                                                        span: 797..798,
+                                                    },
+                                                },
+                                            },
+                                        ],
+                                        span: 773..799,
+                                    },
+                                    Idx {
+                                        bound: Var {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "m",
+                                                        span: 805..806,
+                                                    },
+                                                    Ident {
+                                                        name: "V",
+                                                        span: 807..808,
+                                                    },
+                                                ],
+                                                span: 805..808,
+                                            },
+                                        },
+                                        axes: [
+                                            Axis {
+                                                name: Some(
+                                                    Ident {
+                                                        name: "batch",
+                                                        span: 810..815,
+                                                    },
+                                                ),
+                                                dim: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "B",
+                                                                span: 817..818,
+                                                            },
+                                                        ],
+                                                        span: 817..818,
+                                                    },
+                                                },
+                                            },
+                                            Axis {
+                                                name: Some(
+                                                    Ident {
+                                                        name: "seq",
+                                                        span: 820..823,
+                                                    },
+                                                ),
+                                                dim: Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "T",
+                                                                span: 825..826,
+                                                            },
+                                                        ],
+                                                        span: 825..826,
+                                                    },
+                                                },
+                                            },
+                                        ],
+                                        span: 801..827,
+                                    },
+                                ],
+                                span: 772..828,
+                            },
+                        ),
+                        default: None,
+                        axis: false,
+                        span: 764..828,
+                    },
+                ],
+                ret: Some(
+                    Real {
+                        axes: [],
+                        span: 833..838,
+                    },
+                ),
+                effects: [],
+                body: Let {
+                    pat: Tuple {
+                        elems: [
+                            Ident(
+                                Ident {
+                                    name: "x",
+                                    span: 848..849,
+                                },
+                            ),
+                            Ident(
+                                Ident {
+                                    name: "y",
+                                    span: 851..852,
+                                },
+                            ),
+                        ],
+                        span: 847..853,
+                    },
+                    init: Var {
+                        path: Path {
+                            segs: [
+                                Ident {
+                                    name: "batch",
+                                    span: 856..861,
+                                },
+                            ],
+                            span: 856..861,
+                        },
+                    },
+                    body: Let {
+                        pat: Ident(
+                            Ident {
+                                name: "logits",
+                                span: 868..874,
+                            },
+                        ),
+                        init: Call {
+                            callee: Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "m",
+                                            span: 877..878,
+                                        },
+                                        Ident {
+                                            name: "MiniGPT",
+                                            span: 879..886,
+                                        },
+                                        Ident {
+                                            name: "apply",
+                                            span: 887..892,
+                                        },
+                                    ],
+                                    span: 877..892,
+                                },
+                            },
+                            args: [
+                                Pos(
+                                    Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "θ",
+                                                    span: 893..895,
+                                                },
+                                            ],
+                                            span: 893..895,
+                                        },
+                                    },
+                                ),
+                                Pos(
+                                    Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "x",
+                                                    span: 897..898,
+                                                },
+                                            ],
+                                            span: 897..898,
+                                        },
+                                    },
+                                ),
+                            ],
+                            span: 877..899,
+                        },
+                        body: Call {
+                            callee: Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "mean",
+                                            span: 940..944,
+                                        },
+                                    ],
+                                    span: 940..944,
+                                },
+                            },
+                            args: [
+                                Pos(
+                                    Call {
+                                        callee: Var {
+                                            path: Path {
+                                                segs: [
+                                                    Ident {
+                                                        name: "cross_entropy",
+                                                        span: 945..958,
+                                                    },
+                                                ],
+                                                span: 945..958,
+                                            },
+                                        },
+                                        args: [
+                                            Pos(
+                                                Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "logits",
+                                                                span: 959..965,
+                                                            },
+                                                        ],
+                                                        span: 959..965,
+                                                    },
+                                                },
+                                            ),
+                                            Pos(
+                                                Var {
+                                                    path: Path {
+                                                        segs: [
+                                                            Ident {
+                                                                name: "y",
+                                                                span: 967..968,
+                                                            },
+                                                        ],
+                                                        span: 967..968,
+                                                    },
+                                                },
+                                            ),
+                                        ],
+                                        span: 945..969,
+                                    },
+                                ),
+                            ],
+                            span: 940..970,
+                        },
+                        span: 864..970,
+                    },
+                    span: 843..970,
+                },
+                span: 725..970,
+            },
+        ),
+        Optimizer {
+            name: Ident {
+                name: "adamw",
+                span: 1416..1421,
+            },
+            items: [
+                Field {
+                    name: Ident {
+                        name: "lr",
+                        span: 1426..1428,
+                    },
+                    ty: Some(
+                        Named {
+                            path: Path {
+                                segs: [
+                                    Ident {
+                                        name: "f64",
+                                        span: 1441..1444,
+                                    },
+                                ],
+                                span: 1441..1444,
+                            },
+                            args: [],
+                            span: 1441..1444,
+                        },
+                    ),
+                    value: Lit {
+                        lit: Float(
+                            "3e-4",
+                        ),
+                        span: 1447..1451,
+                    },
+                    span: 1426..1451,
+                },
+                Field {
+                    name: Ident {
+                        name: "betas",
+                        span: 1454..1459,
+                    },
+                    ty: Some(
+                        Tuple {
+                            elems: [
+                                Named {
+                                    path: Path {
+                                        segs: [
+                                            Ident {
+                                                name: "f64",
+                                                span: 1470..1473,
+                                            },
+                                        ],
+                                        span: 1470..1473,
+                                    },
+                                    args: [],
+                                    span: 1470..1473,
+                                },
+                                Named {
+                                    path: Path {
+                                        segs: [
+                                            Ident {
+                                                name: "f64",
+                                                span: 1475..1478,
+                                            },
+                                        ],
+                                        span: 1475..1478,
+                                    },
+                                    args: [],
+                                    span: 1475..1478,
+                                },
+                            ],
+                            span: 1469..1479,
+                        },
+                    ),
+                    value: Tuple {
+                        elems: [
+                            Lit {
+                                lit: Float(
+                                    "0.9",
+                                ),
+                                span: 1483..1486,
+                            },
+                            Lit {
+                                lit: Float(
+                                    "0.95",
+                                ),
+                                span: 1488..1492,
+                            },
+                        ],
+                        span: 1482..1493,
+                    },
+                    span: 1454..1493,
+                },
+                Field {
+                    name: Ident {
+                        name: "weight_decay",
+                        span: 1496..1508,
+                    },
+                    ty: Some(
+                        Named {
+                            path: Path {
+                                segs: [
+                                    Ident {
+                                        name: "f64",
+                                        span: 1511..1514,
+                                    },
+                                ],
+                                span: 1511..1514,
+                            },
+                            args: [],
+                            span: 1511..1514,
+                        },
+                    ),
+                    value: Lit {
+                        lit: Float(
+                            "0.1",
+                        ),
+                        span: 1517..1520,
+                    },
+                    span: 1496..1520,
+                },
+                Field {
+                    name: Ident {
+                        name: "grad_clip",
+                        span: 1523..1532,
+                    },
+                    ty: Some(
+                        Named {
+                            path: Path {
+                                segs: [
+                                    Ident {
+                                        name: "f64",
+                                        span: 1538..1541,
+                                    },
+                                ],
+                                span: 1538..1541,
+                            },
+                            args: [],
+                            span: 1538..1541,
+                        },
+                    ),
+                    value: Lit {
+                        lit: Float(
+                            "1.0",
+                        ),
+                        span: 1544..1547,
+                    },
+                    span: 1523..1547,
+                },
+                Field {
+                    name: Ident {
+                        name: "schedule",
+                        span: 1550..1558,
+                    },
+                    ty: None,
+                    value: Call {
+                        callee: Var {
+                            path: Path {
+                                segs: [
+                                    Ident {
+                                        name: "cosine",
+                                        span: 1565..1571,
+                                    },
+                                ],
+                                span: 1565..1571,
+                            },
+                        },
+                        args: [
+                            Named {
+                                name: Ident {
+                                    name: "warmup",
+                                    span: 1572..1578,
+                                },
+                                value: Lit {
+                                    lit: Nat(
+                                        "2000",
+                                    ),
+                                    span: 1581..1585,
+                                },
+                            },
+                        ],
+                        span: 1565..1586,
+                    },
+                    span: 1550..1586,
+                },
+            ],
+            span: 1406..1588,
+        },
+        Training {
+            items: [
+                Field {
+                    name: Ident {
+                        name: "model",
+                        span: 1757..1762,
+                    },
+                    ty: None,
+                    value: Var {
+                        path: Path {
+                            segs: [
+                                Ident {
+                                    name: "m",
+                                    span: 1769..1770,
+                                },
+                                Ident {
+                                    name: "MiniGPT",
+                                    span: 1771..1778,
+                                },
+                            ],
+                            span: 1769..1778,
+                        },
+                    },
+                    span: 1757..1778,
+                },
+                Field {
+                    name: Ident {
+                        name: "objective",
+                        span: 1781..1790,
+                    },
+                    ty: None,
+                    value: Var {
+                        path: Path {
+                            segs: [
+                                Ident {
+                                    name: "loss",
+                                    span: 1793..1797,
+                                },
+                            ],
+                            span: 1793..1797,
+                        },
+                    },
+                    span: 1781..1797,
+                },
+                Field {
+                    name: Ident {
+                        name: "optimizer",
+                        span: 1800..1809,
+                    },
+                    ty: None,
+                    value: Var {
+                        path: Path {
+                            segs: [
+                                Ident {
+                                    name: "adamw",
+                                    span: 1812..1817,
+                                },
+                            ],
+                            span: 1812..1817,
+                        },
+                    },
+                    span: 1800..1817,
+                },
+                Field {
+                    name: Ident {
+                        name: "data",
+                        span: 1893..1897,
+                    },
+                    ty: None,
+                    value: Binary {
+                        op: Pipe,
+                        lhs: Binary {
+                            op: Pipe,
+                            lhs: Call {
+                                callee: Var {
+                                    path: Path {
+                                        segs: [
+                                            Ident {
+                                                name: "stream",
+                                                span: 1905..1911,
+                                            },
+                                        ],
+                                        span: 1905..1911,
+                                    },
+                                },
+                                args: [
+                                    Pos(
+                                        Lit {
+                                            lit: Str(
+                                                "data/tokens.psk.d",
+                                            ),
+                                            span: 1912..1931,
+                                        },
+                                    ),
+                                ],
+                                span: 1905..1931,
+                            },
+                            rhs: Call {
+                                callee: Var {
+                                    path: Path {
+                                        segs: [
+                                            Ident {
+                                                name: "shuffle",
+                                                span: 1935..1942,
+                                            },
+                                        ],
+                                        span: 1935..1942,
+                                    },
+                                },
+                                args: [
+                                    Named {
+                                        name: Ident {
+                                            name: "seed",
+                                            span: 1943..1947,
+                                        },
+                                        value: Lit {
+                                            lit: Nat(
+                                                "1234",
+                                            ),
+                                            span: 1950..1954,
+                                        },
+                                    },
+                                ],
+                                span: 1935..1955,
+                            },
+                            span: 1905..1955,
+                        },
+                        rhs: Call {
+                            callee: Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "batch",
+                                            span: 1959..1964,
+                                        },
+                                    ],
+                                    span: 1959..1964,
+                                },
+                            },
+                            args: [
+                                Named {
+                                    name: Ident {
+                                        name: "B",
+                                        span: 1965..1966,
+                                    },
+                                    value: Lit {
+                                        lit: Nat(
+                                            "32",
+                                        ),
+                                        span: 1969..1971,
+                                    },
+                                },
+                            ],
+                            span: 1959..1972,
+                        },
+                        span: 1905..1972,
+                    },
+                    span: 1893..1972,
+                },
+                Field {
+                    name: Ident {
+                        name: "epochs",
+                        span: 1975..1981,
+                    },
+                    ty: Some(
+                        Named {
+                            path: Path {
+                                segs: [
+                                    Ident {
+                                        name: "nat",
+                                        span: 1987..1990,
+                                    },
+                                ],
+                                span: 1987..1990,
+                            },
+                            args: [],
+                            span: 1987..1990,
+                        },
+                    ),
+                    value: Lit {
+                        lit: Nat(
+                            "10",
+                        ),
+                        span: 1993..1995,
+                    },
+                    span: 1975..1995,
+                },
+                Field {
+                    name: Ident {
+                        name: "parallel",
+                        span: 2172..2180,
+                    },
+                    ty: None,
+                    value: Binary {
+                        op: Tensor,
+                        lhs: Call {
+                            callee: Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "data_parallel",
+                                            span: 2184..2197,
+                                        },
+                                    ],
+                                    span: 2184..2197,
+                                },
+                            },
+                            args: [
+                                Named {
+                                    name: Ident {
+                                        name: "replicas",
+                                        span: 2198..2206,
+                                    },
+                                    value: Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "auto",
+                                                    span: 2209..2213,
+                                                },
+                                            ],
+                                            span: 2209..2213,
+                                        },
+                                    },
+                                },
+                            ],
+                            span: 2184..2214,
+                        },
+                        rhs: Call {
+                            callee: Var {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "tensor_parallel",
+                                            span: 2219..2234,
+                                        },
+                                    ],
+                                    span: 2219..2234,
+                                },
+                            },
+                            args: [
+                                Axis(
+                                    Ident {
+                                        name: "model",
+                                        span: 2240..2245,
+                                    },
+                                ),
+                            ],
+                            span: 2219..2246,
+                        },
+                        span: 2184..2246,
+                    },
+                    span: 2172..2246,
+                },
+                Field {
+                    name: Ident {
+                        name: "precision",
+                        span: 2425..2434,
+                    },
+                    ty: None,
+                    value: Call {
+                        callee: Var {
+                            path: Path {
+                                segs: [
+                                    Ident {
+                                        name: "budget",
+                                        span: 2437..2443,
+                                    },
+                                ],
+                                span: 2437..2443,
+                            },
+                        },
+                        args: [
+                            Named {
+                                name: Ident {
+                                    name: "rel_error",
+                                    span: 2444..2453,
+                                },
+                                value: Lit {
+                                    lit: Float(
+                                        "1e-3",
+                                    ),
+                                    span: 2456..2460,
+                                },
+                            },
+                        ],
+                        span: 2437..2461,
+                    },
+                    span: 2425..2461,
+                },
+                Checkpoint {
+                    every: Lit {
+                        lit: Nat(
+                            "1000",
+                        ),
+                        span: 2550..2554,
+                    },
+                    to: "ckpt/",
+                    span: 2533..2571,
+                },
+            ],
+            span: 1740..2573,
+        },
+    ],
+}

@@ -1,0 +1,4 @@
+-- E2007: every axis of an `ein` operand must be named.
+dim B
+fn f(q : ℝ[batch: B, 8], k : ℝ[batch: B, hd: 8]) -> ℝ[batch: B] =
+  ein[batch](q * k)

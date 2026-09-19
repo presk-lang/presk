@@ -1,0 +1,33 @@
+-- serve_minigpt.psk — Inférence et génération (§7).
+-- Illustre : inference serve, quantification sous budget, kv_cache comme transformation
+-- CERTIFIÉE du graphe, et échantillonnage sous l'effet Rand.
+import "minigpt.psk" as m
+
+-- ── Échantillonnage d'un token ───────────────────────────────────────────────────
+-- argmax et sample renvoient un idx[V] (classe Disc). sample porte l'effet Rand :
+-- la graine circule explicitement façon PRNG splittable, pas d'état global (§2.2, §3.5).
+fn next_token(θ : params m.MiniGPT, ctx : idx[m.V][batch: B, seq: T],
+              temperature : f64 = 0.8) -> idx[m.V][batch: B] uses Rand =
+  let logits = m.MiniGPT.apply(θ, ctx)            -- ℝ[batch, seq, vocab: V]
+  let last   = logits[seq: -1]                    -- ℝ[batch, vocab: V] : dernière position
+  sample(last / real(temperature))               -- idx[V] par batch
+
+-- ── Configuration de service ─────────────────────────────────────────────────────
+inference serve {
+  model   = m.MiniGPT
+  weights = "ckpt/final"
+
+  -- Budget d'erreur absolu, PUIS quantification int8 calibrée. Le compilateur garantit
+  -- la borne ; int8 est un choix de représentation, pas une réécriture du modèle (§7).
+  precision = budget(abs_error = 1e-2) | quantize(int8, calibration = "data/calib.psk.d")
+
+  -- Cibles alternatives ; le même source sert les deux via des backends distincts (§8).
+  target    = gpu(sm_90) | cpu(avx512)
+
+  batching  = dynamic(max_batch = 64, timeout = 5ms)
+
+  -- kv_cache : transformation de programme VÉRIFIÉE. Le graphe avec cache dénote la même
+  -- fonction que sans cache, sous l'hypothèse de causalité portée par le type du masque
+  -- (causal_mask dans minigpt.psk) — pas un hack manuel (§7).
+  cache     = kv_cache(axis seq)
+}

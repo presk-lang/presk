@@ -1,0 +1,6 @@
+-- E3001: `grad` through `argmax` — the differentiated path is discontinuous.
+dim B
+fn pick(logits : ℝ[batch: B, vocab: 8]) -> ℝ[] =
+  mean(real(argmax(logits)))
+fn bad(logits : ℝ[batch: B, vocab: 8]) -> ℝ[batch: B, vocab: 8] =
+  grad(λ l. pick(l))(logits)

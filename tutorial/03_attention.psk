@@ -1,0 +1,18 @@
+-- 03_attention.psk — constants, static assertions, bounded dimensions, ein.
+const D  : nat = 8          -- model dimension
+const H  : nat = 2          -- heads
+const HD : nat = D / H      -- must be exact: checked at elaboration
+static assert D % H == 0
+
+dim B
+dim T <= 1024
+
+type Q = ℝ[batch: B, heads: H, seq: T, hd: HD]
+
+fn scores(q : Q, k : Q) -> ℝ[batch: B, heads: H, seq: T, seq2: T] =
+  ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+
+fn attend(q : Q, k : Q, v : Q) -> Q =
+  let s = scores(q, k)
+  let a = softmax(axis seq2, s + causal_mask(seq: T))
+  ein[batch, heads, seq, hd](a * v)

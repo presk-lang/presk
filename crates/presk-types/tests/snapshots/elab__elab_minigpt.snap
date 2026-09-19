@@ -1,0 +1,140 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "format!(\"{}\\n-- diagnostics --\\n{}\", elab::dump(&prog),\nrender_all(&diags, &sm, false))"
+---
+== tests/examples/minigpt/../layernorm/layernorm.psk
+module LayerNorm{D : dim} {
+  param γ : ℝ[D]  init
+  param β : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+module RMSNorm{D : dim} {
+  param γ : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+== tests/examples/minigpt/../mlp/mlp.psk
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init
+  param b : ℝ[Out]  init
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out]
+}
+module MLP{D hidden : dim} {
+  use l1 : Linear{D, hidden}
+  use l2 : Linear{hidden, D}
+  fn apply(x : ℝ[..., D]) -> ℝ[..., D]
+}
+fn mse{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[]   -- implicit dims: B
+fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D}   -- implicit dims: B
+== tests/examples/minigpt/minigpt.psk (main)
+import norm = tests/examples/minigpt/../layernorm/layernorm.psk
+import ff = tests/examples/minigpt/../mlp/mlp.psk
+const V = 50257
+const D = 768
+const H = 12
+const HD = 64
+const L = 12
+dim B
+dim T <= 1024
+type Tokens = idx[50257][batch: B, seq: T]
+type Acts = ℝ[batch: B, seq: T, model: 768]
+type Mask = ℝ[seq: T, seq2: T]
+module SelfAttention {
+  use wq : Linear{768, 768}
+  use wk : Linear{768, 768}
+  use wv : Linear{768, 768}
+  use wo : Linear{768, 768}
+  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
+}
+module Block {
+  use attn : SelfAttention
+  use mlp : MLP{768, 3072}
+  use ln1 : LayerNorm{768}
+  use ln2 : LayerNorm{768}
+  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
+}
+module Embedding {
+  param tok : ℝ[50257, 768]  init
+  param pos : ℝ[T, 768]  init
+  fn apply(ids : idx[50257][batch: B, seq: T]) -> ℝ[batch: B, seq: T, model: 768]
+}
+module MiniGPT {
+  param head : ℝ[768, 50257]  init
+  use emb : Embedding
+  use blocks : stack{12}(Block)
+  use lnf : LayerNorm{768}
+  fn apply(ids : idx[50257][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: 50257]
+}
+static assert #1: discharged
+== implicit dimensions: B
+== instances
+Linear{D, hidden}:
+  w : ℝ[D, hidden]
+  b : ℝ[hidden]
+Linear{hidden, D}:
+  w : ℝ[hidden, D]
+  b : ℝ[D]
+MLP{D, 4*D}:
+  l1.w : ℝ[D, 4*D]
+  l1.b : ℝ[4*D]
+  l2.w : ℝ[4*D, D]
+  l2.b : ℝ[D]
+Linear{768, 768}:
+  w : ℝ[768, 768]
+  b : ℝ[768]
+SelfAttention:
+  wq.w : ℝ[768, 768]
+  wq.b : ℝ[768]
+  wk.w : ℝ[768, 768]
+  wk.b : ℝ[768]
+  wv.w : ℝ[768, 768]
+  wv.b : ℝ[768]
+  wo.w : ℝ[768, 768]
+  wo.b : ℝ[768]
+MLP{768, 3072}:
+  l1.w : ℝ[768, 3072]
+  l1.b : ℝ[3072]
+  l2.w : ℝ[3072, 768]
+  l2.b : ℝ[768]
+LayerNorm{768}:
+  γ : ℝ[768]
+  β : ℝ[768]
+Embedding:
+  tok : ℝ[50257, 768]
+  pos : ℝ[T, 768]
+Block:
+  attn.wq.w : ℝ[768, 768]
+  attn.wq.b : ℝ[768]
+  attn.wk.w : ℝ[768, 768]
+  attn.wk.b : ℝ[768]
+  attn.wv.w : ℝ[768, 768]
+  attn.wv.b : ℝ[768]
+  attn.wo.w : ℝ[768, 768]
+  attn.wo.b : ℝ[768]
+  mlp.l1.w : ℝ[768, 3072]
+  mlp.l1.b : ℝ[3072]
+  mlp.l2.w : ℝ[3072, 768]
+  mlp.l2.b : ℝ[768]
+  ln1.γ : ℝ[768]
+  ln1.β : ℝ[768]
+  ln2.γ : ℝ[768]
+  ln2.β : ℝ[768]
+
+-- diagnostics --
+[W0001] Warning: implicit dimension `B`
+    ,-[ tests/examples/minigpt/../mlp/mlp.psk:26:65 ]
+    |
+ 26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
+    |                                                                 |  
+    |                                                                 `-- not declared; taken as a dimension of this function
+    | 
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'
+[W0001] Warning: implicit dimension `B`
+    ,-[ tests/examples/minigpt/../mlp/mlp.psk:34:35 ]
+    |
+ 34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
+    |                                   |  
+    |                                   `-- not declared; taken as a dimension of this function
+    | 
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'

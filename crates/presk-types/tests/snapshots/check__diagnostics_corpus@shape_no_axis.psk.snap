@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_no_axis.psk
+---
+[E2008] Error: no axis named `model`
+   ,-[ tests/diag/shape_no_axis.psk:4:13 ]
+   |
+ 4 |   mean(axis model, x)
+   |             ^^|^^  
+   |               `---- the tensor has shape `[batch: B, 4]`
+   | 
+   | Help: axes are selected by the names given in the type; an unnamed axis cannot be selected
+---'

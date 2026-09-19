@@ -1,0 +1,6 @@
+-- Two declarations with errors are both reported (recovery at column 0).
+module A {
+  param w : ℝ[D] init zeros
+}
+fn g(x : ℝ[]) -> ℝ[] = x +
+fn h(x : ℝ[]) -> ℝ[] = x

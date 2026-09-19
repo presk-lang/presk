@@ -1,0 +1,4 @@
+-- E1004: an assertion on a symbolic dimension is checked for every value in ℕ.
+dim T <= 1024
+static assert T <= 4096
+static assert T % 2 == 0

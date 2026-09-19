@@ -1,0 +1,12 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/elab_arity.psk
+---
+[E1003] Error: `Linear` takes 2 dimension arguments, 1 given
+   ,-[ tests/diag/elab_arity.psk:6:11 ]
+   |
+ 6 |   use l : Linear{4}
+   |           ^^^^|^^^^  
+   |               `------ wrong number of dimension arguments
+---'

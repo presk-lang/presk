@@ -1,0 +1,49 @@
+# The user manual at docs.presk-lang.org: the rustdoc of the crate
+# `presk-manual` (`cargo doc -p presk-manual --no-deps`, which compiles no
+# other crate and needs no GMP), published with GitHub Pages on every push
+# to main. The repository's Pages settings name the custom domain
+# (`docs.presk-lang.org`, a CNAME to presk-lang.github.io in the DNS zone)
+# and "GitHub Actions" as the source. The files of `docs/` the manual names
+# are copied beside it, so that `docs/<file>` resolves on the site too.
+name: Manual
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The manual, rendered by rustdoc
+        run: |
+          cargo doc -p presk-manual --no-deps
+          cp -r docs target/doc/docs
+          printf '<!doctype html>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0; url=presk_manual/index.html">\n<title>Presk manual</title>\n<a href="presk_manual/index.html">The Presk manual</a>\n' > target/doc/index.html
+          touch target/doc/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

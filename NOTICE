@@ -1,0 +1,23 @@
+Presk compiler
+Copyright 2026 Georges-André Silber
+
+Licensed under the Apache License, Version 2.0 (the file LICENSE).
+
+This repository carries code from other projects, each under its own
+licence, kept with the code:
+
+- The exported C runtime ships transcendental functions taken from musl
+  libc (crates/presk-export-c/c/presk_libm.c), copyright 2005-2014 Rich
+  Felker, et al., under the MIT licence; most of them are FreeBSD's, under
+  the notice of Sun Microsystems that heads each. The licence and the
+  notices are at the head of that file.
+
+- The pipeline view embeds KaTeX 0.19.0 (crates/presk-explain/templates/
+  katex/), copyright 2013-2020 Khan Academy and other contributors, under
+  the MIT licence (the LICENSE file in that directory).
+
+The reference interpreter uses GMP and MPFR through the `rug` crate
+(`gmp-mpfr-sys`), both under the GNU Lesser General Public License version
+3 or later. They are built from their own sources on the user's machine
+when the compiler is built, and are not redistributed in this repository;
+a binary distribution of the compiler carries their notices.

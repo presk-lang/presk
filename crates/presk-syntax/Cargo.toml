@@ -1,0 +1,16 @@
+[package]
+name = "presk-syntax"
+description = "Presk source map, diagnostics, lexer, AST and parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ariadne.workspace = true
+unicode-ident = "1"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+insta.workspace = true

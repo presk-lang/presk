@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/elab_product.psk
+---
+[E1007] Error: product of two symbolic dimensions
+   ,-[ tests/diag/elab_product.psk:3:15 ]
+   |
+ 3 |   param w : ℝ[M * N]
+   |               ^^|^^  
+   |                 `---- `M` times `N` is outside the decidable shape fragment
+   | 
+   | Note: dimension arithmetic is linear: one factor of a product must be a constant
+---'

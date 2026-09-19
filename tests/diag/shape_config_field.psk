@@ -1,0 +1,16 @@
+-- E2010: an unknown field and a malformed value in configuration blocks.
+module M {
+  param w : ℝ[4]
+  fn apply(x : ℝ[4]) -> ℝ[4] = x * w
+}
+fn loss(θ : params M, x : ℝ[4]) -> ℝ[] = mean(M.apply(θ, x))
+optimizer adamw {
+  lr       : f64 = 3e-4
+  momentum : f64 = 0.9
+}
+training run {
+  model     = M
+  objective = loss
+  optimizer = adamw
+  epochs    : nat = ten
+}

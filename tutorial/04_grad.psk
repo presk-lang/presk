@@ -1,0 +1,11 @@
+-- 04_grad.psk — a loss, its gradient, and regularity classes.
+import "01_linear.psk" as lin
+
+fn loss{D B : dim}(net : lin.Linear{D, 1}, θ : params net,
+                   x : ℝ[batch: B, D], y : ℝ[batch: B, 1]) -> ℝ[] =
+  let ŷ = net.apply(θ, x)
+  mean((ŷ - y)^2)
+
+fn loss_grad{D B : dim}(net : lin.Linear{D, 1}, θ : params net,
+                        x : ℝ[batch: B, D], y : ℝ[batch: B, 1]) -> params net =
+  grad(λ θ. loss(net, θ, x, y))(θ)

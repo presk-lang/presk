@@ -1,0 +1,4 @@
+-- E2007: an output axis of `ein` that appears in no operand.
+dim B
+fn f(q : ℝ[batch: B, hd: 8], k : ℝ[batch: B, hd: 8]) -> ℝ[batch: B, heads: 2] =
+  ein[batch, heads](q * k)

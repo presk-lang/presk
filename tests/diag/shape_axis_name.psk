@@ -1,0 +1,4 @@
+-- E2003: two axes of the same length but different names are different axes.
+dim T
+fn f(a : ℝ[seq: T, model: 4], b : ℝ[seq2: T, model: 4]) -> ℝ[seq: T, model: 4] =
+  a + b

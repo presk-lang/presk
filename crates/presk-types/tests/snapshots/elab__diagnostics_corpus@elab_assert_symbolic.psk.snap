@@ -1,0 +1,12 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/elab_assert_symbolic.psk
+---
+[E1004] Error: static assertion fails: T % 2 == 0
+   ,-[ tests/diag/elab_assert_symbolic.psk:4:1 ]
+   |
+ 4 | static assert T % 2 == 0
+   | ^^^^^^^^^^^^|^^^^^^^^^^^  
+   |             `------------- fails for T = 1
+---'

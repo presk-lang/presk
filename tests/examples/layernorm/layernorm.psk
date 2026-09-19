@@ -1,0 +1,27 @@
+-- layernorm.psk — Normalisation de couche.
+-- Illustre : réductions sur un axe nommé, params vecteurs (gain/biais),
+-- et la philosophie « la stabilité numérique est au compilateur, pas au code ».
+
+module LayerNorm{D : dim} {
+  param γ : ℝ[D]  init = ones     -- gain
+  param β : ℝ[D]  init = zeros    -- biais
+
+  -- eps N'EST PAS un garde-fou numérique : la sémantique est exacte (division par
+  -- l'écart-type réel). C'est un hyperparamètre du *modèle* (régularisation), donc f64.
+  -- La stabilité de la racine/division est traitée à la compilation sous le budget (§8.2),
+  -- pas ici.
+  fn apply(x : ℝ[..., model: D], eps : f64 = 1e-5) -> ℝ[..., model: D] =
+    let μ  = mean(axis model, x)                 -- ℝ[...]
+    let σ2 = mean(axis model, (x - μ)^2)         -- variance, réduction sur `model`
+    let x̂  = (x - μ) / sqrt(σ2 + real(eps))       -- real(eps) : injection f64 -> ℝ explicite
+    x̂ * γ + β                                     -- broadcast de γ, β sur les axes de tête
+}
+
+-- RMSNorm : variante sans recentrage, même patron de réduction.
+module RMSNorm{D : dim} {
+  param γ : ℝ[D]  init = ones
+
+  fn apply(x : ℝ[..., model: D], eps : f64 = 1e-6) -> ℝ[..., model: D] =
+    let ms = mean(axis model, x^2)
+    x / sqrt(ms + real(eps)) * γ
+}

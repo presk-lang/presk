@@ -1,0 +1,12 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/elab_cycle.psk
+---
+[E1002] Error: import cycle through `../elab_cycle.psk`
+   ,-[ tests/diag/helpers/cycle_back.psk:1:1 ]
+   |
+ 1 | import "../elab_cycle.psk" as front
+   | ^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^  
+   |                  `------------------- this file is already being imported
+---'

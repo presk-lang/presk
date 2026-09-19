@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/elab_inexact_const.psk
+---
+[E1005] Error: `HD` is not a natural number
+   ,-[ tests/diag/elab_inexact_const.psk:4:18 ]
+   |
+ 4 | const HD : nat = D / H
+   |                  ^^|^^  
+   |                    `---- evaluates to 768/7
+   | 
+   | Note: constants are evaluated exactly: a division must be exact and the result non-negative
+---'

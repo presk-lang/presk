@@ -1,0 +1,6 @@
+/target
+/out
+/.venv
+*.snap.new
+.DS_Store
+__pycache__/

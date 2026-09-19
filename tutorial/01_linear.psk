@@ -1,0 +1,8 @@
+-- 01_linear.psk — a linear layer: parameters, initializers, one function.
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
+    x · w + b
+}

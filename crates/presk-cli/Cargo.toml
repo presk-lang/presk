@@ -1,0 +1,21 @@
+[package]
+name = "presk"
+description = "The Presk compiler: a language for neural networks with exact real semantics, compiled under a declared error budget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap.workspace = true
+serde_json.workspace = true
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-export-pytorch.workspace = true
+
+[[bin]]
+name = "presk"
+path = "src/main.rs"

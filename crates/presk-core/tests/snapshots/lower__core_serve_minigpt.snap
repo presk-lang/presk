@@ -1,0 +1,280 @@
+---
+source: crates/presk-core/tests/lower.rs
+expression: text
+---
+fn LayerNorm.apply{D}(θ : params LayerNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  μ : ℝ[...] = mean axis model x
+  %4 : ℝ[..., model: D] = sub x, μ
+  %5 : ℝ[..., model: D] = pow 2 %4
+  σ2 : ℝ[...] = mean axis model %5
+  %7 : ℝ[..., model: D] = sub x, μ
+  %8 : ℝ[] = real eps
+  %9 : ℝ[...] = add σ2, %8
+  %10 : ℝ[...] = sqrt %9
+  x̂ : ℝ[..., model: D] = div %7, %10
+  γ : ℝ[D] = θ.γ
+  %13 : ℝ[..., model: D] = mul x̂, γ
+  β : ℝ[D] = θ.β
+  %15 : ℝ[..., model: D] = add %13, β
+  return %15
+}
+
+fn RMSNorm.apply{D}(θ : params RMSNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  %3 : ℝ[..., model: D] = pow 2 x
+  ms : ℝ[...] = mean axis model %3
+  %5 : ℝ[] = real eps
+  %6 : ℝ[...] = add ms, %5
+  %7 : ℝ[...] = sqrt %6
+  %8 : ℝ[..., model: D] = div x, %7
+  γ : ℝ[D] = θ.γ
+  %10 : ℝ[..., model: D] = mul %8, γ
+  return %10
+}
+
+fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
+  w : ℝ[In, Out] = θ.w
+  %3 : ℝ[..., Out] = dot x, w
+  b : ℝ[Out] = θ.b
+  %5 : ℝ[..., Out] = add %3, b
+  return %5
+}
+
+fn MLP.apply{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D]) -> ℝ[..., D] {
+  l1 : params Linear{D, hidden} = θ.l1
+  %3 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %4 : ℝ[..., hidden] = gelu %3
+  l2 : params Linear{hidden, D} = θ.l2
+  %6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)
+  return %6
+}
+
+fn mse{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[] {
+  ŷ : ℝ[batch: B, D] = call MLP.apply{D = D, hidden = 4*D}(θ, x)
+  %4 : ℝ[batch: B, model: D] = sub ŷ, y
+  %5 : ℝ[batch: B, model: D] = pow 2 %4
+  %6 : ℝ[] = mean %5
+  return %6
+}
+
+fn mse_grad{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D} {
+  %3 : (params MLP{D, 4*D}) -> ℝ[] = closure mse_grad.lambda0[x, y]
+  %4 : (params MLP{D, 4*D}) -> params MLP{D, 4*D} = grad %3
+  %5 : params MLP{D, 4*D} = apply %4(θ)
+  return %5
+}
+
+fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768] {
+  wq : params Linear{768, 768} = θ.wq
+  %4 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wq, x)
+  q : ℝ[batch: B, heads: 12, seq: T, hd: 64] = split_heads 12x64 %4
+  wk : params Linear{768, 768} = θ.wk
+  %7 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wk, x)
+  k : ℝ[batch: B, heads: 12, seq: T, hd: 64] = split_heads 12x64 %7
+  wv : params Linear{768, 768} = θ.wv
+  %10 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wv, x)
+  v : ℝ[batch: B, heads: 12, seq: T, hd: 64] = split_heads 12x64 %10
+  %12 : ℝ[batch: B, heads: 12, seq: T, seq2: T] = ein[batch, heads, seq, seq2]([batch, heads, seq, hd] * [batch, heads, seq2, hd]) q, k
+  %13 : nat = 64
+  %14 : ℝ[] = real %13
+  %15 : ℝ[] = sqrt %14
+  s : ℝ[batch: B, heads: 12, seq: T, seq2: T] = div %12, %15
+  %17 : ℝ[batch: B, heads: 12, seq: T, seq2: T] = add s, mask
+  a : ℝ[batch: B, heads: 12, seq: T, seq2: T] = softmax axis seq2 %17
+  o : ℝ[batch: B, heads: 12, seq: T, hd: 64] = ein[batch, heads, seq, hd]([batch, heads, seq, seq2] * [batch, heads, seq2, hd]) a, v
+  %20 : ℝ[batch: B, seq: T, model: 768] = merge_heads 12x64 o
+  wo : params Linear{768, 768} = θ.wo
+  %22 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wo, %20)
+  return %22
+}
+
+fn Block.apply{B T}(θ : params Block, x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768] {
+  ln1 : params LayerNorm{768} = θ.ln1
+  %4 : f64 = 1e-5
+  %5 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(ln1, x, %4)
+  attn : params SelfAttention = θ.attn
+  %7 : ℝ[batch: B, seq: T, model: 768] = call SelfAttention.apply{B = B, T = T}(attn, %5, mask)
+  x : ℝ[batch: B, seq: T, model: 768] = add x, %7
+  ln2 : params LayerNorm{768} = θ.ln2
+  %10 : f64 = 1e-5
+  %11 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(ln2, x, %10)
+  mlp : params MLP{768, 3072} = θ.mlp
+  %13 : ℝ[batch: B, seq: T, 768] = call MLP.apply{D = 768, hidden = 3072}(mlp, %11)
+  %14 : ℝ[batch: B, seq: T, model: 768] = add x, %13
+  return %14
+}
+
+fn Embedding.apply{B T}(θ : params Embedding, ids : idx[50257][batch: B, seq: T]) -> ℝ[batch: B, seq: T, model: 768] {
+  tok : ℝ[50257, 768] = θ.tok
+  e : ℝ[batch: B, seq: T, 768] = embed tok, ids
+  pos : ℝ[T, 768] = θ.pos
+  %5 : idx[T][seq: T] = positions seq
+  p : ℝ[seq: T, 768] = embed pos, %5
+  %7 : ℝ[batch: B, seq: T, 768] = add e, p
+  return %7
+}
+
+fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[50257][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: 50257] {
+  mask : ℝ[seq: T, seq2: T] = causal_mask seq
+  emb : params Embedding = θ.emb
+  h0 : ℝ[batch: B, seq: T, model: 768] = call Embedding.apply{B = B, T = T}(emb, ids)
+  blocks : params stack{12}(Block) = θ.blocks
+  %6 : params Block = slice_params 0 blocks
+  %7 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%6, h0, mask)
+  %8 : params Block = slice_params 1 blocks
+  %9 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%8, %7, mask)
+  %10 : params Block = slice_params 2 blocks
+  %11 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%10, %9, mask)
+  %12 : params Block = slice_params 3 blocks
+  %13 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%12, %11, mask)
+  %14 : params Block = slice_params 4 blocks
+  %15 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%14, %13, mask)
+  %16 : params Block = slice_params 5 blocks
+  %17 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%16, %15, mask)
+  %18 : params Block = slice_params 6 blocks
+  %19 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%18, %17, mask)
+  %20 : params Block = slice_params 7 blocks
+  %21 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%20, %19, mask)
+  %22 : params Block = slice_params 8 blocks
+  %23 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%22, %21, mask)
+  %24 : params Block = slice_params 9 blocks
+  %25 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%24, %23, mask)
+  %26 : params Block = slice_params 10 blocks
+  %27 : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%26, %25, mask)
+  %28 : params Block = slice_params 11 blocks
+  hL : ℝ[batch: B, seq: T, model: 768] = call Block.apply{B = B, T = T}(%28, %27, mask)
+  lnf : params LayerNorm{768} = θ.lnf
+  %31 : f64 = 1e-5
+  %32 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(lnf, hL, %31)
+  head : ℝ[768, 50257] = θ.head
+  %34 : ℝ[batch: B, seq: T, 50257] = dot %32, head
+  return %34
+}
+
+fn next_token{B T}(θ : params MiniGPT, ctx : idx[50257][batch: B, seq: T], temperature : f64) -> idx[50257][batch: B] uses Rand {
+  logits : ℝ[batch: B, seq: T, vocab: 50257] = call MiniGPT.apply{B = B, T = T}(θ, ctx)
+  last : ℝ[batch: B, vocab: 50257] = index seq: -1 logits
+  %5 : ℝ[] = real temperature
+  %6 : ℝ[batch: B, vocab: 50257] = div last, %5
+  %7 : idx[50257][batch: B] = sample %6
+  return %7
+}
+
+fn LayerNorm.init{D}(key : key) -> params LayerNorm{D} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  γ : ℝ[D] = ones
+  β : ℝ[D] = zeros
+  %6 : params LayerNorm{D} = {γ = γ, β = β}
+  return %6
+}
+
+fn RMSNorm.init{D}(key : key) -> params RMSNorm{D} uses Rand {
+  %1 : (key) = split_key 1 key
+  %2 : key = %1.0
+  γ : ℝ[D] = ones
+  %4 : params RMSNorm{D} = {γ = γ}
+  return %4
+}
+
+fn Linear.init{In Out}(key : key) -> params Linear{In, Out} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  w : ℝ[In, Out] = xavier_uniform %2
+  b : ℝ[Out] = zeros
+  %6 : params Linear{In, Out} = {w = w, b = b}
+  return %6
+}
+
+fn MLP.init{D hidden}(key : key) -> params MLP{D, hidden} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  %4 : params Linear{D, hidden} = call Linear.init{In = D, Out = hidden}(%2)
+  %5 : params Linear{hidden, D} = call Linear.init{In = hidden, Out = D}(%3)
+  %6 : params MLP{D, hidden} = {l1 = %4, l2 = %5}
+  return %6
+}
+
+fn SelfAttention.init{B T}(key : key) -> params SelfAttention uses Rand {
+  %1 : (key, key, key, key) = split_key 4 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  %4 : key = %1.2
+  %5 : key = %1.3
+  %6 : params Linear{768, 768} = call Linear.init{In = 768, Out = 768}(%2)
+  %7 : params Linear{768, 768} = call Linear.init{In = 768, Out = 768}(%3)
+  %8 : params Linear{768, 768} = call Linear.init{In = 768, Out = 768}(%4)
+  %9 : params Linear{768, 768} = call Linear.init{In = 768, Out = 768}(%5)
+  %10 : params SelfAttention = {wq = %6, wk = %7, wv = %8, wo = %9}
+  return %10
+}
+
+fn Block.init{B T}(key : key) -> params Block uses Rand {
+  %1 : (key, key, key, key) = split_key 4 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  %4 : key = %1.2
+  %5 : key = %1.3
+  %6 : params SelfAttention = call SelfAttention.init{B = B, T = T}(%2)
+  %7 : params MLP{768, 3072} = call MLP.init{D = 768, hidden = 3072}(%3)
+  %8 : params LayerNorm{768} = call LayerNorm.init{D = 768}(%4)
+  %9 : params LayerNorm{768} = call LayerNorm.init{D = 768}(%5)
+  %10 : params Block = {attn = %6, mlp = %7, ln1 = %8, ln2 = %9}
+  return %10
+}
+
+fn Embedding.init{B T}(key : key) -> params Embedding uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  tok : ℝ[50257, 768] = normal std=0.02 %2
+  pos : ℝ[T, 768] = normal std=0.02 %3
+  %6 : params Embedding = {tok = tok, pos = pos}
+  return %6
+}
+
+fn MiniGPT.init{B T}(key : key) -> params MiniGPT uses Rand {
+  %1 : (key, key, key, key) = split_key 4 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  %4 : key = %1.2
+  %5 : key = %1.3
+  head : ℝ[768, 50257] = zeros
+  %7 : params Embedding = call Embedding.init{B = B, T = T}(%3)
+  %8 : (key, key, key, key, key, key, key, key, key, key, key, key) = split_key 12 %4
+  %9 : key = %8.0
+  %10 : key = %8.1
+  %11 : key = %8.2
+  %12 : key = %8.3
+  %13 : key = %8.4
+  %14 : key = %8.5
+  %15 : key = %8.6
+  %16 : key = %8.7
+  %17 : key = %8.8
+  %18 : key = %8.9
+  %19 : key = %8.10
+  %20 : key = %8.11
+  %21 : params Block = call Block.init{B = B, T = T}(%9)
+  %22 : params Block = call Block.init{B = B, T = T}(%10)
+  %23 : params Block = call Block.init{B = B, T = T}(%11)
+  %24 : params Block = call Block.init{B = B, T = T}(%12)
+  %25 : params Block = call Block.init{B = B, T = T}(%13)
+  %26 : params Block = call Block.init{B = B, T = T}(%14)
+  %27 : params Block = call Block.init{B = B, T = T}(%15)
+  %28 : params Block = call Block.init{B = B, T = T}(%16)
+  %29 : params Block = call Block.init{B = B, T = T}(%17)
+  %30 : params Block = call Block.init{B = B, T = T}(%18)
+  %31 : params Block = call Block.init{B = B, T = T}(%19)
+  %32 : params Block = call Block.init{B = B, T = T}(%20)
+  %33 : params stack{12}(Block) = stack_params 12 %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31, %32
+  %34 : params LayerNorm{768} = call LayerNorm.init{D = 768}(%5)
+  %35 : params MiniGPT = {head = head, emb = %7, blocks = %33, lnf = %34}
+  return %35
+}
+
+fn mse_grad.lambda0{D B}(x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], θ : params MLP{D, 4*D}) -> ℝ[] {
+  %3 : ℝ[] = call mse{D = D, B = B}(θ, x, y)
+  return %3
+}

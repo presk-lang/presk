@@ -1,0 +1,13 @@
+[package]
+name = "presk-manual"
+description = "User manual of the Presk compiler, rendered by rustdoc (cargo doc -p presk-manual --open)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]

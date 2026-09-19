@@ -1,0 +1,96 @@
+-- minigpt.psk — Un GPT décodeur-seul, complet et typé.
+-- Illustre : idx[V] pour les tokens, embeddings comme contraction one-hot (§3.5),
+-- attention causale par ein[…] typé, blocs Transformer, stack{N}, tête de sortie.
+--
+-- Dépend de : ../layernorm/layernorm.psk (LayerNorm), ../mlp/mlp.psk (Linear).
+import "../layernorm/layernorm.psk"  as norm
+import "../mlp/mlp.psk"              as ff
+
+-- ── Hyperparamètres (hors du graphe : évalués statiquement, cf. §1) ──────────────
+const V  : nat = 50257     -- taille du vocabulaire
+const D  : nat = 768       -- dimension du modèle
+const H  : nat = 12        -- nombre de têtes
+const HD : nat = D / H     -- dimension par tête
+const L  : nat = 12        -- nombre de blocs
+static assert D % H == 0   -- fragment décidable de Presburger (§3.1)
+
+-- ── Dimensions symboliques (résolues à l'usage) ──────────────────────────────────
+dim B                       -- taille de batch
+dim T <= 1024               -- longueur de contexte, bornée
+
+-- ── Types nommés, pour éviter la « soupe d'indices » (§3.2) ──────────────────────
+type Tokens = idx[V][batch: B, seq: T]                 -- entrée : indices, PAS des réels
+type Acts   = ℝ[batch: B, seq: T, model: D]            -- activations
+type Mask   = ℝ[seq: T, seq2: T]                       -- masque additif (0 ou −∞)
+
+-- ─────────────────────────────────────────────────────────────────────────────────
+-- Attention multi-têtes causale.
+-- ─────────────────────────────────────────────────────────────────────────────────
+module SelfAttention {
+  use wq, wk, wv, wo : ff.Linear{D, D}
+
+  -- split_heads : ℝ[batch, seq, model: D] -> ℝ[batch, heads: H, seq, hd: HD]
+  -- merge_heads : l'inverse. Fournis par la lib standard ; purs remaniements d'axes.
+  fn apply(x : Acts, mask : Mask) -> Acts =
+    let q = split_heads(wq.apply(x))
+    let k = split_heads(wk.apply(x))
+    let v = split_heads(wv.apply(x))
+
+    -- Contraction typée : l'axe `hd` est réduit, `seq`×`seq2` produit la matrice de scores.
+    -- Le compilateur vérifie que `hd` apparaît exactement dans les deux opérandes (§3.2).
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+
+    -- softmax sur seq2, masque causal ajouté avant normalisation.
+    let a = softmax(axis seq2, s + mask)
+
+    -- Repondération des valeurs, puis projection de sortie.
+    let o = ein[batch, heads, seq, hd](a * v)
+    wo.apply(merge_heads(o))
+    -- Note : aucune trace de FlashAttention ici. La fusion softmax+matmul est une
+    -- stratégie d'ordonnancement choisie par PSK-Sched (§8.2), pas un noyau écrit à la main.
+}
+
+-- ─────────────────────────────────────────────────────────────────────────────────
+-- Bloc Transformer pré-normalisé (Pre-LN), avec connexions résiduelles.
+-- ─────────────────────────────────────────────────────────────────────────────────
+module Block {
+  use attn : SelfAttention
+  use mlp  : ff.MLP{D, 4*D}
+  use ln1, ln2 : norm.LayerNorm{D}
+
+  fn apply(x : Acts, mask : Mask) -> Acts =
+    let x = x + attn.apply(ln1.apply(x), mask)   -- shadowing : nouvelle liaison, pas de mutation
+    x + mlp.apply(ln2.apply(x))
+}
+
+-- ─────────────────────────────────────────────────────────────────────────────────
+-- Embeddings de tokens et de positions.
+-- embed dénote eₜᵀ·W (one-hot × table) ; compilé en gather, jamais matérialisé (§3.5).
+-- ─────────────────────────────────────────────────────────────────────────────────
+module Embedding {
+  param tok : param ℝ[V, D]  init = normal(std = 0.02)   -- table de tokens
+  param pos : param ℝ[T, D]  init = normal(std = 0.02)   -- table de positions apprises
+
+  fn apply(ids : Tokens) -> Acts =
+    let e = embed(tok, ids)                 -- ℝ[batch, seq, model: D] ; gradient = scatter-add sur tok
+    let p = embed(pos, positions(seq: T))   -- positions() : idx[T] le long de l'axe seq
+    e + p                                    -- broadcast de p sur le batch
+}
+
+-- ─────────────────────────────────────────────────────────────────────────────────
+-- Le modèle complet : embeddings → L blocs empilés → norme finale → logits.
+-- ─────────────────────────────────────────────────────────────────────────────────
+module MiniGPT {
+  use emb    : Embedding
+  use blocks : stack{L}(Block)     -- params empilés en ℝ[L, …] ; compilé en boucle (§4.3)
+  use lnf    : norm.LayerNorm{D}
+  param head : param ℝ[D, V]  init = zeros    -- projection vers le vocabulaire (logits)
+
+  -- Le masque causal est dérivé du type : position i ne voit que j ≤ i.
+  -- C'est cette propriété que le kv_cache de l'inférence exploitera (§7).
+  fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
+    let mask = causal_mask(seq: T)                  -- ℝ[seq, seq2], 0 sur j≤i sinon −∞
+    let h0   = emb.apply(ids)
+    let hL   = blocks.apply(h0, mask)               -- déroule les L blocs
+    lnf.apply(hL) · head                            -- ℝ[batch, seq, vocab: V]
+}

@@ -1,0 +1,4 @@
+-- E2011: the body's shape does not match the declared return type.
+dim B
+fn f(x : ℝ[batch: B, model: 4]) -> ℝ[batch: B] =
+  x * x

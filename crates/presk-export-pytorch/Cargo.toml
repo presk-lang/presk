@@ -1,0 +1,16 @@
+[package]
+name = "presk-export-pytorch"
+description = "Readable PyTorch export of Presk programs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+indexmap.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

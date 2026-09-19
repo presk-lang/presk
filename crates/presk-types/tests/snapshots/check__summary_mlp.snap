@@ -1,0 +1,9 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: summary
+---
+mlp.psk Linear.apply : ℝ[..., Out]
+mlp.psk MLP.apply : ℝ[..., D]
+mlp.psk mse : ℝ[]
+    let ŷ : ℝ[batch: B, D]
+mlp.psk mse_grad : params MLP{D, 4*D}

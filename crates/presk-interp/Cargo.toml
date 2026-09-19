@@ -1,0 +1,23 @@
+[package]
+name = "presk-interp"
+description = "Presk arbitrary-precision reference interpreter over PSK-Core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+indexmap.workspace = true
+rug.workspace = true
+rand_chacha.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+num-traits.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

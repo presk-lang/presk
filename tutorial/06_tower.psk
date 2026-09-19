@@ -1,0 +1,22 @@
+-- 06_tower.psk — composition: imports, sub-modules, stacked blocks.
+import "01_linear.psk" as lin
+import "02_norm.psk"   as norm
+
+const D : nat = 4
+const L : nat = 3
+
+module Block {
+  use norm : norm.RMSNorm{D}
+  use proj : lin.Linear{D, D}
+
+  fn apply(x : ℝ[..., model: D]) -> ℝ[..., model: D] =
+    x + proj.apply(gelu(norm.apply(x)))       -- residual connection
+}
+
+module Tower {
+  use blocks : stack{L}(Block)                 -- L copies of Block, parameters stacked
+  use final  : norm.RMSNorm{D}
+
+  fn apply(x : ℝ[..., model: D]) -> ℝ[..., model: D] =
+    final.apply(blocks.apply(x))
+}

@@ -1,0 +1,12 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_unresolved.psk
+---
+[E2001] Error: unresolved name `scale`
+   ,-[ tests/diag/shape_unresolved.psk:3:7 ]
+   |
+ 3 |   x * scale
+   |       ^^|^^  
+   |         `---- not a variable, parameter, module member or constant in scope
+---'

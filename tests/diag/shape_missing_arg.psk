@@ -1,0 +1,9 @@
+-- E2004: a call with a missing argument and one with an unknown named argument.
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]
+  fn apply(x : ℝ[..., In], scale : f64 = 1.0) -> ℝ[..., Out] =
+    x · w
+}
+fn g(net : Linear{4, 4}, θ : params net, x : ℝ[4]) -> ℝ[4] =
+  let a = net.apply(θ)
+  net.apply(θ, x, gain = 2.0)

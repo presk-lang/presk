@@ -1,0 +1,50 @@
+---
+source: crates/presk-types/tests/elab.rs
+expression: "format!(\"{}\\n-- diagnostics --\\n{}\", elab::dump(&prog),\nrender_all(&diags, &sm, false))"
+---
+== tests/examples/mlp/mlp.psk (main)
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init
+  param b : ℝ[Out]  init
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out]
+}
+module MLP{D hidden : dim} {
+  use l1 : Linear{D, hidden}
+  use l2 : Linear{hidden, D}
+  fn apply(x : ℝ[..., D]) -> ℝ[..., D]
+}
+fn mse{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[]   -- implicit dims: B
+fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D}   -- implicit dims: B
+== implicit dimensions: B
+== instances
+Linear{D, hidden}:
+  w : ℝ[D, hidden]
+  b : ℝ[hidden]
+Linear{hidden, D}:
+  w : ℝ[hidden, D]
+  b : ℝ[D]
+MLP{D, 4*D}:
+  l1.w : ℝ[D, 4*D]
+  l1.b : ℝ[4*D]
+  l2.w : ℝ[4*D, D]
+  l2.b : ℝ[D]
+
+-- diagnostics --
+[W0001] Warning: implicit dimension `B`
+    ,-[ tests/examples/mlp/mlp.psk:26:65 ]
+    |
+ 26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
+    |                                                                 |  
+    |                                                                 `-- not declared; taken as a dimension of this function
+    | 
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'
+[W0001] Warning: implicit dimension `B`
+    ,-[ tests/examples/mlp/mlp.psk:34:35 ]
+    |
+ 34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
+    |                                   |  
+    |                                   `-- not declared; taken as a dimension of this function
+    | 
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'

@@ -1,0 +1,12 @@
+---
+source: crates/presk-syntax/tests/snapshots.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/parse_let_in_parens.psk
+---
+[E0011] Error: `let` is not allowed inside parentheses or brackets
+   ,-[ tests/diag/parse_let_in_parens.psk:3:16 ]
+   |
+ 3 |   sqrt(let y = x * x)
+   |                ^^|^^  
+   |                  `---- the body of a `let` must start on the next line
+---'

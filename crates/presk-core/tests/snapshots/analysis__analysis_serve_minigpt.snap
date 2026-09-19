@@ -1,0 +1,24 @@
+---
+source: crates/presk-core/tests/analysis.rs
+expression: summary
+---
+LayerNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+RMSNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+Linear.apply : [θ C∞, x C∞] uses none
+MLP.apply : [θ C∞, x C∞] uses none
+mse : [θ C∞, x C∞, y C∞] uses none
+mse_grad : [θ C∞, x C∞, y C∞] uses none
+SelfAttention.apply : [θ C∞, x C∞, mask C∞] uses none
+Block.apply : [θ C∞, x C∞, mask C∞] uses none
+Embedding.apply : [θ C∞, ids Disc] uses none
+MiniGPT.apply : [θ C∞, ids Disc] uses none
+next_token : [θ Disc, ctx Disc, temperature Disc] uses Rand
+LayerNorm.init : [key C∞] uses Rand
+RMSNorm.init : [key C∞] uses Rand
+Linear.init : [key C∞] uses Rand
+MLP.init : [key C∞] uses Rand
+SelfAttention.init : [key C∞] uses Rand
+Block.init : [key C∞] uses Rand
+Embedding.init : [key C∞] uses Rand
+MiniGPT.init : [key C∞] uses Rand
+mse_grad.lambda0 : [x C∞, y C∞, θ C∞] uses none

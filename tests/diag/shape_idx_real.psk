@@ -1,0 +1,4 @@
+-- E2009: an index tensor does not mix with reals without `real(…)`.
+dim B
+fn f(t : idx[10][batch: B], x : ℝ[batch: B]) -> ℝ[batch: B] =
+  x + t

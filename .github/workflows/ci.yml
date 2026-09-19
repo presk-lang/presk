@@ -1,0 +1,41 @@
+# Build and test on every push to main and on every pull request, on Linux
+# x86-64 and macOS arm64. The first build compiles GMP and MPFR from their
+# sources (the `rug` crate), which needs m4 and a C compiler: GitHub's
+# runners have the compiler, Ubuntu's lacks m4. Nothing here is a
+# measurement: the timings of record are taken by hand on a quiet machine
+# (the manual's `experiments` chapter), never in CI.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      # Two tests of the CLI plan under the frozen layout model of the
+      # measurement machine (`~/presk-data/ra4-model-0.8.0/profile.json`);
+      # `RA4_FROZEN` names another copy, here the one the explain tests
+      # carry, the same model without its calibration samples.
+      RA4_FROZEN: ${{ github.workspace }}/crates/presk-explain/tests/data/x925-frozen.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: m4, for GMP's build
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y m4
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: The example programs
+        run: make check-examples

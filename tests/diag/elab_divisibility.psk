@@ -1,0 +1,4 @@
+-- E1006: dividing a symbolic dimension needs a divisibility fact.
+module Heads{D : dim} {
+  param w : ℝ[D / 12, 12]
+}

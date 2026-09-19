@@ -1,0 +1,140 @@
+---
+source: crates/presk-core/tests/ad.rs
+expression: text
+---
+fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
+  w : ℝ[In, Out] = θ.w
+  %3 : ℝ[..., Out] = dot x, w
+  b : ℝ[Out] = θ.b
+  %5 : ℝ[..., Out] = add %3, b
+  return %5
+}
+
+fn MLP.apply{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D]) -> ℝ[..., D] {
+  l1 : params Linear{D, hidden} = θ.l1
+  %3 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %4 : ℝ[..., hidden] = gelu %3
+  l2 : params Linear{hidden, D} = θ.l2
+  %6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)
+  return %6
+}
+
+fn mse{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[] {
+  ŷ : ℝ[batch: B, D] = call MLP.apply{D = D, hidden = 4*D}(θ, x)
+  %4 : ℝ[batch: B, model: D] = sub ŷ, y
+  %5 : ℝ[batch: B, model: D] = pow 2 %4
+  %6 : ℝ[] = mean %5
+  return %6
+}
+
+fn mse_grad{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D} {
+  %3 : (params MLP{D, 4*D}) -> ℝ[] = closure mse_grad.lambda0[x, y]
+  %4 : (params MLP{D, 4*D}) -> params MLP{D, 4*D} = closure mse_grad.lambda0.grad[x, y]
+  %5 : params MLP{D, 4*D} = apply %4(θ)
+  return %5
+}
+
+fn Linear.init{In Out}(key : key) -> params Linear{In, Out} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  w : ℝ[In, Out] = xavier_uniform %2
+  b : ℝ[Out] = zeros
+  %6 : params Linear{In, Out} = {w = w, b = b}
+  return %6
+}
+
+fn MLP.init{D hidden}(key : key) -> params MLP{D, hidden} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  %4 : params Linear{D, hidden} = call Linear.init{In = D, Out = hidden}(%2)
+  %5 : params Linear{hidden, D} = call Linear.init{In = hidden, Out = D}(%3)
+  %6 : params MLP{D, hidden} = {l1 = %4, l2 = %5}
+  return %6
+}
+
+fn mse_grad.lambda0{D B}(x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], θ : params MLP{D, 4*D}) -> ℝ[] {
+  %3 : ℝ[] = call mse{D = D, B = B}(θ, x, y)
+  return %3
+}
+
+fn mse_grad.lambda0.vjp{D B}(x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], θ : params MLP{D, 4*D}, ct : ℝ[]) -> (ℝ[batch: B, model: D], ℝ[batch: B, model: D], params MLP{D, 4*D}) {
+  %4 : ℝ[] = call mse{D = D, B = B}(θ, x, y)
+  %5 : (params MLP{D, 4*D}, ℝ[batch: B, model: D], ℝ[batch: B, model: D]) = call mse.vjp{D = D, B = B}(θ, x, y, ct)
+  %6 : params MLP{D, 4*D} = %5.0
+  %7 : ℝ[batch: B, model: D] = %5.1
+  %8 : ℝ[batch: B, model: D] = %5.2
+  %9 : (ℝ[batch: B, model: D], ℝ[batch: B, model: D], params MLP{D, 4*D}) = (%7, %8, %6)
+  return %9
+}
+
+fn mse.vjp{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], ct : ℝ[]) -> (params MLP{D, 4*D}, ℝ[batch: B, model: D], ℝ[batch: B, model: D]) {
+  ŷ : ℝ[batch: B, D] = call MLP.apply{D = D, hidden = 4*D}(θ, x)
+  %5 : ℝ[batch: B, model: D] = sub ŷ, y
+  %6 : ℝ[batch: B, model: D] = pow 2 %5
+  %7 : ℝ[] = mean %6
+  %8 : ℝ[batch: B, model: D] = mean_vjp ct, %6
+  %9 : nat = 2
+  %10 : ℝ[] = real %9
+  %11 : ℝ[batch: B, model: D] = pow 1 %5
+  %12 : ℝ[batch: B, model: D] = mul %10, %11
+  %13 : ℝ[batch: B, model: D] = mul %8, %12
+  %14 : ℝ[batch: B, model: D] = neg %13
+  %15 : ℝ[batch: B, D] = sum_to %13, ŷ
+  %16 : ℝ[batch: B, model: D] = sum_to %14, y
+  %17 : (params MLP{D, 4*D}, ℝ[..., D]) = call MLP.apply.vjp{D = D, hidden = 4*D}(θ, x, %15)
+  %18 : params MLP{D, 4*D} = %17.0
+  %19 : ℝ[..., D] = %17.1
+  %20 : (params MLP{D, 4*D}, ℝ[batch: B, model: D], ℝ[batch: B, model: D]) = (%18, %19, %16)
+  return %20
+}
+
+fn MLP.apply.vjp{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D], ct : ℝ[..., D]) -> (params MLP{D, hidden}, ℝ[..., D]) {
+  l1 : params Linear{D, hidden} = θ.l1
+  %4 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %5 : ℝ[..., hidden] = gelu %4
+  l2 : params Linear{hidden, D} = θ.l2
+  %7 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %5)
+  %8 : (params Linear{hidden, D}, ℝ[..., hidden]) = call Linear.apply.vjp{In = hidden, Out = D}(l2, %5, ct)
+  %9 : params Linear{hidden, D} = %8.0
+  %10 : ℝ[..., hidden] = %8.1
+  %11 : params MLP{D, hidden} = zeros_like θ
+  %12 : params MLP{D, hidden} = set_field l2 %11, %9
+  %13 : ℝ[..., hidden] = gelu' %4
+  %14 : ℝ[..., hidden] = mul %10, %13
+  %15 : (params Linear{D, hidden}, ℝ[..., D]) = call Linear.apply.vjp{In = D, Out = hidden}(l1, x, %14)
+  %16 : params Linear{D, hidden} = %15.0
+  %17 : ℝ[..., D] = %15.1
+  %18 : params MLP{D, hidden} = zeros_like θ
+  %19 : params MLP{D, hidden} = set_field l1 %18, %16
+  %20 : params MLP{D, hidden} = add %12, %19
+  %21 : (params MLP{D, hidden}, ℝ[..., D]) = (%20, %17)
+  return %21
+}
+
+fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out]) -> (params Linear{In, Out}, ℝ[..., In]) {
+  w : ℝ[In, Out] = θ.w
+  %4 : ℝ[..., Out] = dot x, w
+  b : ℝ[Out] = θ.b
+  %6 : ℝ[..., Out] = add %4, b
+  %7 : ℝ[..., Out] = sum_to ct, %4
+  %8 : ℝ[Out] = sum_to ct, b
+  %9 : params Linear{In, Out} = zeros_like θ
+  %10 : params Linear{In, Out} = set_field b %9, %8
+  %11 : ℝ[..., In] = dot_vjp_l %7, w
+  %12 : ℝ[In, Out] = dot_vjp_r x, %7
+  %13 : params Linear{In, Out} = zeros_like θ
+  %14 : params Linear{In, Out} = set_field w %13, %12
+  %15 : params Linear{In, Out} = add %10, %14
+  %16 : (params Linear{In, Out}, ℝ[..., In]) = (%15, %11)
+  return %16
+}
+
+fn mse_grad.lambda0.grad{D B}(x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], θ : params MLP{D, 4*D}) -> params MLP{D, 4*D} {
+  %3 : nat = 1
+  %4 : ℝ[] = real %3
+  %5 : (ℝ[batch: B, model: D], ℝ[batch: B, model: D], params MLP{D, 4*D}) = call mse_grad.lambda0.vjp{D = D, B = B}(x, y, θ, %4)
+  %6 : params MLP{D, 4*D} = %5.2
+  return %6
+}

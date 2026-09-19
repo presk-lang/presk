@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_idx_real.psk
+---
+[E2009] Error: `+` between an index tensor and a real
+   ,-[ tests/diag/shape_idx_real.psk:4:3 ]
+   |
+ 4 |   x + t
+   |   ^^|^^  
+   |     `---- indices do not mix with reals
+   | 
+   | Help: inject explicitly with `real(…)` if the numeric value of the index is meant
+---'

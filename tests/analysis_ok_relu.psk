@@ -1,0 +1,6 @@
+-- W0002 is not a thing: this file has no diagnostic and is a positive control
+-- (see crates/presk-core/tests/analysis.rs). `relu` is C⁰⁺, which `grad` accepts.
+fn f(x : ℝ[4]) -> ℝ[] =
+  mean(relu(x))
+fn g(x : ℝ[4]) -> ℝ[4] =
+  grad(λ y. f(y))(x)

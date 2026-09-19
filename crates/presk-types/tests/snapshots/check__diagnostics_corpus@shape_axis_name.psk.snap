@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_axis_name.psk
+---
+[E2003] Error: cannot broadcast `ℝ[seq: T, model: 4]` with `ℝ[seq2: T, model: 4]`
+   ,-[ tests/diag/shape_axis_name.psk:4:3 ]
+   |
+ 4 |   a + b
+   |   ^^|^^  
+   |     `---- no alignment by position or by name
+   | 
+   | Note: axes align from the last one, or by name when every axis of the smaller operand is named
+---'

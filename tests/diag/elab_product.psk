@@ -1,0 +1,4 @@
+-- E1007: the product of two symbolic dimensions is outside the decidable fragment.
+module Outer{M N : dim} {
+  param w : ℝ[M * N]
+}

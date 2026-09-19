@@ -1,0 +1,4 @@
+-- E1001: a name in a dimension position that is neither a const, a dim nor a type parameter.
+module Linear{In : dim} {
+  param w : ℝ[In, Out]
+}

@@ -1,0 +1,5 @@
+-- E3001: no gradient with respect to an index argument (`embed` is Disc in its indices).
+fn lookup(w : ℝ[16, 4], t : idx[16][seq: 3]) -> ℝ[] =
+  mean(embed(w, t))
+fn bad(w : ℝ[16, 4], t : idx[16][seq: 3]) -> idx[16][seq: 3] =
+  grad(λ i. lookup(w, i))(t)

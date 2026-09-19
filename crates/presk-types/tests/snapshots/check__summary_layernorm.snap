@@ -1,0 +1,10 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: summary
+---
+layernorm.psk LayerNorm.apply : ℝ[..., model: D]
+    let μ : ℝ[...]
+    let σ2 : ℝ[...]
+    let x̂ : ℝ[..., model: D]
+layernorm.psk RMSNorm.apply : ℝ[..., model: D]
+    let ms : ℝ[...]

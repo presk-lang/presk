@@ -1,0 +1,50 @@
+---
+source: crates/presk-core/tests/lower.rs
+expression: text
+---
+fn LayerNorm.apply{D}(θ : params LayerNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  μ : ℝ[...] = mean axis model x
+  %4 : ℝ[..., model: D] = sub x, μ
+  %5 : ℝ[..., model: D] = pow 2 %4
+  σ2 : ℝ[...] = mean axis model %5
+  %7 : ℝ[..., model: D] = sub x, μ
+  %8 : ℝ[] = real eps
+  %9 : ℝ[...] = add σ2, %8
+  %10 : ℝ[...] = sqrt %9
+  x̂ : ℝ[..., model: D] = div %7, %10
+  γ : ℝ[D] = θ.γ
+  %13 : ℝ[..., model: D] = mul x̂, γ
+  β : ℝ[D] = θ.β
+  %15 : ℝ[..., model: D] = add %13, β
+  return %15
+}
+
+fn RMSNorm.apply{D}(θ : params RMSNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  %3 : ℝ[..., model: D] = pow 2 x
+  ms : ℝ[...] = mean axis model %3
+  %5 : ℝ[] = real eps
+  %6 : ℝ[...] = add ms, %5
+  %7 : ℝ[...] = sqrt %6
+  %8 : ℝ[..., model: D] = div x, %7
+  γ : ℝ[D] = θ.γ
+  %10 : ℝ[..., model: D] = mul %8, γ
+  return %10
+}
+
+fn LayerNorm.init{D}(key : key) -> params LayerNorm{D} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  γ : ℝ[D] = ones
+  β : ℝ[D] = zeros
+  %6 : params LayerNorm{D} = {γ = γ, β = β}
+  return %6
+}
+
+fn RMSNorm.init{D}(key : key) -> params RMSNorm{D} uses Rand {
+  %1 : (key) = split_key 1 key
+  %2 : key = %1.0
+  γ : ℝ[D] = ones
+  %4 : params RMSNorm{D} = {γ = γ}
+  return %4
+}

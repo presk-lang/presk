@@ -1,0 +1,78 @@
+# Building and running
+
+## Requirements
+
+- A Rust toolchain, `rustc` ≥ 1.85 (edition 2024). Developed with 1.92.
+- `make` (the `Makefile` is a thin layer over `cargo`; every recipe can be
+  run as the `cargo` command it wraps).
+- `m4` and a C compiler: the interpreter uses MPFR through the `rug` crate,
+  which `gmp-mpfr-sys` builds from bundled sources the first time (a few
+  minutes, cached under `target/`). With Homebrew's `mpfr` installed, the
+  `use-system-libs` feature of `gmp-mpfr-sys` links it instead.
+- PyTorch is *not* needed to build or test the compiler; only to run the
+  conformance tests that `presk export` generates.
+
+## Build
+
+```sh
+git clone https://github.com/presk-lang/presk.git
+cd presk
+make build                       # cargo build --workspace
+```
+
+The binary is `target/debug/presk`. During development it is simplest to run
+it through cargo:
+
+```sh
+cargo run -q -p presk -- check tests/examples/mlp/mlp.psk
+cargo run -q -p presk -- run tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2
+cargo run -q -p presk -- dump --stage core tests/examples/mlp/mlp.psk
+```
+
+Add `--release` for an optimized build (`target/release/presk`).
+
+## Tests
+
+```sh
+make test                        # cargo test --workspace
+cargo insta review               # accept or reject changed snapshots
+make check-examples              # presk check on the five example programs
+make run-examples                # the reference presk run commands
+make export-examples             # export the example files to out/ (mlp, layernorm, minigpt, train_minigpt)
+make venv                        # once: .venv with PyTorch, NumPy and pytest (needs uv)
+make conformance                 # export, then run every generated test_conformance.py in .venv
+make tutorial                    # every command of the tutorial chapter (ends with two conformance tests)
+```
+
+The conformance tests are the only thing that needs PyTorch; `.venv` is
+ignored by git and created with [uv](https://docs.astral.sh/uv/).
+
+Snapshot tests (crate `insta`) record the tokens, ASTs and rendered
+diagnostics of reference inputs under `crates/*/tests/snapshots/`; a change
+in output shows up as a failing test with a diff, to be reviewed with
+`cargo insta review`.
+
+## Documentation
+
+```sh
+make doc                         # cargo doc -p presk-manual --open
+cargo doc --workspace --no-deps  # API documentation of the crates as well
+```
+
+## Layout of the repository
+
+```text
+crates/presk-syntax          source map, diagnostics, lexer, AST, parser
+crates/presk-types           dimensions, Presburger solver, elaboration, typing   (step 2–3)
+crates/presk-core            PSK-Core IR, lowering, regularity, effects, AD       (step 4–6)
+crates/presk-interp          reference interpreter                                (step 7)
+crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
+crates/presk-cli             the `presk` binary
+crates/presk-manual          this manual
+tests/examples               the example programs of presk-specs (do not edit here)
+tutorial                     the programs of the tutorial chapter
+tests/diag                   one erroneous program per diagnostic, with snapshots
+```
+
+The example programs are refreshed from the specification repository with
+`make sync-examples` (variable `PRESK_SPECS_DIR`, default `../presk-specs`).

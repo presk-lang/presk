@@ -1,0 +1,60 @@
+---
+source: crates/presk-core/tests/lower.rs
+expression: text
+---
+fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
+  w : ℝ[In, Out] = θ.w
+  %3 : ℝ[..., Out] = dot x, w
+  b : ℝ[Out] = θ.b
+  %5 : ℝ[..., Out] = add %3, b
+  return %5
+}
+
+fn MLP.apply{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D]) -> ℝ[..., D] {
+  l1 : params Linear{D, hidden} = θ.l1
+  %3 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %4 : ℝ[..., hidden] = gelu %3
+  l2 : params Linear{hidden, D} = θ.l2
+  %6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)
+  return %6
+}
+
+fn mse{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[] {
+  ŷ : ℝ[batch: B, D] = call MLP.apply{D = D, hidden = 4*D}(θ, x)
+  %4 : ℝ[batch: B, model: D] = sub ŷ, y
+  %5 : ℝ[batch: B, model: D] = pow 2 %4
+  %6 : ℝ[] = mean %5
+  return %6
+}
+
+fn mse_grad{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D} {
+  %3 : (params MLP{D, 4*D}) -> ℝ[] = closure mse_grad.lambda0[x, y]
+  %4 : (params MLP{D, 4*D}) -> params MLP{D, 4*D} = grad %3
+  %5 : params MLP{D, 4*D} = apply %4(θ)
+  return %5
+}
+
+fn Linear.init{In Out}(key : key) -> params Linear{In, Out} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  w : ℝ[In, Out] = xavier_uniform %2
+  b : ℝ[Out] = zeros
+  %6 : params Linear{In, Out} = {w = w, b = b}
+  return %6
+}
+
+fn MLP.init{D hidden}(key : key) -> params MLP{D, hidden} uses Rand {
+  %1 : (key, key) = split_key 2 key
+  %2 : key = %1.0
+  %3 : key = %1.1
+  %4 : params Linear{D, hidden} = call Linear.init{In = D, Out = hidden}(%2)
+  %5 : params Linear{hidden, D} = call Linear.init{In = hidden, Out = D}(%3)
+  %6 : params MLP{D, hidden} = {l1 = %4, l2 = %5}
+  return %6
+}
+
+fn mse_grad.lambda0{D B}(x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D], θ : params MLP{D, 4*D}) -> ℝ[] {
+  %3 : ℝ[] = call mse{D = D, B = B}(θ, x, y)
+  return %3
+}

@@ -1,0 +1,3 @@
+-- E0002: a character outside the syntax, then recovery on the next declaration.
+const D : nat = 768 § 2
+fn f(x : ℝ[]) -> ℝ[] = x

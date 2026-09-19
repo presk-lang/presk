@@ -1,0 +1,47 @@
+-- train_minigpt.psk — Entraînement déclaratif de MiniGPT (§6).
+-- Illustre : objectif cross_entropy sur cibles idx[V], optimizer, training run,
+-- budget de précision (contrainte, pas un dtype), parallélisme déclaratif.
+import "minigpt.psk" as m
+
+-- ── Objectif ─────────────────────────────────────────────────────────────────────
+-- Le batch est fait d'INDICES (idx[V]), pas de réels : x = tokens d'entrée,
+-- y = tokens cibles décalés d'un cran. cross_entropy est différentiable en logits
+-- (gather de log-softmax, stabilisé à la compilation), Disc en y (§3.5).
+fn loss(θ : params m.MiniGPT,
+        batch : (idx[m.V][batch: B, seq: T], idx[m.V][batch: B, seq: T])) -> ℝ[] =
+  let (x, y) = batch
+  let logits = m.MiniGPT.apply(θ, x)          -- ℝ[batch, seq, vocab: V]
+  mean(cross_entropy(logits, y))              -- moyenne sur batch × seq
+
+-- ── Optimiseur ───────────────────────────────────────────────────────────────────
+-- Les hyperparamètres sont des types machine (f64, nat…), évalués au lancement.
+-- La mise à jour est une fonction pure (θ, état, grad) → (θ', état') (§6).
+optimizer adamw {
+  lr           : f64 = 3e-4
+  betas        : (f64, f64) = (0.9, 0.95)
+  weight_decay : f64 = 0.1
+  grad_clip    : f64 = 1.0
+  schedule     : cosine(warmup = 2000)
+}
+
+-- ── Boucle d'entraînement (construction du langage) ──────────────────────────────
+training run {
+  model     = m.MiniGPT
+  objective = loss
+  optimizer = adamw
+
+  -- Pipeline de données : le stream porte des idx[V], pas des réels.
+  data      = stream "data/tokens.psk.d" |> shuffle(seed = 1234) |> batch(B = 32)
+  epochs    : nat = 10
+
+  -- Parallélisme déclaratif : le compilateur insère les collectives (all-reduce,
+  -- all-gather) et PROUVE que le programme distribué dénote la même fonction (§6).
+  parallel  = data_parallel(replicas = auto) ⊗ tensor_parallel(axis model)
+
+  -- Le budget est une CONTRAINTE d'erreur, pas un dtype. PSK-Sched choisit les
+  -- représentations (BF16 activations, FP32 accumulations…) pour la garantir (§6, §8.2).
+  precision = budget(rel_error = 1e-3)
+
+  -- checkpoint : annotation mémoire sans effet sémantique (§5).
+  checkpoint every 1000 steps to "ckpt/"
+}

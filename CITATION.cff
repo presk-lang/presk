@@ -1,0 +1,31 @@
+# Citation metadata (Citation File Format 1.2.0). The export to the public
+# repository sets `version` and `date-released` to each exported tag's; keep
+# them at the current version here (part of a version's documentation check).
+cff-version: 1.2.0
+message: "If you use Presk, please cite it as below."
+type: software
+title: "Presk: a compiler for neural networks with exact real semantics"
+abstract: >-
+  Presk is a domain-specific language for describing, training and running
+  neural networks whose programs denote functions over tensors of real
+  numbers, with no machine number type, and a compiler that chooses the
+  machine types and the order of operations under a declared error budget,
+  checked by measurement against an exact reference.
+authors:
+  - family-names: Silber
+    given-names: Georges-André
+    affiliation: "Mines Paris – PSL"
+    email: georges-andre.silber@minesparis.psl.eu
+version: 0.1.0
+date-released: 2026-09-19
+license: Apache-2.0
+repository-code: "https://github.com/presk-lang/presk"
+url: "https://presk-lang.org"
+keywords:
+  - neural networks
+  - domain-specific language
+  - compiler
+  - floating-point precision
+  - error budget
+  - exact arithmetic
+  - mixed precision

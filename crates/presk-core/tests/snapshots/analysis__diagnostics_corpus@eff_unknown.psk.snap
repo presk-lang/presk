@@ -1,0 +1,15 @@
+---
+source: crates/presk-core/tests/analysis.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/eff_unknown.psk
+---
+[E4002] Error: unknown effect `IO`
+   ,-[ tests/diag/eff_unknown.psk:2:1 ]
+   |
+ 2 | ,-> fn f(x : ℝ[4]) -> ℝ[4] uses IO =
+ 3 | |->   x
+   | |         
+   | `--------- declared by `f`
+   | |   
+   | |   Help: the only effect of 0.1.0 is `Rand`
+---'

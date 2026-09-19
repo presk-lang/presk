@@ -1,0 +1,12 @@
+---
+source: crates/presk-syntax/tests/snapshots.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/parse_missing_eq.psk
+---
+[E0010] Error: expected `=`, found identifier `gelu`
+   ,-[ tests/diag/parse_missing_eq.psk:3:3 ]
+   |
+ 3 |   gelu(x)
+   |   ^^|^  
+   |     `--- expected `=` here
+---'

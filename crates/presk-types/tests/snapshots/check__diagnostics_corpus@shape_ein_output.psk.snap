@@ -1,0 +1,12 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_ein_output.psk
+---
+[E2007] Error: output axis `heads` appears in no operand
+   ,-[ tests/diag/shape_ein_output.psk:4:14 ]
+   |
+ 4 |   ein[batch, heads](q * k)
+   |              ^^|^^  
+   |                `---- not an axis of the operands
+---'

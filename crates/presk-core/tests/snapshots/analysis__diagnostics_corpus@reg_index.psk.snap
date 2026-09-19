@@ -1,0 +1,20 @@
+---
+source: crates/presk-core/tests/analysis.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/reg_index.psk
+---
+[E3001] Error: cannot differentiate through `embed`: the function is discontinuous (Disc) in `i`
+   ,-[ tests/diag/reg_index.psk:5:3 ]
+   |
+ 3 |   mean(embed(w, t))
+   |        ^^^^^|^^^^^  
+   |             `------- `embed` makes the result discontinuous in `i`
+   | 
+ 5 |   grad(λ i. lookup(w, i))(t)
+   |   ^^^^^^^^^^^|^^^^^^^^^^^  
+   |              `------------- `grad` here, with respect to `i`
+   | 
+   | Help: the gradient with respect to an index does not exist: differentiate with respect to the table or the logits instead
+   | 
+   | Note: in `bad`; `grad` requires the class C⁰⁺ or better
+---'

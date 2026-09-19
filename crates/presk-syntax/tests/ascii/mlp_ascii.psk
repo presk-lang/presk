@@ -1,0 +1,36 @@
+-- mlp.psk — Le plus petit programme Presk « complet ».
+-- Illustre : module, param + init, fn apply, composition, et grad typé.
+-- Aucune précision machine n'apparaît : tout est Real exact (cf. §2).
+
+module Linear{In Out : dim} {
+  param w : Real[In, Out]  init = xavier_uniform
+  param b : Real[Out]      init = zeros
+
+  fn apply(x : Real[..., In]) -> Real[..., Out] =
+    x @ w + b            -- « @ » : contraction sur le dernier axe, broadcast de b
+}
+
+-- Un perceptron à deux couches. `hidden` est une dimension symbolique :
+-- la même définition sert pour toutes les tailles, vérifiée à l'instanciation.
+module MLP{D hidden : dim} {
+  use l1 : Linear{D, hidden}
+  use l2 : Linear{hidden, D}
+
+  -- gelu est C∞ ; apply est donc inféré C∞ (dérivable à tout ordre).
+  fn apply(x : Real[..., D]) -> Real[..., D] =
+    l2.apply(gelu(l1.apply(x)))
+}
+
+-- Objectif jouet : erreur quadratique moyenne vers une cible fixe.
+-- θ est le pytree de paramètres engendré automatiquement à partir des `param` du module.
+fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : Real[batch: B, model: D],
+                y : Real[batch: B, model: D]) -> Real[] =
+  let ŷ = net.apply(θ, x)
+  mean((ŷ - y)^2)
+
+-- grad exige au moins la classe C⁰⁺ ; mse est C∞ ⇒ accepté.
+-- On dérive par rapport aux paramètres seuls (x, y sont capturés).
+fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params net,
+                     x : Real[batch: B, model: D], y : Real[batch: B, model: D])
+    -> params net =
+  grad(\ θ. mse(net, θ, x, y))(θ)

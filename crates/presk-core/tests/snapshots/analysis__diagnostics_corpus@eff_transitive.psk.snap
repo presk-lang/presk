@@ -1,0 +1,17 @@
+---
+source: crates/presk-core/tests/analysis.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/eff_transitive.psk
+---
+[E4001] Error: `twice` uses the effect `Rand` without declaring it
+   ,-[ tests/diag/eff_transitive.psk:6:3 ]
+   |
+ 5 | ,-> fn twice(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+ 6 | |->   pick(logits)
+   | |     ^^^^^^|^^^^^   
+   | |           `-------- this uses `Rand`
+   | |                    
+   | `-------------------- declared without `uses`
+   |     
+   |     Help: add `uses Rand` to the signature of `twice`
+---'
