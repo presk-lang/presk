@@ -19,7 +19,7 @@ the models. Its purpose is to be a *forcing function*, not a demonstration.
 | 2 | `02_bigram_neural.psk`, the same model fitted | nothing — it was expressible, which was worth knowing |
 | 3 | `03_mlp.psk`, Bengio's embedding MLP | `merge`, joining two adjacent axes (question 45) |
 | 4 | `04_wavenet.psk`, dilated convolutions | not written: convolution is a type-system extension, not a primitive (`coverage` chapter) |
-| 5 | `05_gpt.psk`, the course's GPT | character tokenization, fusion, threads, blocked contractions — most of this version |
+| 5 | `05_gpt.psk`, the course's GPT | character tokenization, fusion, threads, blocked contractions — most of 0.4.0; then dropout at its three sites, which forced the per-layer key idiom (0.5.0 step 1) |
 
 `data/prepare.py` fetches the course's files and derives the datasets; only
 the 71 KB word list is committed, everything else is regenerated. `make
@@ -42,6 +42,18 @@ its differentiation and its arithmetic that no synthetic test does.
 Rung 5 is the one that hurt: a training step took 289 s when it was first
 written and takes 39.8 s now, and the losses never moved. Every number in the
 `scheduling`, `native` and `optimization` chapters was measured on it.
+
+Since 0.5.0 step 1 it also carries the course's dropout, at the three sites
+the course has it: the attention weights, the attention output and the
+feed-forward output. That is what forced the accumulator idiom of the
+`language` chapter, because the blocks are a fold and a fold would otherwise
+have handed all six of them one key. The first step's loss is unchanged to
+every digit — the head is zero-initialized, so the logits are zero whatever
+is dropped — while the gradient norm now moves with the run's seed, which is
+how one can see from the outside that the masks are live. The step costs
+45.1 s instead of 39.8 s, about 13 %, and `EXPECTED.md` keeps both figures,
+because the 0.4.0 numbers are what this manual's other chapters were
+measured against.
 
 ## Adding to it
 

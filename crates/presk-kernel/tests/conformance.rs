@@ -8,7 +8,7 @@ use std::sync::Once;
 
 use presk_interp::{Interp, RunOptions};
 use presk_kernel::KernelBackend;
-use presk_rt::{Realize, Value};
+use presk_rt::{Dtype, Realization, Value};
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
 use presk_types::check;
@@ -45,12 +45,24 @@ fn prepare(rel: &str, consts: &[(&str, u64)]) -> (ElabProgram, presk_core::Progr
     (prog, core)
 }
 
-/// The tolerance of a realization: `(ε, a)`.
-fn tol(r: Realize) -> (f64, f64) {
-    match r {
-        Realize::F64 => (2f64.powi(-40), 2f64.powi(-50)),
-        Realize::F32 => (2f64.powi(-15), 2f64.powi(-20)),
-    }
+/// The tolerance of a realization: `(ε, a)`. Since 0.5.0 step 2 the suite is
+/// parameterized by a `Realization` rather than a machine type, so a mixed or
+/// reassociated one is reported the same way a uniform one is (D34). The
+/// bands are the storage type's, loosened by the reduction order when it
+/// reassociates.
+fn tol(r: &Realization) -> (f64, f64) {
+    let (eps, a) = match r.default {
+        Dtype::F64 => (2f64.powi(-40), 2f64.powi(-50)),
+        Dtype::F32 => (2f64.powi(-15), 2f64.powi(-20)),
+        // bf16 keeps eight bits of significand, so `u = 2⁻⁹`, and a value of
+        // order one carries an absolute error of about `2⁻¹⁰` before anything
+        // has happened to it. The floor `a` is what makes the band mean
+        // something: without it a result near a cancellation has unbounded
+        // *relative* error, which says nothing about the kernel. Measured
+        // worst over the entries below: 3.3e-2.
+        Dtype::Bf16 => (2f64.powi(-4), 2f64.powi(-5)),
+    };
+    if r.order.is_exact() { (eps, a) } else { (eps * 8.0, a) }
 }
 
 /// The largest `|x − x̂| / (|x| + a)` over the leaves, and the leaf path of the worst.
@@ -86,7 +98,7 @@ fn worst(reference: &IValue, got: &Value, a: f64, path: &str, out: &mut (f64, St
     }
 }
 
-fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], realize: Realize) -> f64 {
+fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], realize: &Realization) -> f64 {
     let (prog, core) = prepare(rel, consts);
     let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
     let reference = presk_interp::run(&core, &prog, &opts).unwrap_or_else(|e| panic!("{entry}: {}", e.message));
@@ -96,7 +108,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     let (eps, a) = tol(realize);
     let mut w = (0.0, String::new());
     worst(&reference.result, &got, a, entry, &mut w);
-    assert!(w.0 <= eps, "{rel} {entry} ({realize:?}): gap {:.3e} > {eps:.3e} at {}", w.0, w.1);
+    assert!(w.0 <= eps, "{rel} {entry} ({}): gap {:.3e} > {eps:.3e} at {}", realize.label(), w.0, w.1);
     w.0
 }
 
@@ -116,13 +128,15 @@ fn examples_conform() {
         ("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
         ("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)]),
         ("tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)]),
+        ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
         ("tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
     ];
     let mut report = String::new();
     for (rel, consts, entry, dims) in cases {
-        let g64 = check_entry(rel, consts, entry, dims, Realize::F64);
-        let g32 = check_entry(rel, consts, entry, dims, Realize::F32);
-        report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}\n"));
+        let g64 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F64));
+        let g32 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F32));
+        let gbf = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::Bf16));
+        report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}  bf16 {gbf:.1e}\n"));
     }
     eprintln!("{report}");
 }
@@ -206,12 +220,12 @@ fn primitives_conform() {
         (PrimOp::SumSquares, vec![x.clone()]),
         (PrimOp::Real, vec![ids.clone()]),
     ];
-    for realize in [Realize::F64, Realize::F32] {
-        let (eps, a) = tol(realize);
-        let mut backend = KernelBackend::new(&core, &prog, realize, 0);
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::Bf16)] {
+        let (eps, a) = tol(&realize);
+        let mut backend = KernelBackend::new(&core, &prog, &realize, 0);
         for (op, args) in &cases {
             let reference = interp.prim_public(op, args).unwrap_or_else(|e| panic!("{}: {}", op.name(), e.message));
-            let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(realize)).collect();
+            let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(realize.default)).collect();
             let got = backend.prim(op, &rargs, &presk_types::ty::Ty::Nat, &Default::default()).unwrap_or_else(|e| panic!("{} on the kernel backend: {}", op.name(), e.message));
             let mut w = (0.0, String::new());
             worst(&reference, &got, a, &op.name(), &mut w);
@@ -225,8 +239,8 @@ fn primitives_conform() {
 fn kernel_dump_snapshot() {
     let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{3, 2}.apply".into(), dims: vec![("batch".into(), 4)], seed: 0, bits: 64, digits: 12 };
-    let mut backend = KernelBackend::new(&core, &prog, Realize::F32, 0);
-    presk_rt::run_with(&mut backend, &core, &prog, &opts, Realize::F32).unwrap();
+    let mut backend = KernelBackend::new(&core, &prog, &Realization::uniform(Dtype::F32), 0);
+    presk_rt::run_with(&mut backend, &core, &prog, &opts, &Realization::uniform(Dtype::F32)).unwrap();
     let text: String = backend.kernels.iter().map(|k| k.to_string()).collect();
     insta::assert_snapshot!("linear_kernels", text);
 }

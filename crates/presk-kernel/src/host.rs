@@ -10,7 +10,7 @@ use presk_core::ir::{Lit, Rhs};
 use presk_core::{FuncId, PrimOp, Program, VarId};
 use presk_interp::eval::Dims;
 use presk_interp::key::{Key, normal, uniform01};
-use presk_rt::{Axis, Backend, Buf, Prepared, Realize, RtError, Tensor, Value, err};
+use presk_rt::{Axis, Backend, Buf, Prepared, Realization, RtError, Tensor, Value, err};
 use presk_types::dim::DimExpr;
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{Shape, Ty};
@@ -47,7 +47,14 @@ impl KernelExec for InterpExec {
 pub struct KernelBackend<'p> {
     pub prog: &'p Program,
     pub elab: &'p ElabProgram,
+    /// What the backend is allowed to do (D34). `dtype` below is this
+    /// realization resolved at the site currently being executed.
+    pub realize: Realization,
+    /// The storage type of the site being executed. Constant for a uniform
+    /// realization, which is every realization earlier versions could write.
     pub dtype: Dtype,
+    /// `"<function>/%<let>"` — the fusion group a dtype is assigned to.
+    site: String,
     /// Kernels in order of first use.
     pub kernels: Vec<Kernel>,
     outs: Vec<(Vec<Axis>, BufKind, u64)>,
@@ -78,8 +85,10 @@ impl Backend for KernelBackend<'_> {
         (self.launches, self.fused)
     }
 
-    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: Realize) -> Result<Prepared> {
-        Ok(Prepared { func: entry, dims: dims.clone(), realize, handle: 0 })
+    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared> {
+        self.realize = realize.clone();
+        self.dtype = realize.default;
+        Ok(Prepared { func: entry, dims: dims.clone(), realize: realize.clone(), handle: 0 })
     }
 
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value> {
@@ -89,26 +98,20 @@ impl Backend for KernelBackend<'_> {
 }
 
 impl<'p> KernelBackend<'p> {
-    pub fn new(prog: &'p Program, elab: &'p ElabProgram, realize: Realize, seed: u64) -> Self {
+    pub fn new(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64) -> Self {
         Self::with_exec(prog, elab, realize, seed, Box::new(InterpExec))
     }
 
     /// A kernel backend whose kernels are run by `exec`.
-    pub fn with_exec(prog: &'p Program, elab: &'p ElabProgram, realize: Realize, seed: u64, exec: Box<dyn KernelExec>) -> Self {
-        let dtype = match realize {
-            Realize::F64 => Dtype::F64,
-            Realize::F32 => Dtype::F32,
-        };
-        KernelBackend { prog, elab, dtype, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, plans: HashMap::new(), fused: 0, exec }
+    pub fn with_exec(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64, exec: Box<dyn KernelExec>) -> Self {
+        let dtype = realize.default;
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, plans: HashMap::new(), fused: 0, exec }
     }
 
     // ----- buffers and values ------------------------------------------------
 
     fn buf(&self, data: Vec<f64>) -> Buf {
-        match self.dtype {
-            Dtype::F64 => Buf::F64(data),
-            Dtype::F32 => Buf::F32(data.into_iter().map(|x| x as f32).collect()),
-        }
+        Buf::of(self.dtype, &data)
     }
 
     fn scalar(&self, x: f64) -> Value {
@@ -156,8 +159,22 @@ impl<'p> KernelBackend<'p> {
             }
         };
         let k = &self.kernels[idx];
+        // A mixed realization can hand this kernel a buffer another site
+        // wrote in a different type. Converting here, at the kernel's edge,
+        // is where the cost of a mixed assignment actually is, and it keeps
+        // the loop nest monomorphic.
+        let converted: Vec<Buf> = inputs
+            .iter()
+            .map(|b| match b {
+                Buf::I64(_) | Buf::Exact(_) => (*b).clone(),
+                b if b.dtype() == k.dtype.name() => (*b).clone(),
+                b => Buf::of(k.dtype, &b.to_f64()),
+            })
+            .collect();
+        let refs: Vec<&Buf> = converted.iter().collect();
+        let k = &self.kernels[idx];
         let mut out = output_buf(k);
-        self.exec.run(idx, k, inputs, &mut out)?;
+        self.exec.run(idx, k, &refs, &mut out)?;
         self.launches += 1;
         let (axes, kind, bound) = self.outs[idx].clone();
         Ok(match kind {
@@ -207,12 +224,19 @@ impl<'p> KernelBackend<'p> {
         // Fusion groups: computed once per function, structural, so the same
         // plan serves every shape and every realization (`presk-sched`).
         let plan = self.plans.entry(f).or_insert_with(|| presk_sched::plan(func)).clone();
+        let outer_site = std::mem::take(&mut self.site);
+        let outer_dtype = self.dtype;
         for l in &func.body.lets {
             // An interior `let` of a group never reaches memory: its value is
             // an expression inside the group's single loop nest.
             if plan.interior.contains(&l.var) {
                 continue;
             }
+            // The site a realization assigns a type to: a group's root `let`
+            // in a named function (D34). A site the realization does not
+            // mention takes its default, which is every site of a uniform one.
+            self.site = format!("{}/%{}", func.name, l.var.0);
+            self.dtype = self.realize.dtype_at(&self.site);
             if let Some(g) = plan.groups.get(&l.var) {
                 let v = self.fused_group(g, &env).map_err(|e| RtError {
                     span: e.span.or(Some(l.span)),
@@ -238,6 +262,8 @@ impl<'p> KernelBackend<'p> {
             let v = self.retag(v, &l.ty);
             env.insert(l.var, v);
         }
+        self.site = outer_site;
+        self.dtype = outer_dtype;
         env.remove(&func.body.result).ok_or_else(|| RtError { code: "E7001", message: "result variable undefined".into(), span: Some(func.span) })
     }
 
@@ -417,6 +443,21 @@ impl<'p> KernelBackend<'p> {
                 let mut axes = t.axes[..p].to_vec();
                 axes.push(Axis { name: None, len: t.axes[p].len * t.axes[p + 1].len });
                 axes.extend_from_slice(&t.axes[p + 2..]);
+                Ok(Value::Real(Tensor { axes, data: t.data.clone() }))
+            }
+            PrimOp::SplitAxes { a: an, n1, l1, n2, l2 } => {
+                let t = self.as_tensor(a(0)?)?;
+                let Some(p) = t.axes.iter().position(|x| x.name.as_deref() == Some(an.as_str())) else {
+                    return err("E7001", format!("split: no axis `{an}` in {}", lower::show(&t.axes)));
+                };
+                let (u, v) = (self.dim(l1, dims)? as usize, self.dim(l2, dims)? as usize);
+                if u * v != t.axes[p].len {
+                    return err("E7001", format!("split: `{an}` has length {} but {u} · {v} = {}", t.axes[p].len, u * v));
+                }
+                let mut axes = t.axes[..p].to_vec();
+                axes.push(Axis { name: Some(n1.clone()), len: u });
+                axes.push(Axis { name: Some(n2.clone()), len: v });
+                axes.extend_from_slice(&t.axes[p + 1..]);
                 Ok(Value::Real(Tensor { axes, data: t.data.clone() }))
             }
             PrimOp::ReshapeLike => {
@@ -684,10 +725,14 @@ impl<'p> KernelBackend<'p> {
     fn tensor_prim_kinds(&mut self, op: &PrimOp, ins: &[&Tensor], kinds: &[BufKind]) -> Result<Value> {
         let operands: Vec<Operand> = ins.iter().zip(kinds).map(|(t, k)| Operand { axes: t.axes.clone(), kind: *k }).collect();
         let dtype = self.dtype;
-        let key = format!("{op:?}|{dtype}|{}", operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"));
+        // The declared reduction order selects the kernel, so it belongs in
+        // the cache key: two realizations that differ only in their order are
+        // two different programs and must not share a compiled loop nest.
+        let order = self.realize.order;
+        let key = format!("{op:?}|{dtype}|{}|{}", order.name(), operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"));
         let bufs: Vec<&Buf> = ins.iter().map(|t| &t.data).collect();
         let op = op.clone();
-        self.launch(key, move || lower::lower(&op, &operands, dtype).unwrap_or_else(|| Err(format!("`{}`: no kernel for these operands", op.name()))), &bufs)
+        self.launch(key, move || lower::lower_ordered(&op, &operands, dtype, order).unwrap_or_else(|| Err(format!("`{}`: no kernel for these operands", op.name()))), &bufs)
     }
 }
 

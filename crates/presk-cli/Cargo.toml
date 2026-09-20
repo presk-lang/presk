@@ -23,6 +23,7 @@ presk-cranelift.workspace = true
 presk-serve.workspace = true
 presk-export-pytorch.workspace = true
 presk-opt.workspace = true
+presk-precision.workspace = true
 
 [[bin]]
 name = "presk"

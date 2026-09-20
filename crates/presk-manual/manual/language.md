@@ -452,9 +452,18 @@ order, because joining distant axes would also transpose and `merge` moves no
 data, and at least one length must be constant, since the product of two
 symbolic dimensions leaves the decidable fragment (`E1007`). The joined axis
 is unnamed, and is named by whatever signature it is passed to.
+`split(axis a, n1: L1, n2: L2, x)`, its inverse: one axis read as two,
+row-major (`k ↦ (k / L2, k % L2)`), with `L1 · L2 = |a|` (`E2006` otherwise)
+and at least one of them constant (`E1007`). Unlike `merge`, **a split names
+both halves**, because they are new axes the program has to refer to and only
+the author knows what they mean; the consequence is that two splits chain
+where two merges cannot, since a merge leaves nothing for a second merge to
+select. Both are pure retags: they move no data and launch no kernel.
 `split_heads` (`ℝ[…, seq, model] → ℝ[…, heads: H, seq, hd: HD]`) and
 `merge_heads`, which read the constants `H` and `HD` of the file and, unlike
-`merge`, also permute;
+`merge` and `split`, also permute — which is why they are not sugar for the
+pair, and why a head layout with a shared key group is written with `split`
+and not with them (`coverage` chapter);
 `positions(seq: T) → idx[T][seq: T]`; `causal_mask(seq: T) → ℝ[seq: T, seq2: T]`;
 `matmul`; `grad`; `dropout(rate, key, x)` and `split_key(key) → (key, key)`,
 below. Not implemented: `vjp`, `jvp`, `concat`,
@@ -533,6 +542,28 @@ Outside a training run the mask is all ones, which is the expectation of the
 random function `dropout` denotes: `presk run`, `presk serve` and the export
 evaluate the model's mean, and only `presk train` drops. An objective may
 take a per-step key between `θ` and the batch (`training` chapter).
+
+**A key inside `stack{L}`** needs one idiom, and it is worth stating because
+the obvious thing is wrong. A stacked module is a fold, and a fold hands
+every iteration the same extra arguments, so a key passed *as an argument* is
+one key for all `L` blocks: every layer drops the same positions, silently.
+Carry it in the accumulator instead, which is the value the fold threads from
+one iteration to the next:
+
+```text
+type Acc = (ℝ[batch: B, model: D], key)
+
+module Block {
+  fn apply(s : Acc, mask : Mask) -> Acc uses Rand =
+    let (x, k)   = s
+    let (k1, k2) = split_key(k)
+    (x + dropout(0.2, k1, attn(x, mask)), k2)
+}
+```
+
+The caller passes `(x, key)` and projects the result. Nothing new is needed
+for this, it differentiates through the ordinary fold adjoint, and
+`corpus/nlp/05_gpt.psk` uses it (D37).
 
 **Effects.** The only effect is `Rand`. A function *uses* `Rand`
 if it calls `sample`, `dropout`, `split_key` or an initializer, or calls a

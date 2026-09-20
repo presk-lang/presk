@@ -37,6 +37,17 @@ enum Command {
         /// Machine-readable diagnostics.
         #[arg(long)]
         json: bool,
+        /// Propagate the rounding error of the entry this envelope was
+        /// measured on, and print the bound. Conditional on the envelope,
+        /// which is named in the output (`precision` chapter).
+        #[arg(long, value_name = "ENVELOPE.json")]
+        precision: Option<PathBuf>,
+        /// The realization the bound is about.
+        #[arg(long, default_value = "f64")]
+        realize: String,
+        /// Print the bound at every site, widest first.
+        #[arg(long, default_value_t = 0)]
+        sites: usize,
     },
     /// Evaluate an entry point on the reference interpreter.
     Run {
@@ -66,9 +77,9 @@ enum Command {
         /// The executor: the reference interpreter (native backends come with 0.3.0).
         #[arg(long, value_enum, default_value_t = BackendKind::Interp)]
         backend: BackendKind,
-        /// Machine type of a native realization (ignored by the interpreter).
-        #[arg(long, value_enum, default_value_t = RealizeArg::F64)]
-        realize: RealizeArg,
+        /// The realization: `f64`, `f32`, `bf16`, or `@FILE` for a solved one.
+        #[arg(long, default_value = "f64")]
+        realize: String,
         /// Rewrite the program with the e-graph optimizer before running it (`presk-opt`).
         #[arg(long)]
         opt: bool,
@@ -131,6 +142,14 @@ enum Command {
         /// Unroll `stack{L}` into L calls instead of a fold (debugging aid).
         #[arg(long)]
         unroll_stack: bool,
+        /// For `--stage sensitivity`: how many sites to list.
+        #[arg(long, default_value_t = 20)]
+        sites: usize,
+        /// For `--stage sensitivity`: start from these trained parameters.
+        /// A zero-initialized head makes every upstream gradient exactly
+        /// zero, so a ranking taken at initialization is vacuous.
+        #[arg(long, value_name = "ckpt/final")]
+        weights: Option<PathBuf>,
         /// For `--stage kernel`: the entry to run (as `presk run`), with --dim/--const/--realize.
         #[arg(long)]
         entry: Option<String>,
@@ -138,8 +157,8 @@ enum Command {
         dims: Vec<String>,
         #[arg(long = "const", value_name = "NAME=N")]
         consts: Vec<String>,
-        #[arg(long, value_enum, default_value_t = RealizeArg::F64)]
-        realize: RealizeArg,
+        #[arg(long, default_value = "f64")]
+        realize: String,
         /// For `--stage core-opt`: extract by the roofline of this machine profile.
         #[arg(long, value_name = "FILE.json")]
         profile: Option<PathBuf>,
@@ -175,9 +194,9 @@ enum Command {
         /// The executor: the reference interpreter (native backends come with 0.3.0).
         #[arg(long, value_enum, default_value_t = BackendKind::Interp)]
         backend: BackendKind,
-        /// Machine type of a native realization (ignored by the interpreter).
-        #[arg(long, value_enum, default_value_t = RealizeArg::F64)]
-        realize: RealizeArg,
+        /// The realization: `f64`, `f32`, `bf16`, or `@FILE` for a solved one.
+        #[arg(long, default_value = "f64")]
+        realize: String,
         /// Rewrite the program with the e-graph optimizer before training (`presk-opt`).
         #[arg(long)]
         opt: bool,
@@ -218,8 +237,8 @@ enum Command {
         bits: u32,
         #[arg(long, value_enum, default_value_t = BackendKind::Interp)]
         backend: BackendKind,
-        #[arg(long, value_enum, default_value_t = RealizeArg::F64)]
-        realize: RealizeArg,
+        #[arg(long, default_value = "f64")]
+        realize: String,
         /// Machine-readable output on stdout.
         #[arg(long)]
         json: bool,
@@ -261,8 +280,83 @@ enum Command {
         #[arg(long, value_name = "FILE.json")]
         calibrate: Option<PathBuf>,
         /// The realization to calibrate (kernels are timed in this machine type).
-        #[arg(long, value_enum, default_value_t = RealizeArg::F64)]
-        realize: RealizeArg,
+        #[arg(long, default_value = "f64")]
+        realize: String,
+        /// Time the native backend only. The reference interpreter's row is
+        /// exact arbitrary precision, so at a thousand cubed it is not
+        /// affordable and its presence is what stops a large benchmark from
+        /// finishing at all.
+        #[arg(long)]
+        native_only: bool,
+    },
+    /// Measure the magnitude envelope a precision bound is conditional on.
+    ///
+    /// Runs an entry on the *reference* interpreter and records the largest
+    /// `|x|` at each site. Static intervals cannot supply that scale for a
+    /// network, so it is measured, and every bound quoting the envelope
+    /// quotes its sample count with it (decision D35).
+    Calibrate {
+        file: PathBuf,
+        /// Required, and the only mode: this subcommand exists for the
+        /// precision analysis. The roofline is `presk bench --calibrate`.
+        #[arg(long)]
+        precision: bool,
+        #[arg(long)]
+        entry: Option<String>,
+        #[arg(long = "dim", value_name = "NAME=N")]
+        dims: Vec<String>,
+        #[arg(long = "const", value_name = "NAME=N")]
+        consts: Vec<String>,
+        /// Fill the entry's last argument from this `.psk.d` file.
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Samples to fold in (with --data, the size of the batch).
+        #[arg(long)]
+        samples: Option<usize>,
+        /// Skip this many samples first: two disjoint ranges give two
+        /// independent measurements of the same program.
+        #[arg(long, default_value_t = 0)]
+        from: usize,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// Precision of the reference interpreter.
+        #[arg(long, default_value_t = 256)]
+        bits: u32,
+        #[arg(long, value_name = "FILE.json")]
+        out: Option<PathBuf>,
+        /// Report how far this envelope and another disagree. A ratio near 1
+        /// means the magnitudes are a property of the program rather than of
+        /// the sample drawn, which is what a bound quoting one needs.
+        #[arg(long, value_name = "FILE.json")]
+        compare: Option<PathBuf>,
+    },
+    /// Solve for a realization under a declared error budget.
+    Solve {
+        file: PathBuf,
+        /// The magnitude envelope the bound and the estimate are read from.
+        #[arg(long, value_name = "ENVELOPE.json")]
+        precision: PathBuf,
+        /// Relative error budget for the entry's output.
+        #[arg(long, default_value_t = 1e-3)]
+        budget: f64,
+        /// Trained parameters: a sensitivity ranking at initialization is
+        /// vacuous, so without these every site scores zero and the solver
+        /// narrows by traffic alone.
+        #[arg(long, value_name = "ckpt/final.psk.d")]
+        weights: Option<PathBuf>,
+        /// Do not verify by measurement (the proposal only).
+        #[arg(long)]
+        no_verify: bool,
+        #[arg(long, default_value_t = 128)]
+        bits: u32,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// Write the solved realization here; `--realize @FILE` then runs it.
+        #[arg(long, value_name = "FILE.json")]
+        out: Option<PathBuf>,
+        /// List this many assigned sites.
+        #[arg(long, default_value_t = 8)]
+        sites: usize,
     },
     /// Produce and inspect `.psk.d` data files.
     Data {
@@ -364,7 +458,7 @@ fn set_threads(n: Option<usize>) {
 }
 
 /// Runs `f` with the chosen backend over `core`.
-fn with_backend<R>(kind: BackendKind, core: &presk_core::Program, prog: &elab::ElabProgram, bits: u32, seed: u64, realize: presk_rt::Realize, f: impl FnOnce(&mut dyn presk_rt::Backend) -> R) -> R {
+fn with_backend<R>(kind: BackendKind, core: &presk_core::Program, prog: &elab::ElabProgram, bits: u32, seed: u64, realize: &presk_rt::Realization, f: impl FnOnce(&mut dyn presk_rt::Backend) -> R) -> R {
     match kind {
         BackendKind::Interp => f(&mut presk_rt::InterpBackend::new(core, prog, bits, seed)),
         BackendKind::Kernel => f(&mut presk_kernel::KernelBackend::new(core, prog, realize, seed)),
@@ -414,17 +508,16 @@ impl Opt {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum RealizeArg {
-    F64,
-    F32,
-}
-
-impl RealizeArg {
-    fn to_rt(self) -> presk_rt::Realize {
-        match self {
-            RealizeArg::F64 => presk_rt::Realize::F64,
-            RealizeArg::F32 => presk_rt::Realize::F32,
+/// `--realize f64|f32|bf16|@FILE`. The three names are uniform realizations,
+/// what the flag has always meant; `@FILE` reads the object a solver writes
+/// (D34). Parsing is deferred to `presk_rt::Realization::parse` so that one
+/// spelling serves the CLI, the solver and the conformance report.
+fn parse_realize(spec: &str) -> presk_rt::Realization {
+    match presk_rt::Realization::parse(spec) {
+        Ok(r) => r,
+        Err(m) => {
+            eprintln!("presk: {m}");
+            std::process::exit(2);
         }
     }
 }
@@ -442,14 +535,21 @@ enum DumpStage {
     Sched,
     /// The PSK-Kernel v0 kernels launched by an entry (needs --entry, --dim/--const as `presk run`).
     Kernel,
+    /// `‖∂L/∂v‖₁` at every site of an entry, read off one reverse sweep
+    /// (needs --entry, --dim/--const as `presk run`; `--data` for real
+    /// batches). Ranks where a precision budget should *not* be spent.
+    Sensitivity,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Check { file, consts, summary, json } => check(&file, &consts, summary, json),
-        Command::Dump { file, stage, unroll_stack, entry, dims, consts, realize, profile } => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, realize.to_rt(), profile),
-        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, opt, profile, data, samples, threads } => { set_threads(threads); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, realize.to_rt(), Opt { on: opt, profile }, data, samples) }
+        Command::Check { file, consts, summary, json, precision, realize, sites } => match precision {
+            Some(env) => check_precision(&file, &env, &parse_realize(&realize), sites),
+            None => check(&file, &consts, summary, json),
+        },
+        Command::Dump { file, stage, unroll_stack, entry, dims, consts, realize, profile, weights, sites } => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, &parse_realize(&realize), profile, weights, sites),
+        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, opt, profile, data, samples, threads } => { set_threads(threads); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, &parse_realize(&realize), Opt { on: opt, profile }, data, samples) }
         Command::Export { file, target: _, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile } => export(&file, mode, &out, shapes.as_deref(), stack, conformance_entry.as_deref(), train, serve, &dims, &consts, seed, Opt { on: opt, profile }),
         Command::Serve { file, consts, weights, prompt, tokens, entry, dims, temperature, seed, bits, backend, realize, json, opt, profile } => {
             let mut prompt_tokens = Vec::new();
@@ -474,11 +574,17 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let opts = presk_serve::ServeOptions { weights, prompt: prompt_tokens, tokens, seed, bits, realize: realize.to_rt(), temperature, dims: named };
+            let opts = presk_serve::ServeOptions { weights, prompt: prompt_tokens, tokens, seed, bits, realize: parse_realize(&realize), temperature, dims: named };
             serve(&file, &consts, entry.as_deref(), opts, backend, json, Opt { on: opt, profile })
         }
-        Command::Train { file, consts, data, steps, epochs, seed, bits, log_every, ckpt, json, backend, realize, opt, profile, threads } => { set_threads(threads); train(&file, &consts, presk_train::TrainOptions { data, steps, epochs, seed, bits, realize: realize.to_rt(), ckpt, checkpoints: true }, log_every, json, backend, Opt { on: opt, profile }) }
-        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, realize, threads } => { set_threads(threads); bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate.as_deref(), realize.to_rt()) }
+        Command::Train { file, consts, data, steps, epochs, seed, bits, log_every, ckpt, json, backend, realize, opt, profile, threads } => { set_threads(threads); train(&file, &consts, presk_train::TrainOptions { data, steps, epochs, seed, bits, realize: parse_realize(&realize), ckpt, checkpoints: true }, log_every, json, backend, Opt { on: opt, profile }) }
+        Command::Calibrate { file, precision, entry, dims, consts, data, samples, from, seed, bits, out, compare } => {
+            calibrate_precision(&file, precision, entry.as_deref(), &dims, &consts, data.as_deref(), samples, from, seed, bits, out.as_deref(), compare.as_deref())
+        }
+        Command::Solve { file, precision, budget, weights, no_verify, bits, seed, out, sites } => {
+            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites)
+        }
+        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, realize, threads, native_only } => { set_threads(threads); bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate.as_deref(), &parse_realize(&realize), native_only) }
         Command::Data { command } => match data(command) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -522,7 +628,7 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
         return c;
     }
     let on_token = |_step: u64, _tok: u64| {};
-    match with_backend(backend, &core, &prog, opts.bits, opts.seed, opts.realize, |b| presk_serve::serve(b, &core, &prog, &fns, &opts, on_token)) {
+    match with_backend(backend, &core, &prog, opts.bits, opts.seed, &opts.realize, |b| presk_serve::serve(b, &core, &prog, &fns, &opts, on_token)) {
         Err(e) => {
             let usage = e.code == "E9003";
             let mut d = presk_syntax::Diagnostic::error(e.code, e.message);
@@ -557,9 +663,391 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
     }
 }
 
+/// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
+#[allow(clippy::too_many_arguments)]
+fn solve_precision(file: &Path, env_path: &Path, budget: f64, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize) -> ExitCode {
+    use presk_precision::{sensitivity, solve};
+    let env = match presk_precision::envelope::Envelope::load(env_path) {
+        Ok(e) => e,
+        Err(m) => {
+            eprintln!("presk solve: {m}");
+            return ExitCode::from(1);
+        }
+    };
+    let consts = env.consts.clone();
+    let (sm, prog, mut core) = match core(file, &consts, false) {
+        Err(c) => return c,
+        Ok(x) => x,
+    };
+    let diags = presk_core::ad::transform(&mut core);
+    eprint!("{}", render_all(&diags, &sm, color()));
+    if has_errors(&diags) {
+        return ExitCode::from(1);
+    }
+    let Ok((entry, _, _)) = presk_interp::run::resolve_entry(&core, &prog, &env.entry) else {
+        eprintln!("presk solve: `{}` is not an entry of {}", env.entry, file.display());
+        return ExitCode::from(1);
+    };
+    let opts = presk_interp::RunOptions { entry: env.entry.clone(), dims: env.dims.clone(), seed, bits, digits: 17 };
+    let Ok((_, fdims, inputs)) = presk_interp::run::prepare_run(&core, &prog, &opts) else {
+        eprintln!("presk solve: cannot bind the inputs of `{}`", env.entry);
+        return ExitCode::from(1);
+    };
+    let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
+    if let Some(path) = weights
+        && let Ok(v) = presk_rt::load_params(path, &args[0])
+    {
+        args[0] = v;
+    }
+
+    // Where the budget should *not* be spent: one reverse sweep.
+    let (vjp, adjoints, _) = presk_core::ad::vjp_with_adjoints(&mut core, entry);
+    let mut sb = presk_rt::InterpBackend::new(&core, &prog, bits, seed);
+    sb.interp.sums = Some(Default::default());
+    let mut vargs = args.clone();
+    vargs.push(presk_rt::Value::Real(presk_rt::Tensor { axes: vec![], data: presk_rt::Buf::F64(vec![1.0]) }));
+    let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
+    let sens = match presk_rt::Backend::prepare(&mut sb, vjp, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut sb, &p, vargs)) {
+        Ok(_) => sensitivity::from_run(&core, entry, &adjoints, &sb.interp.sums.take().unwrap_or_default()),
+        Err(e) => {
+            eprintln!("presk solve: the objective does not differentiate: {}", e.message);
+            return ExitCode::from(1);
+        }
+    };
+
+    // The exact value, to measure candidates against.
+    let mut exact = presk_rt::InterpBackend::new(&core, &prog, bits, seed);
+    let reference = match presk_rt::Backend::prepare(&mut exact, entry, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut exact, &p, args.clone())) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("presk solve: {}", e.message);
+            return ExitCode::from(1);
+        }
+    };
+    let ref_f64 = leaf_max(&reference);
+    let output_site = format!("{}/%{}", core.func(entry).name, core.func(entry).body.result.0);
+
+    let mut measure = |r: &presk_rt::Realization| -> f64 {
+        let mut b = presk_kernel::KernelBackend::new(&core, &prog, r, seed);
+        let a: Vec<presk_rt::Value> = args.iter().map(|v| v.realize(r.default)).collect();
+        match presk_rt::Backend::prepare(&mut b, entry, &fdims, r).and_then(|p| presk_rt::Backend::call(&mut b, &p, a)) {
+            Ok(v) => leaf_gap(&reference, &v),
+            Err(_) => f64::INFINITY,
+        }
+    };
+    let menu = solve::Menu::default();
+    let sol = if verify {
+        solve::solve(&env, &sens, &output_site, budget, &menu, presk_rt::Dtype::F64, Some(&mut measure))
+    } else {
+        solve::solve(&env, &sens, &output_site, budget, &menu, presk_rt::Dtype::F64, None)
+    };
+
+    println!("presk solve: `{}` under budget {:.2e} relative ({:.3e} absolute, |output| {:.3e})", env.entry, budget, sol.budget_abs, ref_f64);
+    println!("  sites       {} narrowable, {} assigned away from f64", sol.considered, sol.realization.storage.len());
+    println!("  traffic     {:.4e} bytes against {:.4e} all-f64 ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, sol.speedup(), sol.relaxation_bytes);
+    println!("  proposal    {:.4e} bytes before measurement widened anything", sol.proposed_bytes);
+    println!("  estimate    {:.3e} (sensitivity-weighted, first order: it ranks, it does not guarantee)", sol.estimated_error);
+    match sol.measured {
+        Some(g) => println!("  measured    {:.3e} against the exact reference, after {} widening round(s) — {}", g, sol.rounds, if g <= sol.budget_abs { "inside the budget" } else { "OUTSIDE the budget" }),
+        None => println!("  measured    not checked (--no-verify)"),
+    }
+    if let Some((_, bytes)) = solve::exhaustive(&env, &sens, &output_site, budget, &menu, presk_rt::Dtype::F64, 200_000) {
+        println!("  optimal     {:.4e} bytes by exhaustive search under the same estimate — the greedy proposal is {:.3}x that", bytes, sol.proposed_bytes / bytes.max(1.0));
+    } else {
+        println!("  optimal     not searched (the space is too large); the relaxation floor above is the lower bound");
+    }
+    if list > 0 && !sol.realization.storage.is_empty() {
+        let mut rows: Vec<(&String, &presk_rt::Dtype)> = sol.realization.storage.iter().collect();
+        rows.sort_by_key(|(k, _)| k.as_str());
+        println!("{:<30} {:>8} {:>12} {:>12}", "site", "dtype", "elements", "‖∂L/∂v‖₁");
+        for (site, d) in rows.iter().take(list) {
+            println!("{site:<30} {:>8} {:>12} {:>12.3e}", d.name(), env.elems(site), sens.get(site).unwrap_or(0.0));
+        }
+    }
+    if let Some(path) = out {
+        if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty())
+            && let Err(e) = std::fs::create_dir_all(d)
+        {
+            eprintln!("presk solve: {e}");
+            return ExitCode::from(1);
+        }
+        if let Err(e) = std::fs::write(path, sol.realization.to_json()) {
+            eprintln!("presk solve: {e}");
+            return ExitCode::from(1);
+        }
+        println!("presk solve: wrote {} — run it with `--realize @{}`", path.display(), path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+/// The largest `|x|` over the leaves of a runtime value.
+fn leaf_max(v: &presk_rt::Value) -> f64 {
+    match v {
+        presk_rt::Value::Real(t) => t.data.to_f64().into_iter().map(f64::abs).filter(|x| x.is_finite()).fold(0.0, f64::max),
+        presk_rt::Value::Tuple(xs) => xs.iter().map(leaf_max).fold(0.0, f64::max),
+        presk_rt::Value::Record(xs) => xs.iter().map(|(_, x)| leaf_max(x)).fold(0.0, f64::max),
+        _ => 0.0,
+    }
+}
+
+/// The largest absolute difference over the leaves of two runtime values.
+fn leaf_gap(a: &presk_rt::Value, b: &presk_rt::Value) -> f64 {
+    match (a, b) {
+        (presk_rt::Value::Real(x), presk_rt::Value::Real(y)) => x
+            .data
+            .to_f64()
+            .into_iter()
+            .zip(y.data.to_f64())
+            .map(|(p, q)| (p - q).abs())
+            .filter(|d| d.is_finite())
+            .fold(0.0, f64::max),
+        (presk_rt::Value::Tuple(xs), presk_rt::Value::Tuple(ys)) => xs.iter().zip(ys).map(|(x, y)| leaf_gap(x, y)).fold(0.0, f64::max),
+        (presk_rt::Value::Record(xs), presk_rt::Value::Record(ys)) => xs.iter().zip(ys).map(|((_, x), (_, y))| leaf_gap(x, y)).fold(0.0, f64::max),
+        _ => 0.0,
+    }
+}
+
+/// `presk dump --stage sensitivity`: one reverse sweep, and what it says
+/// about where a budget should go (plan 0.5.0 §3.3).
+/// The inputs are the synthesized ones of a fixed seed rather than a data
+/// file: a sensitivity *ranking* is driven by the architecture — which values
+/// the output depends on and through how many operations — and not by which
+/// tokens happen to be in a batch. The magnitudes would move; the order does
+/// not.
+#[allow(clippy::too_many_arguments)]
+fn dump_sensitivity(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], weights: Option<&Path>, top: usize, seed: u64, bits: u32) -> ExitCode {
+    let dims_p = match parse_dims(dims) {
+        Ok(d) => d,
+        Err(c) => return c,
+    };
+    let (sm, prog, mut core) = match core(file, consts, false) {
+        Err(c) => return c,
+        Ok(x) => x,
+    };
+    let diags = presk_core::ad::transform(&mut core);
+    eprint!("{}", render_all(&diags, &sm, color()));
+    if has_errors(&diags) {
+        return ExitCode::from(1);
+    }
+    let Some(entry) = entry else {
+        eprintln!("presk dump --stage sensitivity: --entry is required");
+        return ExitCode::from(2);
+    };
+    let Ok((f, _, _)) = presk_interp::run::resolve_entry(&core, &prog, entry) else {
+        eprintln!("presk dump: `{entry}` is not an entry of {}", file.display());
+        return ExitCode::from(1);
+    };
+    if !matches!(core.func(f).ret, presk_types::ty::Ty::Real(ref s) if s.axes.is_empty() && s.prefix.is_none()) {
+        eprintln!("presk dump --stage sensitivity: `{entry}` must return a scalar `ℝ[]`, since a sensitivity is `∂L/∂v`");
+        return ExitCode::from(2);
+    }
+    // The reverse sweep already computes the adjoint of every intermediate;
+    // this only asks where each one ended up.
+    let (vjp, adjoints, diags) = presk_core::ad::vjp_with_adjoints(&mut core, f);
+    eprint!("{}", render_all(&diags, &sm, color()));
+    if has_errors(&diags) {
+        return ExitCode::from(1);
+    }
+    let opts = presk_interp::RunOptions { entry: entry.into(), dims: dims_p, seed, bits, digits: 17 };
+    let Ok((_, fdims, inputs)) = presk_interp::run::prepare_run(&core, &prog, &opts) else {
+        eprintln!("presk dump: cannot bind the inputs of `{entry}`");
+        return ExitCode::from(1);
+    };
+    let mut backend = presk_rt::InterpBackend::new(&core, &prog, bits, seed);
+    backend.interp.sums = Some(Default::default());
+    // The vjp takes the forward arguments and a cotangent; seeding it with 1
+    // is what makes the adjoints `∂L/∂v` rather than a scaled multiple.
+    let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
+    if let Some(path) = weights {
+        match presk_rt::load_params(path, &args[0]) {
+            Ok(v) => args[0] = v,
+            Err(e) => {
+                eprintln!("presk dump: {}", e.message);
+                return ExitCode::from(1);
+            }
+        }
+    }
+    args.push(presk_rt::Value::Real(presk_rt::Tensor { axes: vec![], data: presk_rt::Buf::F64(vec![1.0]) }));
+    let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
+    let p = match presk_rt::Backend::prepare(&mut backend, vjp, &fdims, &one) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("presk dump: {}", e.message);
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = presk_rt::Backend::call(&mut backend, &p, args) {
+        eprintln!("presk dump: {}", e.message);
+        return ExitCode::from(1);
+    }
+    let sums = backend.interp.sums.take().unwrap_or_default();
+    let s = presk_precision::sensitivity::from_run(&core, f, &adjoints, &sums);
+    println!("-- sensitivity of `{entry}`: ‖∂L/∂v‖₁ at each site, one reverse sweep at {bits} bits");
+    println!("{:<34} {:>14}", "module", "Σ ‖∂L/∂v‖₁");
+    for (m, v) in s.by_module() {
+        println!("{m:<34} {v:>14.4e}");
+    }
+    println!("\n{:<34} {:>14}", "site", "‖∂L/∂v‖₁");
+    for (site, v) in s.ranked().into_iter().take(top) {
+        println!("{site:<34} {v:>14.4e}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `presk check --precision ENVELOPE.json`: the bound the analysis of plan
+/// 0.5.0 §3.2 gives for the entry the envelope was measured on.
+fn check_precision(file: &Path, env_path: &Path, realize: &presk_rt::Realization, sites: usize) -> ExitCode {
+    let env = match presk_precision::envelope::Envelope::load(env_path) {
+        Ok(e) => e,
+        Err(m) => {
+            eprintln!("presk check: {m}");
+            return ExitCode::from(1);
+        }
+    };
+    let consts: Vec<String> = env.consts.clone();
+    let (sm, prog, mut core) = match core(file, &consts, false) {
+        Err(c) => return c,
+        Ok(x) => x,
+    };
+    let diags = presk_core::ad::transform(&mut core);
+    eprint!("{}", render_all(&diags, &sm, color()));
+    if has_errors(&diags) {
+        return ExitCode::from(1);
+    }
+    let Ok((entry, _, _)) = presk_interp::run::resolve_entry(&core, &prog, &env.entry) else {
+        eprintln!("presk check: `{}` is not an entry of {}", env.entry, file.display());
+        return ExitCode::from(1);
+    };
+    // The same shapes the magnitudes were measured at: `k` in a contraction's
+    // rule is a shape, so a bound computed at other dimensions is a bound
+    // about another program.
+    let named: std::collections::BTreeMap<String, u64> = env.dims.iter().cloned().collect();
+    let dims: std::collections::BTreeMap<presk_types::dim::DimVar, u64> =
+        core.func(entry).dims.iter().filter_map(|d| named.get(&prog.dim_name(*d)).map(|n| (*d, *n))).collect();
+    let a = presk_precision::propagate::propagate(&core, &prog, entry, &dims, &env, realize);
+    let out = a.output;
+    println!("presk check --precision: `{}` under {}", env.entry, realize.label());
+    println!("  magnitude   {:.4e}", out.mag);
+    println!("  bound       {:.4e}  ({:.2e} relative)", out.err, out.relative());
+    println!("  envelope    {} over {} samples, {} sites", env_path.display(), env.samples, a.sites.len());
+    if !a.uncovered.is_empty() {
+        println!("  uncovered   {} site(s) the envelope does not mention, first {}", a.uncovered.len(), a.uncovered.first().map(|s| s.as_str()).unwrap_or("-"));
+    }
+    if !a.unbounded.is_empty() {
+        println!("  unbounded   {} site(s) divide by something with no measured floor: {}", a.unbounded.len(), a.unbounded.first().map(|s| s.as_str()).unwrap_or("-"));
+    }
+    if sites > 0 {
+        let mut rows: Vec<(&String, &presk_precision::propagate::Bound)> = a.sites.iter().collect();
+        rows.sort_by(|x, y| y.1.err.partial_cmp(&x.1.err).unwrap_or(std::cmp::Ordering::Equal));
+        println!("{:<30} {:>12} {:>12} {:>12}", "site", "magnitude", "bound", "relative");
+        for (site, b) in rows.iter().take(sites) {
+            println!("{site:<30} {:>12.3e} {:>12.3e} {:>12.3e}", b.mag, b.err, b.relative());
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `presk calibrate --precision`: the magnitude envelope of plan 0.5.0 §3.2.
+#[allow(clippy::too_many_arguments)]
+fn calibrate_precision(
+    file: &Path,
+    precision: bool,
+    entry: Option<&str>,
+    dims: &[String],
+    consts: &[String],
+    data: Option<&Path>,
+    samples: Option<usize>,
+    from: usize,
+    seed: u64,
+    bits: u32,
+    out: Option<&Path>,
+    compare: Option<&Path>,
+) -> ExitCode {
+    if !precision {
+        eprintln!("presk calibrate: --precision is required (the roofline is `presk bench --calibrate`)");
+        return ExitCode::from(2);
+    }
+    let dims = match parse_dims(dims) {
+        Ok(d) => d,
+        Err(c) => return c,
+    };
+    let (sm, prog, mut core) = match core(file, consts, false) {
+        Err(c) => return c,
+        Ok(x) => x,
+    };
+    let diags = presk_core::ad::transform(&mut core);
+    eprint!("{}", render_all(&diags, &sm, color()));
+    if has_errors(&diags) {
+        return ExitCode::from(1);
+    }
+    let Some(entry) = entry else {
+        eprintln!("presk calibrate: --entry is required");
+        return ExitCode::from(2);
+    };
+    let opts = presk_interp::RunOptions { entry: entry.into(), dims, seed, bits, digits: 17 };
+    let mut backend = presk_rt::InterpBackend::new(&core, &prog, bits, seed);
+    backend.interp.magnitudes = Some(Default::default());
+    backend.interp.minima = Some(Default::default());
+    backend.interp.elems = Some(Default::default());
+    let today = "2026-09-20";
+    let mut env = presk_precision::envelope::Envelope::new(&file.display().to_string(), entry, bits, today);
+    env.dims = opts.dims.clone();
+    env.consts = consts.to_vec();
+    let run = match data {
+        Some(path) => presk_train::run_on_data_from(&mut backend, &core, &prog, &opts, presk_rt::Realization::uniform(presk_rt::Dtype::F64), path, from, samples)
+            .map_err(|e| e.message),
+        None => presk_rt::run_with(&mut backend, &core, &prog, &opts, &presk_rt::Realization::uniform(presk_rt::Dtype::F64)).map_err(|e| e.message),
+    };
+    if let Err(m) = run {
+        eprintln!("presk calibrate: {m}");
+        return ExitCode::from(1);
+    }
+    let m = backend.interp.magnitudes.take().unwrap_or_default();
+    env.observe(&m);
+    env.observe_minima(&backend.interp.minima.take().unwrap_or_default());
+    env.observe_elems(&backend.interp.elems.take().unwrap_or_default());
+    env.samples = samples.unwrap_or(1).max(1);
+    println!("presk calibrate: {} sites over {} samples of `{entry}` at {bits} bits", env.sites.len(), env.samples);
+    let mut widest: Vec<(&String, &f64)> = env.sites.iter().collect();
+    widest.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (site, v) in widest.iter().take(5) {
+        println!("  {site:<28} {v:.4e}");
+    }
+    if let Some(other) = compare {
+        match presk_precision::envelope::Envelope::load(other) {
+            Ok(o) => {
+                let a = env.agreement(&o);
+                println!(
+                    "presk calibrate: against {}: worst ratio {:.3}x at {} over {} sites ({} zero in both, {} in only one)",
+                    other.display(),
+                    a.worst,
+                    if a.at.is_empty() { "-" } else { &a.at },
+                    a.compared,
+                    a.both_zero,
+                    a.only_one
+                );
+            }
+            Err(m) => {
+                eprintln!("presk calibrate: {m}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    if let Some(path) = out
+        && let Err(m) = env.save(path)
+    {
+        eprintln!("presk calibrate: {m}");
+        return ExitCode::from(1);
+    }
+    if let Some(path) = out {
+        println!("presk calibrate: wrote {}", path.display());
+    }
+    ExitCode::SUCCESS
+}
+
 /// `presk bench`: one entry timed on every backend.
 #[allow(clippy::too_many_arguments)]
-fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, repeat: usize, seed: u64, opt: Opt, calibrate: Option<&Path>, realize: presk_rt::Realize) -> ExitCode {
+fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, repeat: usize, seed: u64, opt: Opt, calibrate: Option<&Path>, realize: &presk_rt::Realization, native_only: bool) -> ExitCode {
     let dims = match parse_dims(dims) {
         Ok(d) => d,
         Err(c) => return c,
@@ -588,7 +1076,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     if let Some(path) = calibrate {
         return calibrate_profile(&core, &prog, func, &fdims, &args, realize, repeat.max(3), seed, path);
     }
-    let time = |name: &str, b: &mut dyn presk_rt::Backend, realize: presk_rt::Realize| -> Option<(String, f64, f64)> {
+    let time = |name: &str, b: &mut dyn presk_rt::Backend, realize: &presk_rt::Realization| -> Option<(String, f64, f64)> {
         let p = b.prepare(func, &fdims, realize).ok()?;
         let mut samples = Vec::new();
         for _ in 0..repeat.max(1) {
@@ -602,18 +1090,30 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
         Some((name.to_string(), samples[samples.len() / 2], samples[0]))
     };
+    let uniform = |d| presk_rt::Realization::uniform(d);
+    let f64r = uniform(presk_rt::Dtype::F64);
     let mut rows = Vec::new();
-    if let Some(r) = time(&format!("interp {bits} bits"), &mut presk_rt::InterpBackend::new(&core, &prog, bits, seed), presk_rt::Realize::F64) {
-        rows.push(r);
+    if !native_only {
+        if let Some(r) = time(&format!("interp {bits} bits"), &mut presk_rt::InterpBackend::new(&core, &prog, bits, seed), &f64r) {
+            rows.push(r);
+        }
+        if let Some(r) = time("kernel f64", &mut presk_kernel::KernelBackend::new(&core, &prog, &f64r, seed), &f64r) {
+            rows.push(r);
+        }
     }
-    if let Some(r) = time("kernel f64", &mut presk_kernel::KernelBackend::new(&core, &prog, presk_rt::Realize::F64, seed), presk_rt::Realize::F64) {
-        rows.push(r);
+    let mut want: Vec<(String, presk_rt::Realization)> =
+        [presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16].iter().map(|d| (format!("native {d}"), uniform(*d))).collect();
+    // A realization given on the command line is timed too, whatever it is:
+    // a solved assignment or a declared reduction order is exactly the thing
+    // one wants a row for.
+    if !realize.is_uniform() || !want.iter().any(|(_, r)| r == realize) {
+        want.push((format!("native {}", realize.label()), realize.clone()));
     }
-    for (name, realize) in [("native f64", presk_rt::Realize::F64), ("native f32", presk_rt::Realize::F32)] {
-        match presk_cranelift::native_backend(&core, &prog, realize, seed) {
+    for (name, r) in &want {
+        match presk_cranelift::native_backend(&core, &prog, r, seed) {
             Ok(mut b) => {
-                if let Some(r) = time(name, &mut b, realize) {
-                    rows.push(r);
+                if let Some(row) = time(name, &mut b, r) {
+                    rows.push(row);
                 }
             }
             Err(e) => eprintln!("presk bench: native backend unavailable: {}", e.message),
@@ -630,7 +1130,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
 /// `presk bench --calibrate`: time every kernel of the entry natively, fit
 /// the roofline and write (or extend) the profile.
 #[allow(clippy::too_many_arguments)]
-fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], realize: presk_rt::Realize, repeat: usize, seed: u64, path: &Path) -> ExitCode {
+fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], realize: &presk_rt::Realization, repeat: usize, seed: u64, path: &Path) -> ExitCode {
     let native = match presk_cranelift::NativeExec::new() {
         Ok(n) => n,
         Err(e) => {
@@ -654,7 +1154,7 @@ fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func:
         }
     }
     let medians = presk_kernel::cost::median_per_kernel(&samples.borrow(), backend.kernels.len());
-    let dtype = backend.dtype.to_string();
+    let dtype = backend.realize.label();
     let mut kernels: Vec<presk_opt::profile::Sample> = Vec::new();
     for (k, t) in backend.kernels.iter().zip(medians) {
         let Some(seconds) = t else { continue };
@@ -734,7 +1234,7 @@ fn train(file: &Path, consts: &[String], opts: presk_train::TrainOptions, log_ev
         return c;
     }
     let mut stats = (0u64, 0u64);
-    match with_backend(backend, &core, &prog, opts.bits, opts.seed, opts.realize, |b| {
+    match with_backend(backend, &core, &prog, opts.bits, opts.seed, &opts.realize, |b| {
         let out = presk_train::train(b, &core, &prog, &typed, &fns, &opts, on_step);
         stats = presk_rt::Backend::launch_stats(b);
         out
@@ -1033,7 +1533,10 @@ fn core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: presk_rt::Realize, profile: Option<PathBuf>) -> ExitCode {
+fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: &presk_rt::Realization, profile: Option<PathBuf>, weights: Option<PathBuf>, sites: usize) -> ExitCode {
+    if let DumpStage::Sensitivity = stage {
+        return dump_sensitivity(file, entry, dims, consts, weights.as_deref(), sites, 0, 128);
+    }
     if let DumpStage::Kernel = stage {
         let Some(entry) = entry else {
             eprintln!("presk dump --stage kernel: --entry is required (the kernels are specialized on the entry's shapes)");
@@ -1060,7 +1563,7 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
         }
         let before = backend.launches + backend.fused;
         let pct = if before > 0 { 100.0 * backend.fused as f64 / before as f64 } else { 0.0 };
-        println!("-- {} kernels, {} launches, {}", backend.kernels.len(), backend.launches, backend.dtype);
+        println!("-- {} kernels, {} launches, {}", backend.kernels.len(), backend.launches, backend.realize.label());
         println!("-- fusion: {before} launches without it, {} saved ({pct:.0}%)", backend.fused);
         for k in &backend.kernels {
             print!("{k}");
@@ -1072,7 +1575,7 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
         Err(c) => return c,
     };
     match stage {
-        DumpStage::Kernel => unreachable!("handled above"),
+        DumpStage::Kernel | DumpStage::Sensitivity => unreachable!("handled above"),
         DumpStage::Tokens => {
             let lexed = lexer::lex(id, sm.text(id));
             print!("{}", lexer::dump_tokens(&lexed.tokens));
@@ -1154,7 +1657,7 @@ fn parse_dims(dims: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, json: bool, verbose: bool, unroll_stack: bool, backend: BackendKind, realize: presk_rt::Realize, opt: Opt, data: Option<PathBuf>, samples: Option<usize>) -> ExitCode {
+fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, json: bool, verbose: bool, unroll_stack: bool, backend: BackendKind, realize: &presk_rt::Realization, opt: Opt, data: Option<PathBuf>, samples: Option<usize>) -> ExitCode {
     let dims = match parse_dims(dims) {
         Ok(d) => d,
         Err(c) => return c,
@@ -1189,7 +1692,7 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
     }
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits, digits };
     let evaluate = |b: &mut dyn presk_rt::Backend| match &data {
-        Some(path) => presk_train::run_on_data(b, &core, &prog, &opts, realize, path, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span }),
+        Some(path) => presk_train::run_on_data(b, &core, &prog, &opts, realize.clone(), path, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span }),
         None => presk_rt::run_with(b, &core, &prog, &opts, realize),
     };
     match with_backend(backend, &core, &prog, bits, seed, realize, evaluate) {
@@ -1389,7 +1892,7 @@ fn export(file: &Path, mode: ExportMode, out: &Path, shapes: Option<&str>, stack
             if has_errors(&diags) {
                 return ExitCode::from(1);
             }
-            let topts = presk_train::TrainOptions { data: None, steps: Some(k), epochs: None, seed, bits: 256, realize: presk_rt::Realize::F64, ckpt: None, checkpoints: false };
+            let topts = presk_train::TrainOptions { data: None, steps: Some(k), epochs: None, seed, bits: 256, realize: presk_rt::Realization::uniform(presk_rt::Dtype::F64), ckpt: None, checkpoints: false };
             let fns = match presk_train::prepare_training(&mut core, &prog, &typed) {
                 Ok(f) => f,
                 Err(e) => {
@@ -1410,9 +1913,9 @@ fn export(file: &Path, mode: ExportMode, out: &Path, shapes: Option<&str>, stack
             // The same K steps on the native backend (same seed: same θ₀ and batches),
             // for the experiments chapter's native points.
             let mut native_files: Vec<(String, presk_rt::Value)> = Vec::new();
-            for (realize, name) in [(presk_rt::Realize::F64, "native_f64"), (presk_rt::Realize::F32, "native_f32")] {
-                let o = presk_train::TrainOptions { realize, ..topts.clone() };
-                match presk_cranelift::native_backend(&core, &prog, realize, seed) {
+            for (realize, name) in [(presk_rt::Realization::uniform(presk_rt::Dtype::F64), "native_f64"), (presk_rt::Realization::uniform(presk_rt::Dtype::F32), "native_f32")] {
+                let o = presk_train::TrainOptions { realize: realize.clone(), ..topts.clone() };
+                match presk_cranelift::native_backend(&core, &prog, &realize, seed) {
                     Ok(mut b) => match presk_train::train(&mut b, &core, &prog, &typed, &fns, &o, |_| {}) {
                         Ok(t) => native_files.push((name.to_string(), t.theta)),
                         Err(e) => eprintln!("presk export: native {name}: {}", e.message),

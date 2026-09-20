@@ -131,7 +131,7 @@ fn prim_work_bytes(op: &PrimOp, ch: &[Id], elems: &dyn Fn(Id) -> f64, ty_of: &dy
         Embed | OneHot | EmbedVjp | MeanVjp { .. } | BroadcastLike | ScatterIndex { .. } | ScatterParams { .. } | SetSlice => n_out,
         Argmax | Sample => in0,
         Zeros { .. } | Ones { .. } | ZerosLike | Normal { .. } | XavierUniform { .. } | DropoutMask | Positions { .. } | CausalMask { .. } => n_out,
-        MergeAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SliceParams { .. } | StackParams { .. } | SplitKey { .. } | SetField { .. } | SetElem { .. } => 0.0,
+        MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SliceParams { .. } | StackParams { .. } | SplitKey { .. } | SetField { .. } | SetElem { .. } => 0.0,
     };
     (w, q)
 }

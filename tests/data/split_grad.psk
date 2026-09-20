@@ -1,0 +1,28 @@
+-- A gradient through `split` (0.5.0 step 1): one axis is read as two,
+-- row-major, in the middle of a differentiable path, and the two halves are
+-- then treated differently — a per-pair scale broadcasts across the inner
+-- axis — so the adjoint has to sum the cotangent back under the original
+-- axis rather than merely retag it. This is the shape rotary positions and
+-- grouped-query attention need.
+const V : nat = 3
+const D : nat = 4
+const P : nat = 2
+dim B
+
+module M {
+  param tok   : ℝ[vocab: V, model: D]  init = normal(std = 0.5)
+  param scale : ℝ[pair: P]             init = normal(std = 0.5)
+  param w     : ℝ[model: D, vocab: V]  init = xavier_uniform
+
+  fn apply(ids : idx[V][batch: B]) -> ℝ[batch: B, vocab: V] =
+    let e = embed(tok, ids)                        -- ℝ[batch: B, model: D]
+    let s = split(axis model, pair: P, two: 2, e)  -- ℝ[batch: B, pair: P, two: 2]
+    let r = tanh(s * scale)                        -- `scale` broadcasts across `two`
+    merge(axis pair, axis two, r) · w
+}
+
+fn loss(θ : params M, ids : idx[V][batch: B]) -> ℝ[] =
+  mean(M.apply(θ, ids)^2)
+
+fn loss_grad(θ : params M, ids : idx[V][batch: B]) -> params M =
+  grad(λ θ. loss(θ, ids))(θ)

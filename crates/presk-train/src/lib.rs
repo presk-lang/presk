@@ -25,7 +25,7 @@ use presk_core::{FuncId, Program};
 use presk_data::{Layout, Leaf, Pipeline, Reader};
 use presk_interp::eval::Dims;
 use presk_interp::key::Key;
-pub use presk_rt::{Backend, Buf, Realize, Tensor, Value, load_params, params_from_data, params_to_data, save_params};
+pub use presk_rt::{Backend, Buf, Realization, Tensor, Value, load_params, params_from_data, params_to_data, save_params};
 use presk_rt::{Axis, Prepared, RtError};
 use presk_syntax::Span;
 use presk_types::check::TypedProgram;
@@ -44,7 +44,7 @@ pub struct TrainOptions {
     pub seed: u64,
     pub bits: u32,
     /// The machine type of a native backend (ignored by the interpreter).
-    pub realize: Realize,
+    pub realize: Realization,
     /// Overrides the run's checkpoint directory.
     pub ckpt: Option<PathBuf>,
     /// Write checkpoints and `final.psk.d` at all (the conformance replay does not).
@@ -181,13 +181,13 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
         Ok(d)
     };
     let d_obj = dims_of(fns.objective)?;
-    let objective: Prepared = backend.prepare(fns.objective, &d_obj, opts.realize)?;
-    let vjp = backend.prepare(fns.vjp, &d_obj, opts.realize)?;
-    let init = backend.prepare(fns.init, &dims_of(fns.init)?, opts.realize)?;
+    let objective: Prepared = backend.prepare(fns.objective, &d_obj, &opts.realize)?;
+    let vjp = backend.prepare(fns.vjp, &d_obj, &opts.realize)?;
+    let init = backend.prepare(fns.init, &dims_of(fns.init)?, &opts.realize)?;
     let d_opt = dims_of(fns.opt_step)?;
-    let opt_init = backend.prepare(fns.opt_init, &d_opt, opts.realize)?;
-    let opt_step = backend.prepare(fns.opt_step, &d_opt, opts.realize)?;
-    let opt_lr = backend.prepare(fns.opt_lr, &Dims::new(), opts.realize)?;
+    let opt_init = backend.prepare(fns.opt_init, &d_opt, &opts.realize)?;
+    let opt_step = backend.prepare(fns.opt_step, &d_opt, &opts.realize)?;
+    let opt_lr = backend.prepare(fns.opt_lr, &Dims::new(), &opts.realize)?;
     // Checkpoints.
     let ckpt_dir: Option<PathBuf> = if opts.checkpoints { opts.ckpt.clone().or_else(|| run.checkpoint.as_ref().map(|(_, dir)| run.dir.join(dir))) } else { None };
     let every = run.checkpoint.as_ref().map(|(k, _)| *k).filter(|k| *k > 0);
@@ -273,7 +273,15 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
 /// usual. The `batch` axis of that parameter is bound to the number of samples
 /// read, so an objective can be evaluated on its own dataset and a plain
 /// function on a corpus.
-pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, realize: Realize, path: &std::path::Path, samples: Option<usize>) -> Result<presk_interp::RunOutput> {
+pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, realize: Realization, path: &std::path::Path, samples: Option<usize>) -> Result<presk_interp::RunOutput> {
+    run_on_data_from(backend, core, elab, opts, realize, path, 0, samples)
+}
+
+/// The same, on the `samples` entries starting at `from`. Two calls with
+/// disjoint ranges give two independent measurements of the same program,
+/// which is how the magnitude envelope's stability is tested (0.5.0 step 3).
+#[allow(clippy::too_many_arguments)]
+pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, realize: Realization, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<presk_interp::RunOutput> {
     let to_train = |e: presk_interp::RunError| TrainError { code: "E7001", message: e.message, span: e.span };
     let (entry_fn, _, _) = presk_interp::run::resolve_entry(core, elab, &opts.entry).map_err(to_train)?;
     let Some(last) = core.func(entry_fn).params.last() else {
@@ -281,9 +289,10 @@ pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram
     };
     let last_ty = last.ty.clone();
     let mut reader = Reader::open(path)?;
-    let count = samples.unwrap_or(usize::MAX).min(reader.len());
+    let available = reader.len().saturating_sub(from);
+    let count = samples.unwrap_or(usize::MAX).min(available);
     if count == 0 {
-        return err("E9003", format!("{}: no samples to read", path.display()));
+        return err("E9003", format!("{}: no samples to read from {from} (the file holds {})", path.display(), reader.len()));
     }
     let layout = reader.layout()?.clone();
     // The batch dimension of that parameter is the number of samples taken.
@@ -295,12 +304,12 @@ pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram
     }
     let opts = presk_interp::RunOptions { entry: opts.entry.clone(), dims, seed: opts.seed, bits: opts.bits, digits: opts.digits };
     let (func, fdims, inputs) = presk_interp::run::prepare_run(core, elab, &opts).map_err(to_train)?;
-    let values: Vec<presk_data::Value> = (0..count).map(|i| reader.get(i)).collect::<std::result::Result<_, _>>()?;
+    let values: Vec<presk_data::Value> = (from..from + count).map(|i| reader.get(i)).collect::<std::result::Result<_, _>>()?;
     let refs: Vec<&presk_data::Value> = values.iter().collect();
     let batch = batch_value(&last_ty, &layout, &refs, &fdims)?;
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<std::result::Result<_, _>>()?;
     *args.last_mut().unwrap() = batch;
-    let prepared = backend.prepare(func, &fdims, realize)?;
+    let prepared = backend.prepare(func, &fdims, &realize)?;
     let result = backend.call(&prepared, args)?;
     let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
     Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })

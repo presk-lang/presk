@@ -34,7 +34,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: tutorial-precision curve precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -70,7 +70,10 @@ venv:
 	uv pip install --python .venv/bin/python torch numpy pytest onnx onnxscript onnxruntime
 
 conformance: export-examples
-	@for d in out/*/; do echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; done
+	@for d in out/*/; do \
+	    [ -f "$$d/test_conformance.py" ] || continue; \
+	    echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; \
+	done
 
 # The commands of the tutorial chapter, in order (crates/presk-manual/manual/tutorial.md).
 # The PyTorch conformance tests at the end need `make venv`.
@@ -215,6 +218,53 @@ corpus: build
 # check` passes at the course's own constants (D=384, H=6, L=6, T=256); what
 # trains here is reduced, because a course-scale step is the wall this version
 # exists to break (corpus/nlp/EXPECTED.md).
+# The magnitude envelope a precision bound is conditional on (0.5.0 step 3),
+# and the property the whole analysis rests on: two disjoint sets of samples
+# must give magnitudes within a small factor of each other.
+# The epsilon-to-quality curve (0.5.0 step 8): one program, one parameter
+# varying, every point verified by measurement against the exact reference.
+# Tutorial step 15: every command of "A budget, and what it buys".
+tutorial-precision: build
+	$(PRESK) calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out out/tut_env.json
+	$(PRESK) check --precision out/tut_env.json tutorial/07_train.psk --realize f32
+	$(PRESK) solve tutorial/07_train.psk --precision out/tut_env.json --budget 1e-3 --out out/tut_solved.json --sites 0
+	$(PRESK) run tutorial/07_train.psk --entry loss --dim B=4 --backend native --realize @out/tut_solved.json --digits 10
+
+curve: build
+	./experiments/curve.sh out/curve.md
+
+precision: build
+	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	    --const D=32 --const H=2 --const L=2 --dim T=256 \
+	    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 0 \
+	    --out out/envelope_a.json
+	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	    --const D=32 --const H=2 --const L=2 --dim T=256 \
+	    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 8 \
+	    --out out/envelope_b.json --compare out/envelope_a.json
+	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	    --const D=32 --const H=2 --const L=2 --dim T=256 \
+	    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 64 \
+	    --out out/envelope_c.json --compare out/envelope_a.json
+	# And the bound that envelope supports, per realization (0.5.0 step 4).
+	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f64
+	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f32 --sites 6
+	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize bf16
+	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	    --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=32 --bits 128 \
+	    --out out/gpt_env.json
+	# Where a budget should go, from one reverse sweep on trained weights
+	# (0.5.0 step 5). Without --weights the zero-initialized head makes every
+	# upstream gradient exactly zero and the ranking says nothing.
+	$(PRESK) dump corpus/nlp/05_gpt.psk --stage sensitivity --entry loss \
+	    --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=32 \
+	    --weights out/gpt_tiny/final.psk.d --sites 8
+	# A budget in, a realization out (0.5.0 step 6); then run what it chose.
+	$(PRESK) solve corpus/nlp/05_gpt.psk --precision out/gpt_env.json --budget 1e-3 \
+	    --weights out/gpt_tiny/final.psk.d --out out/solved.json --sites 6
+	$(PRESK) run corpus/nlp/05_gpt.psk --entry loss --const D=64 --const H=2 --const L=2 \
+	    --dim B=2 --dim T=32 --backend native --realize @out/solved.json --digits 10
+
 corpus-gpt: build
 	python3 corpus/nlp/data/prepare.py
 	$(PRESK) data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json

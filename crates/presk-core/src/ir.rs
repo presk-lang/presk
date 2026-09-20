@@ -211,6 +211,11 @@ pub enum PrimOp {
     /// (`(i, j) ↦ i·|b| + j`). The new axis is unnamed, as `embed`'s is. A
     /// pure retag: row-major buffers make this metadata-only.
     MergeAxes { a: String, b: String },
+    /// `split(axis a, n1: L1, n2: L2, x)`: one axis becomes two, row-major
+    /// (`k ↦ (k / L2, k % L2)`), so it is exactly the inverse of `MergeAxes`
+    /// and the two halves are named at the split site. A pure retag, like
+    /// `MergeAxes`: it reads the same buffer under a different shape.
+    SplitAxes { a: String, n1: String, l1: DimExpr, n2: String, l2: DimExpr },
     /// `(x, template)`: `x`'s buffer under the template's axes, which must
     /// hold as many elements. The adjoint of `MergeAxes`, and a retag like it.
     ReshapeLike,
@@ -311,6 +316,7 @@ impl PrimOp {
             PrimOp::Sample => "sample".into(),
             PrimOp::IndexConst { axis, index } => format!("index {axis}: {index}"),
             PrimOp::MergeAxes { a, b } => format!("merge {a}, {b}"),
+            PrimOp::SplitAxes { a, n1, n2, .. } => format!("split {a} into {n1}, {n2}"),
             PrimOp::ReshapeLike => "reshape_like".into(),
             PrimOp::SplitHeads { h, hd } => format!("split_heads {h}x{hd}"),
             PrimOp::MergeHeads { h, hd } => format!("merge_heads {h}x{hd}"),

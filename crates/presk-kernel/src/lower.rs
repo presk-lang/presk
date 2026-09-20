@@ -7,6 +7,7 @@ use presk_core::PrimOp;
 use presk_sched::{Src, Step};
 use presk_rt::Axis;
 
+use presk_rt::ReductionOrder;
 use crate::ir::{BinOp, BufKind, BufSpec, CmpOp, Dtype, Expr, Kernel, Stmt, UnOp};
 
 /// An operand: its axes and whether it holds reals or indices.
@@ -202,11 +203,18 @@ fn unary_expr(op: &PrimOp, x: Expr) -> Option<Expr> {
 /// Lowers a tensor primitive; `None` when the primitive is a host operation
 /// (structural, random, or on scalars).
 pub fn lower(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Option<Result<Lowered>> {
+    lower_ordered(op, ins, dtype, ReductionOrder::Sequential)
+}
+
+/// The same, under the realization's declared reduction order. An
+/// `Interleaved` order selects a contraction that reassociates and says so
+/// (D31); every other order keeps the exact forms of 0.4.0.
+pub fn lower_ordered(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Option<Result<Lowered>> {
     Some(match op {
         PrimOp::Add | PrimOp::Sub | PrimOp::Mul | PrimOp::Div => elementwise_binary(op, ins, dtype),
         PrimOp::Neg | PrimOp::Exp | PrimOp::Log | PrimOp::Tanh | PrimOp::Sqrt | PrimOp::Sin | PrimOp::Cos | PrimOp::Abs | PrimOp::Gelu | PrimOp::GeluDeriv | PrimOp::Relu | PrimOp::Heaviside | PrimOp::Sign | PrimOp::Sigmoid | PrimOp::Pow(_) => unary(op, ins, dtype),
         PrimOp::Real if ins.len() == 1 && ins[0].kind == BufKind::Idx => unary(op, ins, dtype),
-        PrimOp::Dot | PrimOp::Matmul => dot(ins, dtype),
+        PrimOp::Dot | PrimOp::Matmul => dot(ins, dtype, order),
         PrimOp::DotVjpL => dot_vjp_l(ins, dtype),
         PrimOp::DotVjpR => dot_vjp_r(ins, dtype),
         PrimOp::Ein { operands, output } => ein(ins, operands, output, dtype),
@@ -316,6 +324,62 @@ fn unary(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
 /// given index builders.
 #[allow(clippy::too_many_arguments)]
 fn contraction(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>, outer_dims: Vec<usize>, inner_dims: Vec<usize>, index_x: impl Fn(&[usize], &[usize]) -> Vec<Expr>, index_y: impl Fn(&[usize], &[usize]) -> Vec<Expr>) -> Result<Lowered> {
+    contraction_ordered(name, dtype, ins, out, outer_dims, inner_dims, index_x, index_y, ReductionOrder::Sequential)
+}
+
+/// The same, under a declared reduction order.
+///
+/// `Interleaved { partials: n }` keeps `n` accumulators over one contracted
+/// axis, each summing every `n`-th term, and adds them at the end. That
+/// **reassociates** the sum, so it is a different realization owing a
+/// declared order and a measured gap (D31) — which is exactly why the order
+/// is a field of the realization and not a flag on the backend. It also
+/// breaks the serial dependency of the accumulator chain, which is what
+/// makes it worth having: `k` dependent additions become `k/n`.
+#[allow(clippy::too_many_arguments)]
+fn contraction_ordered(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>, outer_dims: Vec<usize>, inner_dims: Vec<usize>, index_x: impl Fn(&[usize], &[usize]) -> Vec<Expr>, index_y: impl Fn(&[usize], &[usize]) -> Vec<Expr>, order: ReductionOrder) -> Result<Lowered> {
+    // `Interleaved { partials: n }`: `n` accumulators over the contracted
+    // axis, each summing every `n`-th term, added at the end. This
+    // **reassociates** the sum, which is the whole reason the order is a
+    // declared field of the realization and not a flag on the backend (D31)
+    // — and it is also why it is worth having, since `k` dependent additions
+    // become `k/n` and the accumulator chain stops being the bottleneck.
+    //
+    // The contracted index is `cb·n + t` for an unrolled `t`, which needs a
+    // *loop* variable to be assigned rather than iterated: `Stmt::SetL`.
+    if let ReductionOrder::Interleaved { partials } = order
+        && inner_dims.len() == 1
+        && partials >= 2
+        && inner_dims[0] % partials as usize == 0
+    {
+        let n = partials as usize;
+        let chunks = inner_dims[0] / n;
+        let mut bd = B::new();
+        let ov = bd.loops(&outer_dims);
+        let cb = bd.iv();
+        let terms: Vec<usize> = (0..n).map(|_| bd.iv()).collect();
+        let accs: Vec<usize> = (0..n).map(|_| bd.sv()).collect();
+        let mut inner = Vec::new();
+        for t in 0..n {
+            let idx = bin(BinOp::IAdd, bin(BinOp::IMul, Expr::Iv(cb), Expr::I(n as i64)), Expr::I(t as i64));
+            inner.push(Stmt::SetL { var: terms[t], value: idx });
+            inner.push(Stmt::Set {
+                var: accs[t],
+                value: bin(BinOp::Add, Expr::Sv(accs[t]), bin(BinOp::Mul, load(0, index_x(&ov, &terms[t..t + 1])), load(1, index_y(&ov, &terms[t..t + 1])))),
+            });
+        }
+        let mut body: Vec<Stmt> = accs.iter().map(|a| Stmt::Set { var: *a, value: f(0.0) }).collect();
+        body.push(Stmt::For { var: cb, bound: chunks, body: inner });
+        // The partials are combined left to right, so the shape of the tree
+        // is fixed and declared rather than left to the backend.
+        let mut total = Expr::Sv(accs[0]);
+        for a in &accs[1..] {
+            total = bin(BinOp::Add, total, Expr::Sv(*a));
+        }
+        body.push(Stmt::Store { buf: 2, index: ivs(&ov), value: total });
+        let kern = kernel(name, dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &outer_dims, body));
+        return done(kern, out);
+    }
     let mut bd = B::new();
     let ov = bd.loops(&outer_dims);
     let cv = bd.loops(&inner_dims);
@@ -335,7 +399,7 @@ fn contraction(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>, outer_
 const GEMM_TILE: usize = 8;
 
 /// `x[..., K] · w[K, rest…]`.
-fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
+fn dot(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> {
     let (x, w) = (tensor_in(ins, 0, "dot")?, tensor_in(ins, 1, "dot")?);
     if x.axes.is_empty() || w.axes.is_empty() {
         return Err("dot: both operands need at least one axis".into());
@@ -359,7 +423,11 @@ fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     // contiguous run of `w` and stores nothing. Each accumulator still sums
     // `k` in increasing order, so this is bit-identical to the column form —
     // what changes is where the partial sums live, not their order.
-    if w.axes.len() >= 2 && outer.len() >= 2 && *outer.last().unwrap() % GEMM_TILE == 0 {
+    // The blocked and row-wise forms below are exact: every output still
+    // accumulates `k` in increasing order (D32). An interleaved order asks
+    // for a different sum and takes the contraction at the end instead.
+    let exact = order.is_exact();
+    if exact && w.axes.len() >= 2 && outer.len() >= 2 && *outer.last().unwrap() % GEMM_TILE == 0 {
         let (opre, jn) = (outer[..outer.len() - 1].to_vec(), *outer.last().unwrap());
         let mut bd = B::new();
         let ov = bd.loops(&opre);
@@ -388,7 +456,7 @@ fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
         let kern = kernel("dot", dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &opre, vec![tiles]));
         return done(kern, out);
     }
-    if w.axes.len() >= 2 && outer.len() >= 2 {
+    if exact && w.axes.len() >= 2 && outer.len() >= 2 {
         let (opre, jn) = (outer[..outer.len() - 1].to_vec(), *outer.last().unwrap());
         let mut bd = B::new();
         let ov = bd.loops(&opre);
@@ -413,7 +481,7 @@ fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
         let kern = kernel("dot", dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &opre, vec![zero, over_k]));
         return done(kern, out);
     }
-    contraction(
+    contraction_ordered(
         "dot",
         dtype,
         ins,
@@ -430,6 +498,7 @@ fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
             ix.extend(ov[lead..].iter().map(|v| Expr::Iv(*v)));
             ix
         },
+        order,
     )
 }
 

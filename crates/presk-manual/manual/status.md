@@ -144,3 +144,299 @@ E-graph rewriting, cost models, code generation (backend to be chosen in
 0.2), PSK-Sched and PSK-Kernel, the `.pskk`/`.pskb`/`.pskt` formats, the Zig
 runtime, Lean 4 certification, execution of a `training run`, `presk export
 --mode graph` and `--precision=solved`.
+
+## Version 0.5.0 (in progress)
+
+Precision as a resource, plan
+`presk-specs/implementation/presk-plan-0.5.0.md`. The subject is RA3 of the
+research programme: given a declared error budget, which machine types and
+which reduction orders should the backends use, and how far from the exact
+denotation does that put the execution? Both previous plans deferred it for
+the same reason — the solver could not be evaluated on programs that take
+minutes a step — and 0.4.0 removed that reason.
+
+Two tracks, in one version because each is the other's precondition. The
+realization becomes an object rather than a flag, which is what decisions D31
+and D32 of 0.4.0 needed and could not write down; and one vectorized GEMM
+ships under that contract, because the `native` chapter records that `f32` is
+no faster than `f64` here, so without vector lanes a precision solver's
+objective is flat and its result untestable.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | Version `0.5.0-dev`, crate `presk-precision` scaffolded, decisions D34 and D35, spec questions 50–55 | done (2026-09-20) |
+| 1 | The axis `split` (question 45's open half) and per-layer keys inside a fold (question 48's residue) | done (2026-09-20); grouped-query attention now exact, rotary positions blocked on `concat`, not on the split |
+| 2 | The realization as an object: per-group storage and accumulator types, a declared reduction order, `bf16` storage, conformance per realization | done (2026-09-20); `f64` and `f32` unchanged digit for digit |
+| 3 | The magnitude envelope: `presk calibrate --precision`, and its stability measured between disjoint sample sets | done (2026-09-20); disjoint slices agree within 1.24× |
+| 4 | First-order error propagation over PSK-Core, `presk check --precision` | done (2026-09-20); sound everywhere, vacuous on a transformer |
+| 5 | Sensitivity by differentiation, `dump --stage sensitivity` | done (2026-09-20); half the folklore reproduced, half contradicted |
+| 6 | The solver: propose by sensitivity, verify by **measurement**, tighten, report the gap; `presk solve … --out R.json`, run with `--realize @R.json` | done (2026-09-20); 2.67× less traffic on the corpus GPT, accepted first time |
+| 7 | The vectorized GEMM under the contract | **started, not landed** (2026-09-20): the declared order reaches the lowering and the cache key; neither the interleaved contraction nor the vector lanes are emitted |
+| 8 | The ε-to-quality curve, `make curve` | done for the ε axis (2026-09-20); the quality axis needs a training run per point and was not affordable |
+| 9 | The four statements answered by measurement; the MLPerf foil written up against BERT-large | done (2026-09-20); **D holds, E and F fail, G is not askable** |
+| 10 | Documentation, tutorial step 15, CHANGELOG, version `0.5.0`, tag | done (2026-09-20) |
+
+### What 0.5.0 will be judged on
+
+Four falsifiable statements, in the form 0.4.0 used, where two of three
+failed and the version was better for having said in advance what would count
+as failure. On the corpus GPT at course scale: the solved realization's
+**measured** gap is inside a `1e-3` budget (D); it is at least 1.5× faster a
+step than all-`f64` (E); the **propagated** bound exceeds the measured gap by
+at most 10³ on at least half the conformance entries (F); and the vectorized
+GEMM's measured gap falls inside the bound its declared reduction order
+predicts (G). E is the statement most at risk, and step 7 is sequenced before
+step 8 to give it a chance.
+
+### 0.5.0 step 1, in detail
+
+The step closed two language debts and found that one of them was mislabelled.
+
+The axis `split` is in the checker, the IR, the lowering, differentiation,
+the reference interpreter, the kernel host, the cost model and the PyTorch
+export (`.unflatten`). It is a pure retag, so it launches no kernel; its
+adjoint is `reshape_like`, checked against central finite differences at 512
+bits in `tests/data/split_grad.psk` on a model that treats the two halves
+differently, which a transposed or column-major reading would not survive.
+The three backends agree to every digit and the generated PyTorch passes its
+conformance test.
+
+Per-layer randomness needed **nothing new**. A fold hands every iteration the
+same extras, so the key is carried in the accumulator instead;
+`tests/data/stack_keys.psk` measures that four independent masks at rate ½
+zero about fifteen sixteenths of a tensor where one reused mask zeroes about
+half. The index route was implemented far enough to establish that it could
+not be differentiated (`E6001`), and the builtin written for it was removed
+(D37).
+
+Two findings worth carrying forward. Splits chain and merges do not, because
+a split names its halves and a merge names nothing (D36) — which is what lets
+`coverage/llama.psk` express grouped-query attention exactly, with neither
+`split_heads` nor `merge_heads`. And rotary positions, which 0.4.0 attributed
+to the missing split, are not blocked by it: the pairing checks, and what is
+missing is `concat` — a way to build a tensor along an axis from computed
+parts. The decoder family is one construct from exact, and it is not a shape
+construct.
+
+
+### 0.5.0 step 2, in detail
+
+`presk_rt::Realize`, a flag with two values, became `presk_rt::Realization`,
+a record: a storage and an accumulator type per site, a declared reduction
+order, and the magnitude envelope any bound about it assumed. It travels
+through `presk-kernel`, `presk-cranelift`, `presk-serve`, `presk-train` and
+the CLI, which now takes `--realize f64|f32|bf16|@FILE`.
+
+A site is a fusion group's root, `"<function>/%<let>"`. The kernel host
+resolves the realization at each site as it walks a body, and a buffer that
+crosses from a site of one type to a kernel of another is converted at the
+kernel's edge — the one place a mixed assignment's conversion cost actually
+lives. Measured on `mse`: `f64` gives 0.935893833554, uniform `bf16` gives
+0.9375, and narrowing the single site `mse/%5` gives 0.937812805176, which
+is neither.
+
+`bf16` is storage only (D38), widened by a shift and narrowed by one round to
+nearest even, written once in Rust and again as Cranelift integer
+instructions. The two executors agree digit for digit on a `bf16` gradient,
+which is what makes the conformance number a realization gap rather than a
+difference between two programs.
+
+**The check that mattered** was that nothing moved: every `f64` and `f32`
+entry of the conformance table is what 0.4.0 measured, to the last digit, and
+every golden is unchanged. The suite now reports three columns, and the
+`bf16` one is new evidence rather than a regression: worst 3.3e-2, with an
+absolute floor in the band because a result near a cancellation has unbounded
+relative error at any precision.
+
+### 0.5.0 step 3, in detail
+
+`presk calibrate --precision` runs an entry on the reference interpreter and
+records the largest `|x|` at each site, with the program, the entry, the
+sample count, the precision and the day in the file. The recorder is a field
+on the interpreter rather than a separate pass, so the magnitudes are those
+of the exact denotation and not of a rounded run.
+
+The step's real content is the check. `make precision` calibrates three
+disjoint slices of the civil code on the corpus GPT and compares them: 101
+sites, 77 compared, 24 identically zero in both, **none in only one**, worst
+ratio **1.241×** between adjacent slices and **1.128×** between far-apart
+ones. So the magnitudes are a property of the program within about a
+quarter, not of the sample drawn — which is the assumption the whole error
+analysis rests on, now measured rather than assumed (D35). The worst
+disagreement is at the input of a normalization, the widest value in a
+transformer block and the one most exposed to an unusual batch.
+
+Two limits stated in the `precision` chapter: the measurement is at reduced
+constants, because a course-scale run on the exact interpreter is not
+affordable, and it is taken at a fresh initialization, so it says nothing yet
+about how the envelope moves during training.
+
+### 0.5.0 step 4, in detail
+
+`presk check --precision ENVELOPE.json` propagates an entry's rounding error
+under a realization and prints the bound; `--sites N` prints the widest `N`
+sites, which is the per-value table the plan asked a separate dump stage for
+— one surface rather than two, since `check` already loads the envelope.
+
+The rules are in the `precision` chapter. Three of them carry the analysis: a
+quotient propagates in *relative* terms, which is why a normaliser costs
+nothing; a residual adds rather than multiplies; a softmax is 1-Lipschitz in
+the ∞ norm. The reduction order is an argument, and a test asserts what that
+means — blocking leaves the bound untouched, eight interleaved partials
+change it.
+
+**The result is that the analysis is sound and, on a real model, vacuous.**
+On every conformance entry in every realization the bound exceeds the
+measured gap, which a test asserts over 24 combinations. The median ratio is
+1.8·10³ and ten of twenty-one are within 10³; on a normaliser it is 27. On
+the corpus GPT it is 10²⁰, which is a relative bound of 10²⁰ on a loss of
+4.5 and says nothing.
+
+The cause is located: a contraction of `k` terms multiplies its input error
+by `k`, worst-case correct, while committed errors grow like `√k`. Four
+contractions in series carry `k⁴`. The tightening that closes it is each
+sum's condition number measured into the envelope, named as future work
+(D39). Two rules were wrong before the soundness test found them — a mean
+was multiplying error by the batch size, and the absolute quotient rule was
+pairing the largest numerator with the smallest divisor — which is what the
+test is for.
+
+### 0.5.0 step 5, in detail
+
+`presk dump --stage sensitivity --entry L` prints `‖∂L/∂v‖₁` at every site
+and summed per module. It costs one reverse sweep: differentiation already
+computes every intermediate's adjoint and throws all but the parameters'
+away, so the step only keeps the correspondence (D40).
+
+Two results. **A ranking at initialization is vacuous** — a zero-initialized
+output head stops every upstream gradient, so `--weights` is required for the
+number to mean anything, exactly as the envelope needs a trained model to
+describe one. And **half the mixed-precision folklore is reproduced**: the
+output head dominates at 5.86 against 2.46 for the whole block stack, while
+the token embedding table scores 0.28, below the down-projection that
+practice narrows without hesitation. Keeping embeddings wide is therefore not
+explained by the loss's sensitivity to them.
+
+### 0.5.0 step 6, in detail
+
+`presk solve` turns a budget into a realization: propose greedily by bytes
+saved per unit of sensitivity-weighted error, verify, and while the
+verification fails widen the worst site one step of the menu.
+
+**It verifies by measurement rather than by the bound** (D41), because step 4
+showed the bound is vacuous on a transformer and verifying against it would
+accept everything. Measuring the candidate against the exact reference is the
+stronger check, and one only this compiler can make. Two deviations from the
+plan follow: the budget comes from `--budget` rather than the program's
+`precision` block, whose plumbing through the typed configuration is not
+done, and the result is written to a file that `--realize @FILE` runs, rather
+than a `--realize solved` mode — the two compose and the file is what the
+next steps want anyway.
+
+Measured on the corpus GPT at `D = 64`, trained, budget 10⁻³: 2.67× less
+traffic than all-`f64`, **zero** widening rounds, measured gap 1.05e-7
+against a budget of 4.5e-3, and the solved realization runs natively. On a
+program small enough for exhaustive search the greedy proposal is exactly
+optimal at 10⁻³ and 1.057× off at 10⁻⁶.
+
+One bug worth recording because it inverted the whole search: reading a
+*missing* sensitivity as zero makes a site look maximally safe to narrow.
+With it, the solver narrowed everything, measurement rejected the result, and
+103 widening rounds recovered 1.06×. Treating the absence as unknown gives
+2.67× accepted on the first measurement.
+
+### 0.5.0 step 7, where it stands
+
+Two things came out of starting it, and only one of them is code.
+
+**The finding.** D31 refused vectorization because vectorizing a
+contraction's inner sum reassociates it. That is true and it is not the only
+way to vectorize a contraction. The blocked form of 0.4.0 already holds eight
+accumulators, and they are eight *different output columns*, each still
+summing `k` in increasing order. Putting those in vector lanes is bit-exact:
+the lanes are independent columns and the inner sum is untouched. So the
+largest single factor the kernels roadmap expects does **not** need a new
+realization, which is a better position than the plan assumed (D42). The
+contract remains necessary for the matrix coprocessor and the GPU, where a
+reduction genuinely crosses lanes.
+
+**The code.** `Stmt::SetL` assigns a loop variable in PSK-Kernel and in both
+executors, which is what an unrolled index needs; on it the interleaved
+contraction is emitted, and the declared order is part of the kernel cache
+key. It reaches the kernel and reassociates, which a test asserts: the
+embedding MLP at `D = 32` in `f32` gives 1.5494239330292 sequentially and
+1.5494240522385 with eight partials, and the two executors agree with each
+other to the last digit under each order.
+
+`presk bench --native-only` skips the exact interpreter's row, which at 1024³
+is what stopped a large benchmark from finishing at all. With it, on a 1024³
+matmul over twelve cores: `f64` 102.4 ms, `f32` 87.3, `bf16` 96.9, and `f32`
+with `Interleaved(8)` **239.0**.
+
+**The reassociating order is 2.7× slower**, structurally: it cannot use the
+blocked form, whose eight accumulators are eight output columns, so it falls
+back to the naive per-element contraction and loses the cache behaviour that
+was the whole gain of 0.4.0 step 6. Breaking the accumulator's dependency
+chain buys far less than blocking does. So for a CPU contraction there is no
+reason to reassociate at all — the exact form is both faster and exact, and
+is also the shape vector lanes want. The order stays implemented, declared
+and measured, because the coprocessor and the GPU will need it and a contract
+one cannot exercise is not a contract; it is nothing's default.
+
+What remains is the vector lanes, which need a vector form in the kernel IR.
+Statement G as the plan worded it is about a vectorized kernel that does not
+exist yet, and stays unanswered.
+
+Statement G of the plan is therefore **not yet answerable**, and the version
+cannot be closed until this step is.
+
+### 0.5.0 step 8, in detail
+
+`make curve` sweeps the budget on the corpus GPT: one program, one parameter
+varying, which is the whole point — the sweep the specification says nobody
+can do cleanly, because elsewhere each precision level is a different
+pipeline and the comparison is between artefacts.
+
+Every point is inside its budget by measurement against the exact reference,
+and traffic rises monotonically as the budget tightens: 4.00× less at 10⁻¹,
+2.67× at 10⁻³, 1.69× at 10⁻⁷, with a knee between 10⁻² and 10⁻³. The
+`precision` chapter has the table.
+
+Two things it does not hide. The measured gap is not monotone, because the
+greedy proposal changes shape between budgets and the constraint is on being
+inside rather than tight. And the propagated bound at these constants is
+7.15e11, vacuous, which is why the measured columns are the result — exactly
+as the plan said they would have to be.
+
+**What is missing is the quality axis.** A validation loss per point needs a
+training run per point, and that is the one experiment this version has not
+been able to afford. The curve is therefore an ε-to-*traffic* curve with
+measured error, not yet an ε-to-quality one.
+
+## What 0.5.0 has, and what it does not
+
+**Has.** A realization that is an object rather than a flag: per-site storage
+and accumulator types, a declared reduction order, and the envelope any bound
+about it assumed. A magnitude envelope measured on the exact interpreter,
+stable to 1.24× across disjoint samples. A first-order error propagation that
+is sound everywhere it can be checked. A sensitivity analysis costing one
+reverse sweep. A solver that turns a declared budget into an assignment and
+**verifies it by measurement against the exact denotation** — 1.05e-7 against
+a budget of 4.52e-3 on the corpus GPT. And a one-parameter sweep of that
+budget, every point verified, four times less traffic at 10⁻¹ and 1.69× at
+10⁻⁷.
+
+**Does not have.** Speed. The solved realization runs at 0.96× all-`f64`,
+because the objective is traffic and these kernels are bound by arithmetic
+(statement E). The vectorized kernel is deferred to 0.6.0: vectorizing across
+output columns turns out to be bit-exact (D42), and emitting it needs a
+vector form in PSK-Kernel that this version did not write. Statement G is
+about that kernel and needs restating. The curve has no *quality* axis, which
+needs a training run per point. The bound is vacuous on a network, and the
+tightening is named but not built.
+
+**The shape of the result is 0.4.0's.** There, the discipline was shown
+affordable and the speed was not there. Here, precision is shown declarable
+and verifiable and the speed is still not there. The next version's first
+item is the same as this one's last: make a narrower type buy time, not only
+bytes.

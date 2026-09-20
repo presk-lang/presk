@@ -77,7 +77,7 @@ report is a snapshot test; adding a code means adding such a file.
 | `E2003` | shape mismatch / cannot broadcast / axis name mismatch | ranks differ; no trailing or by-name alignment for an elementwise operation; two named axes with different names where one is expected (`seq` vs `seq2`); `·` without the needed axes |
 | `E2004` | wrong number of arguments / missing argument / unknown named argument | call arity, a parameter without default not given, a named argument that matches no parameter, a missing `θ` when calling a module function outside its module |
 | `E2005` | not callable / not a member | calling a non-function, a function name that is not a member of the module, field access on an expression, a module instance used as a value |
-| `E2006` | dimension mismatch: `a` vs `b` | two dimension expressions that must be equal are not (a counterexample is shown when the procedure finds one) |
+| `E2006` | dimension mismatch: `a` vs `b` | two dimension expressions that must be equal are not (a counterexample is shown when the procedure finds one). A `split` whose two lengths are both known says so as arithmetic instead: *`split` of `a` does not account for every element*, with the product and the axis length |
 | `E2007` | `ein` errors | an operand with an unnamed axis or an open prefix, an output axis absent from all operands, an ambiguous relabeling |
 | `E2008` | no axis named `a` | `axis a`, `[a: i]` on a tensor whose type has no axis of that name, or a positional index on an open shape |
 | `E2009` | index tensor mixed with reals | `+ - * /` between an `idx` tensor and a real; use `real(…)` |

@@ -17,16 +17,78 @@ the training loop written over the seam reproduces 0.2.0's results digit for
 digit. Input synthesis stays with the interpreter: any backend runs on the
 inputs the reference would.
 
-## Realization: `--realize f64|f32`
+## The realization: `--realize f64|f32|bf16|@FILE`
 
-A native backend computes every real tensor in one machine type. Reductions
-and contractions accumulate in that type (PyTorch's convention), indices
-are `i64`, hyperparameters and `nat` values are converted at their
-injection. `gelu` is the exact `x·Φ(x)` through `erf`; `softmax` and
-`cross_entropy` subtract the row maximum (a value-preserving rewrite over
-ℝ). The realization is uniform: per-tensor choices are the precision
-solver's job, in a later version. The interpreter ignores the flag and
-computes at `--bits`.
+Versions 0.1.0 to 0.4.0 had a flag here with two values. Since 0.5.0 step 2
+the realization is an **object**, because two separate needs met: the
+precision solver has to *produce* a per-site assignment, and a vectorized or
+coprocessor kernel has to *declare* its reduction order before it may ship —
+which decisions D31 and D32 demanded and had nowhere to write down. One
+record answers both (D34):
+
+```json
+{
+  "default": "f32",
+  "storage": { "loss/%17": "bf16", "loss/%23": "f64" },
+  "accum":   { "loss/%17": "f32" },
+  "order":   { "kind": "interleaved", "partials": 8 },
+  "envelope": "out/envelope.json"
+}
+```
+
+- **`default`** is the storage type of every site the map does not mention,
+  so `--realize f64` is exactly this object with an empty map and a
+  sequential order. Those spellings mean today what they meant in 0.4.0, and
+  the goldens prove it: every measured gap of the conformance table is
+  unchanged digit for digit.
+- **A site** is `"<function>/%<let>"`, naming a fusion group's root as
+  `presk dump --stage core` prints it. The group is the unit because it is
+  one loop nest with one set of buffers, so it is the smallest place a type
+  is a decision rather than a conversion.
+- **`accum`** is the type a contraction sums in. It defaults to the
+  *arithmetic* type of the storage, so `bf16` storage accumulates in `f32`
+  unless something says otherwise.
+- **`order`** is `sequential`, `blocked(width)` or `interleaved(partials)`.
+  The first two are bit-identical — register blocking keeps every addition in
+  index order (D32) — and the third reassociates, which is a different
+  realization owing a measured gap (D31). It is not a performance hint: the
+  constant in front of `u` in a contraction's error rule is a function of it.
+- **`envelope`** names the magnitude measurements any bound about this
+  realization assumed, because a bound without one is a different and
+  unsupported claim (D35).
+
+`bf16` is **storage only**: buffers hold sixteen bits, arithmetic is `f32`,
+and conversion is a shift on the way in and one round to nearest even on the
+way out (D38). It halves the traffic of the memory-bound sweeps — `adamw.step`
+is a dozen passes over every parameter — while contractions keep their
+accuracy. There is no `f16`.
+
+`presk bench` now times each uniform realization, and the first thing it
+shows is that a narrower type is not automatically faster. On
+`Linear{64, 64}.apply` at batch 64, twelve cores, medians of five:
+
+| realization | median ms |
+|---|---|
+| native `f64` | 0.273 |
+| native `f32` | 0.264 |
+| native `bf16` | 0.282 |
+
+`bf16` is *slower* than `f32` here, because this kernel is bound by
+arithmetic rather than by traffic and the conversion on every load and store
+is pure overhead. That is the whole reason precision has to be *solved* per
+site rather than chosen globally: the narrow type pays on the memory-bound
+sweeps and costs on the compute-bound contractions, and which is which is a
+question for a cost model, not for a flag. It is also why this version does
+the vectorized kernel before the curve — without vector lanes there is no
+regime in which arithmetic width alone buys time.
+
+Reductions and contractions accumulate in the accumulator type, indices are
+`i64`, hyperparameters and `nat` values are converted at their injection.
+`gelu` is the exact `x·Φ(x)` through `erf`; `softmax` and `cross_entropy`
+subtract the row maximum (a value-preserving rewrite over ℝ). Where a site
+hands a buffer to a kernel of another type, the conversion happens at the
+kernel's edge, which is where the cost of a mixed assignment actually is.
+The interpreter ignores the realization and computes at `--bits`.
 
 ## PSK-Kernel v0: `--backend kernel`
 
@@ -95,19 +157,29 @@ the kernel backend with the reference interpreter at 256 bits:
   stacked modules, the regression's loss), in both realizations.
 
 The tolerance is `|x − x̂| ≤ ε · (|x| + a)` with `ε = 2⁻⁴⁰, a = 2⁻⁵⁰` for
-`f64` and `ε = 2⁻¹⁵, a = 2⁻²⁰` for `f32`, and the measured worst gaps of
-the examples on 2026-09-19:
+`f64`, `ε = 2⁻¹⁵, a = 2⁻²⁰` for `f32` and `ε = 2⁻⁴, a = 2⁻⁵` for `bf16`.
+Since 0.5.0 step 2 the suite is parameterized by a **realization** rather
+than a machine type, so a mixed or reassociated one is reported the same way;
+the bands above are those of uniform ones. Measured worst gaps of the
+examples (`f64` and `f32` on 2026-09-19, `bf16` on 2026-09-20):
 
-| Entry | f64 | f32 |
-|---|---|---|
-| `mse` | 1.2e-16 | 6.4e-8 |
-| `mse_grad` | 1.5e-14 | 2.0e-6 |
-| `LayerNorm{8}.apply` | 1.2e-15 | 2.4e-7 |
-| `RMSNorm{8}.apply` | 2.2e-16 | 8.2e-8 |
-| `MiniGPT.apply` (tiny) | 0 | 0 |
-| training `loss` (tiny MiniGPT) | 2.1e-16 | 1.1e-7 |
-| `adamw.step` | 1.0e-14 | 1.8e-6 |
-| `loss_grad` through a stacked module | 2.6e-14 | 5.3e-6 |
+| Entry | f64 | f32 | bf16 |
+|---|---|---|---|
+| `mse` | 1.2e-16 | 6.4e-8 | 1.7e-3 |
+| `mse_grad` | 1.5e-14 | 2.0e-6 | 2.8e-2 |
+| `LayerNorm{8}.apply` | 1.2e-15 | 2.4e-7 | 3.2e-2 |
+| `RMSNorm{8}.apply` | 2.2e-16 | 8.2e-8 | 6.1e-3 |
+| `MiniGPT.apply` (tiny) | 0 | 0 | 0 |
+| training `loss` (tiny MiniGPT) | 2.1e-16 | 1.1e-7 | 6.3e-4 |
+| `adamw.step` | 1.0e-14 | 1.8e-6 | 7.6e-3 |
+| `loss_grad` through a stacked module | 2.6e-14 | 5.3e-6 | 1.1e-2 |
+
+The `f64` and `f32` columns are those of 0.4.0, digit for digit: making the
+realization an object changed no arithmetic. The `bf16` column needs its
+absolute floor `a` to mean anything — a result near a cancellation has
+unbounded *relative* error at any precision, which says nothing about the
+kernel, and that is why the bound rules of the precision analysis carry a
+magnitude beside an error rather than a ratio alone.
 
 (`MiniGPT.apply` is exactly 0 because its head is zero-initialized; the
 gaps are those of the gradient path.) Reading against the machine epsilons

@@ -1,0 +1,58 @@
+-- Per-layer randomness inside a `stack{L}` fold (0.5.0 step 1, spec question
+-- 51). A fold passes the same extra arguments to every iteration, so a key
+-- handed in as an extra is the *same* key in all L blocks and every layer
+-- drops the same positions. Carrying the key in the fold's **accumulator**
+-- instead gives each layer its own, with no new construct: the accumulator is
+-- already threaded from one iteration to the next, which is exactly the
+-- dependency a key chain needs.
+--
+-- `Chained` splits the key at every layer, `Shared` reuses one. With rate
+-- 1/2 and L = 4, `Shared` zeroes about half the elements (the same mask four
+-- times over) and `Chained` about fifteen sixteenths. The test reads that
+-- difference, so a fold that silently reused one key would fail it.
+const D : nat = 16
+const L : nat = 4
+dim B
+
+type Acc = (ℝ[batch: B, model: D], key)
+
+module Chained {
+  param γ : ℝ[model: D]  init = ones
+  fn apply(s : Acc) -> Acc uses Rand =
+    let (x, k) = s
+    let (k1, k2) = split_key(k)
+    (dropout(0.5, k1, x * γ), k2)
+}
+
+module Shared {
+  param γ : ℝ[model: D]  init = ones
+  fn apply(s : Acc) -> Acc uses Rand =
+    let (x, k) = s
+    (dropout(0.5, k, x * γ), k)
+}
+
+module NetChained {
+  use blocks : stack{L}(Chained)
+  fn apply(x : ℝ[batch: B, model: D], k : key) -> ℝ[batch: B, model: D] uses Rand =
+    let (y, _) = blocks.apply((x, k))
+    y
+}
+
+module NetShared {
+  use blocks : stack{L}(Shared)
+  fn apply(x : ℝ[batch: B, model: D], k : key) -> ℝ[batch: B, model: D] uses Rand =
+    let (y, _) = blocks.apply((x, k))
+    y
+}
+
+fn chained(θ : params NetChained, x : ℝ[batch: B, model: D], k : key) -> ℝ[batch: B, model: D] uses Rand =
+  NetChained.apply(θ, x, k)
+
+fn shared(θ : params NetShared, x : ℝ[batch: B, model: D], k : key) -> ℝ[batch: B, model: D] uses Rand =
+  NetShared.apply(θ, x, k)
+
+fn loss(θ : params NetChained, x : ℝ[batch: B, model: D], k : key) -> ℝ[] uses Rand =
+  mean(NetChained.apply(θ, x, k)^2)
+
+fn loss_grad(θ : params NetChained, x : ℝ[batch: B, model: D], k : key) -> params NetChained uses Rand =
+  grad(λ θ. loss(θ, x, k))(θ)

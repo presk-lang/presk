@@ -96,6 +96,7 @@ impl<E: Elem> Env<'_, E> {
         match b {
             Buf::F64(v) => E::from_f64(v[off]),
             Buf::F32(v) => E::from_f64(v[off] as f64),
+            Buf::Bf16(v) => E::from_f64(presk_rt::bf16_to_f32(v[off]) as f64),
             Buf::I64(v) => E::from_f64(v[off] as f64),
             Buf::Exact(v) => E::from_f64(v[off].to_f64()),
         }
@@ -174,6 +175,9 @@ impl<E: Elem> Env<'_, E> {
         match self.out {
             Buf::F64(v) => v[off] = x.to_f64(),
             Buf::F32(v) => v[off] = x.to_f64() as f32,
+            // Storage only: the value was computed in `f32` and is rounded
+            // once, to nearest even, on the way to memory.
+            Buf::Bf16(v) => v[off] = presk_rt::f32_to_bf16(x.to_f64() as f32),
             Buf::I64(v) => v[off] = x.to_f64() as i64,
             Buf::Exact(_) => {}
         }
@@ -195,6 +199,10 @@ impl<E: Elem> Env<'_, E> {
                 Stmt::SetI { var, value } => {
                     let x = self.eval_i(value);
                     self.ints[*var] = x;
+                }
+                Stmt::SetL { var, value } => {
+                    let x = self.eval_i(value);
+                    self.loops[*var] = x.max(0) as usize;
                 }
                 Stmt::Store { buf, index, value } => {
                     let off = self.offset(*buf, index);
@@ -228,7 +236,9 @@ pub fn run_kernel(k: &Kernel, inputs: &[&Buf], out: &mut Buf) {
             let mut env = Env::<f64> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![0.0; k.nreal], ints: vec![0; k.nint] };
             env.run(&k.body);
         }
-        crate::ir::Dtype::F32 => {
+        // `bf16` is a storage type: the loop nest runs in `f32` and only the
+        // buffers are narrow, which is the whole of the idiom (D34).
+        crate::ir::Dtype::F32 | crate::ir::Dtype::Bf16 => {
             let mut env = Env::<f32> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![0.0; k.nreal], ints: vec![0; k.nint] };
             env.run(&k.body);
         }
@@ -242,5 +252,6 @@ pub fn output_buf(k: &Kernel) -> Buf {
         (BufKind::Idx, _) => Buf::I64(vec![0; n]),
         (BufKind::Real, crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n]),
         (BufKind::Real, crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n]),
+        (BufKind::Real, crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n]),
     }
 }

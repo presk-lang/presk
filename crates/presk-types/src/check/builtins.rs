@@ -9,7 +9,7 @@ use crate::ty::{Axis, Shape, Ty};
 
 const ELEMENTWISE: &[&str] = &["gelu", "relu", "exp", "tanh", "sqrt", "abs", "log", "sigmoid", "sin", "cos"];
 const NOT_IMPLEMENTED: &[&str] = &["vjp", "jvp", "concat", "clamp", "max", "min"];
-const ALL: &[&str] = &["mean", "sum", "softmax", "embed", "one_hot", "merge", "dropout", "split_key", "cross_entropy", "argmax", "sample", "real", "split_heads", "merge_heads", "positions", "causal_mask", "grad", "matmul"];
+const ALL: &[&str] = &["mean", "sum", "softmax", "embed", "one_hot", "merge", "split", "dropout", "split_key", "cross_entropy", "argmax", "sample", "real", "split_heads", "merge_heads", "positions", "causal_mask", "grad", "matmul"];
 
 impl Checker<'_> {
     pub(crate) fn is_builtin(&self, name: &str) -> bool {
@@ -232,6 +232,63 @@ impl Checker<'_> {
                 let mut axes: Vec<Axis> = sh.axes[..p].to_vec();
                 axes.push(Axis { name: None, len });
                 axes.extend_from_slice(&sh.axes[q + 1..]);
+                Some(Ty::Real(Shape { prefix: sh.prefix, axes }))
+            }
+            "split" => {
+                let [TArg::Axis(a, aspan), TArg::NamedAxis(n1, l1, _), TArg::NamedAxis(n2, l2, s2), TArg::Pos(t, ts)] = args else {
+                    self.error(
+                        Diagnostic::error("E2004", "`split` takes `(axis A, n1: L1, n2: L2, tensor)`")
+                            .label(span, "wrong arguments")
+                            .note("the two new axes are named at the split site, because neither half is named by `A`"),
+                    );
+                    return None;
+                };
+                let Ty::Real(sh) = self.zonk(t) else {
+                    let st = self.show(t);
+                    self.error(Diagnostic::error("E2002", format!("`split` expects a real tensor, found `{st}`")).label(*ts, "not a real tensor"));
+                    return None;
+                };
+                let sh = self.resolve_shape(&sh);
+                let Some(p) = sh.axes.iter().position(|x| x.name.as_deref() == Some(a.as_str())) else {
+                    self.no_axis(a, &sh, *aspan);
+                    return None;
+                };
+                if n1 == n2 {
+                    self.error(Diagnostic::error("E2003", format!("`split` gives both halves the name `{n1}`")).label(*s2, "the two new axes must have different names"));
+                    return None;
+                }
+                let n = self.prog.names();
+                let Some(prod) = l1.mul(l2) else {
+                    self.error(
+                        Diagnostic::error("E1007", format!("`split` of `{a}` multiplies two symbolic dimensions"))
+                            .label(span, format!("`{}` · `{}` is outside the decidable fragment", l1.display(&*n.dim), l2.display(&*n.dim)))
+                            .help("at least one of the two new axes must have a constant length"),
+                    );
+                    return None;
+                };
+                // `L1 · L2 = |A|`: the split moves no data, so it must account
+                // for every element. When both sides are known the arithmetic
+                // is the whole story and deserves to be told as arithmetic;
+                // otherwise the decision procedure takes it, and may solve an
+                // inferred length on the way.
+                let have = self.resolve_dim(&sh.axes[p].len);
+                match (prod.as_nat(), have.as_nat()) {
+                    (Some(g), Some(h)) if g != h => {
+                        self.error(
+                            Diagnostic::error("E2006", format!("`split` of `{a}` does not account for every element"))
+                                .label(span, format!("`{n1}` · `{n2}` is {g}, but `{a}` has length {h}"))
+                                .help(format!("the two new lengths must multiply to {h}")),
+                        );
+                        return None;
+                    }
+                    _ if !self.unify_dim(&prod, &have, span) => return None,
+                    _ => {}
+                }
+                self.typed.axis_pos.insert(*aspan, p);
+                let mut axes: Vec<Axis> = sh.axes[..p].to_vec();
+                axes.push(Axis { name: Some(n1.clone()), len: l1.clone() });
+                axes.push(Axis { name: Some(n2.clone()), len: l2.clone() });
+                axes.extend_from_slice(&sh.axes[p + 1..]);
                 Some(Ty::Real(Shape { prefix: sh.prefix, axes }))
             }
             "one_hot" => {

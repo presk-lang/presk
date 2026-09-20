@@ -887,6 +887,20 @@ impl<'a> Printer<'a> {
                 let k = self.axis_pos(args, pos).unwrap_or(-2);
                 format!("{}.flatten({k}, {})", x(self, 0), k + 1)
             }
+            "split" => {
+                // The inverse of `merge`, and of its export: one axis read as
+                // two, row-major, so the first new axis is the outer one.
+                let k = self.axis_pos(args, pos).unwrap_or(-1);
+                let lens: Vec<String> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        Arg::NamedAxis { value, .. } => Some(self.expr(value)),
+                        _ => None,
+                    })
+                    .collect();
+                let (l1, l2) = (lens.first().cloned().unwrap_or_else(|| "None".into()), lens.get(1).cloned().unwrap_or_else(|| "None".into()));
+                format!("{}.unflatten({k}, ({l1}, {l2}))", x(self, 0))
+            }
             "split_key" => {
                 // The exported program never draws from a key: `dropout` is
                 // exported as its expectation, so both halves are dead.

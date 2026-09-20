@@ -78,6 +78,7 @@ crates/presk-train           the training loop over a Backend, presk train      
 crates/presk-serve           the generation loop over a Backend, presk serve         (0.3.0 step 5)
 crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles    (0.3.0 steps 6–7)
 crates/presk-sched           PSK-Sched v0: fusion groups over PSK-Core bodies       (0.4.0 step 4)
+crates/presk-precision       realizations, error bounds, sensitivity, the solver    (0.5.0 steps 2–6)
 crates/presk-cli             the `presk` binary
 crates/presk-manual          this manual
 tests/examples               the example programs of presk-specs (do not edit here)

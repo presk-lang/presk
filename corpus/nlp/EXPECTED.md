@@ -91,6 +91,19 @@ contractions of 0.4.0 steps 4 to 6 (twelve cores, `f32`); the losses are
 unchanged to the last digit, since none of the three changes the order of an
 arithmetic operation.
 
+**The model changed in 0.5.0 step 1**, so the rows above describe a program
+this file no longer holds: `05_gpt.psk` gained the course's dropout at its
+three sites per block. Measured the same way on the same machine
+(2026-09-20), the course configuration is **45.1 s** a step, 2395 kernel
+launches against 2274, so the masks cost about 13 %. The step-1 loss is
+4.521650 either way, because the head is zero-initialized and the logits are
+zero whatever is dropped; what moves with the run's seed is the gradient
+norm, which is how the masks can be seen from outside. The 0.4.0 figures are
+kept because every number in the `scheduling`, `native`, `optimization` and
+`experiments` chapters was measured against them, and the comparison they
+support — 289 s to 39.8 s with the losses unmoved — is about the compiler,
+not about this model.
+
 Memory is the same after three steps and after twelve: the reader seeks to
 each sample as the batch asks for it, so what is resident is the model and
 its batch, never the dataset. The streaming the plan asked for at this step

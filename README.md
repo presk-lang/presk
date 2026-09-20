@@ -5,7 +5,7 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.4.0**: the front-end (`presk check`), an arbitrary-precision
+**Version 0.5.0-dev** (0.4.0 released): the front-end (`presk check`), an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), a native
 backend — PSK-Kernel v0 compiled by Cranelift, with fusion groups, threads
 over the parallel axes and blocked contractions, `--backend native --realize

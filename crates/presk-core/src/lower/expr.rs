@@ -482,6 +482,13 @@ impl Lowerer<'_> {
             LArg::NamedAxis(n, d) => Some((n.clone(), d.clone())),
             _ => None,
         });
+        let named_axes: Vec<(String, DimExpr)> = args
+            .iter()
+            .filter_map(|a| match a {
+                LArg::NamedAxis(n, d) => Some((n.clone(), d.clone())),
+                _ => None,
+            })
+            .collect();
         let unit = self.unit_of(b);
         let consts = |n: &str| self.elab.units[unit].consts.get(n).map(|c| c.value);
         let op = match name {
@@ -512,6 +519,11 @@ impl Lowerer<'_> {
             "one_hot" => PrimOp::OneHot,
             "split_key" => PrimOp::SplitKey { n: 2 },
             "merge" => PrimOp::MergeAxes { a: axes_sel.first()?.clone(), b: axes_sel.get(1)?.clone() },
+            "split" => {
+                let (n1, l1) = named_axes.first()?.clone();
+                let (n2, l2) = named_axes.get(1)?.clone();
+                PrimOp::SplitAxes { a: axes_sel.first()?.clone(), n1, l1, n2, l2 }
+            }
             "cross_entropy" => PrimOp::CrossEntropy,
             "argmax" => PrimOp::Argmax,
             "sample" => PrimOp::Sample,

@@ -16,7 +16,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use presk_core::Program;
 use presk_kernel::ir::{BinOp, BufKind, CmpOp, Dtype, Expr, Kernel, Stmt, UnOp};
 use presk_kernel::{KernelBackend, KernelExec};
-use presk_rt::{Buf, Realize, RtError};
+use presk_rt::{Buf, Realization, RtError};
 use presk_types::elab::ElabProgram;
 
 type Result<T> = std::result::Result<T, RtError>;
@@ -109,10 +109,14 @@ impl NativeExec {
     }
 
     fn compile(&mut self, idx: usize, k: &Kernel) -> Result<KernelFn> {
+        // `bf16` is a *storage* type: the loop nest is generated in `f32` and
+        // only the loads and stores narrow (D34). So the arithmetic type and
+        // the element size part company here, and nowhere else.
         let fty = match k.dtype {
             Dtype::F64 => types::F64,
-            Dtype::F32 => types::F32,
+            Dtype::F32 | Dtype::Bf16 => types::F32,
         };
+        let real_bytes = k.dtype.bytes() as i64;
         // Declare the libm functions the kernel needs before building.
         let mut needed: Vec<&'static str> = Vec::new();
         collect_libm(&k.body, &mut needed);
@@ -120,7 +124,7 @@ impl NativeExec {
         for n in needed {
             let name = match (k.dtype, n) {
                 (Dtype::F64, n) => n.to_string(),
-                (Dtype::F32, n) => format!("{n}f"),
+                (Dtype::F32 | Dtype::Bf16, n) => format!("{n}f"),
             };
             libm_ids.insert(n, self.libm_fn(&name, fty)?);
         }
@@ -151,12 +155,12 @@ impl NativeExec {
                 b.def_var(*v, zero_f);
             }
             let strides: Vec<Vec<usize>> = k.inputs.iter().map(|s| s.strides()).chain(std::iter::once(k.output.strides())).collect();
-            let esize: Vec<i64> = k.inputs.iter().map(|s| if s.kind == BufKind::Idx { 8 } else { fty.bytes() as i64 }).chain(std::iter::once(if k.output.kind == BufKind::Idx { 8 } else { fty.bytes() as i64 })).collect();
+            let esize: Vec<i64> = k.inputs.iter().map(|s| if s.kind == BufKind::Idx { 8 } else { real_bytes }).chain(std::iter::once(if k.output.kind == BufKind::Idx { 8 } else { real_bytes })).collect();
             let mut refs: HashMap<&'static str, cranelift_codegen::ir::FuncRef> = HashMap::new();
             for (n, id) in &libm_ids {
                 refs.insert(n, self.module.declare_func_in_func(*id, b.func));
             }
-            let mut g = Gen { b, fty, bufs, strides, esize, loops, reals, ints, libm: refs };
+            let mut g = Gen { b, fty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, loops, reals, ints, libm: refs };
             // The outermost loop runs over the range the caller gives, so one
             // compiled kernel serves the sequential call and every worker.
             match (k.parallel_outer(), k.body.as_slice()) {
@@ -219,7 +223,7 @@ fn collect_libm(stmts: &[Stmt], out: &mut Vec<&'static str>) {
     for s in stmts {
         match s {
             Stmt::For { body, .. } => collect_libm(body, out),
-            Stmt::Set { value, .. } | Stmt::SetI { value, .. } => expr(value, out),
+            Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::SetL { value, .. } => expr(value, out),
             Stmt::Store { index, value, .. } | Stmt::StoreI { index, value, .. } => {
                 index.iter().for_each(|x| expr(x, out));
                 expr(value, out);
@@ -242,6 +246,8 @@ struct Gen<'a> {
     bufs: Vec<CV>,
     strides: Vec<Vec<usize>>,
     esize: Vec<i64>,
+    /// Real buffers hold `bf16`: loads widen and stores round.
+    narrow: bool,
     loops: Vec<Variable>,
     reals: Vec<Variable>,
     ints: Vec<Variable>,
@@ -260,12 +266,40 @@ impl Gen<'_> {
         self.b.ins().iadd(self.bufs[buf], bytes)
     }
 
+    /// `f32` to the sixteen bits of the nearest `bf16`, ties to even — the
+    /// same function as `presk_rt::f32_to_bf16`, so the kernel interpreter and
+    /// the JIT store the same bits and the conformance suite compares like
+    /// with like.
+    fn round_bf16(&mut self, x: CV) -> CV {
+        let bits = self.b.ins().bitcast(types::I32, MemFlags::new(), x);
+        let lsb = self.b.ins().ushr_imm(bits, 16);
+        let lsb = self.b.ins().band_imm(lsb, 1);
+        let bias = self.b.ins().iadd_imm(lsb, 0x7fff);
+        let rounded = self.b.ins().iadd(bits, bias);
+        let shifted = self.b.ins().ushr_imm(rounded, 16);
+        // NaN must stay NaN: the bias above could carry it to an infinity.
+        let quiet = self.b.ins().ushr_imm(bits, 16);
+        let quiet = self.b.ins().bor_imm(quiet, 0x0040);
+        let is_nan = self.b.ins().fcmp(FloatCC::NotEqual, x, x);
+        let pick = self.b.ins().select(is_nan, quiet, shifted);
+        self.b.ins().ireduce(types::I16, pick)
+    }
+
     fn gen_f(&mut self, e: &Expr) -> CV {
         match e {
             Expr::F(x) => fconst(&mut self.b, self.fty, *x),
             Expr::Load(buf, ix) => {
                 let a = self.addr(*buf, ix);
-                self.b.ins().load(self.fty, MemFlags::trusted(), a, 0)
+                if self.narrow {
+                    // A `bf16` is the top sixteen bits of the `f32` it
+                    // denotes, so widening is exact and is a shift.
+                    let h = self.b.ins().load(types::I16, MemFlags::trusted(), a, 0);
+                    let w = self.b.ins().uextend(types::I32, h);
+                    let up = self.b.ins().ishl_imm(w, 16);
+                    self.b.ins().bitcast(types::F32, MemFlags::new(), up)
+                } else {
+                    self.b.ins().load(self.fty, MemFlags::trusted(), a, 0)
+                }
             }
             Expr::Sv(v) => self.b.use_var(self.reals[*v]),
             Expr::Bin(op, x, y) if !matches!(op, BinOp::IAdd | BinOp::IMul) => {
@@ -409,10 +443,19 @@ impl Gen<'_> {
                     let x = self.gen_i(value);
                     self.b.def_var(self.ints[*var], x);
                 }
+                Stmt::SetL { var, value } => {
+                    let x = self.gen_i(value);
+                    self.b.def_var(self.loops[*var], x);
+                }
                 Stmt::Store { buf, index, value } => {
                     let x = self.gen_f(value);
                     let a = self.addr(*buf, index);
-                    self.b.ins().store(MemFlags::trusted(), x, a, 0);
+                    if self.narrow {
+                        let h = self.round_bf16(x);
+                        self.b.ins().store(MemFlags::trusted(), h, a, 0);
+                    } else {
+                        self.b.ins().store(MemFlags::trusted(), x, a, 0);
+                    }
                 }
                 Stmt::StoreI { buf, index, value } => {
                     let x = self.gen_i(value);
@@ -440,6 +483,7 @@ fn buf_ptr(b: &Buf) -> Result<*mut u8> {
     Ok(match b {
         Buf::F64(v) => v.as_ptr() as *mut u8,
         Buf::F32(v) => v.as_ptr() as *mut u8,
+        Buf::Bf16(v) => v.as_ptr() as *mut u8,
         Buf::I64(v) => v.as_ptr() as *mut u8,
         Buf::Exact(_) => return err("native backend: an exact buffer reached a kernel"),
     })
@@ -466,6 +510,7 @@ impl KernelExec for NativeExec {
         ptrs.push(match out {
             Buf::F64(v) => v.as_mut_ptr() as *mut u8,
             Buf::F32(v) => v.as_mut_ptr() as *mut u8,
+            Buf::Bf16(v) => v.as_mut_ptr() as *mut u8,
             Buf::I64(v) => v.as_mut_ptr() as *mut u8,
             Buf::Exact(_) => return err("native backend: an exact output buffer"),
         });
@@ -506,13 +551,13 @@ impl KernelExec for NativeExec {
 }
 
 /// A kernel backend whose kernels are JIT-compiled by Cranelift.
-pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: Realize, seed: u64) -> Result<KernelBackend<'p>> {
+pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64) -> Result<KernelBackend<'p>> {
     Ok(KernelBackend::with_exec(prog, elab, realize, seed, Box::new(NativeExec::new()?)))
 }
 
 /// The same backend with an explicit number of workers, so a caller can pin it
 /// (the tests compare one thread against many, which must agree exactly).
-pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: Realize, seed: u64, threads: usize) -> Result<KernelBackend<'p>> {
+pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64, threads: usize) -> Result<KernelBackend<'p>> {
     let mut exec = NativeExec::new()?;
     exec.threads = threads.max(1);
     Ok(KernelBackend::with_exec(prog, elab, realize, seed, Box::new(exec)))

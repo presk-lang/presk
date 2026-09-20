@@ -27,20 +27,207 @@ use rug::Float;
 
 type IValue = presk_interp::Value<Float>;
 
-/// The machine type of every real tensor of a native realization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Realize {
+/// A machine type a real tensor can be stored in.
+///
+/// `Bf16` is **storage only**: buffers hold sixteen bits, arithmetic is done
+/// in `f32`, and conversion happens on load and on store with
+/// round-to-nearest-even. That is the standard mixed-precision idiom, it is
+/// exactly implementable, and it is what gives a solver a third rung with a
+/// real traffic win on the memory-bound sweeps. There is no `f16`: its
+/// dynamic range is a separate problem (plan 0.5.0 §3.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dtype {
     F64,
     F32,
+    Bf16,
 }
 
-impl Realize {
-    pub fn parse(s: &str) -> Option<Realize> {
+impl Dtype {
+    pub fn parse(s: &str) -> Option<Dtype> {
         match s {
-            "f64" => Some(Realize::F64),
-            "f32" => Some(Realize::F32),
+            "f64" => Some(Dtype::F64),
+            "f32" => Some(Dtype::F32),
+            "bf16" => Some(Dtype::Bf16),
             _ => None,
         }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Dtype::F64 => "f64",
+            Dtype::F32 => "f32",
+            Dtype::Bf16 => "bf16",
+        }
+    }
+
+    /// Bytes a stored element occupies. This is the number the roofline's `Q`
+    /// is counted in, so it is what a narrower storage type actually buys.
+    pub fn bytes(self) -> usize {
+        match self {
+            Dtype::F64 => 8,
+            Dtype::F32 => 4,
+            Dtype::Bf16 => 2,
+        }
+    }
+
+    /// The type arithmetic is carried out in. `bf16` computes in `f32`.
+    pub fn arith(self) -> Dtype {
+        match self {
+            Dtype::Bf16 => Dtype::F32,
+            other => other,
+        }
+    }
+
+    /// The unit roundoff `u` of this type: half an ulp of 1, and the constant
+    /// every first-order error rule is written in terms of (step 4).
+    pub fn unit_roundoff(self) -> f64 {
+        match self {
+            Dtype::F64 => f64::EPSILON / 2.0,
+            Dtype::F32 => f32::EPSILON as f64 / 2.0,
+            // bf16 keeps 8 bits of significand, so u = 2^-9.
+            Dtype::Bf16 => 2f64.powi(-9),
+        }
+    }
+}
+
+impl std::fmt::Display for Dtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Round an `f32` to the nearest `bf16`, ties to even, and keep it as the
+/// sixteen bits that are stored. NaN is preserved as a quiet NaN.
+pub fn f32_to_bf16(x: f32) -> u16 {
+    let bits = x.to_bits();
+    if x.is_nan() {
+        return ((bits >> 16) as u16) | 0x0040;
+    }
+    let lsb = (bits >> 16) & 1;
+    let rounded = bits + 0x7fff + lsb;
+    (rounded >> 16) as u16
+}
+
+/// The `f32` a stored `bf16` denotes. Exact: `bf16` is a prefix of `f32`.
+pub fn bf16_to_f32(x: u16) -> f32 {
+    f32::from_bits((x as u32) << 16)
+}
+
+/// How a sum is allowed to be accumulated.
+///
+/// This is the field decisions D31 and D32 of 0.4.0 both needed and could not
+/// write down. It is not a performance hint: it is an argument of the error
+/// bound (step 4), because the constant in front of `u` in a contraction's
+/// rule depends on it, and it is what a conformance report names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ReductionOrder {
+    /// Every addition in index order. The semantics of 0.1.0 to 0.4.0.
+    Sequential,
+    /// Register blocking: several *results* accumulated at once, each still
+    /// summing its own terms in index order. Bit-identical to `Sequential`
+    /// (D32), and declared separately only because the kernels differ.
+    Blocked { width: u32 },
+    /// `n` partial accumulators summed at the end — a vector lane, a packed
+    /// micro-kernel, a thread split. This one **reassociates**, so it is a
+    /// different realization and owes a measured gap (D31).
+    Interleaved { partials: u32 },
+}
+
+impl ReductionOrder {
+    /// Whether this order preserves the exact order of additions, and so is
+    /// bit-identical to `Sequential` at the same dtype.
+    pub fn is_exact(self) -> bool {
+        !matches!(self, ReductionOrder::Interleaved { .. })
+    }
+
+    pub fn name(self) -> String {
+        match self {
+            ReductionOrder::Sequential => "sequential".into(),
+            ReductionOrder::Blocked { width } => format!("blocked({width})"),
+            ReductionOrder::Interleaved { partials } => format!("interleaved({partials})"),
+        }
+    }
+}
+
+/// What the backends are allowed to do with a program's arithmetic.
+///
+/// Versions 0.1.0 to 0.4.0 had a two-valued flag here. It became an object in
+/// 0.5.0 (D34) because two separate needs met: the precision solver has to
+/// *produce* a per-site assignment, and the fast kernels have to *declare* a
+/// reduction order before they may ship. One record answers both.
+///
+/// A site is `"<function>/<let>"` — a fusion group's root, which is the
+/// smallest unit at which a type is a decision rather than a conversion. A
+/// site the map does not mention takes `default`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Realization {
+    pub default: Dtype,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub storage: BTreeMap<String, Dtype>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accum: BTreeMap<String, Dtype>,
+    pub order: ReductionOrder,
+    /// The magnitude envelope any bound about this realization assumed
+    /// (step 3). A bound without one is a different and unsupported claim
+    /// (D35), so the reference travels with the realization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<String>,
+}
+
+impl Realization {
+    /// One dtype everywhere, additions in index order: what `--realize f64`
+    /// and `--realize f32` meant in every version up to 0.4.0, and still do.
+    pub fn uniform(d: Dtype) -> Realization {
+        Realization { default: d, storage: BTreeMap::new(), accum: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None }
+    }
+
+    /// `f64`, `f32`, `bf16`, or `@PATH` for a realization file.
+    pub fn parse(spec: &str) -> std::result::Result<Realization, String> {
+        if let Some(path) = spec.strip_prefix('@') {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+            return serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"));
+        }
+        match Dtype::parse(spec) {
+            Some(d) => Ok(Realization::uniform(d)),
+            None => Err(format!("unknown realization `{spec}`; expected f64, f32, bf16 or @FILE")),
+        }
+    }
+
+    /// The storage type of a site.
+    pub fn dtype_at(&self, site: &str) -> Dtype {
+        self.storage.get(site).copied().unwrap_or(self.default)
+    }
+
+    /// The accumulator type of a site's contraction. It defaults to the
+    /// *arithmetic* type of the storage, so `bf16` storage accumulates in
+    /// `f32` unless something says otherwise — the idiom, not a surprise.
+    pub fn accum_at(&self, site: &str) -> Dtype {
+        self.accum.get(site).copied().unwrap_or_else(|| self.dtype_at(site).arith())
+    }
+
+    /// Whether every site of this realization has one type and additions keep
+    /// their order. Uniform realizations are the ones earlier versions could
+    /// express, and the ones whose goldens must not move.
+    pub fn is_uniform(&self) -> bool {
+        self.storage.is_empty() && self.accum.is_empty() && self.order == ReductionOrder::Sequential
+    }
+
+    /// A short name for reports and cache keys.
+    pub fn label(&self) -> String {
+        if self.is_uniform() {
+            return self.default.name().into();
+        }
+        let mut s = format!("{}+{}", self.default, self.order.name());
+        if !self.storage.is_empty() {
+            s.push_str(&format!("+{}sites", self.storage.len()));
+        }
+        s
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("a realization serializes")
     }
 }
 
@@ -51,6 +238,9 @@ pub enum Buf {
     Exact(Vec<Float>),
     F64(Vec<f64>),
     F32(Vec<f32>),
+    /// Storage-only sixteen-bit floats, held as their raw bits. Arithmetic on
+    /// them happens in `f32`; only the traffic is halved.
+    Bf16(Vec<u16>),
     I64(Vec<i64>),
 }
 
@@ -60,6 +250,7 @@ impl Buf {
             Buf::Exact(v) => v.len(),
             Buf::F64(v) => v.len(),
             Buf::F32(v) => v.len(),
+            Buf::Bf16(v) => v.len(),
             Buf::I64(v) => v.len(),
         }
     }
@@ -74,7 +265,26 @@ impl Buf {
             Buf::Exact(v) => v.iter().map(|x| x.to_f64()).collect(),
             Buf::F64(v) => v.clone(),
             Buf::F32(v) => v.iter().map(|x| *x as f64).collect(),
+            Buf::Bf16(v) => v.iter().map(|x| bf16_to_f32(*x) as f64).collect(),
             Buf::I64(v) => v.iter().map(|x| *x as f64).collect(),
+        }
+    }
+
+    /// A buffer of `n` reals in the machine type `d`, rounded once from `f64`.
+    pub fn of(d: Dtype, v: &[f64]) -> Buf {
+        match d {
+            Dtype::F64 => Buf::F64(v.to_vec()),
+            Dtype::F32 => Buf::F32(v.iter().map(|x| *x as f32).collect()),
+            Dtype::Bf16 => Buf::Bf16(v.iter().map(|x| f32_to_bf16(*x as f32)).collect()),
+        }
+    }
+
+    /// Zeros of the machine type `d`.
+    pub fn zeros(d: Dtype, n: usize) -> Buf {
+        match d {
+            Dtype::F64 => Buf::F64(vec![0.0; n]),
+            Dtype::F32 => Buf::F32(vec![0.0; n]),
+            Dtype::Bf16 => Buf::Bf16(vec![0u16; n]),
         }
     }
 
@@ -83,6 +293,7 @@ impl Buf {
             Buf::Exact(_) => "exact",
             Buf::F64(_) => "f64",
             Buf::F32(_) => "f32",
+            Buf::Bf16(_) => "bf16",
             Buf::I64(_) => "i64",
         }
     }
@@ -175,6 +386,7 @@ impl Value {
                     Buf::Exact(v) => v.iter().map(|x| Float::with_val(prec, x)).collect(),
                     Buf::F64(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                     Buf::F32(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
+                    Buf::Bf16(v) => v.iter().map(|x| Float::with_val(prec, bf16_to_f32(*x))).collect(),
                     Buf::I64(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                 },
             }),
@@ -198,16 +410,10 @@ impl Value {
         }
     }
 
-    /// Every real buffer in the machine type of `r` (exact reals rounded once).
-    pub fn realize(&self, r: Realize) -> Value {
+    /// Every real buffer in the machine type `d` (exact reals rounded once).
+    pub fn realize(&self, d: Dtype) -> Value {
         self.map_leaves(&mut |leaf| match leaf {
-            Value::Real(t) => Value::Real(Tensor {
-                axes: t.axes.clone(),
-                data: match r {
-                    Realize::F64 => Buf::F64(t.data.to_f64()),
-                    Realize::F32 => Buf::F32(t.data.to_f64().into_iter().map(|x| x as f32).collect()),
-                },
-            }),
+            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::of(d, &t.data.to_f64()) }),
             other => other.clone(),
         })
     }
@@ -288,7 +494,7 @@ pub fn axes_of(s: &Shape, dims: &Dims) -> Result<Vec<Axis>> {
 pub struct Prepared {
     pub func: FuncId,
     pub dims: Dims,
-    pub realize: Realize,
+    pub realize: Realization,
     /// Backend-specific handle (a compiled kernel program's index, …).
     pub handle: usize,
 }
@@ -297,7 +503,7 @@ pub struct Prepared {
 pub trait Backend {
     fn name(&self) -> &'static str;
     /// Bind an entry to concrete dimensions and a realization.
-    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: Realize) -> Result<Prepared>;
+    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared>;
     /// Run a prepared entry.
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value>;
     /// Whether this run trains: `dropout` drops only when it does. Off by
@@ -332,8 +538,8 @@ impl Backend for InterpBackend<'_> {
         self.interp.training = on;
     }
 
-    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: Realize) -> Result<Prepared> {
-        Ok(Prepared { func: entry, dims: dims.clone(), realize, handle: 0 })
+    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared> {
+        Ok(Prepared { func: entry, dims: dims.clone(), realize: realize.clone(), handle: 0 })
     }
 
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value> {
@@ -346,7 +552,7 @@ impl Backend for InterpBackend<'_> {
 /// `presk run` over a backend: the interpreter synthesizes the inputs, the
 /// backend runs the entry; the output is the interpreter's `RunOutput` (the
 /// result at `prec` bits, exact for the interpreter, rounded once otherwise).
-pub fn run_with(backend: &mut dyn Backend, prog: &Program, elab: &ElabProgram, opts: &RunOptions, realize: Realize) -> Result<presk_interp::RunOutput> {
+pub fn run_with(backend: &mut dyn Backend, prog: &Program, elab: &ElabProgram, opts: &RunOptions, realize: &Realization) -> Result<presk_interp::RunOutput> {
     let (func, dims, inputs) = presk_interp::run::prepare_run(prog, elab, opts)?;
     let p = backend.prepare(func, &dims, realize)?;
     let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<Result<_>>()?;

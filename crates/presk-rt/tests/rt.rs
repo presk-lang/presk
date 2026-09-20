@@ -1,7 +1,7 @@
 //! The runtime seam: values cross it exactly, realizations round once,
 //! shapes materialize at bound dimensions.
 
-use presk_rt::{Axis, Buf, Realize, Tensor, Value};
+use presk_rt::{Axis, Buf, Dtype, Tensor, Value};
 use rug::Float;
 
 #[test]
@@ -22,8 +22,8 @@ fn exact_values_round_trip() {
 fn realizations_round_once() {
     let x = Float::with_val(256, 1) / Float::with_val(256, 3);
     let v = Value::Real(Tensor { axes: vec![], data: Buf::Exact(vec![x]) });
-    let Value::Real(t64) = v.realize(Realize::F64) else { panic!() };
-    let Value::Real(t32) = v.realize(Realize::F32) else { panic!() };
+    let Value::Real(t64) = v.realize(Dtype::F64) else { panic!() };
+    let Value::Real(t32) = v.realize(Dtype::F32) else { panic!() };
     assert_eq!(t64.data, Buf::F64(vec![1.0 / 3.0]));
     assert_eq!(t32.data, Buf::F32(vec![1.0f32 / 3.0]));
     assert_eq!(v.scalar_f64(), 1.0 / 3.0);
@@ -43,4 +43,54 @@ fn indices_and_scalars() {
     let Value::Tuple(parts) = &v else { panic!() };
     assert_eq!(parts[0].kind(), "index tensor");
     assert_eq!(parts[1].scalar_f64(), 5.0);
+}
+
+/// The realization is an object, and a round trip through its file form must
+/// give the same object back — otherwise `--realize @FILE` and the solver
+/// that writes the file disagree about what was asked for (D34).
+#[test]
+fn a_realization_survives_its_file_form() {
+    use presk_rt::{Dtype, Realization, ReductionOrder};
+    let mut r = Realization::uniform(Dtype::F32);
+    r.storage.insert("loss/%17".into(), Dtype::Bf16);
+    r.storage.insert("loss/%23".into(), Dtype::F64);
+    r.accum.insert("loss/%17".into(), Dtype::F32);
+    r.order = ReductionOrder::Interleaved { partials: 8 };
+    r.envelope = Some("out/envelope.json".into());
+    let back: Realization = serde_json::from_str(&r.to_json()).unwrap();
+    assert_eq!(back, r);
+
+    // The defaults a site inherits, and the one that is not the storage type.
+    assert_eq!(back.dtype_at("loss/%17"), Dtype::Bf16);
+    assert_eq!(back.dtype_at("loss/%99"), Dtype::F32, "an unmentioned site takes the default");
+    assert_eq!(back.accum_at("loss/%23"), Dtype::F64, "an unmentioned accumulator follows its storage");
+    assert_eq!(back.accum_at("loss/%42"), Dtype::F32);
+
+    // A uniform realization is the thing every earlier version could write,
+    // and it must still be recognisable as one.
+    let u = Realization::uniform(Dtype::F64);
+    assert!(u.is_uniform() && u.label() == "f64");
+    assert!(!back.is_uniform());
+    assert!(ReductionOrder::Blocked { width: 8 }.is_exact(), "blocking keeps the order (D32)");
+    assert!(!ReductionOrder::Interleaved { partials: 8 }.is_exact(), "partials reassociate (D31)");
+}
+
+/// `bf16` is a prefix of `f32`, so widening is exact and narrowing is one
+/// round to nearest even. The JIT emits the same function in integer ops, so
+/// this is also what pins the two executors together.
+#[test]
+fn bf16_rounds_to_nearest_even() {
+    use presk_rt::{bf16_to_f32, f32_to_bf16};
+    for x in [1.0f32, -3.75, 0.1, 1e-8, 123456.0, 0.0, -0.0] {
+        let y = bf16_to_f32(f32_to_bf16(x));
+        assert!((y - x).abs() <= 0.005 * x.abs().max(1e-30), "{x} -> {y}");
+    }
+    // Exactly representable values must not move at all.
+    for x in [1.0f32, 2.0, -0.5, 3.0, 256.0] {
+        assert_eq!(bf16_to_f32(f32_to_bf16(x)), x, "{x} is a bf16 already");
+    }
+    // A tie rounds to the even significand, not away from zero.
+    let tie = f32::from_bits(0x3F808000); // 1 + 2^-8, halfway between two bf16
+    assert_eq!(f32_to_bf16(tie), 0x3F80, "ties go to even");
+    assert!(bf16_to_f32(f32_to_bf16(f32::NAN)).is_nan(), "NaN stays NaN");
 }

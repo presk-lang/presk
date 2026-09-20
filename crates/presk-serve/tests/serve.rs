@@ -8,7 +8,7 @@ use std::path::Path;
 
 use presk_cranelift::native_backend;
 use presk_interp::key::Key;
-use presk_rt::{Backend, InterpBackend, Realize, Value, save_params};
+use presk_rt::{Backend, InterpBackend, Dtype, Value, save_params, Realization};
 use presk_serve::{ServeOptions, prepare_serve, serve};
 use presk_syntax::{SourceMap, parse_file};
 use presk_types::check;
@@ -45,33 +45,33 @@ fn greedy_generation_agrees_across_backends() {
         let mut b = InterpBackend::new(&core, &prog, 64, 7);
         // The initializer carries the file's dimensions (`B`, `T`); only `T` shapes a parameter.
         let dims: BTreeMap<_, _> = core.func(fns.init).dims.iter().map(|d| (*d, if prog.dim_name(*d) == "T" { 8 } else { 1 })).collect();
-        let init = b.prepare(fns.init, &dims, Realize::F64).unwrap();
+        let init = b.prepare(fns.init, &dims, &Realization::uniform(Dtype::F64)).unwrap();
         let theta = b.call(&init, vec![Value::Key(Key::from_seed(7))]).unwrap();
         save_params(&weights, &fns.model, &theta).unwrap();
     }
     let prompt: Vec<u64> = vec![1, 2, 3, 4, 5, 6, 7, 8];
-    let sopts = ServeOptions { weights: Some(weights.clone()), prompt: prompt.clone(), tokens: 4, seed: 0, bits: 64, realize: Realize::F64, temperature: Some(0.0), dims: BTreeMap::new() };
+    let sopts = ServeOptions { weights: Some(weights.clone()), prompt: prompt.clone(), tokens: 4, seed: 0, bits: 64, realize: Realization::uniform(Dtype::F64), temperature: Some(0.0), dims: BTreeMap::new() };
     let reference = serve(&mut InterpBackend::new(&core, &prog, 64, 0), &core, &prog, &fns, &sopts, |_, _| {}).unwrap();
     assert_eq!(reference.window, Some(8), "pos : ℝ[T, D] ties the model to T");
     assert!(reference.greedy);
     assert_eq!(reference.vocab, 64);
     assert_eq!(reference.generated.len(), 4);
-    for realize in [Realize::F64, Realize::F32] {
-        let o = ServeOptions { realize, ..sopts.clone() };
-        let native = serve(&mut native_backend(&core, &prog, realize, 0).unwrap(), &core, &prog, &fns, &o, |_, _| {}).unwrap();
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32)] {
+        let o = ServeOptions { realize: realize.clone(), ..sopts.clone() };
+        let native = serve(&mut native_backend(&core, &prog, &realize, 0).unwrap(), &core, &prog, &fns, &o, |_, _| {}).unwrap();
         assert_eq!(native.generated, reference.generated, "{realize:?}");
     }
     // Sampling: tokens of the vocabulary, deterministic for a seed.
     let s1 = ServeOptions { temperature: None, ..sopts.clone() };
-    let a = serve(&mut native_backend(&core, &prog, Realize::F64, 3).unwrap(), &core, &prog, &fns, &s1, |_, _| {}).unwrap();
-    let b = serve(&mut native_backend(&core, &prog, Realize::F64, 3).unwrap(), &core, &prog, &fns, &s1, |_, _| {}).unwrap();
+    let a = serve(&mut native_backend(&core, &prog, &Realization::uniform(Dtype::F64), 3).unwrap(), &core, &prog, &fns, &s1, |_, _| {}).unwrap();
+    let b = serve(&mut native_backend(&core, &prog, &Realization::uniform(Dtype::F64), 3).unwrap(), &core, &prog, &fns, &s1, |_, _| {}).unwrap();
     assert!(!a.greedy && a.generated.iter().all(|t| *t < 64));
     assert_eq!(a.generated, b.generated);
     // The window: a longer prompt slides; a shorter one is refused.
     let long = ServeOptions { prompt: (0..12).collect(), dims: BTreeMap::from([("T".to_string(), 8)]), ..sopts.clone() };
-    assert_eq!(serve(&mut native_backend(&core, &prog, Realize::F64, 0).unwrap(), &core, &prog, &fns, &long, |_, _| {}).unwrap().window, Some(8));
+    assert_eq!(serve(&mut native_backend(&core, &prog, &Realization::uniform(Dtype::F64), 0).unwrap(), &core, &prog, &fns, &long, |_, _| {}).unwrap().window, Some(8));
     let short = ServeOptions { prompt: vec![1, 2], dims: BTreeMap::from([("T".to_string(), 8)]), ..sopts.clone() };
-    let e = serve(&mut native_backend(&core, &prog, Realize::F64, 0).unwrap(), &core, &prog, &fns, &short, |_, _| {}).unwrap_err();
+    let e = serve(&mut native_backend(&core, &prog, &Realization::uniform(Dtype::F64), 0).unwrap(), &core, &prog, &fns, &short, |_, _| {}).unwrap_err();
     assert!(e.message.contains("fix the context length T = 8"), "{}", e.message);
     // `--entry` names a function that is not a generation function.
     let e = prepare_serve(&mut core, &prog, &typed, Some("nope")).unwrap_err();

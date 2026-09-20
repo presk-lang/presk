@@ -1,7 +1,8 @@
 # Architecture decisions
 
-One paragraph per decision, newest last. The plan these come from is
-`presk-specs/implementation/presk-plan-0.1.0.md`.
+One paragraph per decision, newest last. The plans these come from are
+`presk-specs/implementation/presk-plan-0.1.0.md` through
+`presk-plan-0.5.0.md`.
 
 ## D1 — Scope of 0.1.0 (2026-09-18)
 
@@ -521,3 +522,348 @@ operation counts' while its extraction is six times dearer, is in the
 distributing a contraction over a sum (legal, but it duplicates the
 contraction, which the tree-based extractor prices wrongly).
 
+
+## D34 — The realization is an object, not a flag (2026-09-20)
+
+`presk_rt::Realize` becomes a record: a storage type and an accumulator type
+per fusion group, a declared reduction order, and a reference to the
+magnitude envelope any bound about it assumed. It is serialized as JSON
+beside the calibrated profile, `--realize f64|f32` stays as sugar for a
+uniform assignment with a sequential order, and `--realize @FILE` and
+`--realize solved` are the new forms; `solved` reads the budget from the
+program's own `precision` configuration block, which the checker has accepted
+since 0.1.0 and ignored ever since.
+
+The change is forced from two sides at once, and that is the argument for
+making it now rather than as part of a larger precision effort. D31 and D32
+of 0.4.0 each refused a transformation — vectorizing a contraction's inner
+sum, and calling a vendor BLAS — on the ground that a reassociated sum is a
+different realization owing a declared order and a measured gap, and each
+then had nowhere to write the declaration down. `docs/kernels-roadmap.md`
+records the same blockage from the performance side: the fast kernels cannot
+ship until the contract exists. Meanwhile the precision solver needs exactly
+this record as its output. One object unblocks both.
+
+The granularity is the fusion group (D30) rather than the individual value,
+because a group is one loop nest with one set of buffers, so it is the
+smallest unit at which a type is a decision rather than a conversion; it also
+puts the choice at PSK-Sched, where the specification puts it. Storage `bf16`
+is admitted with `f32` arithmetic and round-to-nearest-even on store, which
+is the standard mixed-precision idiom and is what gives the solver a third
+rung with a real traffic win on the memory-bound sweeps; `f16` is not, its
+dynamic range being a separate problem. Alternatives considered: a per-value
+assignment (too fine to lower, and it prices conversions it cannot see); a
+per-module annotation in the source (it would put a machine type in a
+language that has none, which is the position the project exists to test).
+
+## D35 — A bound is conditional on a measured envelope, and says so (2026-09-20)
+
+The first-order error analysis of plan 0.5.0 §3.2 needs a bound on the
+magnitude of every intermediate. Static interval arithmetic cannot supply one
+for a neural network — weights are unbounded, and intervals grow with depth
+until they say nothing — so the magnitudes are measured instead: the
+reference interpreter runs on a stated number of calibration batches and
+records `max |·|` per PSK-Core value into an envelope file carrying its date
+and its sample count.
+
+Every bound the tool computes is therefore conditional on an envelope, and
+must be printed with it. This is the version's main exposure, and the answer
+is to make the conditionality part of the output rather than a caveat in a
+paper: a bound without its envelope is not a weaker claim, it is a different
+and unsupported one. Step 3 measures the envelope's stability between two
+disjoint sample sets rather than assuming it, because that stability is the
+assumption the whole analysis rests on and it is cheap to test.
+
+*Measured (2026-09-20, corpus GPT at reduced constants, `make precision`):*
+disjoint slices of the civil code agree to **1.241×** and far-apart ones to
+**1.128×**, over 77 compared sites of 101, with 24 identically zero in both
+and none present in only one. So the magnitudes are a property of the program
+within about a quarter. The decision stands, now with a number attached to
+what "conditional" costs.
+
+The specification already proposes this shape for quantisation, calibration
+being "an input of the bound rather than of the graph" (RA3). What is new
+here is applying it to the deterministic bound as well, and admitting the
+consequence: presk guarantees the distance between an execution and the
+denotation *over an observed input domain*, not over all inputs. Spec
+question 53 asks whether the language should let a program declare that
+domain. Alternatives considered: symbolic interval propagation (unusable, as
+above); a probabilistic envelope from moments rather than maxima (a real
+option, and the specification admits statistical error models as a
+realization of the same framework — deferred, because a maximum is checkable
+against the conformance suite and a quantile is not).
+
+## D36 — `split` names its halves, and splits chain where merges do not (2026-09-20)
+
+`split(axis a, n1: L1, n2: L2, x)` reads one axis as two, row-major
+(`k ↦ (k / L2, k % L2)`), so it is exactly the inverse of `merge` and, like
+it, a pure retag that moves no data and launches no kernel. `L1 · L2` must
+equal `|a|`, and at least one must be constant, because `DimExpr` is linear —
+the same restriction `merge` carries for the same reason.
+
+Unlike `merge`, **the split names both halves**, and the asymmetry is not an
+oversight. D28 left a merged axis unnamed because neither input name
+describes the product and `a_b` would be arbitrary. A split has the opposite
+problem: the two halves are genuinely new axes that the program must be able
+to refer to, and only the author knows what they mean — `groups` and `per`,
+or `rot` and `pair`. The consequence, found while transcribing Llama, is that
+**two splits chain and two merges do not**: `split` produces named axes that
+the next `split` can select, while `merge` produces an unnamed one that no
+second `merge` can name. Grouped-query attention needs a three-way reading of
+one axis and so needs the chaining.
+
+The larger finding is that the split, not `split_heads`, is what expresses a
+head layout. `split_heads` is hard-wired to `const H` and `const HD` and also
+permutes, so it cannot say "eight key heads shared by thirty-two query
+heads" at all. The split can, and needs no transpose to do it, because `ein`
+contracts by *name*: the group axis of the queries meets the group axis of
+the keys wherever each happens to sit in its operand. `coverage/llama.psk`
+now transcribes grouped-query attention exactly and uses neither head
+primitive.
+
+## D37 — Per-layer randomness rides in the fold's accumulator (2026-09-20)
+
+A `stack{L}` module lowers to a `Fold`, and a fold hands every iteration the
+same extra arguments. A key passed as an extra is therefore one key for all
+`L` blocks: every layer drops the same positions, which is wrong and silent.
+Question 48 left this open and proposed deriving a key from the loop index.
+
+The answer taken is that **no new construct is needed**: the key is carried in
+the accumulator. The accumulator is already threaded from one iteration to
+the next, which is exactly the dependency a key chain needs, so a block whose
+type is `(Acts, key) -> (Acts, key)` splits its key, uses one half and passes
+the other on. `tests/data/stack_keys.psk` measures the difference — four
+independent masks at rate ½ zero about fifteen sixteenths of a tensor, one
+reused mask about half — so a fold that quietly shared a key fails the test.
+
+The index route was implemented far enough to see that it is worse. `Fold`
+already carries an `index` flag, but AD refuses outright to differentiate an
+indexed fold (`E6001`), so per-layer keys by index would not have survived
+`grad` — and a dropout scheme that cannot be trained through is not a dropout
+scheme. The accumulator route differentiates today, through the existing
+fold adjoint, with nothing added. An indexed `split_key(key, i)` was written
+and then removed for the same reason D33 gives: no program needed it once the
+accumulator worked, and a builtin no program can use is decoration.
+
+## D38 — `bf16` is storage, and the conversion is one named function (2026-09-20)
+
+The third rung of the dtype menu is `bf16`, and it is a **storage** type
+only: buffers hold sixteen bits, the loop nest is generated in `f32`, and
+conversion happens on load and on store. That is the standard mixed-precision
+idiom rather than an invention, it needs no arithmetic this compiler does not
+have, and it is what makes a narrower type *worth* anything — the memory-bound
+sweeps, of which `adamw.step` is a dozen over every parameter, halve their
+traffic while the contraction kernels keep their accuracy.
+
+`f16` is not admitted. Its dynamic range is a separate problem needing loss
+scaling, which is a training technique rather than a realization, and the
+solver would have to model overflow rather than rounding.
+
+Widening is exact, because `bf16` is a prefix of `f32`: a shift. Narrowing is
+one round to nearest even, written once in `presk_rt::f32_to_bf16` and emitted
+again in Cranelift as the same integer sequence, NaN case included. That
+duplication is deliberate and is pinned by a test: the kernel interpreter and
+the JIT must store the same bits, or the conformance suite would be comparing
+two different programs and calling the difference a realization gap. They
+agree digit for digit on a `bf16` gradient today.
+
+Measured worst gap to the exact reference over the conformance entries:
+`f64` 2.6e-14, `f32` 5.3e-6, `bf16` 3.3e-2. The `bf16` band needs an absolute
+floor of `2⁻⁵` to mean anything, because a result near a cancellation has
+unbounded *relative* error at any precision and that says nothing about the
+kernel — which is itself a small lesson about what a bound on a ratio can
+promise, and the reason step 4's rules carry a magnitude alongside an error.
+
+## D39 — The bound is first-order and relative where it must be, and it is vacuous on a transformer (2026-09-20)
+
+The propagation of plan 0.5.0 §3.2 carries a pair at every value — a ceiling
+on `|v|` from the measured envelope and a ceiling on `|executed − exact|` —
+and computes the second by first-order rules, dropping products of errors as
+this literature does. Three choices in it are worth recording, and the third
+is a result rather than a choice.
+
+**Quotients, roots and logarithms propagate in *relative* terms.** The
+absolute form of the quotient rule, `da/b + a·db/b²`, is pointwise sound
+given a floor for `b`, and it is useless: it pairs the largest numerator with
+the smallest divisor, a pairing that never occurs in a tensor. Written that
+way, five layer norms in a row put an `f64` transformer's bound at 10³⁰. In
+relative terms a quotient simply adds, `d(a/b)/(a/b) = da/a − db/b`, and a
+normaliser costs nothing — which is the conditioning the specification asks
+to exploit, and it is not a special case for `LayerNorm` but the quotient
+rule written in the right variable. Where both forms apply the analysis takes
+the tighter; products and powers keep the absolute form, which never divides.
+
+**A mean does not multiply error by `k`.** The sum of `k` errors is `k·e` and
+the division by `k` takes it straight back to `e`. Treating a mean like a sum
+cost a factor of the batch size before it was noticed. Sums and contractions
+do multiply by `k`, and that is worst-case correct: `|Σ wᵢ δxᵢ| ≤ k·max|w|·
+max|δx|`.
+
+**On a real transformer the bound is vacuous, and that is the finding.** It
+is sound everywhere it can be checked — on every conformance entry, in every
+realization, the propagated bound exceeds the measured gap, which a test
+asserts. But the ratio between them has a median of 1.8·10³ on small entries
+and reaches 10²⁰ on the corpus GPT, where four contractions in series carry
+`k⁴` while the errors they commit grow like `√k`, being independent. A bound
+of 10²⁰ relative on a loss of 4.5 says nothing.
+
+This is the specification's own risk register, arriving on schedule: "worst-
+case bounds are pessimistic by several orders of magnitude". Two consequences
+are taken now rather than discovered later. The tightening that would close
+the gap is named and is not vague — each sum needs its **condition number**,
+`Σ|xᵢwᵢ| / |Σxᵢwᵢ|`, measured into the envelope beside the magnitudes, which
+replaces the worst-case `k` with what the program actually does. And step 6's
+solver cannot verify a candidate assignment against a bound that is vacuous;
+it will have to either carry that tightening first or accept against the
+measured gap, and the plan's propose/verify/tighten loop is now known to
+depend on it. Step 8's measured curve was already the version's primary
+deliverable for exactly this reason.
+
+## D40 — Sensitivities are read off the adjoints a reverse sweep already computes (2026-09-20)
+
+A reverse sweep computes `∂L/∂v` for every intermediate on the way to the
+parameters — that is what a reverse sweep *is* — and then discards all of
+them but the parameters'. The sensitivity analysis of plan 0.5.0 §3.3 keeps
+the correspondence instead: `presk_core::ad::AdjointMap` records, for each
+forward value, which variable of the generated `.vjp` holds its adjoint, and
+running that vjp once with the 1-norm recorder gives `‖∂L/∂v‖₁` at every
+site. No second differentiation, no perturbation per site, and no new
+numerical machinery.
+
+Two things this makes explicit, and both are in the code's own words. A
+sensitivity **ranks** and a bound **guarantees**; the solver proposes with
+the first and verifies with the second, and code that mixes them is wrong.
+And a ranking taken at initialization is **vacuous**: the corpus GPT's output
+head is zero-initialized, as Karpathy's is, so nothing upstream of it
+receives any gradient and every module scores exactly zero. `--weights`
+starts from trained parameters, and the same caveat governs the magnitude
+envelope.
+
+**Half the mixed-precision folklore is reproduced and half is not.** On the
+trained corpus GPT the output head dominates at 5.86, twelve times the whole
+block stack and twenty times anything else: keeping it wide is what the
+derivative says, not a convention. The token embedding table scores 0.28,
+*below* the down-projection that practice is happy to narrow. So the habit of
+keeping embeddings in high precision is not explained by the loss's
+sensitivity to them; if it is right it is right for another reason — sparse
+rows, dynamic range, optimizer state — and that is a claim this measurement
+can make and the folklore cannot. It is also the first evidence that a solver
+allocating by sensitivity will not simply rediscover current practice.
+
+## D41 — The solver verifies by measurement, not by the bound (2026-09-20)
+
+The plan had the solver *propose* with the sensitivity and *verify* with the
+propagated bound. Step 4 established that the bound, though sound, is vacuous
+on a real transformer — 10²⁰ relative on a loss of 4.5 (D39) — so verifying
+against it would accept every assignment and mean nothing. Question 56 put
+three options to the specification; this is the one taken in practice.
+
+**A candidate realization is run and its distance to the exact reference is
+measured.** That is a stronger check than a bound, not a weaker one: it is
+the error actually committed rather than an envelope around it. It is also
+something only this compiler can do, because only this compiler keeps an
+exact denotation to measure against — which makes the acceptance rule an
+argument for the project's position rather than a retreat from it. The
+propagated bound is still computed and reported beside the measurement,
+labelled as the weaker artefact.
+
+Three further choices, each with a reason that was measured rather than
+assumed.
+
+**The objective is traffic, not time.** Bytes moved is what a narrower type
+reduces. Time is not: step 2 measured `bf16` *slower* than `f32` on a
+compute-bound kernel, the conversion being pure overhead there. Pricing time
+per site needs the calibrated roofline's `W` beside its `Q`, and that is named
+work rather than assumed away.
+
+**An unknown sensitivity means leave the site alone.** Reading a missing
+measurement as zero makes a site look maximally *safe* to narrow, which is
+exactly backwards. With the absence read as zero the solver narrowed
+everything, measurement rejected it, and a hundred and three widening rounds
+recovered a 1.06× saving; with the absence read as unknown it proposes a
+mixed assignment accepted on the first measurement, at 2.67×.
+
+**Tightening widens one step of the menu, not straight to the widest.**
+Jumping to the top undoes in one round everything the proposal found.
+
+Measured. On the corpus GPT at `D = 64` with trained weights and a 10⁻³
+budget: 2.67× less traffic than all-`f64`, accepted with **zero** widening
+rounds, measured gap 1.05·10⁻⁷ against a budget of 4.5·10⁻³, and the solved
+realization runs natively to 4.521788597 where `f64` gives 4.521788577. On a
+program small enough to search exhaustively the greedy proposal is **exactly
+optimal** at a 10⁻³ budget and 1.057× off at 10⁻⁶.
+
+## D42 — Vectorizing across output columns is exact; the inner sum is what reassociates (2026-09-20)
+
+D31 of 0.4.0 refused vectorization on the ground that "vectorizing a
+contraction's inner sum reassociates it". That is true and it is not the only
+way to vectorize a contraction, which step 7 established while plumbing the
+declared order through the kernel lowering.
+
+The blocked form of 0.4.0 already holds `GEMM_TILE = 8` accumulators, and
+they are **eight different output columns**, not eight partial sums of one.
+Each still accumulates `k` in increasing order. Putting those eight
+accumulators in vector lanes is therefore **bit-exact**: the lanes are
+independent columns, the inner sum's order is untouched, and no new
+realization is owed. The register blocking that 0.4.0 chose for cache
+behaviour turns out to be the shape a vector kernel wants anyway.
+
+So the factor the `kernels-roadmap` note expects from vectorization does not
+need the realization contract after all — which is a better position than the
+plan assumed, not a worse one. The contract is still needed for the matrix
+coprocessor and for the GPU, where a reduction genuinely crosses lanes.
+
+**What is landed and what is not.** `Stmt::SetL` now assigns a *loop*
+variable in PSK-Kernel, in both executors, which is what an unrolled index
+`cb·n + t` needs; on it, `contraction_ordered` emits the interleaved
+contraction, and the declared order is part of the kernel cache key, so two
+realizations differing only in their order can never share a compiled loop
+nest.
+
+**The order reaches the kernel and reassociates**, which a test asserts: on
+the embedding MLP at `D = 32` in `f32`, a sequential order gives
+1.5494239330292 and `Interleaved(8)` gives 1.5494240522385, and the kernel
+interpreter and the JIT agree with each other to the last digit under each.
+A declared order the kernel ignored would be the worst outcome this design
+could have, so that inequality is the assertion worth having.
+
+An intermediate diagnosis in this step was **wrong and is recorded because
+it cost time**: the two orders first appeared bit-identical, and the reason
+looked like the order not reaching the fused-group path. It is not. Fusion
+groups are elementwise (D30) and contain no reduction at all. The programs
+being compared simply did not *depend* on a long contraction: a
+zero-initialized head makes the logits identically zero and the training loss
+exactly `ln V`, whatever happens upstream — the third time that zero head has
+changed how something must be measured, after the magnitude envelope and the
+sensitivity ranking.
+
+**Measured, and the measurement settles the step.** `presk bench
+--native-only` on a 1024³ matmul, twelve cores, medians of three:
+
+| realization | median ms |
+|---|---|
+| `f64` | 102.4 |
+| `f32` | 87.3 |
+| `bf16` | 96.9 |
+| `f32`, `Interleaved(8)` | **239.0** |
+
+The reassociating order is **2.7× slower**, and the reason is structural
+rather than incidental: an interleaved order cannot use the blocked form,
+whose eight accumulators are eight output columns, so it falls back to the
+naive per-element contraction and loses the cache behaviour that was the
+whole gain of 0.4.0 step 6. Breaking the accumulator's dependency chain buys
+less than blocking does, by a wide margin.
+
+So the conclusion of this step is a **negative result, and a useful one**:
+for a CPU contraction there is no reason to reassociate at all. The exact
+blocked form is both faster and exact, and — by the finding above — it is
+also the shape vector lanes want. The `Interleaved` order stays implemented,
+declared and measured, because the coprocessor and the GPU will need it and
+because a contract one cannot exercise is not a contract; it does not ship
+as anything's default. `bf16` slower than `f32` again (96.9 against 87.3)
+repeats step 2's measurement on a second kernel.
+
+What is still not landed is the vector lanes, which need a vector form in the
+kernel IR. **Statement G, as the plan worded it, is about a vectorized kernel
+that does not exist yet and stays unanswered**; what this step can answer, it
+has.

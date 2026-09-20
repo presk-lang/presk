@@ -148,3 +148,58 @@ where shapes, smoothness, randomness and data are checked before anything
 runs, and an exact reference that turns numerical precision into a
 measurement. The back half, that this discipline buys speed rather than
 costing it, is what the next version has to start showing.
+
+
+## 4. Precision as a resource: the four statements of 0.5.0
+
+Version 0.5.0 named four falsifiable statements before it began
+(`presk-specs/implementation/presk-plan-0.5.0.md` §3.7), in the form 0.4.0
+used. One holds, two fail, and one cannot be asked of anything that exists.
+
+| # | Statement | Asked | Measured | |
+|---|---|---|---|---|
+| D | the solved realization's **measured** gap is inside a 1e-3 budget | ≤ 4.52e-3 | **1.05e-7** | holds |
+| E | the solved realization is faster per step than all-`f64` | ≥ 1.5× | **0.96×** | fails |
+| F | the propagated bound is within 10³ of the measured gap on half the entries | ≥ 11 of 21 | **10 of 21**, median 1.8e3 | fails |
+| G | the vectorized GEMM's gap is inside its declared order's bound | — | — | not askable |
+
+**D holds, and it is the one that matters most.** A budget declared in the
+program becomes an assignment whose distance from the exact denotation is
+*measured*, not asserted, and the measurement is inside the budget by four
+orders of magnitude. No other compiler can run this check, because no other
+compiler keeps the exact denotation to measure against.
+
+**E fails, and the reason is the version's own finding turned against it.**
+The solver minimises **traffic**, because traffic is what a narrower type
+reduces. At these shapes the kernels are not traffic-bound, so narrowing buys
+nothing and the conversions cost: the solved realization runs at 5.63 ms
+against all-`f64`'s 5.39, and uniform `bf16` at 6.05. Step 2 measured exactly
+this on a single kernel and D41 wrote it down as the reason the objective is
+traffic and not time. The consequence was still not drawn: **optimising the
+right proxy in the wrong regime is not optimising**. Closing E needs two
+things, both already named — the roofline's `W` per site so the objective can
+be time, and vector lanes so that arithmetic width buys time at all.
+
+**F fails narrowly and informatively.** Ten of twenty-one entries are within
+10³ and the median ratio is 1.8e3; on a normaliser the bound is within a
+factor of 27, on the corpus GPT it is 10²⁰. The threshold was set generously
+on purpose, because the interesting outcome was the number and not the
+verdict. The number says the bound is worth having on a kernel and worthless
+on a network, and locates why: a contraction of `k` terms multiplies error by
+`k` where committed errors grow like `√k`.
+
+**G cannot be asked.** It is about a vectorized GEMM, and there is none. The
+step that would have built it found instead that vectorizing across output
+*columns* is bit-exact (D42), so the kernel G describes should be built under
+a sequential order and would have no realization gap for G to measure. The
+statement needs restating before the next version can answer it — against the
+exact vector kernel, with the margin printed beside the verdict rather than a
+bare pass.
+
+**What the four together say.** The claim that precision can be *declared*
+and *verified* is demonstrated: D holds by measurement. The claim that it
+**pays** is not: E fails, and it fails for a reason this version measured
+twice before believing it. That is the same shape as 0.4.0, where the
+discipline was shown affordable and the speed was not there yet, and it puts
+the same item at the top of the next version's list: make a narrower type buy
+time, not only bytes.

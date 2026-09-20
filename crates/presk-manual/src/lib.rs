@@ -37,6 +37,11 @@ pub mod corpus {}
 #[doc = include_str!("../manual/coverage.md")]
 pub mod coverage {}
 
+/// Precision as a resource: the magnitude envelope a bound is conditional
+/// on, and what a budget does and does not promise.
+#[doc = include_str!("../manual/precision.md")]
+pub mod precision {}
+
 /// Experiments: shapes as types against silent broadcasting, and the
 /// realization gap of float32/float64 training against the exact reference.
 #[doc = include_str!("../manual/experiments.md")]

@@ -19,6 +19,12 @@ type Tokens = idx[V][batch: B, seq: T]
 type Acts   = ℝ[batch: B, seq: T, model: D]
 type Mask   = ℝ[seq: T, seq2: T]
 
+-- The accumulator of the block stack. A fold hands every iteration the same
+-- extras, so a key passed as an extra would be one key for all L blocks and
+-- every layer would drop the same positions; carried in the accumulator it is
+-- threaded, and each block draws its own (0.5.0 step 1, question 51).
+type Acc    = (Acts, key)
+
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init = xavier_uniform
   param b : ℝ[Out]      init = zeros
@@ -38,12 +44,12 @@ module LayerNorm{Dm : dim} {
 module SelfAttention {
   use wq, wk, wv, wo : Linear{D, D}
 
-  fn apply(x : Acts, mask : Mask) -> Acts =
+  fn apply(x : Acts, mask : Mask, kd : key) -> Acts uses Rand =
     let q = split_heads(wq.apply(x))
     let k = split_heads(wk.apply(x))
     let v = split_heads(wv.apply(x))
     let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
-    let a = softmax(axis seq2, s + mask)
+    let a = dropout(0.2, kd, softmax(axis seq2, s + mask))
     wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
 }
 
@@ -58,9 +64,17 @@ module Block {
   use ff   : FeedForward
   use ln1, ln2 : LayerNorm{D}
 
-  fn apply(x : Acts, mask : Mask) -> Acts =
-    let x = x + attn.apply(ln1.apply(x), mask)
-    x + ff.apply(ln2.apply(x))
+  -- Three dropouts a block at the course's rate of 0.2, where it has them:
+  -- on the attention weights, on the attention output and on the
+  -- feed-forward output. The rate is written at each site because `const`
+  -- holds naturals only (E1009).
+  fn apply(s : Acc, mask : Mask) -> Acc uses Rand =
+    let (x, k)     = s
+    let (katt, k1) = split_key(k)
+    let (kres, k2) = split_key(k1)
+    let (kff,  k3) = split_key(k2)
+    let h = x + dropout(0.2, kres, attn.apply(ln1.apply(x), mask, katt))
+    (h + dropout(0.2, kff, ff.apply(ln2.apply(h))), k3)
 }
 
 module GPT {
@@ -70,15 +84,19 @@ module GPT {
   use lnf    : LayerNorm{D}
   param head : ℝ[D, V]               init = zeros
 
-  fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
-    let mask = causal_mask(seq: T)
-    let h0   = embed(tok, ids) + embed(pos, positions(seq: T))
-    lnf.apply(blocks.apply(h0, mask)) · head
+  fn apply(ids : Tokens, k : key) -> ℝ[batch: B, seq: T, vocab: V] uses Rand =
+    let mask     = causal_mask(seq: T)
+    let h0       = embed(tok, ids) + embed(pos, positions(seq: T))
+    let (ke, kb) = split_key(k)
+    let (hL, _)  = blocks.apply((dropout(0.2, ke, h0), kb), mask)
+    lnf.apply(hL) · head
 }
 
-fn loss(θ : params GPT, batch : (Tokens, Tokens)) -> ℝ[] =
+-- The objective takes a per-step key between θ and the batch, which the
+-- training loop derives from the run's seed (D29).
+fn loss(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[] uses Rand =
   let (x, y) = batch
-  mean(cross_entropy(GPT.apply(θ, x), y))
+  mean(cross_entropy(GPT.apply(θ, x, k), y))
 
 optimizer adamw {
   lr           : f64 = 3e-4

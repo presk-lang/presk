@@ -1196,6 +1196,81 @@ remaining distance is a matrix coprocessor presk does not reach yet.
 Exit codes, for scripts: 0 success, 1 diagnostics with an error, 2 usage or
 not implemented, 3 valid but not executable in this version.
 
+## 15. A budget, and what it buys
+
+Every program so far has been run in one machine type, chosen by a flag.
+Version 0.5.0 replaces that with a **budget**: you say how far the execution
+may stray from the mathematics, and the compiler chooses the types.
+
+Three commands. First, measure how large the program's values actually get,
+on the exact interpreter — a bound needs a scale, and static intervals cannot
+supply one for a network:
+
+```sh
+presk calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 \
+    --bits 128 --out out/tut_env.json
+```
+
+```text
+presk calibrate: 30 sites over 1 samples of `loss` at 128 bits
+  loss/%6                      7.4759e0
+  RMSNorm.apply/%3             4.0212e0
+  loss/%5                      2.7342e0
+```
+
+Then ask what a given realization costs:
+
+```sh
+presk check --precision out/tut_env.json tutorial/07_train.psk --realize f32
+```
+
+```text
+presk check --precision: `loss` under f32
+  magnitude   2.1038e0
+  bound       3.0878e-2  (1.47e-2 relative)
+  envelope    out/tut_env.json over 1 samples, 30 sites
+```
+
+That bound is *sound* and, as the `precision` chapter explains at length,
+loose — worth reading on a kernel and not on a network. Which is why the
+third command does not trust it:
+
+```sh
+presk solve tutorial/07_train.psk --precision out/tut_env.json \
+    --budget 1e-3 --out out/tut_solved.json
+```
+
+```text
+presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2.104e0)
+  sites       22 narrowable, 22 assigned away from f64
+  traffic     1.2900e3 bytes against 2.6000e3 all-f64 (2.02x), relaxation floor 6.5000e2
+  estimate    1.044e-3 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  measured    3.663e-8 against the exact reference, after 0 widening round(s) — inside the budget
+```
+
+Read the last two lines together, because they are the point. The
+**estimate** ranks: it says where the budget should go, from one reverse
+sweep of the derivative the compiler already computes. The **measurement**
+decides: the candidate is run and compared against the exact denotation, and
+3.663e-8 is inside the 2.104e-3 the budget allows. A bound would have
+accepted this too, and would have accepted much worse.
+
+The file it writes is a realization, and `--realize @FILE` runs it:
+
+```sh
+presk run tutorial/07_train.psk --entry loss --dim B=4 \
+    --backend native --realize @out/tut_solved.json
+```
+
+Two honest notes to end on. Half the values got a narrower type and the
+program moves half as many bytes — but on these shapes that does **not** make
+it faster, because the kernels are bound by arithmetic rather than by memory
+(the `experiments` chapter's statement E, which fails). And the budget
+guarantees the distance to the *mathematics*, not the quality of the model;
+what it buys is that a degradation beyond it is a compiler bug, provably, and
+below it is the model's own sensitivity, measurably.
+
+
 ## Where to go next
 
 - The `experiments` chapter for what these tools show about the approach

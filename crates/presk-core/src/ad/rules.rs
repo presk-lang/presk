@@ -102,7 +102,7 @@ pub(crate) fn prim_vjp(e: &mut Emit, op: &PrimOp, args: &[VarId], tys: &[Ty], y:
             vec![(0, mul(e, ct, d, &yt))]
         }
         // A retag moves no data: the cotangent goes back under the argument's axes.
-        PrimOp::MergeAxes { .. } | PrimOp::ReshapeLike => {
+        PrimOp::MergeAxes { .. } | PrimOp::SplitAxes { .. } | PrimOp::ReshapeLike => {
             vec![(0, e.prim(tys[0].clone(), PrimOp::ReshapeLike, vec![ct, args[0]], span))]
         }
         PrimOp::Abs => {

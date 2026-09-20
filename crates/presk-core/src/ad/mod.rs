@@ -21,7 +21,7 @@ use crate::ir::{stack_ty, unstack_ty, Block, Func, FuncId, Let, Lit, Origin, Par
 
 /// Rewrite every `grad` in the program; returns the diagnostics.
 pub fn transform(prog: &mut Program) -> Vec<Diagnostic> {
-    let mut ad = Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![] };
+    let mut ad = Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![], adjoints: AdjointMap::new() };
     // Rewrite `grad` nodes until none is left (generated functions may contain some).
     loop {
         let mut target = None;
@@ -60,15 +60,34 @@ pub fn transform(prog: &mut Program) -> Vec<Diagnostic> {
 /// `f.vjp` for a named function (the training loop's gradient of the
 /// objective), generated on demand after [`transform`].
 pub fn vjp_function(prog: &mut Program, f: FuncId) -> (FuncId, Vec<Diagnostic>) {
-    let mut ad = Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![] };
+    let (id, _, diags) = vjp_with_adjoints(prog, f);
+    (id, diags)
+}
+
+/// Where the adjoint of each forward value lives inside a generated `.vjp`:
+/// `forward function → (its vjp, forward var → adjoint var in the vjp)`.
+///
+/// The reverse sweep already computes `∂output/∂v` for every intermediate —
+/// that is what a reverse sweep *is* — and then throws all of them away but
+/// the parameters'. This table keeps the correspondence so that the
+/// sensitivity analysis can read them back (0.5.0 step 5) without a second
+/// differentiation or a perturbation per site.
+pub type AdjointMap = HashMap<FuncId, (FuncId, HashMap<VarId, VarId>)>;
+
+/// The same as [`vjp_function`], also returning where each forward value's
+/// adjoint ended up.
+pub fn vjp_with_adjoints(prog: &mut Program, f: FuncId) -> (FuncId, AdjointMap, Vec<Diagnostic>) {
+    let mut ad = Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![], adjoints: AdjointMap::new() };
     let id = ad.vjp_of(prog, f);
-    (id, ad.diags)
+    (id, ad.adjoints, ad.diags)
 }
 
 struct Ad {
     vjps: HashMap<FuncId, FuncId>,
     grads: HashMap<(FuncId, usize), FuncId>,
     diags: Vec<Diagnostic>,
+    /// Filled as each vjp is built; see [`AdjointMap`].
+    adjoints: AdjointMap,
 }
 
 /// Emits lets with fresh variables.
@@ -393,6 +412,15 @@ impl Ad {
         }
         let ret = Ty::Tuple(params[..params.len() - 1].iter().map(|p| p.ty.clone()).collect());
         let result = e.emit(ret.clone(), Rhs::Tuple(outs), src.span);
+        // Keep the correspondence before it is lost: which variable of this
+        // vjp holds `∂output/∂v` for each `v` of the forward body.
+        let table: HashMap<VarId, VarId> = src
+            .body
+            .lets
+            .iter()
+            .filter_map(|l| adj.get(&rn(&rename, &l.var)).map(|a| (l.var, *a)))
+            .collect();
+        self.adjoints.insert(f, (id, table));
         let func = &mut prog.funcs[id.0 as usize];
         func.params = params;
         func.ret = ret;

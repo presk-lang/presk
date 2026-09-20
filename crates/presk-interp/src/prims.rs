@@ -260,6 +260,21 @@ impl<R: Real> Interp<'_, R> {
                 axes.extend_from_slice(&t.axes[p + 2..]);
                 Ok(Value::Real(Tensor { axes, data: t.data.clone() }))
             }
+            PrimOp::SplitAxes { a: an, n1, l1, n2, l2 } => {
+                let t = self.tensor(a(0)?, &name)?;
+                let Some(p) = t.axes.iter().position(|x| x.name.as_deref() == Some(an.as_str())) else {
+                    return err(format!("split: no axis `{an}` in {}", show_axes(&t.axes)));
+                };
+                let (u, v) = (self.dim(l1, dims)? as usize, self.dim(l2, dims)? as usize);
+                if u * v != t.axes[p].len {
+                    return err(format!("split: `{an}` has length {} but {u} · {v} = {}", t.axes[p].len, u * v));
+                }
+                let mut axes = t.axes[..p].to_vec();
+                axes.push(Axis { name: Some(n1.clone()), len: u });
+                axes.push(Axis { name: Some(n2.clone()), len: v });
+                axes.extend_from_slice(&t.axes[p + 1..]);
+                Ok(Value::Real(Tensor { axes, data: t.data.clone() }))
+            }
             PrimOp::ReshapeLike => {
                 let x = self.tensor(a(0)?, &name)?;
                 let template = self.tensor(a(1)?, &name)?;

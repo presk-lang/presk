@@ -35,7 +35,7 @@ pub fn prim_weight(op: &PrimOp) -> f64 {
         Exp | Log | Tanh | Sqrt | Gelu | Sigmoid | Sin | Cos | GeluDeriv => TRANSCENDENTAL,
         Dot | Matmul | Ein { .. } | DotVjpL | DotVjpR => CONTRACTION,
         DropoutMask | SumAll | MeanAll | Sum { .. } | Mean { .. } | Softmax { .. } | CrossEntropy | CrossEntropyVjp | Argmax | Sample | Embed | OneHot | EmbedVjp | SumTo | BroadcastLike | MeanVjp { .. } | SumSquares | ZerosLike | Zeros { .. } | Ones { .. } | Normal { .. } | XavierUniform { .. } | Positions { .. } | CausalMask { .. } | ScatterIndex { .. } | ScatterParams { .. } => REDUCTION,
-        MergeAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SplitKey { .. } | SliceParams { .. } | StackParams { .. } | SetField { .. } | SetElem { .. } | SetSlice => STRUCTURAL,
+        MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SplitKey { .. } | SliceParams { .. } | StackParams { .. } | SetField { .. } | SetElem { .. } | SetSlice => STRUCTURAL,
     }
 }
 

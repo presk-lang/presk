@@ -33,7 +33,7 @@ use presk_core::ir::{Origin, PrimOp, Rhs};
 use presk_core::{FuncId, Program};
 use presk_interp::eval::Dims;
 use presk_interp::key::Key;
-use presk_rt::{Backend, Buf, Realize, Result, RtError, Value, axes_of, err, load_params};
+use presk_rt::{Backend, Buf, Realization, Result, RtError, Value, axes_of, err, load_params};
 use presk_syntax::ast::{Expr, Lit};
 use presk_types::check::TypedProgram;
 use presk_types::dim::DimVar;
@@ -50,7 +50,7 @@ pub struct ServeOptions {
     pub tokens: u64,
     pub seed: u64,
     pub bits: u32,
-    pub realize: Realize,
+    pub realize: Realization,
     /// `None`: the generation function's default; `Some(0.0)`: greedy.
     pub temperature: Option<f64>,
     /// `--dim NAME=N`: dimensions of the model not fixed by the prompt (`T`
@@ -202,7 +202,7 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
     };
     // θ, shaped by the initializer at the window (or the prompt) length.
     let init_names = names_for(window.unwrap_or(prompt_len));
-    let init = backend.prepare(fns.init, &dims_of(fns.init, &init_names)?, opts.realize)?;
+    let init = backend.prepare(fns.init, &dims_of(fns.init, &init_names)?, &opts.realize)?;
     let template = backend.call(&init, vec![Value::Key(Key::from_seed(opts.seed))])?;
     let theta = load_params(&weights, &template)?;
     // The context type's vocabulary.
@@ -223,7 +223,7 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
         let p = match prepared.get(&len) {
             Some(p) => p,
             None => {
-                let p = backend.prepare(f, &dims, opts.realize)?;
+                let p = backend.prepare(f, &dims, &opts.realize)?;
                 prepared.entry(len).or_insert(p)
             }
         };

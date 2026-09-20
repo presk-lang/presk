@@ -362,6 +362,92 @@ fn ad_through_merge_matches_finite_differences() {
     assert_eq!(checked, 5 * 3 + 6 * 5, "every element of the table and the head");
 }
 
+/// Per-layer randomness inside a `stack{L}` fold (0.5.0 step 1, question 51).
+/// A fold hands every iteration the same extras, so a key passed as an extra
+/// is one key for all L blocks. Carried in the *accumulator* it is threaded,
+/// and each layer draws its own mask — no new construct, and differentiable,
+/// which an index-carrying fold would not have been.
+#[test]
+fn stacked_layers_draw_independent_keys() {
+    let bits = 128;
+    let rel = "tests/data/stack_keys.psk";
+    let (prog, core) = prepare(rel, &[]);
+    let zeros = |entry: &str| -> (usize, usize) {
+        let opts = presk_interp::RunOptions { entry: entry.into(), dims: vec![("B".into(), 8)], seed: 0, bits, digits: 12 };
+        let (f, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+        let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
+        let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+        interp.training = true;
+        let Value::Real(t) = interp.call(f, dims, args).unwrap() else { panic!("a tensor") };
+        (t.data.iter().filter(|x| x.is_zero()).count(), t.data.len())
+    };
+    let (chained, n) = zeros("chained");
+    let (shared, m) = zeros("shared");
+    assert_eq!((n, m), (8 * 16, 8 * 16));
+    // Four independent masks at rate 1/2 leave about 1/16 of the elements;
+    // one mask applied four times leaves about 1/2. The bands are wide enough
+    // to be stable and far enough apart that no key scheme sits in both.
+    assert!(chained as f64 / n as f64 > 0.85, "four independent masks should zero most of it, got {chained}/{n}");
+    assert!((0.35..0.65).contains(&(shared as f64 / m as f64)), "one reused mask should zero about half, got {shared}/{m}");
+
+    // And the chain is differentiable: a fold carrying its index would not
+    // have been, since AD refuses to differentiate an indexed fold.
+    let opts = presk_interp::RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 2)], seed: 0, bits, digits: 12 };
+    let (gradf, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+    let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    interp.training = true;
+    let g = interp.call(gradf, dims, args).unwrap();
+    let per_layer: Vec<f64> = leaf_paths(&g)
+        .iter()
+        .filter_map(|p| match get_leaf(&g, p) {
+            Value::Real(t) => Some(t.data.iter().map(|x| x.to_f64().abs()).sum::<f64>()),
+            _ => None,
+        })
+        .collect();
+    assert!(!per_layer.is_empty(), "the gradient has leaves");
+    assert!(per_layer.iter().all(|x| x.is_finite()), "every leaf is finite");
+}
+
+/// The adjoint of `split` (0.5.0 step 1): reading one axis as two moves no
+/// data, so its adjoint is the retag back — but only if the cotangent really
+/// is put back under the original axis. Here the two halves are treated
+/// differently (a per-pair scale broadcasts across the inner axis), which is
+/// what rotary positions and grouped-query attention do, so a transposed or
+/// column-major reading would survive the shapes and fail the numbers.
+#[test]
+fn ad_through_split_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/split_grad.psk";
+    let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
+    let (prog, core) = prepare(rel, &[]);
+    let loss = core.find("loss").unwrap();
+    let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
+    let theta = out.inputs[0].1.clone();
+    let ids = out.inputs[1].1.clone();
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut checked = 0;
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&out.result, path) else { panic!("gradient leaf missing") };
+        assert_eq!(t.axes, g.axes, "leaf {path:?} keeps its axes through the split");
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, dims.clone(), vec![plus, ids.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, dims.clone(), vec![minus, ids.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "leaf {path:?}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 3 * 4 + 2 + 4 * 3, "every element of the table, the per-pair scale and the head");
+}
+
 /// A fold whose accumulator type has an open prefix (`ℝ[..., model: 4]`):
 /// the scanned accumulators keep their axis names (a regression of the
 /// tutorial's training run), and the gradient agrees with finite differences.

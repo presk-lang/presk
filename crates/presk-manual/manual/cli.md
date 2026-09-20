@@ -88,6 +88,7 @@ output format is not stable.
 | `core` | the PSK-Core intermediate representation after lowering (every function in A-normal form with its dimensions, parameters and types; `init` functions; lifted lambdas), verified before printing | implemented |
 | `core-after-ad` | PSK-Core after automatic differentiation: every `grad` rewritten, with the generated `.vjp` and `.grad` functions; verified before printing | implemented |
 | `kernel` | the PSK-Kernel v0 kernels launched by an entry, specialized on its shapes: needs `--entry` and `--dim`/`--const` as `presk run`, plus `--realize` (`native` chapter) | implemented (0.3.0 step 2) |
+| `sensitivity` | `‖∂L/∂v‖₁` at every site of a scalar entry and summed per module, from one reverse sweep: needs `--entry`, `--dim`/`--const`, and `--weights` to be worth reading, since a zero-initialized head makes every upstream gradient zero; `--sites N` lists more (`precision` chapter) | implemented (0.5.0 step 5) |
 | `sched` | the fusion groups of every function (`scheduling` chapter): one line per group with its steps, its inputs and the launches it removes | implemented (0.4.0 step 4) |
 | `core-opt` | PSK-Core after AD and the e-graph optimizer (`optimization` chapter); the report (functions rewritten, `let`s and cost before and after, stop reason) goes to standard error; `--profile FILE.json` makes the roofline of that profile the extraction cost, `--dim` binds the dimensions it evaluates | implemented (0.3.0 steps 6–7) |
 
@@ -121,7 +122,7 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--verbose` | also print the synthesized inputs. |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
 | `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
-| `--realize f64\|f32` | the machine type of a native realization (0.3.0); ignored by the interpreter, which computes at `--bits`. |
+| `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter). Ignored by the interpreter, which computes at `--bits`. |
 | `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
 | `--threads N` | workers a parallel kernel may use on the native backend (`native` chapter); the default is the machine's cores, `1` keeps every kernel on one thread. Also on `presk train` and `presk bench`. |
@@ -223,6 +224,37 @@ presk serve tests/examples/minigpt/serve_minigpt.psk --const V=64 --const D=16 -
 
 **Exit codes**: 0; 1 a diagnostic or a run-time error; 2 no `inference
 serve`, no weights file, or a malformed `--prompt`/`--dim`.
+
+## `presk calibrate --precision FILE.psk --entry ENTRY …`
+
+```sh
+presk calibrate --precision FILE.psk --entry ENTRY [--data FILE.psk.d]
+    [--samples N] [--from K] [--dim NAME=N] [--const NAME=N]
+    [--bits 256] [--seed 0] [--out ENV.json] [--compare OTHER.json]
+```
+
+Measures the **magnitude envelope**: the largest `|x|` at each site, on the
+*reference* interpreter, since the bound it feeds is a statement about the
+denotation and must not be read off a rounded run. `--samples N` folds in a
+batch of `N` and `--from K` skips the first `K`, so two disjoint ranges give
+two independent measurements of the same program; `--compare` prints how far
+two envelopes disagree. `--precision` is required and is the only mode — the
+roofline calibration is `presk bench --calibrate`, a different measurement of
+a different thing. See the `precision` chapter.
+
+## `presk solve FILE.psk --precision ENVELOPE.json --budget ε`
+
+```sh
+presk solve FILE.psk --precision ENV.json [--budget 1e-3] [--weights ckpt/final.psk.d]
+    [--no-verify] [--bits 128] [--seed 0] [--out R.json] [--sites N]
+```
+
+Chooses a machine type per site to minimise traffic under an error budget,
+and writes a realization `--realize @R.json` can run. It **verifies by
+measurement** against the exact reference rather than by the propagated
+bound, which is vacuous on a real model; `--no-verify` gives the proposal
+alone. `--weights` matters: a sensitivity ranking at initialization is
+vacuous. See the `precision` chapter.
 
 ## `presk bench FILE.psk --entry ENTRY …`
 

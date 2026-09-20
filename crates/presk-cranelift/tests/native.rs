@@ -8,7 +8,7 @@ use std::sync::Once;
 
 use presk_interp::{Interp, RunOptions};
 use presk_cranelift::native_backend;
-use presk_rt::{Realize, Value};
+use presk_rt::{Dtype, Realization, Value};
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
 use presk_types::check;
@@ -45,12 +45,24 @@ fn prepare(rel: &str, consts: &[(&str, u64)]) -> (ElabProgram, presk_core::Progr
     (prog, core)
 }
 
-/// The tolerance of a realization: `(ε, a)`.
-fn tol(r: Realize) -> (f64, f64) {
-    match r {
-        Realize::F64 => (2f64.powi(-40), 2f64.powi(-50)),
-        Realize::F32 => (2f64.powi(-15), 2f64.powi(-20)),
-    }
+/// The tolerance of a realization: `(ε, a)`. Since 0.5.0 step 2 the suite is
+/// parameterized by a `Realization` rather than a machine type, so a mixed or
+/// reassociated one is reported the same way a uniform one is (D34). The
+/// bands are the storage type's, loosened by the reduction order when it
+/// reassociates.
+fn tol(r: &Realization) -> (f64, f64) {
+    let (eps, a) = match r.default {
+        Dtype::F64 => (2f64.powi(-40), 2f64.powi(-50)),
+        Dtype::F32 => (2f64.powi(-15), 2f64.powi(-20)),
+        // bf16 keeps eight bits of significand, so `u = 2⁻⁹`, and a value of
+        // order one carries an absolute error of about `2⁻¹⁰` before anything
+        // has happened to it. The floor `a` is what makes the band mean
+        // something: without it a result near a cancellation has unbounded
+        // *relative* error, which says nothing about the kernel. Measured
+        // worst over the entries below: 3.3e-2.
+        Dtype::Bf16 => (2f64.powi(-4), 2f64.powi(-5)),
+    };
+    if r.order.is_exact() { (eps, a) } else { (eps * 8.0, a) }
 }
 
 /// The largest `|x − x̂| / (|x| + a)` over the leaves, and the leaf path of the worst.
@@ -86,7 +98,7 @@ fn worst(reference: &IValue, got: &Value, a: f64, path: &str, out: &mut (f64, St
     }
 }
 
-fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], realize: Realize) -> f64 {
+fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], realize: &Realization) -> f64 {
     let (prog, core) = prepare(rel, consts);
     let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
     let reference = presk_interp::run(&core, &prog, &opts).unwrap_or_else(|e| panic!("{entry}: {}", e.message));
@@ -96,7 +108,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     let (eps, a) = tol(realize);
     let mut w = (0.0, String::new());
     worst(&reference.result, &got, a, entry, &mut w);
-    assert!(w.0 <= eps, "{rel} {entry} ({realize:?}): gap {:.3e} > {eps:.3e} at {}", w.0, w.1);
+    assert!(w.0 <= eps, "{rel} {entry} ({}): gap {:.3e} > {eps:.3e} at {}", realize.label(), w.0, w.1);
     w.0
 }
 
@@ -120,9 +132,10 @@ fn examples_conform() {
     ];
     let mut report = String::new();
     for (rel, consts, entry, dims) in cases {
-        let g64 = check_entry(rel, consts, entry, dims, Realize::F64);
-        let g32 = check_entry(rel, consts, entry, dims, Realize::F32);
-        report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}\n"));
+        let g64 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F64));
+        let g32 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F32));
+        let gbf = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::Bf16));
+        report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}  bf16 {gbf:.1e}\n"));
     }
     eprintln!("{report}");
 }
@@ -206,12 +219,12 @@ fn primitives_conform() {
         (PrimOp::SumSquares, vec![x.clone()]),
         (PrimOp::Real, vec![ids.clone()]),
     ];
-    for realize in [Realize::F64, Realize::F32] {
-        let (eps, a) = tol(realize);
-        let mut backend = native_backend(&core, &prog, realize, 0).unwrap();
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::Bf16)] {
+        let (eps, a) = tol(&realize);
+        let mut backend = native_backend(&core, &prog, &realize, 0).unwrap();
         for (op, args) in &cases {
             let reference = interp.prim_public(op, args).unwrap_or_else(|e| panic!("{}: {}", op.name(), e.message));
-            let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(realize)).collect();
+            let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(realize.default)).collect();
             let got = backend.prim(op, &rargs, &presk_types::ty::Ty::Nat, &Default::default()).unwrap_or_else(|e| panic!("{} on the kernel backend: {}", op.name(), e.message));
             let mut w = (0.0, String::new());
             worst(&reference, &got, a, &op.name(), &mut w);
@@ -225,8 +238,8 @@ fn primitives_conform() {
 fn kernel_dump_snapshot() {
     let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{3, 2}.apply".into(), dims: vec![("batch".into(), 4)], seed: 0, bits: 64, digits: 12 };
-    let mut backend = native_backend(&core, &prog, Realize::F32, 0).unwrap();
-    presk_rt::run_with(&mut backend, &core, &prog, &opts, Realize::F32).unwrap();
+    let mut backend = native_backend(&core, &prog, &Realization::uniform(Dtype::F32), 0).unwrap();
+    presk_rt::run_with(&mut backend, &core, &prog, &opts, &Realization::uniform(Dtype::F32)).unwrap();
     let text: String = backend.kernels.iter().map(|k| k.to_string()).collect();
     assert!(text.contains("kernel dot"));
 }
@@ -246,11 +259,11 @@ fn native_training_matches_reference() {
     let (mut core, _) = presk_core::lower(&prog, &typed);
     presk_core::ad::transform(&mut core);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
-    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realize::F64, ckpt: None, checkpoints: false };
+    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
     let reference = train(&mut presk_rt::InterpBackend::new(&core, &prog, 256, 0), &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
-    for (realize, bound) in [(Realize::F64, 1e-9), (Realize::F32, 1e-3)] {
-        let o = TrainOptions { realize, ..opts.clone() };
-        let native = train(&mut native_backend(&core, &prog, realize, 0).unwrap(), &core, &prog, &typed, &fns, &o, |_| {}).unwrap();
+    for (realize, bound) in [(Realization::uniform(Dtype::F64), 1e-9), (Realization::uniform(Dtype::F32), 1e-3)] {
+        let o = TrainOptions { realize: realize.clone(), ..opts.clone() };
+        let native = train(&mut native_backend(&core, &prog, &realize, 0).unwrap(), &core, &prog, &typed, &fns, &o, |_| {}).unwrap();
         assert_eq!(native.batches, reference.batches, "same batches from the same seed");
         let (mut w, _) = (0.0f64, ());
         let mut leaves_ref = Vec::new();
@@ -282,13 +295,13 @@ fn native_training_matches_reference() {
 #[test]
 fn threads_do_not_change_a_single_bit() {
     let (prog, core) = prepare("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 64), ("H", 2), ("L", 2)]);
-    for realize in [Realize::F64, Realize::F32] {
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32)] {
         let opts = presk_interp::RunOptions { entry: "GPT.apply".into(), dims: vec![("B".into(), 4), ("T".into(), 24)], seed: 0, bits: 64, digits: 12 };
         let (func, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
         let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
         let run = |threads: usize| -> Vec<f64> {
-            let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, realize, 0, threads).unwrap();
-            let p = presk_rt::Backend::prepare(&mut b, func, &dims, realize).unwrap();
+            let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, &realize, 0, threads).unwrap();
+            let p = presk_rt::Backend::prepare(&mut b, func, &dims, &realize).unwrap();
             let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
             let Value::Real(t) = out else { panic!("the model returns logits") };
             t.data.to_f64()
@@ -312,22 +325,22 @@ fn threads_do_not_change_a_single_bit() {
 #[test]
 fn the_blocked_contraction_is_exact() {
     chdir_root();
-    for realize in [Realize::F64, Realize::F32] {
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32)] {
         // 16 is a multiple of the tile and 12 is not, so the two widths take
         // the two paths; the shared prefix of the results must agree exactly.
-        let wide = gemm_row(16, realize);
-        let narrow = gemm_row(12, realize);
+        let wide = gemm_row(16, &realize);
+        let narrow = gemm_row(12, &realize);
         assert_eq!(wide.len(), 16);
         assert_eq!(narrow.len(), 12);
         for (i, (a, b)) in wide.iter().zip(&narrow).enumerate() {
-            assert_eq!(a.to_bits(), b.to_bits(), "{realize:?} column {i}: blocked {a} against row-wise {b}");
+            assert_eq!(a.to_bits(), b.to_bits(), "{} column {i}: blocked {a} against row-wise {b}", realize.label());
         }
     }
 }
 
 /// One row of `a · b` where `b` has `n` columns, `a` and the shared part of
 /// `b` being the same values whatever `n`.
-fn gemm_row(n: usize, realize: Realize) -> Vec<f64> {
+fn gemm_row(n: usize, realize: &Realization) -> Vec<f64> {
     use presk_rt::{Axis, Buf, Tensor};
     let k = 37;
     let a: Vec<f64> = (0..k).map(|i| ((i * 7 + 1) as f64).sin()).collect();
@@ -336,7 +349,7 @@ fn gemm_row(n: usize, realize: Realize) -> Vec<f64> {
     let f = core.find("gemm").unwrap();
     let dims: presk_interp::eval::Dims = core.func(f).dims.iter().map(|d| (*d, 1)).collect();
     let mut back = presk_cranelift::native_backend(&core, &prog, realize, 0).unwrap();
-    let mk = |axes: Vec<Axis>, data: Vec<f64>| Value::Real(Tensor { axes, data: if realize == Realize::F32 { Buf::F32(data.iter().map(|x| *x as f32).collect()) } else { Buf::F64(data) } });
+    let mk = |axes: Vec<Axis>, data: Vec<f64>| Value::Real(Tensor { axes, data: Buf::of(realize.default, &data) });
     let args = vec![
         mk(vec![Axis { name: Some("row".into()), len: 1 }, Axis { name: None, len: k }], a),
         mk(vec![Axis { name: None, len: k }, Axis { name: None, len: n }], b),

@@ -16,7 +16,7 @@ The transcriptions are in `coverage/`; `make coverage` checks them.
 | Family | MLPerf benchmarks | Status | What is missing |
 |---|---|---|---|
 | Transformer encoder | BERT-large (training and inference) | **expressible**, `coverage/bert.psk` | — |
-| Transformer decoder | GPT-3, GPT-J 6B, Llama 2 70B, Llama 3.1 405B | **expressible** with two substitutions, `coverage/llama.psk` | splitting one axis into two |
+| Transformer decoder | GPT-3, GPT-J 6B, Llama 2 70B, Llama 3.1 405B | **expressible** with one substitution, `coverage/llama.psk` | building a tensor along an axis (`concat`) |
 | Mixture of experts | Mixtral 8×7B | not expressible | top-*k*; indexing a stacked parameter tree by a runtime value |
 | Convolutional vision | ResNet-50, RetinaNet, 3D U-Net, Stable Diffusion | not expressible | convolution, pooling, batch and instance normalization; transposed convolution |
 | Detection post-processing | RetinaNet | outside the language | non-maximum suppression is data-dependent control flow |
@@ -38,33 +38,59 @@ today.
 
 `coverage/llama.psk` is the decoder the Llama, GPT-J and Mixtral benchmarks
 share: no biases, `RMSNorm`, SwiGLU with its own hidden width, a causal mask,
-a zero-initialized head. `silu` is `x · σ(x)`, written from `sigmoid`. It
-checks, with two substitutions marked in the file, and both are the same
-missing construct:
+a zero-initialized head. `silu` is `x · σ(x)`, written from `sigmoid`. In
+0.4.0 it checked with *two* substitutions, both attributed to the same
+missing construct — splitting one axis into two. 0.5.0 step 1 added the
+split. One substitution went away and the other did not, and the reason it
+did not is the more useful of the two results.
 
-- **Rotary positions.** RoPE rotates *pairs* of channels by an angle that
-  depends on the position. Pairing them means reading `hd` as `(hd/2, 2)`,
-  and the language has `merge`, which joins two axes, but not its inverse.
-  The transcription keeps a learned position table in its place.
-- **Grouped-query attention.** Llama 2 70B gives the keys and values eight
-  heads shared by thirty-two query heads. Expressing the sharing means
-  reading `heads` as `(groups, heads-per-group)` so the group axis can
-  broadcast — the same split. The transcription uses plain multi-head
-  attention.
-
-The three ways one might work around a split are all closed, and say so:
+**Grouped-query attention is now transcribed exactly.** Llama 2 70B gives the
+keys and values eight heads shared by thirty-two query heads, so the queries
+are read as `(groups: 8, per: 4, hd: 128)` and the keys and values as
+`(groups: 8, hd: 128)`:
 
 ```text
-split(axis hd, half: HALF, pair: 2, x)   [E2001] unresolved function `split`
-concat(a, b)                             [E2012] `concat` is not implemented
-x[hd: 0..HALF]                           [E0010] expected `]`, found `.`
+let qg = split(axis qout,  groups: G, rest: P*HD, x · wq)
+let q  = split(axis rest,  per: P,    hd: HD,     qg)
+let k  = split(axis kvout, groups: G, hd: HD,     x · wk)
+let s  = ein[batch, groups, per, seq, seq2](q * k) / sqrt(HD : ℝ)
 ```
 
-So the split is the cheapest thing on this list and the one that buys the
-most: it is the declared inverse of `merge`, whose implementation already
-exists inside the compiler as the adjoint of `merge` (`reshape_like`), and it
-moves the decoder family from "with substitutions" to "exactly". It is the
-open half of spec question 45.
+Nothing transposes, and that is the point: `ein` contracts by *name*, so the
+group axis of the queries meets the group axis of the keys wherever each sits
+in its operand. Two things follow that the 0.4.0 chapter did not anticipate.
+The split is not a companion to `split_heads` but its **replacement** for any
+real head layout — `split_heads` is wired to `const H` and `const HD` and
+also permutes, so it cannot say "eight shared by thirty-two" at all, and the
+transcription now uses neither head primitive. And because a merge leaves its
+axis unnamed (D28) while a split names both halves, **splits chain and merges
+do not**, which is why the output projection reads `wo` under the same three
+axes instead of flattening the attention result back.
+
+**Rotary positions are still not expressible, and the split was not what they
+were missing.** The pairing they need now checks:
+
+```text
+split(axis hd, rot: R, pair: 2, q)               -- ℝ[…, rot: R, pair: 2]
+split(axis hd, rot: R, pair: 2, q)[pair: 0]      -- reading one member
+```
+
+The rotation reads both members of a pair and writes both back,
+`out[…, r, 0] = x₀·cos θ − x₁·sin θ` and `out[…, r, 1] = x₀·sin θ + x₁·cos
+θ`. Reading is `x[pair: 0]` and `x[pair: 1]`, which the language has. Writing
+them back is building a tensor along an axis out of two computed parts, which
+it does not:
+
+```text
+concat(a, b)          [E2012] `concat` is not implemented
+x[hd: 0..HALF]        [E0010] expected `]`, found `.`
+```
+
+So what the decoder family is waiting for is not a shape construct at all but
+a way to *make* a tensor from values, and the 0.4.0 chapter attributing both
+substitutions to the split was wrong about one of them. That is the finding,
+and it moves `concat` from a convenience to the last thing between this
+language and an exact Llama.
 
 ## What the rest would cost
 
@@ -103,6 +129,56 @@ reference code, so they carry no weights and are not conformance-tested
 against anything.
 
 The honest summary is that the language covers the transformer, which is one
-family of models described completely, and that the next two things worth
-having are the axis split, which is small and finishes that family, and
+family of models described completely. Of the two things 0.4.0 named as next,
+the axis split is done and bought more than expected — it replaced the head
+primitives rather than complementing them. What is left is `concat`, small
+and now the only thing between this language and an exact Llama, and
 convolution, which is large and opens another four benchmarks.
+
+
+## The foil: what a budget offers that an accuracy target does not
+
+0.4.0 scoped MLPerf to three things (D27), and the third was the research
+content: not a submission, but a **comparison of acceptance rules**. 0.5.0
+has the machinery to make it, so here it is against BERT-large, which
+`coverage/bert.psk` expresses whole.
+
+MLCommons' closed division admits any realization whose *task accuracy* stays
+within 99 % of an FP32 reference. Four properties follow from that rule, and
+none of them is an accident of its thresholds.
+
+- **The constant is negotiated, not derived.** 99 %, or 99.9 % for some
+  benchmarks, is a number the working group agreed. Nothing computes it from
+  the model.
+- **Checking it costs a dataset pass.** The accuracy of a realization is
+  known only after running the whole validation set through it.
+- **It cannot attribute a failure.** A realization two points down might be a
+  fragile model or a defective `fp16` accumulation in one fused kernel. The
+  rule gives no way to tell, because there is no reference for the
+  *computation*, only for the *task*.
+- **It is per benchmark.** The rule says nothing transferable about a kernel,
+  because it is a statement about a dataset.
+
+A budget inverts each. The constant is **declared by the program** and the
+compiler meets it or refuses. Checking it costs **one run against the exact
+denotation**, not a dataset pass, and 0.5.0 does this in milliseconds on the
+corpus GPT. A failure is **attributable**: a degradation beyond ε is a
+compiler bug, provably, and below it is the model's own sensitivity. And it
+is **per kernel**, so the number transfers.
+
+The honest part of the comparison, and it is most of it. A budget does not
+promise task accuracy and must not pretend to: the specification is explicit
+that no analytical function relates a per-operation ε to perplexity. What it
+guarantees is the second term of the split — quality(executed) =
+quality(denotation) + effect of being within ε — and it is the second term
+only. MLPerf's rule measures the thing people actually care about, which a
+budget never will; a budget measures a thing MLPerf cannot see at all, and
+measures it before the dataset runs.
+
+So this is not a claim that the rule should be replaced. It is a claim that
+the two are complementary and that only one of them is currently available,
+because computing the second needs an exact reference and a compiler built
+around it. That is the paper 0.4.0 said would need the precision solver, and
+the solver now exists. What it still needs before it can be written is the
+one thing steps 7 and 8 did not deliver: a realization that is both inside a
+budget *and* faster, on a benchmark-scale model.

@@ -6,20 +6,10 @@
 
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Dtype {
-    F64,
-    F32,
-}
-
-impl fmt::Display for Dtype {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Dtype::F64 => "f64",
-            Dtype::F32 => "f32",
-        })
-    }
-}
+/// The machine type of a kernel's real buffers. Defined at the runtime seam
+/// since 0.5.0 step 2, because a realization assigns it per site and the
+/// backends must agree on what the sites mean.
+pub use presk_rt::Dtype;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BufKind {
@@ -113,6 +103,13 @@ pub enum Stmt {
     For { var: usize, bound: usize, body: Vec<Stmt> },
     Set { var: usize, value: Expr },
     SetI { var: usize, value: Expr },
+    /// Assign a *loop* variable — the one an index expression reads through
+    /// [`Expr::Iv`]. A `For` is the only other thing that writes one, so this
+    /// is what lets a lowering unroll an index: `k = cb·n + t` for a literal
+    /// `t`, which is how an interleaved contraction addresses its terms
+    /// (0.5.0 step 7). The variable is not a loop bound and carries no
+    /// iteration of its own.
+    SetL { var: usize, value: Expr },
     Store { buf: usize, index: Vec<Expr>, value: Expr },
     StoreI { buf: usize, index: Vec<Expr>, value: Expr },
     If { cond: Expr, then: Vec<Stmt> },
@@ -160,7 +157,11 @@ impl Kernel {
                             *ok = false;
                         }
                     }
-                    Stmt::Set { .. } | Stmt::SetI { .. } => {}
+                    // An assignment to the parallel candidate's own
+                    // variable would break the disjointness the analysis is
+                    // about, so it disqualifies the axis.
+                    Stmt::SetL { var: v, .. } if *v == var => *ok = false,
+                    Stmt::Set { .. } | Stmt::SetI { .. } | Stmt::SetL { .. } => {}
                 }
             }
         }
@@ -230,6 +231,7 @@ fn fmt_stmts(stmts: &[Stmt], indent: usize, out: &mut String) {
             }
             Stmt::Set { var, value } => out.push_str(&format!("{pad}s{var} = {value}\n")),
             Stmt::SetI { var, value } => out.push_str(&format!("{pad}n{var} = {value}\n")),
+            Stmt::SetL { var, value } => out.push_str(&format!("{pad}i{var} = {value}\n")),
             Stmt::Store { buf, index, value } | Stmt::StoreI { buf, index, value } => {
                 out.push_str(&format!("{pad}%{buf}[{}] = {value}\n", index.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")));
             }

@@ -2,17 +2,21 @@
 -- that GPT-J and Mixtral share the shape of, at the 7B configuration so the
 -- constants stay readable. Transcribed to see what the shape fragment covers.
 --
--- Two departures from the real model, each blocked on the same missing
--- construct and both marked below: rotary positions and grouped-query
--- attention need to *split* one axis into two, which this version cannot say
--- (spec question 45 gave `merge` but left its inverse internal).
+-- One departure from the real model, marked below. 0.4.0 recorded two, both
+-- blocked on splitting one axis into two; 0.5.0 step 1 added `split`, and
+-- grouped-query attention is now transcribed exactly. Rotary positions are
+-- not, and the split was not what they were missing: see the note above
+-- `Llama` for what they need instead.
 const V  : nat = 32000
 const D  : nat = 4096
 const H  : nat = 32
 const HD : nat = D / H
+const G  : nat = 8         -- key/value heads: 32 query heads in 8 groups
+const P  : nat = H / G     -- query heads per group
 const FF : nat = 11008     -- SwiGLU's hidden width, not 4·D
 const L  : nat = 32
 static assert D % H == 0
+static assert H % G == 0
 
 dim B
 dim T <= 4096
@@ -44,20 +48,42 @@ module SwiGLU {
   fn apply(x : Acts) -> Acts = down.apply(silu(gate.apply(x)) * up.apply(x))
 }
 
--- Multi-head attention. The real model uses *grouped*-query attention, whose
--- keys and values have 8 heads shared by the 32 query heads; expressing that
--- needs `heads` split into (groups, heads-per-group) so the group axis can
--- broadcast, which is the missing inverse of `merge`.
+-- Grouped-query attention, exactly as Llama 2 70B has it: 32 query heads
+-- share 8 key/value heads, so the keys and values project to G·HD channels
+-- rather than D and one key head serves P = 4 query heads.
+--
+-- Nothing here transposes, and that is the point. `split` reads one axis as
+-- two and `ein` contracts *by name*, so the group axis of the queries meets
+-- the group axis of the keys wherever each happens to sit. This is why the
+-- split finishes the family while `split_heads` could not: that primitive is
+-- hard-wired to `const H` and `const HD` and also permutes, so it cannot say
+-- "eight heads shared by thirty-two" at all (D28).
 module Attention {
-  use wq, wk, wv, wo : Dense{D, D}
+  -- Written as plain parameters rather than through `Dense` so that each
+  -- projection's output axis has a name the split can select. Llama's
+  -- projections are biasless linear maps, so `x · w` is the whole of them.
+  param wq : ℝ[model: D, qout: D]       init = normal(std = 0.02)
+  param wk : ℝ[model: D, kvout: G*HD]   init = normal(std = 0.02)
+  param wv : ℝ[model: D, kvout: G*HD]   init = normal(std = 0.02)
+  param wo : ℝ[headhd: D, model: D]     init = normal(std = 0.02)
 
   fn apply(x : Acts, mask : Mask) -> Acts =
-    let q = split_heads(wq.apply(x))
-    let k = split_heads(wk.apply(x))
-    let v = split_heads(wv.apply(x))
-    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
-    let a = softmax(axis seq2, s + mask)
-    wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
+    -- The queries keep all D channels and are read as (groups, per, hd); the
+    -- keys and values have only G·HD and are read as (groups, hd), so one key
+    -- head faces the P query heads of its group.
+    let qg = split(axis qout, groups: G, rest: P*HD, x · wq)
+    let q  = split(axis rest, per: P, hd: HD, qg)
+    let k  = split(axis kvout, groups: G, hd: HD, x · wk)
+    let v  = split(axis kvout, groups: G, hd: HD, x · wv)
+    let s  = ein[batch, groups, per, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a  = softmax(axis seq2, s + mask)
+    let o  = ein[batch, seq, groups, per, hd](a * v)
+    -- The output projection reads `wo` under the same three axes instead of
+    -- flattening `o` back: `merge` leaves the joined axis unnamed (D28), so
+    -- two merges cannot be chained, while two splits can.
+    let w1 = split(axis headhd, groups: G, rest: P*HD, wo)
+    let w2 = split(axis rest, per: P, hd: HD, w1)
+    ein[batch, seq, model](o * w2)
 }
 
 module Block {
@@ -70,10 +96,20 @@ module Block {
 }
 
 -- The real model has no learned position table: it rotates queries and keys
--- by an angle that depends on the position (RoPE). The rotation pairs
--- adjacent channels, which again needs `hd` split into (hd/2, 2) — so this
--- transcription keeps a learned table in its place and the table below
--- records why.
+-- by an angle that depends on the position (RoPE). `split` now gives the
+-- pairing it needs — `split(axis hd, rot: HD/2, pair: 2, q)` checks — but
+-- the pairing was never the hard part. The rotation reads both members of a
+-- pair and writes both back:
+--
+--     out[…, r, 0] = x[…, r, 0]·cos θ − x[…, r, 1]·sin θ
+--     out[…, r, 1] = x[…, r, 0]·sin θ + x[…, r, 1]·cos θ
+--
+-- Reading them is `x[pair: 0]` and `x[pair: 1]`, which this language has.
+-- Writing them back is building a tensor along an axis out of two computed
+-- parts, which it does not: `concat` is declared and not implemented, and
+-- there is no array literal, so the rotation cannot be assembled. So this
+-- transcription keeps a learned table, and what it is waiting for is not a
+-- shape construct but a way to *make* a tensor from values.
 module Llama {
   param tok : ℝ[vocab: V, model: D]  init = normal(std = 0.02)
   param pos : ℝ[T, D]                init = normal(std = 0.02)

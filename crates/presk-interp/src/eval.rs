@@ -41,12 +41,31 @@ pub struct Interp<'p, R: Real> {
     /// Whether `dropout` drops: off, its mask is all ones, which is the
     /// expectation of the random function it denotes.
     pub training: bool,
+    /// When set, the largest `|x|` seen at each site, `"<function>/%<let>"`
+    /// — the magnitude envelope of plan 0.5.0 §3.2. It is measured here,
+    /// on the exact interpreter, because the bound it feeds is a statement
+    /// about the *denotation* and must not be read off a rounded run.
+    pub magnitudes: Option<BTreeMap<String, f64>>,
+    /// Alongside it, the smallest non-zero `|x|` at each site. A division or
+    /// a square root cannot be bounded from a maximum: the error of `a / b`
+    /// grows as `b` shrinks, so the analysis needs a floor as well as a
+    /// ceiling (0.5.0 step 4).
+    pub minima: Option<BTreeMap<String, f64>>,
+    /// And `Σ |x|` at each site. The sensitivity analysis wants a **1-norm**
+    /// of an adjoint, not a maximum: perturbing every element of `v` by `δ`
+    /// moves the output by `‖∂L/∂v‖₁ · δ`, which is the quantity a budget is
+    /// allocated against (0.5.0 step 5).
+    pub sums: Option<BTreeMap<String, f64>>,
+    /// And how many real elements each site holds. The solver's objective is
+    /// traffic, and traffic is elements times bytes per element, so the count
+    /// belongs with the magnitudes (0.5.0 step 6).
+    pub elems: Option<BTreeMap<String, u64>>,
     _r: std::marker::PhantomData<R>,
 }
 
 impl<'p, R: Real> Interp<'p, R> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32, seed: u64) -> Self {
-        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), training: false, _r: std::marker::PhantomData }
+        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), training: false, magnitudes: None, minima: None, sums: None, elems: None, _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.
@@ -103,6 +122,41 @@ impl<'p, R: Real> Interp<'p, R> {
                 closures.insert(l.var, (*f, captured.iter().map(|c| env[c].clone()).collect()));
             }
             let v = self.retag(v, &l.ty, &dims);
+            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.elems.is_some() {
+                let site = format!("{}/%{}", func.name, l.var.0);
+                let m = max_abs(&v);
+                if self.magnitudes.is_some() && m.is_finite() {
+                    let e = self.magnitudes.as_mut().expect("just checked").entry(site.clone()).or_insert(0.0);
+                    if m > *e {
+                        *e = m;
+                    }
+                }
+                if let Some(el) = self.elems.as_mut() {
+                    let n = count_reals(&v) as u64;
+                    let e = el.entry(site.clone()).or_insert(0);
+                    if n > *e {
+                        *e = n;
+                    }
+                }
+                if self.sums.is_some() {
+                    let t = sum_abs(&v);
+                    if t.is_finite() {
+                        let e = self.sums.as_mut().expect("just checked").entry(site.clone()).or_insert(0.0);
+                        if t > *e {
+                            *e = t;
+                        }
+                    }
+                }
+                if let Some(mins) = self.minima.as_mut() {
+                    let lo = min_abs_nonzero(&v);
+                    if lo.is_finite() && lo > 0.0 {
+                        let e = mins.entry(site).or_insert(f64::INFINITY);
+                        if lo < *e {
+                            *e = lo;
+                        }
+                    }
+                }
+            }
             env.insert(l.var, v);
         }
         env.remove(&func.body.result).ok_or_else(|| RunError { message: "result variable undefined".into(), span: Some(func.span) })
@@ -245,5 +299,65 @@ impl<'p, R: Real> Interp<'p, R> {
             Value::Key(k) => Ok(k.clone()),
             other => err(format!("expected a key, found a {}", other.kind())),
         }
+    }
+}
+
+
+/// The largest `|x|` over every real leaf of a value, as an `f64`.
+///
+/// One number a site, even when the value is a whole parameter tree: the
+/// site is the unit a realization assigns a type to (D34), so a bound that
+/// is to cover it must cover its widest leaf. Indices and naturals are not
+/// reals and contribute nothing; infinities are skipped by the caller, since
+/// a `-inf` mask entry says nothing about the magnitude of anything.
+pub fn max_abs<R: Real>(v: &Value<R>) -> f64 {
+    match v {
+        Value::Real(t) => t.data.iter().map(|x| x.abs().to_f64()).filter(|x| x.is_finite()).fold(0.0, f64::max),
+        Value::Tuple(xs) => xs.iter().map(max_abs).fold(0.0, f64::max),
+        Value::Record(xs) => xs.iter().map(|(_, x)| max_abs(x)).fold(0.0, f64::max),
+        Value::F64(x) => x.abs(),
+        _ => 0.0,
+    }
+}
+
+/// The smallest non-zero `|x|` over every real leaf of a value, or infinity
+/// when every element is zero.
+///
+/// Zeros are skipped rather than counted: a masked entry or a zero-
+/// initialized head says nothing about how small a *divisor* gets, and a
+/// floor of zero would make every quotient's bound infinite.
+pub fn min_abs_nonzero<R: Real>(v: &Value<R>) -> f64 {
+    match v {
+        Value::Real(t) => t
+            .data
+            .iter()
+            .map(|x| x.abs().to_f64())
+            .filter(|x| *x > 0.0 && x.is_finite())
+            .fold(f64::INFINITY, f64::min),
+        Value::Tuple(xs) => xs.iter().map(min_abs_nonzero).fold(f64::INFINITY, f64::min),
+        Value::Record(xs) => xs.iter().map(|(_, x)| min_abs_nonzero(x)).fold(f64::INFINITY, f64::min),
+        Value::F64(x) if *x != 0.0 => x.abs(),
+        _ => f64::INFINITY,
+    }
+}
+
+/// `Σ |x|` over every real leaf of a value: the 1-norm.
+pub fn sum_abs<R: Real>(v: &Value<R>) -> f64 {
+    match v {
+        Value::Real(t) => t.data.iter().map(|x| x.abs().to_f64()).filter(|x| x.is_finite()).sum(),
+        Value::Tuple(xs) => xs.iter().map(sum_abs).sum(),
+        Value::Record(xs) => xs.iter().map(|(_, x)| sum_abs(x)).sum(),
+        Value::F64(x) => x.abs(),
+        _ => 0.0,
+    }
+}
+
+/// How many real elements a value holds, over every leaf.
+pub fn count_reals<R: Real>(v: &Value<R>) -> usize {
+    match v {
+        Value::Real(t) => t.data.len(),
+        Value::Tuple(xs) => xs.iter().map(count_reals).sum(),
+        Value::Record(xs) => xs.iter().map(|(_, x)| count_reals(x)).sum(),
+        _ => 0,
     }
 }

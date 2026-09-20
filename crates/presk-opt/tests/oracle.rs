@@ -7,7 +7,7 @@ mod common;
 
 use common::{optimize, prepare, repo_root};
 use presk_interp::RunOptions;
-use presk_rt::{InterpBackend, Realize};
+use presk_rt::{InterpBackend, Dtype, Realization};
 use presk_train::{TrainOptions, prepare_training, train};
 
 fn run_opt(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], bits: u32) -> String {
@@ -70,7 +70,7 @@ fn regression_converges_after_rewriting() {
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let report = optimize(&mut core, &prog);
     assert!(report.lets_after() < report.lets_before(), "{}", report.summary());
-    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realize::F64, ckpt: None, checkpoints: false };
+    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
     let mut backend = InterpBackend::new(&core, &prog, 256, 0);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     assert!(out.logs.last().unwrap().loss < 1e-3, "final loss {}", out.logs.last().unwrap().loss);
@@ -84,7 +84,7 @@ fn minigpt_train_golden_unchanged() {
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     optimize(&mut core, &prog);
     let ckpt = std::env::temp_dir().join(format!("presk-opt-tests-{}", std::process::id()));
-    let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realize::F64, ckpt: Some(ckpt), checkpoints: false };
+    let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt), checkpoints: false };
     let mut backend = InterpBackend::new(&core, &prog, 64, 0);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     let text: String = out.logs.iter().map(|l| format!("step {:>2} epoch {} loss {:.9} lr {:.3e} |g| {:.6}\n", l.step, l.epoch, l.loss, l.lr, l.grad_norm)).collect();

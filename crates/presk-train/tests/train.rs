@@ -7,7 +7,7 @@ use std::sync::Once;
 
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
-use presk_rt::{Buf, InterpBackend, Realize, Value};
+use presk_rt::{Buf, InterpBackend, Dtype, Value, Realization};
 use presk_train::{TrainOptions, load_params, prepare_training, save_params, train};
 use presk_types::check::{self, TypedProgram};
 use presk_types::elab::{self, ElabProgram, Options};
@@ -50,7 +50,7 @@ fn tmp(name: &str) -> PathBuf {
 fn regression_converges_and_checkpoints_round_trip() {
     let (prog, typed, mut core) = prepare("tests/train/mlp_regression.psk", &[]);
     let ckpt = tmp("reg");
-    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realize::F64, ckpt: Some(ckpt.clone()), checkpoints: true };
+    let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt.clone()), checkpoints: true };
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let mut backend = InterpBackend::new(&core, &prog, 256, 0);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
@@ -91,7 +91,7 @@ fn minigpt_twenty_steps() {
     // The example's `checkpoint every 1000 steps to "ckpt/"` would write next to the
     // example file: redirect to a temporary directory.
     let ckpt = tmp("minigpt");
-    let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realize::F64, ckpt: Some(ckpt.clone()), checkpoints: true };
+    let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt.clone()), checkpoints: true };
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let mut backend = InterpBackend::new(&core, &prog, 64, 0);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
@@ -112,7 +112,7 @@ fn dropout_trains_from_a_per_step_key() {
     let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     assert!(fns.key, "the objective takes a key between θ and the batch");
-    let opts = TrainOptions { data: None, steps: Some(120), epochs: None, seed: 0, bits: 256, realize: Realize::F64, ckpt: None, checkpoints: false };
+    let opts = TrainOptions { data: None, steps: Some(120), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
     let run = |seed: u64| {
         let o = TrainOptions { seed, ..opts.clone() };
         let mut backend = InterpBackend::new(&core, &prog, 256, seed);

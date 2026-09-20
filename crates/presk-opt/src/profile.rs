@@ -57,9 +57,20 @@ impl Profile {
         self.lambda + (work / self.pi).max(bytes / self.beta)
     }
 
-    /// Bytes of one real in the profile's realization.
+    /// Bytes of one real in the profile's realization. This is the axis along
+    /// which a narrower storage type buys anything at all: `Q` is counted in
+    /// it, so halving it halves the traffic term of the roofline while the
+    /// work term does not move (0.5.0 step 2). A mixed realization is priced
+    /// by its default here; pricing it per site is the solver's business.
     pub fn real_bytes(&self) -> f64 {
-        if self.dtype == "f32" { 4.0 } else { 8.0 }
+        // The realization's label, whose first field is the default dtype
+        // (`presk_rt::Realization::label`). Read as a string rather than
+        // through `presk-rt`, which the optimizer does not otherwise need.
+        match self.dtype.split('+').next().unwrap_or("") {
+            "bf16" => 2.0,
+            "f32" => 4.0,
+            _ => 8.0,
+        }
     }
 
     pub fn load(path: &std::path::Path) -> Result<Profile, String> {

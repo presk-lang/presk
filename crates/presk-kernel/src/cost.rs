@@ -33,6 +33,7 @@ fn elem_bytes(kind: BufKind, dtype: Dtype) -> f64 {
         (BufKind::Idx, _) => 8.0,
         (BufKind::Real, Dtype::F64) => 8.0,
         (BufKind::Real, Dtype::F32) => 4.0,
+        (BufKind::Real, Dtype::Bf16) => 2.0,
     }
 }
 
@@ -66,7 +67,7 @@ fn stmts_ops(stmts: &[Stmt]) -> f64 {
         .iter()
         .map(|s| match s {
             Stmt::For { bound, body, .. } => *bound as f64 * stmts_ops(body),
-            Stmt::Set { value, .. } | Stmt::SetI { value, .. } => expr_ops(value),
+            Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::SetL { value, .. } => expr_ops(value),
             Stmt::Store { index, value, .. } | Stmt::StoreI { index, value, .. } => expr_ops(value) + index.iter().map(expr_ops).sum::<f64>(),
             // The branch is counted as taken: an upper bound.
             Stmt::If { cond, then } => expr_ops(cond) + stmts_ops(then),
