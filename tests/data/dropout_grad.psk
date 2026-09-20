@@ -1,0 +1,21 @@
+-- A gradient through `dropout` (0.4.0 step 3). The mask is a function of the
+-- key alone, so the backward pass — which recomputes the forward — recomputes
+-- the *same* mask. If it did not, this gradient would disagree with finite
+-- differences, which is the whole point of the test.
+const D  : nat = 4
+const Hd : nat = 6
+dim B
+
+module M {
+  param w1 : ℝ[D, Hd]  init = xavier_uniform
+  param w2 : ℝ[Hd, D]  init = xavier_uniform
+
+  fn apply(x : ℝ[batch: B, model: D], key : key) -> ℝ[batch: B, model: D] uses Rand =
+    dropout(0.3, key, tanh(x · w1)) · w2
+}
+
+fn loss(θ : params M, x : ℝ[batch: B, model: D], key : key) -> ℝ[] uses Rand =
+  mean(M.apply(θ, x, key)^2)
+
+fn loss_grad(θ : params M, x : ℝ[batch: B, model: D], key : key) -> params M uses Rand =
+  grad(λ θ. loss(θ, x, key))(θ)

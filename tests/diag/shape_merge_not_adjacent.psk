@@ -1,0 +1,7 @@
+-- `merge` only joins two axes that are already next to each other: joining
+-- distant axes would also transpose, and `merge` never moves data.
+const A : nat = 2
+const B : nat = 3
+const C : nat = 4
+
+fn bad(x : ℝ[a: A, b: B, c: C]) -> ℝ[] = mean(merge(axis a, axis c, x))

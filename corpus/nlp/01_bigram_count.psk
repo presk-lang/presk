@@ -1,0 +1,34 @@
+-- 01_bigram_count.psk — the counting bigram of the NLP course, in closed form.
+--
+-- The specification describes `embed` as the one-hot contraction eₓᵀ·w (§3.5).
+-- `one_hot` makes that decomposition available to the programmer, and the
+-- counting bigram is then one `ein`: the co-occurrence matrix is the
+-- contraction of the two indicator tensors over the sample axis.
+--
+--   N[a, b] = Σ_i  1[xᵢ = a] · 1[yᵢ = b]
+--
+-- Nothing is learned here: `loss` is the maximum-likelihood estimate, the
+-- optimum that `02_bigram_neural.psk` approaches by gradient descent. Their
+-- losses must meet, which is the course's own sanity check.
+const V : nat = 41         -- the vocabulary of data/vocab.txt
+dim N                      -- number of (character, next character) pairs
+
+-- `one_hot` leaves its new axis unnamed, as `embed` does; passing the result
+-- to these parameters names it, which is what lets `ein` tell the two apart.
+fn counts(ox : ℝ[batch: N, prev: V], oy : ℝ[batch: N, next: V]) -> ℝ[prev: V, next: V] =
+  ein[prev, next](ox * oy)
+
+-- Row-normalized: P(next | prev). The division aligns `prev` by name.
+fn probs(x : idx[V][batch: N], y : idx[V][batch: N]) -> ℝ[prev: V, next: V] =
+  let c = counts(one_hot(x), one_hot(y))
+  c / sum(axis next, c)
+
+-- A row of log P is a valid logit vector (the softmax of a log-probability row
+-- is the row itself), so the average negative log-likelihood of the data is the
+-- cross entropy of `log(p)` gathered at each x.
+-- One tuple parameter, as a training objective takes its batch: `presk run
+-- --data` fills the last parameter of the entry from a `.psk.d` file.
+fn loss(pairs : (idx[V][batch: N], idx[V][batch: N])) -> ℝ[] =
+  let (x, y) = pairs
+  let p = probs(x, y)
+  mean(cross_entropy(log(embed(p, x)), y))

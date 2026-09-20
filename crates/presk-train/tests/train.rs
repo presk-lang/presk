@@ -103,3 +103,30 @@ fn minigpt_twenty_steps() {
     let text: String = out.logs.iter().map(|l| format!("step {:>2} epoch {} loss {:.9} lr {:.3e} |g| {:.6}\n", l.step, l.epoch, l.loss, l.lr, l.grad_norm)).collect();
     insta::assert_snapshot!("minigpt_train_20", text);
 }
+
+/// A training run whose objective takes a per-step key (0.4.0 step 3):
+/// `dropout` drops while training, the run is reproducible from its seed, and
+/// the same model evaluated outside training is its own expectation.
+#[test]
+fn dropout_trains_from_a_per_step_key() {
+    let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
+    let fns = prepare_training(&mut core, &prog, &typed).unwrap();
+    assert!(fns.key, "the objective takes a key between θ and the batch");
+    let opts = TrainOptions { data: None, steps: Some(120), epochs: None, seed: 0, bits: 256, realize: Realize::F64, ckpt: None, checkpoints: false };
+    let run = |seed: u64| {
+        let o = TrainOptions { seed, ..opts.clone() };
+        let mut backend = InterpBackend::new(&core, &prog, 256, seed);
+        train(&mut backend, &core, &prog, &typed, &fns, &o, |_| {}).unwrap()
+    };
+    let a = run(0);
+    assert_eq!(a.logs.len(), 120);
+    assert!(a.logs.last().unwrap().loss < a.logs[0].loss, "{} -> {}", a.logs[0].loss, a.logs.last().unwrap().loss);
+    // Same seed, same masks, same trajectory; another seed, another one.
+    let b = run(0);
+    assert_eq!(a.logs.last().unwrap().loss, b.logs.last().unwrap().loss, "reproducible from the seed");
+    let c = run(1);
+    assert!(c.logs.last().unwrap().loss != a.logs.last().unwrap().loss, "another seed drops differently");
+    // That dropping changes the objective at all, and that its gradient is
+    // right while it does, are checked in `presk-interp` against finite
+    // differences; here the point is that the loop threads a fresh key.
+}

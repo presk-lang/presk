@@ -474,6 +474,10 @@ impl Lowerer<'_> {
             LArg::Axis(n) => Some(n.clone()),
             _ => None,
         });
+        let axes_sel: Vec<String> = args.iter().filter_map(|a| match a {
+            LArg::Axis(n) => Some(n.clone()),
+            _ => None,
+        }).collect();
         let named_axis = args.iter().find_map(|a| match a {
             LArg::NamedAxis(n, d) => Some((n.clone(), d.clone())),
             _ => None,
@@ -505,6 +509,9 @@ impl Lowerer<'_> {
             },
             "softmax" => PrimOp::Softmax { axis: axis? },
             "embed" => PrimOp::Embed,
+            "one_hot" => PrimOp::OneHot,
+            "split_key" => PrimOp::SplitKey { n: 2 },
+            "merge" => PrimOp::MergeAxes { a: axes_sel.first()?.clone(), b: axes_sel.get(1)?.clone() },
             "cross_entropy" => PrimOp::CrossEntropy,
             "argmax" => PrimOp::Argmax,
             "sample" => PrimOp::Sample,
@@ -518,6 +525,11 @@ impl Lowerer<'_> {
             "causal_mask" => {
                 let (a, d) = named_axis?;
                 PrimOp::CausalMask { axis: a, len: d }
+            }
+            "dropout" => {
+                let (rate, key, x) = (*vals.first()?, *vals.get(1)?, *vals.get(2)?);
+                let mask = b.emit(None, ty.clone(), Rhs::Prim { op: PrimOp::DropoutMask, args: vec![rate, key, x] }, span);
+                return Some(b.emit(None, ty.clone(), Rhs::Prim { op: PrimOp::Mul, args: vec![x, mask] }, span));
             }
             "grad" => {
                 return Some(b.emit(None, ty.clone(), Rhs::Grad(*vals.first()?), span));

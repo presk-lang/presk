@@ -5,14 +5,19 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.3.0**: the front-end (`presk check`), an arbitrary-precision
+**Version 0.4.0**: the front-end (`presk check`), an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), a native
-backend — PSK-Kernel v0 compiled by Cranelift, `--backend native --realize
-f64|f32`, measured against the reference — training (`presk train`) from
-`.psk.d` data files (`presk data`) and serving (`presk serve`) on either,
-an e-graph optimizer with rules exact over ℝ and a calibrated cost model
-(`--opt`, `presk bench --calibrate`), and a PyTorch export of models,
-training and serving with conformance tests (`presk export`). See `CHANGELOG.md` and the user manual (`make doc`); its
+backend — PSK-Kernel v0 compiled by Cranelift, with fusion groups, threads
+over the parallel axes and blocked contractions, `--backend native --realize
+f64|f32` — training (`presk train`) from `.psk.d` data files (`presk data`)
+and serving (`presk serve`) on either, an e-graph optimizer with rules exact
+over ℝ and a calibrated cost model (`--opt`, `presk bench --calibrate`), and
+a PyTorch export of models, training and serving with conformance tests
+(`presk export`). A corpus of real models (`corpus/nlp/`, the ladder of an
+NLP course on the French civil code) and a coverage table of the MLPerf
+architectures come with it. Every optimization it adds is *exact*: the
+training losses are identical to every printed digit, and one step of a
+course-scale GPT went from 289 s to 39.8 s without changing a number. See `CHANGELOG.md` and the user manual (`make doc`); its
 tutorial chapter (programs in `tutorial/`, commands in `make tutorial`) is the
 place to start.
 

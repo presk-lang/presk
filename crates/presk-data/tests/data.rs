@@ -146,3 +146,26 @@ fn info_snapshot() {
     let mut r = Reader::open(&path).unwrap();
     insta::assert_snapshot!(presk_data::info(&mut r, 2).unwrap());
 }
+
+/// The character tokenizer (0.4.0 step 2): the vocabulary is every distinct
+/// character in sorted order, and encoding then decoding is the identity —
+/// including on accents, apostrophes and newlines, which the Code civil has.
+#[test]
+fn character_vocabulary_round_trips() {
+    let text = "Les lois et,\nlorsqu'ils sont publiés au Journal officiel de la République française…\r\n";
+    let vocab = presk_data::char_vocab(text);
+    assert!(vocab.iter().all(|t| t.chars().count() == 1), "one character per token");
+    assert!(vocab.windows(2).all(|w| w[0] < w[1]), "sorted and distinct");
+    assert!(vocab.iter().any(|t| t == "é") && vocab.iter().any(|t| t == "\n") && vocab.iter().any(|t| t == "…"));
+    let tokens = presk_data::encode(text, &vocab).unwrap();
+    assert_eq!(tokens.len(), text.chars().count(), "one token per character, not per byte");
+    assert!(tokens.iter().all(|t| *t < vocab.len() as u64));
+    assert_eq!(presk_data::decode_text(&tokens, &vocab).unwrap(), text);
+
+    // A character the vocabulary does not hold, and a sub-word vocabulary.
+    let e = presk_data::encode("Ω", &vocab).unwrap_err();
+    assert_eq!(e.code, "E9004");
+    assert!(e.message.contains("U+03A9"), "{}", e.message);
+    let bpe = vec!["le".to_string(), "s".to_string()];
+    assert_eq!(presk_data::encode("les", &bpe).unwrap_err().code, "E9004");
+}

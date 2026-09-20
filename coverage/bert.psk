@@ -1,0 +1,90 @@
+-- bert.psk — BERT-large as MLPerf training and inference define it
+-- (24 blocks, width 1024, 16 heads, context 384 for SQuAD), transcribed to
+-- check what the shape fragment covers. Post-normalized, as BERT is.
+const V  : nat = 30522     -- WordPiece vocabulary
+const S  : nat = 2         -- segment (sentence A / B) embeddings
+const D  : nat = 1024
+const H  : nat = 16
+const HD : nat = D / H
+const L  : nat = 24
+static assert D % H == 0
+
+dim B
+dim T <= 512               -- BERT's learned positions stop at 512
+
+type Tokens = idx[V][batch: B, seq: T]
+type Acts   = ℝ[batch: B, seq: T, model: D]
+
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = normal(std = 0.02)
+  param b : ℝ[Out]      init = zeros
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] = x · w + b
+}
+
+module LayerNorm{Dm : dim} {
+  param γ : ℝ[Dm]  init = ones
+  param β : ℝ[Dm]  init = zeros
+  fn apply(x : ℝ[..., model: Dm]) -> ℝ[..., model: Dm] =
+    let μ  = mean(axis model, x)
+    let σ2 = mean(axis model, (x - μ)^2)
+    (x - μ) / sqrt(σ2 + real(1e-12)) * γ + β
+}
+
+-- Token, position and segment embeddings summed, then normalized.
+module Embeddings {
+  param tok : ℝ[vocab: V, model: D]    init = normal(std = 0.02)
+  param pos : ℝ[T, D]                  init = normal(std = 0.02)
+  param seg : ℝ[S, D]                  init = normal(std = 0.02)
+  use ln : LayerNorm{D}
+
+  fn apply(ids : Tokens, types : idx[S][batch: B, seq: T]) -> Acts =
+    let e = embed(tok, ids) + embed(pos, positions(seq: T)) + embed(seg, types)
+    ln.apply(e)
+}
+
+-- Bidirectional attention: the mask is additive over the keys, 0 on real
+-- tokens and −∞ on padding, and broadcasts by name across heads and queries.
+module SelfAttention {
+  use wq, wk, wv, wo : Linear{D, D}
+
+  fn apply(x : Acts, mask : ℝ[batch: B, seq2: T]) -> Acts =
+    let q = split_heads(wq.apply(x))
+    let k = split_heads(wk.apply(x))
+    let v = split_heads(wv.apply(x))
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = softmax(axis seq2, s + mask)
+    wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
+}
+
+module Block {
+  use attn : SelfAttention
+  use up   : Linear{D, 4*D}
+  use down : Linear{4*D, D}
+  use ln1, ln2 : LayerNorm{D}
+
+  fn apply(x : Acts, mask : ℝ[batch: B, seq2: T]) -> Acts =
+    let h = ln1.apply(x + attn.apply(x, mask))
+    ln2.apply(h + down.apply(gelu(up.apply(h))))
+}
+
+module Bert {
+  use emb    : Embeddings
+  use blocks : stack{L}(Block)
+
+  fn apply(ids : Tokens, types : idx[S][batch: B, seq: T], mask : ℝ[batch: B, seq2: T]) -> Acts =
+    blocks.apply(emb.apply(ids, types), mask)
+}
+
+-- The MLPerf task is SQuAD extractive question answering: two logits per
+-- position, the start and the end of the answer span.
+module SquadHead {
+  use span : Linear{D, 2}
+  fn apply(h : Acts) -> ℝ[batch: B, seq: T, ends: 2] = span.apply(h)
+}
+
+module BertSquad {
+  use bert : Bert
+  use head : SquadHead
+  fn apply(ids : Tokens, types : idx[S][batch: B, seq: T], mask : ℝ[batch: B, seq2: T]) -> ℝ[batch: B, seq: T, ends: 2] =
+    head.apply(bert.apply(ids, types, mask))
+}

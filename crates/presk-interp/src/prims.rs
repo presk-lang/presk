@@ -247,6 +247,44 @@ impl<R: Real> Interp<'_, R> {
                 let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { message: format!("softmax: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
                 Ok(Value::Real(self.softmax(t, p)))
             }
+            PrimOp::MergeAxes { a: an, b: bn } => {
+                let t = self.tensor(a(0)?, &name)?;
+                let Some(p) = t.axes.iter().position(|x| x.name.as_deref() == Some(an.as_str())) else {
+                    return err(format!("merge: no axis `{an}` in {}", show_axes(&t.axes)));
+                };
+                if t.axes.get(p + 1).and_then(|x| x.name.as_deref()) != Some(bn.as_str()) {
+                    return err(format!("merge: `{an}` is not immediately followed by `{bn}` in {}", show_axes(&t.axes)));
+                }
+                let mut axes = t.axes[..p].to_vec();
+                axes.push(Axis { name: None, len: t.axes[p].len * t.axes[p + 1].len });
+                axes.extend_from_slice(&t.axes[p + 2..]);
+                Ok(Value::Real(Tensor { axes, data: t.data.clone() }))
+            }
+            PrimOp::ReshapeLike => {
+                let x = self.tensor(a(0)?, &name)?;
+                let template = self.tensor(a(1)?, &name)?;
+                if x.numel() != template.numel() {
+                    return err(format!("reshape_like: {} elements against {}", x.numel(), template.numel()));
+                }
+                Ok(Value::Real(Tensor { axes: template.axes.clone(), data: x.data.clone() }))
+            }
+            PrimOp::OneHot => {
+                let (bound, idx) = self.idx(a(0)?, &name)?;
+                let (zero, one) = (self.real(0), self.real(1));
+                let v = bound as usize;
+                let mut data = Vec::with_capacity(idx.numel() * v);
+                for &i in &idx.data {
+                    if i < 0 || i as usize >= v {
+                        return err(format!("one_hot: index {i} out of range [0, {v})"));
+                    }
+                    for j in 0..v {
+                        data.push(if i as usize == j { one.clone() } else { zero.clone() });
+                    }
+                }
+                let mut axes = idx.axes.clone();
+                axes.push(Axis { name: None, len: v });
+                Ok(Value::Real(Tensor { axes, data }))
+            }
             PrimOp::Embed => {
                 let table = self.tensor(a(0)?, &name)?;
                 let (_, idx) = self.idx(a(1)?, &name)?;
@@ -450,6 +488,28 @@ impl<R: Real> Interp<'_, R> {
                 let mut rng = key.rng();
                 let n: usize = axes.iter().map(|x| x.len).product();
                 let data = (0..n).map(|_| R::from_f64((2.0 * uniform01(&mut rng) - 1.0) * bound, self.prec)).collect();
+                Ok(Value::Real(Tensor { axes, data }))
+            }
+            PrimOp::DropoutMask => {
+                let rate = match a(0)? {
+                    Value::F64(p) => *p,
+                    Value::Nat(n) => *n as f64,
+                    Value::Real(t) if t.rank() == 0 => t.data[0].to_f64(),
+                    other => return err(format!("dropout: the rate is a {}", other.kind())),
+                };
+                if !(0.0..1.0).contains(&rate) {
+                    return err(format!("dropout: the rate {rate} is not in [0, 1)"));
+                }
+                let key = self.key_of(a(1)?)?;
+                let axes = self.tensor(a(2)?, &name)?.axes.clone();
+                let n: usize = axes.iter().map(|x| x.len).product();
+                let data = if !self.training {
+                    vec![self.real(1); n]
+                } else {
+                    let (keep, scale) = (1.0 - rate, 1.0 / (1.0 - rate));
+                    let mut rng = key.rng();
+                    (0..n).map(|_| if uniform01(&mut rng) < keep { R::from_f64(scale, self.prec) } else { self.real(0) }).collect()
+                };
                 Ok(Value::Real(Tensor { axes, data }))
             }
             PrimOp::SplitKey { n } => {

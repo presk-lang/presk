@@ -28,10 +28,23 @@ pub mod training {}
 #[doc = include_str!("../manual/native.md")]
 pub mod native {}
 
+/// The corpus: models from an NLP course, used as a forcing function.
+#[doc = include_str!("../manual/corpus.md")]
+pub mod corpus {}
+
+/// Coverage: what the shape fragment can say, measured on the MLPerf
+/// architectures — which families are expressible and what the rest cost.
+#[doc = include_str!("../manual/coverage.md")]
+pub mod coverage {}
+
 /// Experiments: shapes as types against silent broadcasting, and the
 /// realization gap of float32/float64 training against the exact reference.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
+
+/// Scheduling: fusion groups, what shares a loop nest, and what that buys.
+#[doc = include_str!("../manual/scheduling.md")]
+pub mod scheduling {}
 
 /// Optimization: e-graph rewriting of PSK-Core (`--opt`, `presk dump --stage
 /// core-opt`), the rules, the oracle, what changes.

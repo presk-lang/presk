@@ -88,6 +88,7 @@ output format is not stable.
 | `core` | the PSK-Core intermediate representation after lowering (every function in A-normal form with its dimensions, parameters and types; `init` functions; lifted lambdas), verified before printing | implemented |
 | `core-after-ad` | PSK-Core after automatic differentiation: every `grad` rewritten, with the generated `.vjp` and `.grad` functions; verified before printing | implemented |
 | `kernel` | the PSK-Kernel v0 kernels launched by an entry, specialized on its shapes: needs `--entry` and `--dim`/`--const` as `presk run`, plus `--realize` (`native` chapter) | implemented (0.3.0 step 2) |
+| `sched` | the fusion groups of every function (`scheduling` chapter): one line per group with its steps, its inputs and the launches it removes | implemented (0.4.0 step 4) |
 | `core-opt` | PSK-Core after AD and the e-graph optimizer (`optimization` chapter); the report (functions rewritten, `let`s and cost before and after, stop reason) goes to standard error; `--profile FILE.json` makes the roofline of that profile the extraction cost, `--dim` binds the dimensions it evaluates | implemented (0.3.0 steps 6–7) |
 
 Diagnostics (if any) are reported on standard error; the exit code is 1 when
@@ -123,6 +124,8 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--realize f64\|f32` | the machine type of a native realization (0.3.0); ignored by the interpreter, which computes at `--bits`. |
 | `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
+| `--threads N` | workers a parallel kernel may use on the native backend (`native` chapter); the default is the machine's cores, `1` keeps every kernel on one thread. Also on `presk train` and `presk bench`. |
+| `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`. The other arguments are synthesized from `--seed` as usual. |
 
 **Inputs** are synthesized from the parameter types: real tensors from a
 standard normal, index tensors uniformly in `[0, N)`, `params M` by running
@@ -244,12 +247,14 @@ presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 -
      --dim B=2 --dim T=8 --calibrate out/profile.json
 ```
 
-## `presk data pack | lm-windows | info | export`
+## `presk data chars | encode | pack | lm-windows | info | export`
 
 Produces and inspects `.psk.d` files (the `data` chapter has the format and
 the rules):
 
 ```text
+presk data chars INPUT.txt -o VOCAB.json                  # the distinct characters of a text, sorted
+presk data encode INPUT.txt --vocab VOCAB.json -o TOKENS.txt
 presk data pack --type TYPE INPUT.txt -o OUT.psk.d        # one sample per line, values in leaf order
 presk data lm-windows --vocab V --seq T [--stride S] TOKENS.txt -o OUT.psk.d
 presk data info FILE.psk.d [--samples N]                  # header and first samples (default 3)

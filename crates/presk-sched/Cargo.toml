@@ -1,0 +1,16 @@
+[package]
+name = "presk-sched"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PSK-Sched v0: fusion groups over PSK-Core bodies"
+
+[dependencies]
+presk-core = { workspace = true }
+presk-types = { workspace = true }
+
+[dev-dependencies]
+presk-syntax = { workspace = true }
+insta = { workspace = true }

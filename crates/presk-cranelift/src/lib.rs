@@ -25,10 +25,36 @@ fn err<T>(message: impl Into<String>) -> Result<T> {
     Err(RtError { code: "E10001", message: message.into(), span: None })
 }
 
-type KernelFn = unsafe extern "C" fn(*const *mut u8);
+/// A compiled kernel: the buffer pointers, then the half-open range of its
+/// outermost loop. A sequential call passes the whole range.
+type KernelFn = unsafe extern "C" fn(*const *mut u8, i64, i64);
+
+/// The buffer table, sent to a worker thread. Safe because the threads of one
+/// launch share read-only inputs and write disjoint elements of the output:
+/// that is what `Kernel::parallel_outer` establishes before we split.
+#[derive(Clone, Copy)]
+struct Ptrs(*const *mut u8);
+
+impl Ptrs {
+    /// Taking the whole wrapper (not its field) is what makes the closure
+    /// capture a `Send` value.
+    fn get(self) -> *const *mut u8 {
+        self.0
+    }
+}
+// SAFETY: see `Ptrs`.
+unsafe impl Send for Ptrs {}
+
+/// Below this many weighted operations a kernel runs on one thread: spawning
+/// costs tens of microseconds, which only a big kernel earns back.
+const PARALLEL_MIN_WORK: f64 = 4.0e6;
 
 /// The JIT: compiles kernels on first use and runs the machine code.
 pub struct NativeExec {
+    /// Workers for a parallel kernel; `PRESK_THREADS` overrides the core count.
+    pub threads: usize,
+    /// Launches that were split, for the tests and the manual.
+    pub threaded: u64,
     module: JITModule,
     ctx: cranelift_codegen::Context,
     fbc: FunctionBuilderContext,
@@ -59,7 +85,15 @@ impl NativeExec {
         jb.symbol("erff", libm::erff as *const u8);
         let module = JITModule::new(jb);
         let ctx = module.make_context();
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0 })
+        // `PRESK_THREADS` overrides the core count; 1 disables the split, which
+        // is how the tests check that threading changes nothing but the time.
+        let threads = std::env::var("PRESK_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
+            .unwrap_or(1)
+            .max(1);
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0 })
     }
 
     fn libm_fn(&mut self, name: &str, ty: Type) -> Result<FuncId> {
@@ -92,6 +126,8 @@ impl NativeExec {
         }
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
         let fid = self.module.declare_function(&format!("k{idx}"), Linkage::Local, &sig).map_err(|e| RtError { code: "E10001", message: e.to_string(), span: None })?;
         self.ctx.func.signature = sig;
         {
@@ -100,7 +136,7 @@ impl NativeExec {
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
-            let bufs_ptr = b.block_params(entry)[0];
+            let (bufs_ptr, lo, hi) = (b.block_params(entry)[0], b.block_params(entry)[1], b.block_params(entry)[2]);
             let nbufs = k.inputs.len() + 1;
             let bufs: Vec<CV> = (0..nbufs).map(|i| b.ins().load(types::I64, MemFlags::trusted(), bufs_ptr, (8 * i) as i32)).collect();
             let loops: Vec<Variable> = (0..k.nloops).map(|_| b.declare_var(types::I64)).collect();
@@ -121,7 +157,12 @@ impl NativeExec {
                 refs.insert(n, self.module.declare_func_in_func(*id, b.func));
             }
             let mut g = Gen { b, fty, bufs, strides, esize, loops, reals, ints, libm: refs };
-            g.stmts(&k.body);
+            // The outermost loop runs over the range the caller gives, so one
+            // compiled kernel serves the sequential call and every worker.
+            match (k.parallel_outer(), k.body.as_slice()) {
+                (Some(_), [Stmt::For { var, body, .. }]) => g.for_range(*var, lo, hi, body),
+                _ => g.stmts(&k.body),
+            }
             g.b.ins().return_(&[]);
             g.b.finalize();
         }
@@ -130,7 +171,7 @@ impl NativeExec {
         self.module.finalize_definitions().map_err(|e| RtError { code: "E10001", message: e.to_string(), span: None })?;
         let ptr = self.module.get_finalized_function(fid);
         self.compiled_count += 1;
-        // SAFETY: the function was built with the signature `fn(*const *mut u8)`.
+        // SAFETY: the function was built with the signature `fn(*const *mut u8, i64, i64)`.
         Ok(unsafe { std::mem::transmute::<*const u8, KernelFn>(ptr) })
     }
 }
@@ -327,32 +368,38 @@ impl Gen<'_> {
         }
     }
 
+    /// `for var in lo..hi { body }` with the bounds as values, so the caller
+    /// can hand a worker its slice of the iteration space.
+    fn for_range(&mut self, var: usize, lo: CV, hi: CV, body: &[Stmt]) {
+        let v = self.loops[var];
+        self.b.def_var(v, lo);
+        let header = self.b.create_block();
+        let body_b = self.b.create_block();
+        let exit = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let i = self.b.use_var(v);
+        let c = self.b.ins().icmp(IntCC::SignedLessThan, i, hi);
+        self.b.ins().brif(c, body_b, &[], exit, &[]);
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b);
+        self.stmts(body);
+        let i = self.b.use_var(v);
+        let next = self.b.ins().iadd_imm(i, 1);
+        self.b.def_var(v, next);
+        self.b.ins().jump(header, &[]);
+        self.b.seal_block(header);
+        self.b.switch_to_block(exit);
+        self.b.seal_block(exit);
+    }
+
     fn stmts(&mut self, stmts: &[Stmt]) {
         for s in stmts {
             match s {
                 Stmt::For { var, bound, body } => {
-                    let v = self.loops[*var];
                     let zero = self.b.ins().iconst(types::I64, 0);
-                    self.b.def_var(v, zero);
-                    let header = self.b.create_block();
-                    let body_b = self.b.create_block();
-                    let exit = self.b.create_block();
-                    self.b.ins().jump(header, &[]);
-                    self.b.switch_to_block(header);
-                    let i = self.b.use_var(v);
                     let n = self.b.ins().iconst(types::I64, *bound as i64);
-                    let c = self.b.ins().icmp(IntCC::SignedLessThan, i, n);
-                    self.b.ins().brif(c, body_b, &[], exit, &[]);
-                    self.b.switch_to_block(body_b);
-                    self.b.seal_block(body_b);
-                    self.stmts(body);
-                    let i = self.b.use_var(v);
-                    let next = self.b.ins().iadd_imm(i, 1);
-                    self.b.def_var(v, next);
-                    self.b.ins().jump(header, &[]);
-                    self.b.seal_block(header);
-                    self.b.switch_to_block(exit);
-                    self.b.seal_block(exit);
+                    self.for_range(*var, zero, n, body);
                 }
                 Stmt::Set { var, value } => {
                     let x = self.gen_f(value);
@@ -422,9 +469,38 @@ impl KernelExec for NativeExec {
             Buf::I64(v) => v.as_mut_ptr() as *mut u8,
             Buf::Exact(_) => return err("native backend: an exact output buffer"),
         });
+        // Threads over the outermost axis, when the analysis says the writes are
+        // disjoint and the kernel is big enough to pay for spawning. Each output
+        // element is computed by the same inner loops in the same order, so the
+        // result is bit-identical to the sequential one.
+        let parallel = k.parallel_outer();
+        let work = presk_kernel::cost::kernel_cost(k).work;
+        let workers = match parallel {
+            Some(b) if self.threads > 1 && b >= 2 && work >= PARALLEL_MIN_WORK => self.threads.min(b),
+            _ => 1,
+        };
         // SAFETY: the kernel's loop bounds are the buffers' dimensions (checked by the
         // lowering and exercised by the kernel interpreter); inputs are never written.
-        unsafe { f(ptrs.as_ptr()) };
+        if workers <= 1 {
+            let hi = parallel.unwrap_or(0) as i64;
+            unsafe { f(ptrs.as_ptr(), 0, hi) };
+            return Ok(());
+        }
+        let total = parallel.unwrap_or(0) as i64;
+        let p = Ptrs(ptrs.as_ptr());
+        self.threaded += 1;
+        std::thread::scope(|s| {
+            for t in 0..workers as i64 {
+                let lo = total * t / workers as i64;
+                let hi = total * (t + 1) / workers as i64;
+                if lo == hi {
+                    continue;
+                }
+                // SAFETY: the workers share read-only inputs and write disjoint
+                // slices of the output (`Kernel::parallel_outer`).
+                s.spawn(move || unsafe { f(p.get(), lo, hi) });
+            }
+        });
         Ok(())
     }
 }
@@ -432,4 +508,12 @@ impl KernelExec for NativeExec {
 /// A kernel backend whose kernels are JIT-compiled by Cranelift.
 pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: Realize, seed: u64) -> Result<KernelBackend<'p>> {
     Ok(KernelBackend::with_exec(prog, elab, realize, seed, Box::new(NativeExec::new()?)))
+}
+
+/// The same backend with an explicit number of workers, so a caller can pin it
+/// (the tests compare one thread against many, which must agree exactly).
+pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: Realize, seed: u64, threads: usize) -> Result<KernelBackend<'p>> {
+    let mut exec = NativeExec::new()?;
+    exec.threads = threads.max(1);
+    Ok(KernelBackend::with_exec(prog, elab, realize, seed, Box::new(exec)))
 }

@@ -55,12 +55,27 @@ pub struct KernelBackend<'p> {
     sample_rng: ChaCha20Rng,
     /// Kernel launches so far.
     pub launches: u64,
+    /// Whether `dropout` drops (see the interpreter's field of the same name).
+    pub training: bool,
+    /// The fusion plan of each function, computed once (`presk-sched`).
+    plans: HashMap<FuncId, presk_sched::Plan>,
+    /// Kernel launches fusion removed: each group of `n` steps launches once
+    /// where `n` kernels would have run, per leaf of a parameter tree.
+    pub fused: u64,
     pub exec: Box<dyn KernelExec>,
 }
 
 impl Backend for KernelBackend<'_> {
     fn name(&self) -> &'static str {
         self.exec.name()
+    }
+
+    fn set_training(&mut self, on: bool) {
+        self.training = on;
+    }
+
+    fn launch_stats(&self) -> (u64, u64) {
+        (self.launches, self.fused)
     }
 
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: Realize) -> Result<Prepared> {
@@ -84,7 +99,7 @@ impl<'p> KernelBackend<'p> {
             Realize::F64 => Dtype::F64,
             Realize::F32 => Dtype::F32,
         };
-        KernelBackend { prog, elab, dtype, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, exec }
+        KernelBackend { prog, elab, dtype, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, plans: HashMap::new(), fused: 0, exec }
     }
 
     // ----- buffers and values ------------------------------------------------
@@ -189,7 +204,25 @@ impl<'p> KernelBackend<'p> {
             env.insert(p.var, a);
         }
         let mut closures: HashMap<VarId, (FuncId, Vec<Value>)> = HashMap::new();
+        // Fusion groups: computed once per function, structural, so the same
+        // plan serves every shape and every realization (`presk-sched`).
+        let plan = self.plans.entry(f).or_insert_with(|| presk_sched::plan(func)).clone();
         for l in &func.body.lets {
+            // An interior `let` of a group never reaches memory: its value is
+            // an expression inside the group's single loop nest.
+            if plan.interior.contains(&l.var) {
+                continue;
+            }
+            if let Some(g) = plan.groups.get(&l.var) {
+                let v = self.fused_group(g, &env).map_err(|e| RtError {
+                    span: e.span.or(Some(l.span)),
+                    message: if e.message.starts_with("in `") { e.message } else { format!("in `{}` (fused group at %{}): {}", func.name, l.var.0, e.message) },
+                    code: e.code,
+                })?;
+                let v = self.retag(v, &l.ty);
+                env.insert(l.var, v);
+                continue;
+            }
             let v = match &l.rhs {
                 Rhs::Closure { f, captured } => {
                     let c: Vec<Value> = captured.iter().map(|c| env.get(c).cloned().ok_or_else(|| RtError { code: "E7001", message: "captured variable undefined".into(), span: Some(l.span) })).collect::<Result<_>>()?;
@@ -206,6 +239,79 @@ impl<'p> KernelBackend<'p> {
             env.insert(l.var, v);
         }
         env.remove(&func.body.result).ok_or_else(|| RtError { code: "E7001", message: "result variable undefined".into(), span: Some(func.span) })
+    }
+
+    /// One launch for a whole fusion group. The result's axes are computed by
+    /// replaying the steps' broadcasts, not read off the type, because a type
+    /// inside a module function may carry an open prefix.
+    fn fused_group(&mut self, g: &presk_sched::Group, env: &HashMap<VarId, Value>) -> Result<Value> {
+        let vals: Vec<Value> = g
+            .inputs
+            .iter()
+            .map(|v| env.get(v).cloned().ok_or_else(|| RtError { code: "E7001", message: format!("variable %{} undefined", v.0), span: None }))
+            .collect::<Result<_>>()?;
+        self.fused_on(g, &vals)
+    }
+
+    /// The group applied to one set of values. A parameter tree maps the whole
+    /// group over its leaves — the optimizer's update is one chain over a tree,
+    /// and without this it would launch every step again for every leaf.
+    fn fused_on(&mut self, g: &presk_sched::Group, vals: &[Value]) -> Result<Value> {
+        if let Some(template) = vals.iter().find(|v| matches!(v, Value::Record(_) | Value::Tuple(_))) {
+            let template = template.clone();
+            let mut per_input: Vec<Vec<Value>> = Vec::with_capacity(vals.len());
+            let mut n = 0;
+            for v in vals {
+                match v {
+                    Value::Record(_) | Value::Tuple(_) => {
+                        let mut out = Vec::new();
+                        collect_leaves(v, &mut out);
+                        n = n.max(out.len());
+                        per_input.push(out);
+                    }
+                    // A scalar rides along with every leaf (`lr · g`).
+                    leaf => per_input.push(vec![leaf.clone()]),
+                }
+            }
+            let mut leaves = Vec::with_capacity(n);
+            for i in 0..n {
+                let args: Vec<Value> = per_input.iter().map(|xs| if xs.len() == 1 { xs[0].clone() } else { xs[i].clone() }).collect();
+                leaves.push(self.fused_on(g, &args)?);
+            }
+            return Ok(rebuild(&template, &mut leaves.into_iter()));
+        }
+        let mut ins: Vec<Tensor> = Vec::with_capacity(vals.len());
+        for value in vals {
+            ins.push(self.as_tensor(value)?);
+        }
+        let in_axes: Vec<Vec<Axis>> = ins.iter().map(|t| t.axes.clone()).collect();
+        let mut shapes: Vec<Vec<Axis>> = Vec::with_capacity(g.steps.len());
+        for s in &g.steps {
+            let of = |src: &presk_sched::Src| -> Vec<Axis> {
+                match src {
+                    presk_sched::Src::Input(k) => in_axes[*k].clone(),
+                    presk_sched::Src::Step(k) => shapes[*k].clone(),
+                }
+            };
+            let axes = match s.args.as_slice() {
+                [x] => of(x),
+                [x, y] => lower::result_axes(&of(x), &of(y)).ok_or_else(|| RtError {
+                    code: "E7001",
+                    message: format!("fused: `{}` cannot broadcast {} with {}", s.op.name(), lower::show(&of(x)), lower::show(&of(y))),
+                    span: None,
+                })?,
+                other => return err("E7001", format!("fused: `{}` takes {} arguments", s.op.name(), other.len())),
+            };
+            shapes.push(axes);
+        }
+        let out = shapes.pop().expect("a group has at least one step");
+        let operands: Vec<Operand> = in_axes.iter().map(|a| Operand { axes: a.clone(), kind: BufKind::Real }).collect();
+        let dtype = self.dtype;
+        let key = format!("fused|{}|{dtype}|{}|{}", g.signature(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&out));
+        let bufs: Vec<&Buf> = ins.iter().map(|t| &t.data).collect();
+        let steps = g.steps.clone();
+        self.fused += g.steps.len() as u64 - 1;
+        self.launch(key, move || lower::fused(&steps, &operands, &out, dtype), &bufs)
     }
 
     fn rhs(&mut self, rhs: &Rhs, ty: &Ty, dims: &Dims, env: &HashMap<VarId, Value>, closures: &HashMap<VarId, (FuncId, Vec<Value>)>) -> Result<Value> {
@@ -300,6 +406,26 @@ impl<'p> KernelBackend<'p> {
                 Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: self.buf(vec![0.0; t.numel()]) }),
                 other => other.clone(),
             })),
+            PrimOp::MergeAxes { a: an, b: bn } => {
+                let t = self.as_tensor(a(0)?)?;
+                let Some(p) = t.axes.iter().position(|x| x.name.as_deref() == Some(an.as_str())) else {
+                    return err("E7001", format!("merge: no axis `{an}` in {}", lower::show(&t.axes)));
+                };
+                if t.axes.get(p + 1).and_then(|x| x.name.as_deref()) != Some(bn.as_str()) {
+                    return err("E7001", format!("merge: `{an}` is not immediately followed by `{bn}` in {}", lower::show(&t.axes)));
+                }
+                let mut axes = t.axes[..p].to_vec();
+                axes.push(Axis { name: None, len: t.axes[p].len * t.axes[p + 1].len });
+                axes.extend_from_slice(&t.axes[p + 2..]);
+                Ok(Value::Real(Tensor { axes, data: t.data.clone() }))
+            }
+            PrimOp::ReshapeLike => {
+                let (x, template) = (self.as_tensor(a(0)?)?, self.as_tensor(a(1)?)?);
+                if x.numel() != template.numel() {
+                    return err("E7001", format!("reshape_like: {} elements against {}", x.numel(), template.numel()));
+                }
+                Ok(Value::Real(Tensor { axes: template.axes.clone(), data: x.data.clone() }))
+            }
             PrimOp::SetField { name } => match a(0)? {
                 Value::Record(fs) => Ok(Value::Record(fs.iter().map(|(n, v)| (n.clone(), if n == name { a(1).unwrap().clone() } else { v.clone() })).collect())),
                 other => err("E7001", format!("set_field on a {}", other.kind())),
@@ -354,6 +480,28 @@ impl<'p> KernelBackend<'p> {
                 let dtype = self.dtype;
                 let key = format!("{}|{dtype}|{}", op.name(), lower::show(&axes));
                 self.launch(key, move || Ok(lower::fill(&op.name(), &axes, value, dtype)), &[])
+            }
+            PrimOp::DropoutMask => {
+                let rate = match a(0)? {
+                    Value::F64(p) => *p,
+                    Value::Nat(n) => *n as f64,
+                    Value::Real(t) if t.rank() == 0 => t.data.to_f64()[0],
+                    other => return err("E7001", format!("dropout: the rate is a {}", other.kind())),
+                };
+                if !(0.0..1.0).contains(&rate) {
+                    return err("E7001", format!("dropout: the rate {rate} is not in [0, 1)"));
+                }
+                let key = key_of(a(1)?)?;
+                let axes = self.as_tensor(a(2)?)?.axes.clone();
+                let n: usize = axes.iter().map(|x| x.len).product();
+                let data: Vec<f64> = if !self.training {
+                    vec![1.0; n]
+                } else {
+                    let (keep, scale) = (1.0 - rate, 1.0 / (1.0 - rate));
+                    let mut rng = key.rng();
+                    (0..n).map(|_| if uniform01(&mut rng) < keep { scale } else { 0.0 }).collect()
+                };
+                Ok(Value::Real(Tensor { axes, data: self.buf(data) }))
             }
             PrimOp::Normal { ty: t, std } => {
                 let axes = self.axes_of(shape_of(t)?, dims)?;
@@ -411,6 +559,16 @@ impl<'p> KernelBackend<'p> {
                 let n = self.dim(len, dims)? as usize;
                 let (axis, dtype) = (axis.clone(), self.dtype);
                 self.launch(format!("positions {axis} {n} {dtype}"), move || Ok(lower::positions(&axis, n, dtype)), &[])
+            }
+            PrimOp::OneHot => {
+                let Value::Idx { bound, t } = a(0)? else {
+                    return err("E7001", format!("`one_hot`: expected an index tensor, found a {}", a(0)?.kind()));
+                };
+                let mut axes = t.axes.clone();
+                axes.push(Axis { name: None, len: *bound as usize });
+                let dtype = self.dtype;
+                let (key, ax) = (format!("one_hot {} {dtype}", lower::show(&axes)), axes.clone());
+                self.launch(key, move || Ok(lower::one_hot(&ax, dtype)), &[&t.data])
             }
             PrimOp::CausalMask { axis, len } => {
                 let n = self.dim(len, dims)? as usize;

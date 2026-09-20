@@ -27,6 +27,19 @@ impl Key {
             .collect()
     }
 
+    /// The `i`-th child of a key, derived in constant time — `split(i + 1)`
+    /// would cost `i` draws. Used for the per-step keys of a training run.
+    pub fn child(&self, i: u64) -> Key {
+        let mut seed = self.0;
+        for (b, x) in seed[..8].iter_mut().zip(i.to_le_bytes()) {
+            *b ^= x;
+        }
+        let mut rng = ChaCha20Rng::from_seed(seed);
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        Key(k)
+    }
+
     pub fn rng(&self) -> ChaCha20Rng {
         ChaCha20Rng::from_seed(self.0)
     }

@@ -349,3 +349,175 @@ a linear additive model `o + W/π + Q/β` (fits as well on these samples, but
 is not the roofline the specification writes); per-primitive overheads (too
 many parameters for ninety samples); measuring whole entries rather than
 kernels (no way to attribute time to nodes).
+
+## D26 — The NLP corpus lives in the compiler repository (2026-09-20)
+
+`presk/corpus/nlp/` holds the programs of the NLP course, not
+`presk-specs/examples/`. The specification's examples are the syntax source of
+truth and the acceptance programs of the language; the corpus is benchmark
+material driven by a course, it changes with every measurement, and it carries
+data. `data/prepare.py` downloads the course files and derives the datasets;
+only the 71 KB word list is committed, the 1.2 MB of Code civil and every
+derived file are regenerated. `EXPECTED.md` records what each rung produced
+and on which date, so a number in the manual can always be traced to a run.
+
+## D27 — MLPerf as specification and foil, not as a submission target (2026-09-20)
+
+Of MLCommons' training and inference suites, only BERT-large inference is
+within reach of this compiler, and it was retired from recent rounds;
+everything else needs convolution, sparse embeddings, NMS, collectives or a
+GPU backend, none of which touch the thesis. What is taken instead: the model
+architectures as an expressiveness test (`presk check` on transcriptions,
+which is the roadmap's own "coverage of the shape fragment on a corpus of
+models"), the methodology of stating accuracy as a fraction of an FP32
+reference, and MLPerf's closed division as the *foil* — it admits any
+realization whose task accuracy stays within a hand-negotiated per-benchmark
+threshold, verified by a full validation run, and cannot tell model fragility
+from a buggy fused kernel. Presk's counter-proposal is a computed distance to
+the exact denotation, attributable per kernel, known before the dataset run.
+That argument needs one benchmark done properly with an exact reference, not
+thirty done at vendor quality.
+
+## D28 — `merge` joins adjacent axes only, and names nothing (2026-09-20)
+
+The general axis-flattening operation the specification lacks (question 45) is
+`merge(axis a, axis b, x)`, with three deliberate restrictions. The axes must
+already be adjacent and in order: joining distant axes would also transpose,
+and `merge` is defined as a *retag* — row-major buffers make it metadata-only,
+so it launches no kernel on any backend and costs nothing in the model. At
+least one length must be constant, because the merged length is their product
+and `DimExpr` is a linear form. And the joined axis is unnamed, named by the
+signature it is passed to, exactly as `embed`'s and `one_hot`'s are; inventing
+`a_b` would put a name in the type that no declaration wrote. The adjoint is
+the retag back, `reshape_like(ct, x)`, which is its own adjoint. Alternatives
+considered: `merge(axis a, x)` joining `a` with its successor (shorter, but it
+silently merges whatever follows, which is the class of error this language
+exists to catch); a general `reshape` to an arbitrary shape (loses the
+adjacency guarantee and the metadata-only property); making
+`split_heads`/`merge_heads` sugar for split/merge, which does not work because
+they also permute.
+
+## D29 — Dropout's key is in the signature, and its mask is a value (2026-09-20)
+
+`dropout(rate, key, x)` takes a key, and lowers to `x · dropout_mask(rate,
+key, x)`. Both halves of that are forced by differentiation rather than
+chosen for style. Reverse-mode AD here recomputes the forward pass inside
+the generated `vjp`, so a mask drawn from a hidden RNG stream — the obvious
+implementation, and what PyTorch does — would be *different* in the forward
+and in the backward, and the gradient would be wrong with nothing to signal
+it. A mask that is a function of the key alone recomputes identically, which
+makes the scheme correct by construction; putting it in the signature makes
+that visible in the type, and `split_key(key) -> (key, key)` lets a function
+drop more than once. Making the mask an ordinary value, rather than a
+primitive with its own adjoint, means `dropout` needs no differentiation rule
+at all: the adjoint of a product already multiplies the cotangent by the
+mask. The test that matters is finite differences *while dropping*, which
+would fail under any of the rejected designs. Outside a training run the mask
+is all ones, which is not a special case but the expectation of the random
+function `dropout` denotes, so `presk run`, `presk serve` and the export give
+the model's mean; the seam carries that as `Backend::set_training`, off by
+default and turned on only by `presk train`. Alternatives considered: a
+hidden stream (wrong gradients); a key derived at run time from a call-site
+id and a step counter (correct only if every recomputation reproduces the
+same dynamic path, which a fold makes fragile, and invisible in the type);
+storing the mask from the forward pass instead of recomputing it (a change to
+the whole AD strategy for one primitive).
+
+## D30 — Fusion groups are structural, elementwise, and single-output (2026-09-20)
+
+PSK-Sched v0 partitions a PSK-Core body once, on the body alone: the
+partition does not depend on the shapes, the realization or the backend, so
+it is computed per function and cached, and the kernel backend and the
+Cranelift backend necessarily agree. A group is elementwise and
+single-output: a reduction ends it, and a value read from outside the group
+stays materialized. Both restrictions are what keep the lowering a single
+loop nest with one store, needing no change to the kernel IR — multi-output
+kernels would touch the IR, its interpreter and the JIT, and are what the
+forward pass would need to fuse well. Interior values are duplicated in the
+expression tree rather than stored when read twice inside, bounded at
+sixty-four nodes, which trades arithmetic for traffic in the direction the
+roofline says is right. Fusion reassociates nothing, so every golden output
+is byte-identical and the pass needs no tolerance of its own. Groups over
+parameter trees map leaf by leaf, which is where the measured gain is: the
+optimizer's chain is elementwise over every parameter. Alternatives
+considered: fusing at run time by looking ahead in the body (the same
+decision taken repeatedly, invisible to `dump`); fusing in the e-graph as a
+rewrite (the partition is not a term rewrite, and the cost of a group is not
+the sum of its parts); requiring single use rather than all-uses-inside (loses
+the chains where a value is read twice within one group).
+
+## D31 — Threads split an exact axis; vectorizing a sum does not (2026-09-20)
+
+The native backend parallelizes a kernel by splitting the range of its
+outermost loop, and only when that loop is *exact* to split: the body must be
+a single loop nest and every store must index the output with that loop's
+variable directly, so the iterations write disjoint elements. A reduction over
+the outer axis and a scatter whose index is a loaded value both fail the test
+and stay on one thread. Under that condition each output element is computed
+by the same inner loops in the same order, so the result is bit-identical to
+the sequential one and the conformance suite needs no new tolerance — the test
+asserts equality of bits, not closeness. Compiled kernels therefore take the
+loop's range as two parameters, and one compiled function serves the
+sequential call and every worker. Only kernels above four million weighted
+operations are split, because spawning costs tens of microseconds; a
+persistent pool would remove that floor and is the obvious refinement.
+
+Vectorization stops here on purpose. The kernels that vectorize exactly are
+elementwise, and they are not where the time is; the time is in the
+contractions, whose innermost loop is a sum, and vectorizing a sum computes
+one partial per lane and adds them at the end. That reassociates the sum and
+changes the result. In this compiler a changed result is a different
+*realization*, which must declare its reduction order and carry a measured gap
+to the exact reference, exactly as `f32` does. Shipping it as an invisible
+backend detail would contradict the thesis the tool exists to demonstrate, so
+it waits for that treatment rather than for the code.
+
+## D32 — Contractions are blocked, and blocking is exact (2026-09-20)
+
+`dot` and `matmul` are lowered with eight columns of the result held in
+scalar accumulators across the whole contraction, so the inner loop reads one
+element of the left operand and eight contiguous elements of the right and
+writes nothing; widths that are not a multiple of eight take a row-wise form
+that sweeps a row of the result. The naive nest this replaces walked a column
+of the right operand for every output element, one element per cache line.
+
+The point of both forms is that they are *exact*. Each output element still
+accumulates the contraction index in increasing order, so the additions happen
+in the same order as before; what changes is where the partial sums live and
+which memory the loop touches. That is the line this compiler draws through
+the usual GEMM toolbox: loop reordering and register blocking keep it, while
+vectorizing the inner sum, splitting the contraction across threads, and
+multiple partial accumulators summed at the end do not — those reassociate,
+and a reassociated sum is a different realization owing a declared order and a
+measured gap (D31). The test therefore asserts bit equality between the two
+forms rather than closeness, and the conformance table against the reference
+is unchanged to every digit. Alternatives considered: a packed panel layout
+(faster still, but it copies operands, which is a scheduling decision that
+belongs above the kernel); calling a vendor BLAS (fast, but the tool would
+stop being able to say what its own kernels compute).
+
+## D33 — The rewrite worth having moves scalars, not contractions (2026-09-20)
+
+The e-graph rule set gains `(Σ aᵢbᵢ) · s = Σ (aᵢ · s) bᵢ` for `dot`, `matmul`
+and `ein`, proposing every operand as the one to scale and leaving the choice
+to the cost. It replaces the reassociation of adjacent contractions that the
+0.4.0 plan named, which was dropped after counting: the corpus GPT, after
+differentiation, contains *no* contraction whose operand is another
+contraction, because a transformer separates every pair with a softmax, a
+GELU or a normalization, and a nonlinearity blocks associativity. Shipping a
+rule that no program in the corpus can use would have been untestable
+decoration.
+
+The scalar rule is exact over ℝ and not over the floats — it changes the
+order in which a scale is applied — which is the licence this compiler has
+and a float-first one does not: the rewrite is legal against the denotation,
+and the realization gap is measured rather than assumed. It is also the
+first rule whose *right answer depends on sizes*, which makes it the case the
+calibrated profile exists to decide; the measurement of what that is worth,
+including the finding that the profile's decisions are barely better than
+operation counts' while its extraction is six times dearer, is in the
+`optimization` chapter. Alternatives considered: `merge_heads(split_heads x)`
+(a pure win with no decision to make, so it teaches the cost model nothing);
+distributing a contraction over a sum (legal, but it duplicates the
+contraction, which the tree-based extractor prices wrongly).
+

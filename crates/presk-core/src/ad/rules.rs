@@ -101,13 +101,17 @@ pub(crate) fn prim_vjp(e: &mut Emit, op: &PrimOp, args: &[VarId], tys: &[Ty], y:
             let d = e.prim(yt.clone(), PrimOp::Heaviside, vec![args[0]], span);
             vec![(0, mul(e, ct, d, &yt))]
         }
+        // A retag moves no data: the cotangent goes back under the argument's axes.
+        PrimOp::MergeAxes { .. } | PrimOp::ReshapeLike => {
+            vec![(0, e.prim(tys[0].clone(), PrimOp::ReshapeLike, vec![ct, args[0]], span))]
+        }
         PrimOp::Abs => {
             let d = e.prim(yt.clone(), PrimOp::Sign, vec![args[0]], span);
             vec![(0, mul(e, ct, d, &yt))]
         }
         // Hyperparameters and indices carry no adjoint.
-        PrimOp::Real | PrimOp::Argmax | PrimOp::Sample | PrimOp::Positions { .. } | PrimOp::CausalMask { .. } => vec![],
-        PrimOp::Pi | PrimOp::Zeros { .. } | PrimOp::Ones { .. } | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. } => vec![],
+        PrimOp::Real | PrimOp::Argmax | PrimOp::Sample | PrimOp::OneHot | PrimOp::Positions { .. } | PrimOp::CausalMask { .. } => vec![],
+        PrimOp::Pi | PrimOp::Zeros { .. } | PrimOp::Ones { .. } | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. } | PrimOp::DropoutMask => vec![],
         PrimOp::Dot | PrimOp::Matmul => {
             let ca = e.prim(tys[0].clone(), PrimOp::DotVjpL, vec![ct, args[1]], span);
             let cb = e.prim(tys[1].clone(), PrimOp::DotVjpR, vec![args[0], ct], span);

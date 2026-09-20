@@ -112,13 +112,22 @@ impl Checker<'_> {
                 return None;
             }
         }
-        // Second parameter: the batch.
-        let Some(batch_ty) = f.params.get(1).and_then(|p| p.ty.clone()) else {
-            self.error(Diagnostic::error("E2010", format!("`objective` `{}` must take the batch second: `batch : (idx[V][batch: B, seq: T], …)`", f.name)).label(obj_span, "no batch parameter"));
+        // An optional per-step key, then the batch: a `dropout` needs a key,
+        // and the loop derives a fresh one from the run's seed at every step.
+        let key = matches!(f.params.get(1).and_then(|p| p.ty.clone()), Some(Ty::Key));
+        let b = if key { 2 } else { 1 };
+        let Some(batch_ty) = f.params.get(b).and_then(|p| p.ty.clone()) else {
+            self.error(
+                Diagnostic::error("E2010", format!("`objective` `{}` must take the batch {}: `batch : (idx[V][batch: B, seq: T], …)`", f.name, if key { "after the key" } else { "second" }))
+                    .label(obj_span, "no batch parameter"),
+            );
             return None;
         };
-        if f.params.len() > 2 && f.params[2..].iter().any(|p| p.default.is_none()) {
-            self.error(Diagnostic::error("E2010", format!("`objective` `{}` has parameters after the batch without defaults; the loop passes only `θ` and the batch", f.name)).label(obj_span, "too many parameters"));
+        if f.params.len() > b + 1 && f.params[b + 1..].iter().any(|p| p.default.is_none()) {
+            self.error(
+                Diagnostic::error("E2010", format!("`objective` `{}` has parameters after the batch without defaults; the loop passes `θ`{} and the batch", f.name, if key { ", a key" } else { "" }))
+                    .label(obj_span, "too many parameters"),
+            );
             return None;
         }
         let mut dims = BTreeMap::new();

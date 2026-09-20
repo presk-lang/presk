@@ -439,12 +439,25 @@ parameters are inferred from use.
 log sigmoid sin cos` (`ℝ[S] → ℝ[S]`); `mean(x)`, `sum(x)` (`→ ℝ[]`);
 `mean(axis a, x)`, `sum(axis a, x)` (remove axis `a`); `softmax(axis a, x)`;
 `real(n)` (`nat`/`f64` → `ℝ[]`) and `real(t)` (`idx[N][S] → ℝ[S]`);
-`embed(w : ℝ[V, D], t : idx[V][S]) → ℝ[S, D]`; `cross_entropy(logits :
+`embed(w : ℝ[V, D], t : idx[V][S]) → ℝ[S, D]`, whose new axis takes the name
+of the table's second axis when it has one (`param tok : ℝ[vocab: V, emb: E]`
+gives `ℝ[S, emb: E]`) and is unnamed otherwise; `one_hot(t : idx[V][S]) →
+ℝ[S, V]`, the indicator vectors whose contraction with `w` `embed` denotes
+(its new axis is always unnamed, since the bound is a dimension, not a named
+axis, and is named by the signature it is passed to); `cross_entropy(logits :
 ℝ[S, V], y : idx[V][S]) → ℝ[S]`; `argmax`, `sample` (`ℝ[S, V] → idx[V][S]`);
+`merge(axis a, axis b, x)`, which joins two axes into one of length `|a|·|b|`,
+row-major (`(i, j) ↦ i·|b| + j`): the two must already be adjacent and in that
+order, because joining distant axes would also transpose and `merge` moves no
+data, and at least one length must be constant, since the product of two
+symbolic dimensions leaves the decidable fragment (`E1007`). The joined axis
+is unnamed, and is named by whatever signature it is passed to.
 `split_heads` (`ℝ[…, seq, model] → ℝ[…, heads: H, seq, hd: HD]`) and
-`merge_heads`, which read the constants `H` and `HD` of the file;
+`merge_heads`, which read the constants `H` and `HD` of the file and, unlike
+`merge`, also permute;
 `positions(seq: T) → idx[T][seq: T]`; `causal_mask(seq: T) → ℝ[seq: T, seq2: T]`;
-`matmul`; `grad`. Not implemented: `vjp`, `jvp`, `concat`, `dropout`,
+`matmul`; `grad`; `dropout(rate, key, x)` and `split_key(key) → (key, key)`,
+below. Not implemented: `vjp`, `jvp`, `concat`,
 `clamp`, `max`, `min` (error `E2012`). Initializers are not builtins but
 the vocabulary of the `init =` clause: see "Initializers" above.
 
@@ -473,7 +486,8 @@ Both analyses run on PSK-Core, after lowering, and are part of `presk check`.
 **Regularity.** Every function's result gets a class *per parameter*, on the
 lattice `C∞ < C⁰⁺ < Disc`: the worst class of any operation on a path from
 that parameter to the result. Primitives contribute per argument: `argmax`
-and `sample` are `Disc` in everything; `embed` and `cross_entropy` are `C∞`
+and `sample` are `Disc` in everything, and so is `one_hot`, whose only
+argument is an index; `embed` and `cross_entropy` are `C∞`
 in the table/logits and `Disc` in the indices; `real(t)` of an index tensor
 is `Disc`; `relu` and `abs` are `C⁰⁺`; everything else (`+ · ein exp tanh
 softmax gelu sqrt mean …`) is `C∞`. Calls use the callee's summary, so
@@ -496,8 +510,33 @@ responsible and where it is, and suggests a substitute:
    | Help: use `softmax` for a smooth surrogate, or an explicit straight-through relaxation
 ```
 
-**Effects.** The only effect of 0.1.0 is `Rand`. A function *uses* `Rand`
-if it calls `sample` or an initializer, or calls a function that does. The
+**Dropout takes a key.** `dropout(rate, key, x)` multiplies `x` by an
+inverted-dropout mask — `0` with probability `rate`, `1/(1 − rate)`
+otherwise — drawn from `key` *and nothing else*. The key is in the
+signature, not in a hidden stream, and that is a correctness requirement
+rather than a style: differentiation recomputes the forward pass, so a mask
+drawn from a stream would differ between the forward and the backward and the
+gradient would be silently wrong. Being a function of the key, the mask
+recomputes identically, and `dropout` needs no differentiation rule of its
+own — it lowers to `x · dropout_mask(rate, key, x)`, and the adjoint of a
+product is already known. `split_key(key)` gives two independent keys, so a
+function can drop more than once:
+
+```text
+fn block(x : ℝ[batch: B, model: D], key : key) -> ℝ[batch: B, model: D] uses Rand =
+  let (k1, k2) = split_key(key)
+  let h = dropout(0.1, k1, attn(x))
+  dropout(0.1, k2, ff(h))
+```
+
+Outside a training run the mask is all ones, which is the expectation of the
+random function `dropout` denotes: `presk run`, `presk serve` and the export
+evaluate the model's mean, and only `presk train` drops. An objective may
+take a per-step key between `θ` and the batch (`training` chapter).
+
+**Effects.** The only effect is `Rand`. A function *uses* `Rand`
+if it calls `sample`, `dropout`, `split_key` or an initializer, or calls a
+function that does. The
 inferred effects must be declared with `uses Rand` (`E4001` otherwise,
 labelling the first use); a `uses` clause naming an unknown effect is
 `E4002`. Initializers (`M.init`) are implicitly `uses Rand`; a lambda is

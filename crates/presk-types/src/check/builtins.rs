@@ -8,8 +8,8 @@ use crate::dim::DimExpr;
 use crate::ty::{Axis, Shape, Ty};
 
 const ELEMENTWISE: &[&str] = &["gelu", "relu", "exp", "tanh", "sqrt", "abs", "log", "sigmoid", "sin", "cos"];
-const NOT_IMPLEMENTED: &[&str] = &["vjp", "jvp", "concat", "dropout", "clamp", "max", "min"];
-const ALL: &[&str] = &["mean", "sum", "softmax", "embed", "cross_entropy", "argmax", "sample", "real", "split_heads", "merge_heads", "positions", "causal_mask", "grad", "matmul"];
+const NOT_IMPLEMENTED: &[&str] = &["vjp", "jvp", "concat", "clamp", "max", "min"];
+const ALL: &[&str] = &["mean", "sum", "softmax", "embed", "one_hot", "merge", "dropout", "split_key", "cross_entropy", "argmax", "sample", "real", "split_heads", "merge_heads", "positions", "causal_mask", "grad", "matmul"];
 
 impl Checker<'_> {
     pub(crate) fn is_builtin(&self, name: &str) -> bool {
@@ -119,7 +119,9 @@ impl Checker<'_> {
                 }
                 self.unify_dim(&wsh.axes[0].len, &bound, *ts);
                 let mut out = shape.clone();
-                out.axes.push(Axis { name: None, len: wsh.axes[1].len.clone() });
+                // The table's column name, when it has one, names the new axis;
+                // otherwise it stays unnamed and the context names it.
+                out.axes.push(Axis { name: wsh.axes[1].name.clone(), len: wsh.axes[1].len.clone() });
                 Some(Ty::Real(out))
             }
             "cross_entropy" => {
@@ -147,6 +149,104 @@ impl Checker<'_> {
                 let lead = Shape { prefix: lsh.prefix, axes: lsh.axes[..lsh.axes.len() - 1].to_vec() };
                 self.unify_shape(&lead, &shape, *ys);
                 Some(Ty::Real(shape))
+            }
+            "split_key" => {
+                let [TArg::Pos(k, ks)] = args else {
+                    self.error(Diagnostic::error("E2004", "`split_key` takes one key").label(span, format!("{} given", args.len())));
+                    return None;
+                };
+                if !matches!(self.zonk(k), Ty::Key) {
+                    let st = self.show(k);
+                    self.error(Diagnostic::error("E2002", format!("`split_key` expects a key, found `{st}`")).label(*ks, "not a key"));
+                    return None;
+                }
+                Some(Ty::Tuple(vec![Ty::Key, Ty::Key]))
+            }
+            "dropout" => {
+                let [TArg::Pos(r, rs), TArg::Pos(k, ks), TArg::Pos(t, ts)] = args else {
+                    self.error(Diagnostic::error("E2004", "`dropout` takes `(rate, key, tensor)`").label(span, "wrong arguments"));
+                    return None;
+                };
+                match self.zonk(r) {
+                    Ty::F64 | Ty::Nat | Ty::Rat | Ty::Real(_) => {}
+                    other => {
+                        let st = self.show(&other);
+                        self.error(Diagnostic::error("E2002", format!("`dropout` rate must be a number, found `{st}`")).label(*rs, "not a rate"));
+                        return None;
+                    }
+                }
+                if !matches!(self.zonk(k), Ty::Key) {
+                    let st = self.show(k);
+                    self.error(
+                        Diagnostic::error("E2002", format!("`dropout` needs a key, found `{st}`"))
+                            .label(*ks, "not a key")
+                            .note("the mask is a function of the key alone, so differentiation recomputes the same one; a function that drops out takes a `key` parameter, as an initializer does"),
+                    );
+                    return None;
+                }
+                let Ty::Real(sh) = self.zonk(t) else {
+                    let st = self.show(t);
+                    self.error(Diagnostic::error("E2002", format!("`dropout` expects a real tensor, found `{st}`")).label(*ts, "not a real tensor"));
+                    return None;
+                };
+                Some(Ty::Real(sh))
+            }
+            "merge" => {
+                let [TArg::Axis(a, aspan), TArg::Axis(b, bspan), TArg::Pos(t, s)] = args else {
+                    self.error(Diagnostic::error("E2004", "`merge` takes `(axis A, axis B, tensor)`").label(span, "wrong arguments"));
+                    return None;
+                };
+                let Ty::Real(sh) = self.zonk(t) else {
+                    let st = self.show(t);
+                    self.error(Diagnostic::error("E2002", format!("`merge` expects a real tensor, found `{st}`")).label(*s, "not a real tensor"));
+                    return None;
+                };
+                let sh = self.resolve_shape(&sh);
+                let n = self.prog.names();
+                let Some(p) = sh.axes.iter().position(|x| x.name.as_deref() == Some(a.as_str())) else {
+                    self.no_axis(a, &sh, *aspan);
+                    return None;
+                };
+                let Some(q) = sh.axes.iter().position(|x| x.name.as_deref() == Some(b.as_str())) else {
+                    self.no_axis(b, &sh, *bspan);
+                    return None;
+                };
+                if q != p + 1 {
+                    self.error(
+                        Diagnostic::error("E2003", format!("`merge` needs `{a}` immediately followed by `{b}`"))
+                            .label(span, format!("`{a}` is axis {p} and `{b}` is axis {q} of `ℝ{}`", sh.display(&n)))
+                            .note("merging axes that are not adjacent would also transpose; `merge` never moves data"),
+                    );
+                    return None;
+                }
+                let Some(len) = sh.axes[p].len.mul(&sh.axes[q].len) else {
+                    self.error(
+                        Diagnostic::error("E1007", format!("`merge` of `{a}` and `{b}` multiplies two symbolic dimensions"))
+                            .label(span, format!("`{}` · `{}` is outside the decidable fragment", sh.axes[p].len.display(&*n.dim), sh.axes[q].len.display(&*n.dim)))
+                            .help("at least one of the two axes must have a constant length"),
+                    );
+                    return None;
+                };
+                self.typed.axis_pos.insert(*aspan, p);
+                self.typed.axis_pos.insert(*bspan, q);
+                let mut axes: Vec<Axis> = sh.axes[..p].to_vec();
+                axes.push(Axis { name: None, len });
+                axes.extend_from_slice(&sh.axes[q + 1..]);
+                Some(Ty::Real(Shape { prefix: sh.prefix, axes }))
+            }
+            "one_hot" => {
+                let [TArg::Pos(t, s)] = args else {
+                    self.error(Diagnostic::error("E2004", "`one_hot` takes one index tensor").label(span, format!("{} given", args.len())));
+                    return None;
+                };
+                let Ty::Idx { bound, shape } = self.zonk(t) else {
+                    let st = self.show(t);
+                    self.error(Diagnostic::error("E2002", format!("`one_hot` expects an index tensor `idx[V][…]`, found `{st}`")).label(*s, "not an index tensor"));
+                    return None;
+                };
+                let mut out = self.resolve_shape(&shape);
+                out.axes.push(Axis { name: None, len: bound });
+                Some(Ty::Real(out))
             }
             "argmax" | "sample" => {
                 let (_, sh) = self.one_tensor(name, args, span)?;

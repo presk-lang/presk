@@ -185,6 +185,83 @@ step 500  epoch 34  loss 3.385110  lr 7.500e-5  |g| 1.5861e0
 and then the tiny MiniGPT natively in `f64` and `f32` and the larger
 configuration for 100 steps.
 
+## Contractions: the blocked form
+
+A contraction is where the time is, and the loop nest a naive lowering gives
+is the wrong one: for each output element it walks a *column* of the right
+operand, one element per cache line. Since 0.4.0 `dot` and `matmul` are
+lowered in a **register-blocked** form instead. Eight columns of the result
+are held in scalar accumulators across the whole contraction; the inner loop
+loads one element of the left operand and a contiguous run of eight from the
+right, and stores nothing. A width that is not a multiple of eight takes a
+row-wise form, which sweeps a whole row of the result at a time and handles
+any width.
+
+Both are **exact**. Each output element still accumulates `k` in increasing
+order — what changes is where the partial sums live and which memory the loop
+touches, not the order of the additions. A test asserts that the blocked form
+and the row-wise one agree bit for bit in `f64` and `f32`, and the conformance
+gaps against the reference are unchanged to every digit of the table above.
+
+A 1024³ matmul in `f32` on twelve cores:
+
+| Form | 1 thread | 12 threads |
+|---|---|---|
+| row-wise | 3.7 GFLOP/s | 26.6 GFLOP/s |
+| blocked | 9.9 GFLOP/s | 47–56 GFLOP/s |
+
+The machine's scalar peak is about 84 GFLOP/s (twelve cores, one
+fused multiply-add per cycle, two flops each), so the blocked form reaches
+roughly two thirds of what this compiler can address without vector
+instructions. The remaining factor of four would come from those, and the
+`native` backend does not emit them yet — for the reason given under threads.
+
+## Threads: `--threads N`
+
+Since 0.4.0 a kernel whose outermost loop is *parallel* is split across
+workers. A loop is parallel when the kernel is a single loop nest and every
+store indexes the output with that loop's variable directly, so different
+iterations write different elements. A reduction over the outer axis fails
+that test, and so does a scatter such as `embed_vjp`, whose output index is a
+loaded value; both stay on one thread.
+
+This is exact, not approximate. Each output element is computed by the same
+inner loops, in the same order, on the same values — only on another thread.
+One worker and twelve produce bit-identical buffers in `f64` and in `f32`,
+which the crate's test asserts element by element rather than within a
+tolerance.
+
+Only kernels above four million weighted operations are split: spawning
+workers costs tens of microseconds, which a small kernel never earns back, so
+the elementwise kernels stay sequential and the contractions parallelize.
+`--threads N` sets the count on `run`, `train` and `bench`; the default is the
+machine's cores, and `--threads 1` turns the split off.
+
+The corpus GPT on twelve cores, one training step, `f32`:
+
+| Model | 1 thread | 4 threads | 12 threads |
+|---|---|---|---|
+| `D=64, H=2, L=2`, batch 16, context 256 | 2.97 s | — | 0.83 s |
+| the course's own `D=384, H=6, L=6` | — | — | 39.8 s |
+
+A course-scale step took 289 s before this version's scheduling and backend
+work and takes 39.8 s after it, seven times faster, with the loss unchanged
+to the last digit at every stage: 289 s naive, 58.3 s once the threads split
+the parallel axes, 39.8 s once the contractions were blocked. The scaling is well below twelve because only the big kernels are
+split, because the outer loop bounds the workers (a batch of sixteen cannot
+use more than sixteen), and because what is left — host dispatch, small
+kernels, the sequential reductions — does not parallelize.
+
+**Vectorization is not in this version.** The kernels that would vectorize
+exactly, the elementwise ones, are not where the time is; the time is in the
+contractions, whose innermost loop is a sum. Vectorizing a sum computes
+partial sums per lane and adds them at the end, which *reassociates* it and
+changes the result. That is a new realization, not an implementation detail:
+it needs its own declared reduction order and its own measured gap to the
+exact reference, which is how this tool treats every other realization. The
+plan of this version says so, and it is the honest reason the work stopped at
+threads.
+
 ## Speed
 
 `presk bench FILE --entry E [--dim …] [--const …] [--bits 64] [--repeat 5]`

@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_merge_not_adjacent.psk
+---
+[E2003] Error: `merge` needs `a` immediately followed by `c`
+   ,-[ tests/diag/shape_merge_not_adjacent.psk:7:47 ]
+   |
+ 7 | fn bad(x : ℝ[a: A, b: B, c: C]) -> ℝ[] = mean(merge(axis a, axis c, x))
+   |                                               ^^^^^^^^^^^^|^^^^^^^^^^^  
+   |                                                           `------------- `a` is axis 0 and `c` is axis 2 of `ℝ[a: 2, b: 3, c: 4]`
+   | 
+   | Note: merging axes that are not adjacent would also transpose; `merge` never moves data
+---'

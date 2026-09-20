@@ -1,0 +1,98 @@
+-- 05_gpt.psk — the GPT of the NLP course, character-level, on the Code civil.
+--
+-- The course builds this model in `notebooks/007_gpt` (Karpathy's "let's build
+-- GPT"): a pre-normalized decoder-only transformer over the characters of the
+-- Code civil. The constants below are the course's; `--const` shrinks them to
+-- a size this compiler can carry today, which is the point of the rung — it is
+-- the forcing function of version 0.4.0, not a demonstration.
+const V  : nat = 92        -- characters of data/civil_vocab.json
+const D  : nat = 384       -- model width
+const H  : nat = 6         -- attention heads
+const HD : nat = D / H
+const L  : nat = 6         -- blocks
+static assert D % H == 0
+
+dim B
+dim T <= 1024
+
+type Tokens = idx[V][batch: B, seq: T]
+type Acts   = ℝ[batch: B, seq: T, model: D]
+type Mask   = ℝ[seq: T, seq2: T]
+
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] = x · w + b
+}
+
+module LayerNorm{Dm : dim} {
+  param γ : ℝ[Dm]  init = ones
+  param β : ℝ[Dm]  init = zeros
+
+  fn apply(x : ℝ[..., model: Dm]) -> ℝ[..., model: Dm] =
+    let μ  = mean(axis model, x)
+    let σ2 = mean(axis model, (x - μ)^2)
+    (x - μ) / sqrt(σ2 + real(1e-5)) * γ + β
+}
+
+module SelfAttention {
+  use wq, wk, wv, wo : Linear{D, D}
+
+  fn apply(x : Acts, mask : Mask) -> Acts =
+    let q = split_heads(wq.apply(x))
+    let k = split_heads(wk.apply(x))
+    let v = split_heads(wv.apply(x))
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = softmax(axis seq2, s + mask)
+    wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
+}
+
+module FeedForward {
+  use up   : Linear{D, 4*D}
+  use down : Linear{4*D, D}
+  fn apply(x : Acts) -> Acts = down.apply(gelu(up.apply(x)))
+}
+
+module Block {
+  use attn : SelfAttention
+  use ff   : FeedForward
+  use ln1, ln2 : LayerNorm{D}
+
+  fn apply(x : Acts, mask : Mask) -> Acts =
+    let x = x + attn.apply(ln1.apply(x), mask)
+    x + ff.apply(ln2.apply(x))
+}
+
+module GPT {
+  param tok : ℝ[vocab: V, model: D]  init = normal(std = 0.02)
+  param pos : ℝ[T, D]                init = normal(std = 0.02)
+  use blocks : stack{L}(Block)
+  use lnf    : LayerNorm{D}
+  param head : ℝ[D, V]               init = zeros
+
+  fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
+    let mask = causal_mask(seq: T)
+    let h0   = embed(tok, ids) + embed(pos, positions(seq: T))
+    lnf.apply(blocks.apply(h0, mask)) · head
+}
+
+fn loss(θ : params GPT, batch : (Tokens, Tokens)) -> ℝ[] =
+  let (x, y) = batch
+  mean(cross_entropy(GPT.apply(θ, x), y))
+
+optimizer adamw {
+  lr           : f64 = 3e-4
+  betas        : (f64, f64) = (0.9, 0.95)
+  weight_decay : f64 = 0.1
+  grad_clip    : f64 = 1.0
+  schedule     : cosine(warmup = 100)
+}
+
+training run {
+  model     = GPT
+  objective = loss
+  optimizer = adamw
+  data      = stream "data/civil_T256.psk.d" |> shuffle(seed = 7) |> batch(B = 16)
+  epochs    : nat = 1
+  checkpoint every 500 steps to "ckpt/"
+}

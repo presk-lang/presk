@@ -1,0 +1,22 @@
+-- A gradient through `merge` (0.4.0 step 1): two adjacent axes are flattened
+-- row-major in the middle of a differentiable path, so the adjoint has to put
+-- the cotangent back under the original axes.
+const V : nat = 5
+const C : nat = 2
+const E : nat = 3
+dim B
+
+module M {
+  param tok : ℝ[vocab: V, emb: E]  init = normal(std = 0.5)
+  param w   : ℝ[C*E, V]            init = xavier_uniform
+
+  fn apply(ids : idx[V][batch: B, ctx: C]) -> ℝ[batch: B, vocab: V] =
+    let e = embed(tok, ids)                  -- ℝ[batch: B, ctx: C, emb: E]
+    tanh(merge(axis ctx, axis emb, e)) · w
+}
+
+fn loss(θ : params M, ids : idx[V][batch: B, ctx: C]) -> ℝ[] =
+  mean(M.apply(θ, ids)^2)
+
+fn loss_grad(θ : params M, ids : idx[V][batch: B, ctx: C]) -> params M =
+  grad(λ θ. loss(θ, ids))(θ)

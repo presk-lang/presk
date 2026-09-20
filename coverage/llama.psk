@@ -1,0 +1,88 @@
+-- llama.psk — the decoder MLPerf uses for Llama 2 70B (LoRA fine-tuning) and
+-- that GPT-J and Mixtral share the shape of, at the 7B configuration so the
+-- constants stay readable. Transcribed to see what the shape fragment covers.
+--
+-- Two departures from the real model, each blocked on the same missing
+-- construct and both marked below: rotary positions and grouped-query
+-- attention need to *split* one axis into two, which this version cannot say
+-- (spec question 45 gave `merge` but left its inverse internal).
+const V  : nat = 32000
+const D  : nat = 4096
+const H  : nat = 32
+const HD : nat = D / H
+const FF : nat = 11008     -- SwiGLU's hidden width, not 4·D
+const L  : nat = 32
+static assert D % H == 0
+
+dim B
+dim T <= 4096
+
+type Tokens = idx[V][batch: B, seq: T]
+type Acts   = ℝ[batch: B, seq: T, model: D]
+type Mask   = ℝ[seq: T, seq2: T]
+
+-- Llama's projections carry no bias.
+module Dense{In Out : dim} {
+  param w : ℝ[In, Out]  init = normal(std = 0.02)
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] = x · w
+}
+
+module RMSNorm{Dm : dim} {
+  param γ : ℝ[Dm]  init = ones
+  fn apply(x : ℝ[..., model: Dm]) -> ℝ[..., model: Dm] =
+    let ms = mean(axis model, x * x)
+    x / sqrt(ms + real(1e-5)) * γ
+}
+
+-- SiLU, the activation of SwiGLU: x·σ(x). Expressible from `sigmoid`.
+fn silu(x : ℝ[...]) -> ℝ[...] = x * sigmoid(x)
+
+module SwiGLU {
+  use gate : Dense{D, FF}
+  use up   : Dense{D, FF}
+  use down : Dense{FF, D}
+  fn apply(x : Acts) -> Acts = down.apply(silu(gate.apply(x)) * up.apply(x))
+}
+
+-- Multi-head attention. The real model uses *grouped*-query attention, whose
+-- keys and values have 8 heads shared by the 32 query heads; expressing that
+-- needs `heads` split into (groups, heads-per-group) so the group axis can
+-- broadcast, which is the missing inverse of `merge`.
+module Attention {
+  use wq, wk, wv, wo : Dense{D, D}
+
+  fn apply(x : Acts, mask : Mask) -> Acts =
+    let q = split_heads(wq.apply(x))
+    let k = split_heads(wk.apply(x))
+    let v = split_heads(wv.apply(x))
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = softmax(axis seq2, s + mask)
+    wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
+}
+
+module Block {
+  use attn : Attention
+  use ff   : SwiGLU
+  use n1, n2 : RMSNorm{D}
+  fn apply(x : Acts, mask : Mask) -> Acts =
+    let x = x + attn.apply(n1.apply(x), mask)
+    x + ff.apply(n2.apply(x))
+}
+
+-- The real model has no learned position table: it rotates queries and keys
+-- by an angle that depends on the position (RoPE). The rotation pairs
+-- adjacent channels, which again needs `hd` split into (hd/2, 2) — so this
+-- transcription keeps a learned table in its place and the table below
+-- records why.
+module Llama {
+  param tok : ℝ[vocab: V, model: D]  init = normal(std = 0.02)
+  param pos : ℝ[T, D]                init = normal(std = 0.02)
+  use blocks : stack{L}(Block)
+  use norm   : RMSNorm{D}
+  param head : ℝ[D, V]               init = zeros
+
+  fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
+    let mask = causal_mask(seq: T)
+    let h = embed(tok, ids) + embed(pos, positions(seq: T))
+    norm.apply(blocks.apply(h, mask)) · head
+}

@@ -133,7 +133,7 @@ fn optimizer_input<R: Real>(name: &str, v: Value<R>) -> Value<R> {
 
 /// `fn`, `Module.fn`, `Module{8, 4}.fn`: the Core function and the module's
 /// dimension arguments.
-fn resolve_entry(prog: &Program, elab: &ElabProgram, entry: &str) -> Result<(FuncId, Dims, Vec<u64>)> {
+pub fn resolve_entry(prog: &Program, elab: &ElabProgram, entry: &str) -> Result<(FuncId, Dims, Vec<u64>)> {
     // Optimizer functions (`adamw.step`) are found by their exact name.
     if let Some(id) = prog.find(entry)
         && matches!(prog.func(id).origin, Origin::Optimizer { .. })

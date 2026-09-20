@@ -1,0 +1,6 @@
+-- A contraction whose width is a constant, so the test can pick one that the
+-- blocked form takes and one it does not (0.4.0 step 6).
+const K : nat = 37
+const N : nat = 16
+
+fn gemm(a : ℝ[row: 1, K], b : ℝ[K, N]) -> ℝ[row: 1, N] = a · b

@@ -4,12 +4,14 @@ expression: text
 ---
 kernel dot (%0 : f32[batch: 4, 3], %1 : f32[3, 2]) -> %2 : f32[batch: 4, 2] {
   for i0 in 0..4 {
-    for i1 in 0..2 {
-      s0 = 0
-      for i2 in 0..3 {
-        s0 = (s0 + (%0[i0, i2] * %1[i2, i1]))
+    for i2 in 0..2 {
+      %2[i0, i2] = 0
+    }
+    for i1 in 0..3 {
+      s0 = %0[i0, i1]
+      for i2 in 0..2 {
+        %2[i0, i2] = (%2[i0, i2] + (s0 * %1[i1, i2]))
       }
-      %2[i0, i1] = s0
     }
   }
 }

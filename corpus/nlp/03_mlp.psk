@@ -1,0 +1,50 @@
+-- 03_mlp.psk — the embedding MLP of the NLP course (Bengio 2003), on the words
+-- of the Code civil: three characters of context predict the next one.
+--
+-- The rung that needed `merge`. Each character of the context is embedded
+-- into ℝ[emb: E]; the three embeddings are then *one* vector of length C·E
+-- fed to a hidden layer. That flattening is `merge(axis ctx, axis emb, ·)`:
+-- two adjacent axes become one, row-major, without moving any data.
+const V  : nat = 41        -- the vocabulary of data/vocab.txt
+const C  : nat = 3         -- characters of context
+const E  : nat = 10        -- embedding size
+const Hd : nat = 200       -- hidden units
+dim B
+
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] = x · w + b
+}
+
+module MLP {
+  -- Naming the table's columns `emb` is what lets `merge` name that axis:
+  -- `embed` carries the name through.
+  param tok : ℝ[vocab: V, emb: E]  init = normal(std = 1.0)
+  use l1 : Linear{C*E, Hd}
+  use l2 : Linear{Hd, V}
+
+  fn apply(ids : idx[V][batch: B, ctx: C]) -> ℝ[batch: B, vocab: V] =
+    let e = embed(tok, ids)                        -- ℝ[batch: B, ctx: C, emb: E]
+    let flat = merge(axis ctx, axis emb, e)        -- ℝ[batch: B, C*E]
+    l2.apply(tanh(l1.apply(flat)))
+}
+
+fn loss(θ : params MLP, batch : (idx[V][batch: B, ctx: C], idx[V][batch: B])) -> ℝ[] =
+  let (x, y) = batch
+  mean(cross_entropy(MLP.apply(θ, x), y))
+
+optimizer adamw {
+  lr           : f64 = 0.05
+  weight_decay : f64 = 0.0
+  schedule     : cosine(warmup = 100)
+}
+
+training run {
+  model     = MLP
+  objective = loss
+  optimizer = adamw
+  data      = stream "data/context3.psk.d" |> shuffle(seed = 2) |> batch(B = 256)
+  epochs    : nat = 8
+}

@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_merge_symbolic.psk
+---
+[E1007] Error: `merge` of `p` and `q` multiplies two symbolic dimensions
+   ,-[ tests/diag/shape_merge_symbolic.psk:7:41 ]
+   |
+ 7 | fn bad(x : ℝ[p: P, q: Q]) -> ℝ[] = mean(merge(axis p, axis q, x))
+   |                                         ^^^^^^^^^^^^|^^^^^^^^^^^  
+   |                                                     `------------- `P` · `Q` is outside the decidable fragment
+   | 
+   | Help: at least one of the two axes must have a constant length
+---'

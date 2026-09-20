@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_dropout_key.psk
+---
+[E2002] Error: `dropout` needs a key, found `f64`
+   ,-[ tests/diag/shape_dropout_key.psk:8:16 ]
+   |
+ 8 |   dropout(0.2, 0.5, x)
+   |                ^|^  
+   |                 `--- not a key
+   | 
+   | Note: the mask is a function of the key alone, so differentiation recomputes the same one; a function that drops out takes a `key` parameter, as an initializer does
+---'

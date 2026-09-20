@@ -1,0 +1,7 @@
+-- The merged length is the product of the two axes, so at least one of them
+-- must be constant: a product of two symbolic dimensions leaves the
+-- decidable fragment.
+dim P
+dim Q
+
+fn bad(x : ℝ[p: P, q: Q]) -> ℝ[] = mean(merge(axis p, axis q, x))

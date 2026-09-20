@@ -68,6 +68,67 @@ number attached to a program, measured, not argued. Longer runs, larger
 models, bfloat16 and mixed precision are the obvious next points; they need
 the PyTorch side only (`train.py --dtype`), the reference being fixed.
 
+## 3. The decisive experiment: against PyTorch
+
+Version 0.4.0 set three falsifiable statements and trained the course GPT to
+answer them (`D = 384`, 6 heads, 6 blocks, context 256, batch 16, the
+character-level Code civil, `f32`, twelve cores, `presk train` against the
+`train.py` the export writes). The answers:
+
+| # | Statement | Asked | Measured | |
+|---|---|---|---|---|
+| A | presk trains within 3× of PyTorch CPU per step | ≤ 3× | **94×** (82× with `--opt`) | fails |
+| B | `--opt --profile` is worth at least 1.3× | ≥ 1.30× | **1.14×** | fails |
+| C | the profile predicted that speedup within 30 % | ≤ 30 % | **5 %** | holds |
+
+One training step is about 266 GFLOP. PyTorch does it in 0.405 s, presk in
+37.9 s, 33.3 s with the optimizer: 656 GFLOP/s against 7.0.
+
+**Where the factor of ninety-four is.** It is not distributed through the
+compiler; most of it is one thing. PyTorch's CPU matmul reaches Apple's
+matrix coprocessor through the platform BLAS and runs a 1024³ `f32` product
+at 1309–1454 GFLOP/s — a rate that barely moves with the thread count,
+because it is not thread parallelism. Presk's own blocked kernel, scalar
+loops over twelve threads, runs the same product at 47–56 GFLOP/s. That is
+a factor of about twenty-six, and it is an *instruction-set access* gap, not
+a compiler-cleverness gap.
+
+The remaining factor of three is presk's, and it is visible in the same
+numbers: PyTorch's training step runs at 45 % of its own matmul rate, presk's
+at 14 % of its own. The difference is everything that is not a contraction —
+softmax, normalization, the elementwise chains reductions keep splitting, and
+2274 kernel launches a step.
+
+**What that does and does not say about the thesis.** The claim under test is
+that exact semantics plus rewriting plus static cost models buy speed. This
+version bought 7.3× (289 s a step to 39.8 s) and *every* transformation it
+shipped is exact: fusion, threads, blocked contractions and the scalar
+rewrite all leave the training losses identical to every digit printed. The
+discipline held under a sevenfold speedup, which is the part worth keeping.
+
+What it did not do is close the gap to a mature stack, and the reason is
+recorded rather than excused. The kernels this compiler emits are scalar
+because the two ways to go faster both reassociate a sum — vectorizing the
+contraction's inner loop, and calling a BLAS whose summation order is not
+ours — and a reassociated sum is a different realization in this system,
+owing a declared order and a measured gap (decisions D31 and D32). That is a
+real cost of the position, and the honest form of the result is: the
+discipline is affordable at 7.3×, and the next order of magnitude requires
+admitting a new realization and measuring it, not writing a faster loop.
+
+Matching a tuned BLAS is a target this project will have to take on, for the
+CPU's vector units and matrix coprocessor and for the GPU, with its own
+kernels rather than a dependency; `docs/kernels-roadmap.md` records what that
+needs and why it is a research question here — every one of those paths
+reassociates a sum, so each is a realization owing a declared order and a
+measured gap.
+
+Statement C is the one that held, and it is the smallest of the three: asked
+to predict its own speedup, the calibrated model said 1.087× and measurement
+said 1.14×. The model is right about what it is asked; it is asked very
+little, because the rule set offers few decisions that turn on size
+(`optimization` chapter).
+
 ## What these experiments do not show
 
 - **Speed, beyond the first step.** Since 0.3.0 the same program trains

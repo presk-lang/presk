@@ -4,6 +4,7 @@
 //! adjoint primitives), with one kernel per primitive instance.
 
 use presk_core::PrimOp;
+use presk_sched::{Src, Step};
 use presk_rt::Axis;
 
 use crate::ir::{BinOp, BufKind, BufSpec, CmpOp, Dtype, Expr, Kernel, Stmt, UnOp};
@@ -253,6 +254,53 @@ fn elementwise_binary(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowe
     done(kern, out)
 }
 
+/// One loop nest for a fusion group (`presk-sched`): each input is read
+/// through its own broadcast map, each step's value stays in the expression
+/// tree instead of reaching memory, and only the last one is stored. Every
+/// interior step has exactly one use, so the tree cannot blow up.
+pub fn fused(steps: &[Step], ins: &[Operand], out: &[Axis], dtype: Dtype) -> Result<Lowered> {
+    let mut bd = B::new();
+    let iv = bd.loops(&dims(out));
+    let mut idx: Vec<Vec<Expr>> = Vec::with_capacity(ins.len());
+    for (i, o) in ins.iter().enumerate() {
+        let m = align(&o.axes, out).ok_or_else(|| format!("fused: operand {i} of shape {} does not broadcast into {}", show(&o.axes), show(out)))?;
+        idx.push(m.iter().map(|p| Expr::Iv(iv[*p])).collect());
+    }
+    let mut vals: Vec<Expr> = Vec::with_capacity(steps.len());
+    for s in steps {
+        let a: Vec<Expr> = s
+            .args
+            .iter()
+            .map(|src| match src {
+                Src::Input(k) => match ins[*k].kind {
+                    BufKind::Idx => Expr::ToF(Box::new(Expr::LoadI(*k, idx[*k].clone()))),
+                    BufKind::Real => load(*k, idx[*k].clone()),
+                },
+                Src::Step(k) => vals[*k].clone(),
+            })
+            .collect();
+        let value = match a.as_slice() {
+            [x] => unary_expr(&s.op, x.clone()).ok_or_else(|| format!("fused: `{}` is not a unary primitive", s.op.name()))?,
+            [x, y] => {
+                let k = match s.op {
+                    PrimOp::Add => BinOp::Add,
+                    PrimOp::Sub => BinOp::Sub,
+                    PrimOp::Mul => BinOp::Mul,
+                    PrimOp::Div => BinOp::Div,
+                    _ => return Err(format!("fused: `{}` is not a binary primitive", s.op.name())),
+                };
+                bin(k, x.clone(), y.clone())
+            }
+            _ => return Err(format!("fused: `{}` takes {} arguments", s.op.name(), a.len())),
+        };
+        vals.push(value);
+    }
+    let value = vals.pop().ok_or_else(|| "fused: empty group".to_string())?;
+    let body = nest(&iv, &dims(out), vec![Stmt::Store { buf: ins.len(), index: ivs(&iv), value }]);
+    let kern = kernel(format!("fused {} steps", steps.len()), dtype, ins, out, BufKind::Real, &bd, body);
+    done(kern, out.to_vec())
+}
+
 fn unary(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let a = tensor_in(ins, 0, "unary")?;
     let mut bd = B::new();
@@ -280,6 +328,12 @@ fn contraction(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>, outer_
     done(kern, out)
 }
 
+/// Columns of the result held in registers at once by the blocked
+/// contraction. Eight fits the register files this targets and divides the
+/// widths the corpus uses; a width that is not a multiple falls back to the
+/// row-wise form, which handles any.
+const GEMM_TILE: usize = 8;
+
 /// `x[..., K] · w[K, rest…]`.
 fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let (x, w) = (tensor_in(ins, 0, "dot")?, tensor_in(ins, 1, "dot")?);
@@ -294,6 +348,71 @@ fn dot(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let mut out = x.axes[..lead].to_vec();
     out.extend(w.axes[1..].iter().cloned());
     let outer: Vec<usize> = dims(&out);
+    // Row-wise form when the last output axis comes from `w`: hold one element
+    // of `x` and sweep a *row* of `w` and of the result, both unit-stride,
+    // instead of walking a column of `w` for each output element. Each output
+    // accumulates `k` in the same increasing order as the column form, so the
+    // additions happen in the same order and the result is bit-identical; only
+    // the memory it touches changes.
+    // Register-blocked form: hold a tile of the result in scalars across the
+    // whole contraction, so the inner loop loads one element of `x` and a
+    // contiguous run of `w` and stores nothing. Each accumulator still sums
+    // `k` in increasing order, so this is bit-identical to the column form —
+    // what changes is where the partial sums live, not their order.
+    if w.axes.len() >= 2 && outer.len() >= 2 && *outer.last().unwrap() % GEMM_TILE == 0 {
+        let (opre, jn) = (outer[..outer.len() - 1].to_vec(), *outer.last().unwrap());
+        let mut bd = B::new();
+        let ov = bd.loops(&opre);
+        let (jb, kv) = (bd.iv(), bd.iv());
+        let acc: Vec<usize> = (0..GEMM_TILE).map(|_| bd.sv()).collect();
+        // `jb · TILE + t`, the column this accumulator owns.
+        let col = |t: usize| bin(BinOp::IAdd, bin(BinOp::IMul, Expr::Iv(jb), Expr::I(GEMM_TILE as i64)), Expr::I(t as i64));
+        let mut xix: Vec<Expr> = ov[..lead].iter().map(|v| Expr::Iv(*v)).collect();
+        xix.push(Expr::Iv(kv));
+        let xs = bd.sv();
+        let mut inner = vec![Stmt::Set { var: xs, value: load(0, xix) }];
+        for (t, a) in acc.iter().enumerate() {
+            let mut wix = vec![Expr::Iv(kv)];
+            wix.extend(ov[lead..].iter().map(|v| Expr::Iv(*v)));
+            wix.push(col(t));
+            inner.push(Stmt::Set { var: *a, value: bin(BinOp::Add, Expr::Sv(*a), bin(BinOp::Mul, Expr::Sv(xs), load(1, wix))) });
+        }
+        let mut body: Vec<Stmt> = acc.iter().map(|a| Stmt::Set { var: *a, value: f(0.0) }).collect();
+        body.push(Stmt::For { var: kv, bound: k, body: inner });
+        for (t, a) in acc.iter().enumerate() {
+            let mut cix: Vec<Expr> = ov.iter().map(|v| Expr::Iv(*v)).collect();
+            cix.push(col(t));
+            body.push(Stmt::Store { buf: 2, index: cix, value: Expr::Sv(*a) });
+        }
+        let tiles = Stmt::For { var: jb, bound: jn / GEMM_TILE, body };
+        let kern = kernel("dot", dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &opre, vec![tiles]));
+        return done(kern, out);
+    }
+    if w.axes.len() >= 2 && outer.len() >= 2 {
+        let (opre, jn) = (outer[..outer.len() - 1].to_vec(), *outer.last().unwrap());
+        let mut bd = B::new();
+        let ov = bd.loops(&opre);
+        let (kv, jv, acc) = (bd.iv(), bd.iv(), bd.sv());
+        let cix = |j: usize| -> Vec<Expr> {
+            let mut ix: Vec<Expr> = ov.iter().map(|v| Expr::Iv(*v)).collect();
+            ix.push(Expr::Iv(j));
+            ix
+        };
+        let zero = Stmt::For { var: jv, bound: jn, body: vec![Stmt::Store { buf: 2, index: cix(jv), value: f(0.0) }] };
+        let mut xix: Vec<Expr> = ov[..lead].iter().map(|v| Expr::Iv(*v)).collect();
+        xix.push(Expr::Iv(kv));
+        let mut wix = vec![Expr::Iv(kv)];
+        wix.extend(ov[lead..].iter().map(|v| Expr::Iv(*v)));
+        wix.push(Expr::Iv(jv));
+        let sweep = Stmt::For {
+            var: jv,
+            bound: jn,
+            body: vec![Stmt::Store { buf: 2, index: cix(jv), value: bin(BinOp::Add, load(2, cix(jv)), bin(BinOp::Mul, Expr::Sv(acc), load(1, wix))) }],
+        };
+        let over_k = Stmt::For { var: kv, bound: k, body: vec![Stmt::Set { var: acc, value: load(0, xix) }, sweep] };
+        let kern = kernel("dot", dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &opre, vec![zero, over_k]));
+        return done(kern, out);
+    }
     contraction(
         "dot",
         dtype,
@@ -744,6 +863,23 @@ pub fn causal_mask(axis: &str, n: usize, dtype: Dtype) -> Lowered {
     let body = nest(&[i, j], &[n, n], vec![Stmt::Store { buf: 0, index: vec![Expr::Iv(i), Expr::Iv(j)], value: select(cmp(CmpOp::Le, Expr::ToF(Box::new(Expr::Iv(j))), Expr::ToF(Box::new(Expr::Iv(i)))), f(0.0), f(f64::NEG_INFINITY)) }]);
     let kern = kernel(format!("causal_mask {axis}"), dtype, &[], &out, BufKind::Real, &bd, body);
     Lowered { kernel: kern, out_axes: out, out_kind: BufKind::Real, out_bound: 0 }
+}
+
+/// `one_hot`: 1 where the index equals the position on the new trailing axis.
+/// `out` is the result's axes; the index tensor carries all but the last.
+pub fn one_hot(out: &[Axis], dtype: Dtype) -> Lowered {
+    let k = out.len() - 1;
+    let (idx_axes, v) = (&out[..k], out[k].len);
+    let ins = vec![Operand { axes: idx_axes.to_vec(), kind: BufKind::Idx }];
+    let mut bd = B::new();
+    let iv = bd.loops(&dims(idx_axes));
+    let j = bd.iv();
+    let mut oix = ivs(&iv);
+    oix.push(Expr::Iv(j));
+    let hit = cmp(CmpOp::Eq, Expr::ToF(Box::new(Expr::LoadI(0, ivs(&iv)))), Expr::ToF(Box::new(Expr::Iv(j))));
+    let body = nest(&iv, &dims(idx_axes), vec![Stmt::For { var: j, bound: v, body: vec![Stmt::Store { buf: 1, index: oix, value: select(hit, f(1.0), f(0.0)) }] }]);
+    let kern = kernel("one_hot", dtype, &ins, out, BufKind::Real, &bd, body);
+    Lowered { kernel: kern, out_axes: out.to_vec(), out_kind: BufKind::Real, out_bound: 0 }
 }
 
 /// A constant fill (`zeros`, `ones`).

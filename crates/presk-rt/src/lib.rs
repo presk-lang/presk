@@ -300,6 +300,14 @@ pub trait Backend {
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: Realize) -> Result<Prepared>;
     /// Run a prepared entry.
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value>;
+    /// Whether this run trains: `dropout` drops only when it does. Off by
+    /// default, so `run`, `serve` and the export evaluate the expectation.
+    fn set_training(&mut self, _on: bool) {}
+    /// Kernels launched so far, and launches fusion removed. `(0, 0)` for a
+    /// backend that launches no kernels, such as the reference interpreter.
+    fn launch_stats(&self) -> (u64, u64) {
+        (0, 0)
+    }
 }
 
 /// The reference interpreter behind the seam: exact values pass through
@@ -318,6 +326,10 @@ impl<'p> InterpBackend<'p> {
 impl Backend for InterpBackend<'_> {
     fn name(&self) -> &'static str {
         "interp"
+    }
+
+    fn set_training(&mut self, on: bool) {
+        self.interp.training = on;
     }
 
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: Realize) -> Result<Prepared> {

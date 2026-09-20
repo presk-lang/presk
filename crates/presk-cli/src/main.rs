@@ -17,7 +17,7 @@ use presk_types::check::TypedProgram;
 use presk_types::elab::{self, Options};
 
 #[derive(Parser)]
-#[command(name = "presk", version, about = "Presk compiler (0.3.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, PyTorch export)")]
+#[command(name = "presk", version, about = "Presk compiler (0.4.0: front-end, reference interpreter, native backend with fusion and threads, e-graph optimizer, training, serving, PyTorch export)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -75,6 +75,16 @@ enum Command {
         /// With --opt: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`).
         #[arg(long, value_name = "FILE.json")]
         profile: Option<PathBuf>,
+        /// Workers a parallel kernel may use on the native backend (default: the cores).
+        #[arg(long)]
+        threads: Option<usize>,
+        /// Take the entry's last argument from this data file instead of synthesizing it;
+        /// its `batch` axis is bound to the number of samples read.
+        #[arg(long, value_name = "FILE.psk.d")]
+        data: Option<PathBuf>,
+        /// With --data: read only the first N samples.
+        #[arg(long)]
+        samples: Option<usize>,
     },
     /// Export a program to another framework.
     Export {
@@ -171,6 +181,9 @@ enum Command {
         /// Rewrite the program with the e-graph optimizer before training (`presk-opt`).
         #[arg(long)]
         opt: bool,
+        /// Workers a parallel kernel may use on the native backend (default: the cores).
+        #[arg(long)]
+        threads: Option<usize>,
         /// With --opt: the machine profile for the extraction cost.
         #[arg(long, value_name = "FILE.json")]
         profile: Option<PathBuf>,
@@ -237,6 +250,9 @@ enum Command {
         /// Rewrite the program with the e-graph optimizer before timing it (`presk-opt`).
         #[arg(long)]
         opt: bool,
+        /// Workers a parallel kernel may use on the native backend (default: the cores).
+        #[arg(long)]
+        threads: Option<usize>,
         /// With --opt: the machine profile for the extraction cost.
         #[arg(long, value_name = "FILE.json")]
         profile: Option<PathBuf>,
@@ -264,6 +280,20 @@ enum DataCommand {
         ty: String,
         input: PathBuf,
         #[arg(short, long, value_name = "FILE.psk.d")]
+        out: PathBuf,
+    },
+    /// Build a character vocabulary from a UTF-8 text file: a JSON array of tokens, index `i` denoting token `i`.
+    Chars {
+        input: PathBuf,
+        #[arg(short, long, value_name = "FILE.json")]
+        out: PathBuf,
+    },
+    /// Encode a text file against a vocabulary into a whitespace-separated token stream (feeds `lm-windows`).
+    Encode {
+        input: PathBuf,
+        #[arg(long, value_name = "FILE.json")]
+        vocab: PathBuf,
+        #[arg(short, long, value_name = "FILE.txt")]
         out: PathBuf,
     },
     /// Language-modelling windows (x, y = x shifted by one) of a whitespace-separated token stream.
@@ -321,6 +351,16 @@ enum BackendKind {
     Kernel,
     /// PSK-Kernel v0 compiled to machine code by Cranelift (in process).
     Native,
+}
+
+/// `--threads N`: how many workers a parallel kernel may use. Read by the
+/// native executor; 1 keeps every kernel on one thread.
+fn set_threads(n: Option<usize>) {
+    if let Some(n) = n {
+        // SAFETY: set before any backend is built and before any thread is
+        // spawned, from the single-threaded `main`.
+        unsafe { std::env::set_var("PRESK_THREADS", n.max(1).to_string()) };
+    }
 }
 
 /// Runs `f` with the chosen backend over `core`.
@@ -398,6 +438,8 @@ enum DumpStage {
     CoreAfterAd,
     /// PSK-Core after AD and the e-graph optimizer (`presk-opt`); the report goes to stderr.
     CoreOpt,
+    /// The fusion groups of every function (`presk-sched`): what shares a loop nest.
+    Sched,
     /// The PSK-Kernel v0 kernels launched by an entry (needs --entry, --dim/--const as `presk run`).
     Kernel,
 }
@@ -407,7 +449,7 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Check { file, consts, summary, json } => check(&file, &consts, summary, json),
         Command::Dump { file, stage, unroll_stack, entry, dims, consts, realize, profile } => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, realize.to_rt(), profile),
-        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, opt, profile } => run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, realize.to_rt(), Opt { on: opt, profile }),
+        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, opt, profile, data, samples, threads } => { set_threads(threads); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, realize.to_rt(), Opt { on: opt, profile }, data, samples) }
         Command::Export { file, target: _, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile } => export(&file, mode, &out, shapes.as_deref(), stack, conformance_entry.as_deref(), train, serve, &dims, &consts, seed, Opt { on: opt, profile }),
         Command::Serve { file, consts, weights, prompt, tokens, entry, dims, temperature, seed, bits, backend, realize, json, opt, profile } => {
             let mut prompt_tokens = Vec::new();
@@ -435,8 +477,8 @@ fn main() -> ExitCode {
             let opts = presk_serve::ServeOptions { weights, prompt: prompt_tokens, tokens, seed, bits, realize: realize.to_rt(), temperature, dims: named };
             serve(&file, &consts, entry.as_deref(), opts, backend, json, Opt { on: opt, profile })
         }
-        Command::Train { file, consts, data, steps, epochs, seed, bits, log_every, ckpt, json, backend, realize, opt, profile } => train(&file, &consts, presk_train::TrainOptions { data, steps, epochs, seed, bits, realize: realize.to_rt(), ckpt, checkpoints: true }, log_every, json, backend, Opt { on: opt, profile }),
-        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, realize } => bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate.as_deref(), realize.to_rt()),
+        Command::Train { file, consts, data, steps, epochs, seed, bits, log_every, ckpt, json, backend, realize, opt, profile, threads } => { set_threads(threads); train(&file, &consts, presk_train::TrainOptions { data, steps, epochs, seed, bits, realize: realize.to_rt(), ckpt, checkpoints: true }, log_every, json, backend, Opt { on: opt, profile }) }
+        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, realize, threads } => { set_threads(threads); bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate.as_deref(), realize.to_rt()) }
         Command::Data { command } => match data(command) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -691,7 +733,12 @@ fn train(file: &Path, consts: &[String], opts: presk_train::TrainOptions, log_ev
     if let Err(c) = opt.apply(&mut core, &prog, false, &[]) {
         return c;
     }
-    match with_backend(backend, &core, &prog, opts.bits, opts.seed, opts.realize, |b| presk_train::train(b, &core, &prog, &typed, &fns, &opts, on_step)) {
+    let mut stats = (0u64, 0u64);
+    match with_backend(backend, &core, &prog, opts.bits, opts.seed, opts.realize, |b| {
+        let out = presk_train::train(b, &core, &prog, &typed, &fns, &opts, on_step);
+        stats = presk_rt::Backend::launch_stats(b);
+        out
+    }) {
         Err(e) => {
             let usage = e.code == "E9002";
             let mut d = presk_syntax::Diagnostic::error(e.code, e.message);
@@ -717,6 +764,17 @@ fn train(file: &Path, consts: &[String], opts: presk_train::TrainOptions, log_ev
                     && (log_every == 0 || last.step % log_every != 0)
                 {
                     eprintln!("{}", presk_train::format_step(last, out.total));
+                }
+                let (launched, fused) = stats;
+                if launched > 0 && !out.logs.is_empty() {
+                    let steps = out.logs.len() as u64;
+                    let before = launched + fused;
+                    eprintln!(
+                        "presk train: {} kernel launches a step, {} without fusion ({:.0}% removed)",
+                        launched / steps,
+                        before / steps,
+                        100.0 * fused as f64 / before as f64
+                    );
                 }
                 match &out.final_path {
                     Some(p) => println!("presk train: {} steps of {}, final loss {:.6}, weights in {}", out.logs.len(), out.model, out.logs.last().map(|l| l.loss).unwrap_or(f64::NAN), p.display()),
@@ -745,6 +803,27 @@ fn data(command: DataCommand) -> Result<(), presk_data::DataError> {
             }
             let n = presk_data::write(&out, &ty, &layout, &samples)?;
             eprintln!("presk data: wrote {} ({n} samples of type {ty})", out.display());
+        }
+        DataCommand::Chars { input, out } => {
+            let text = read_text(&input)?;
+            let vocab = presk_data::char_vocab(&text);
+            let json = serde_json::to_string(&vocab).unwrap();
+            std::fs::write(&out, json).map_err(|e| DataError { code: "E9003", message: format!("{}: {e}", out.display()) })?;
+            eprintln!("presk data: wrote {} ({} characters over {} of text)", out.display(), vocab.len(), text.chars().count());
+        }
+        DataCommand::Encode { input, vocab, out } => {
+            let words: Vec<String> = serde_json::from_str(&read_text(&vocab)?).map_err(|e| DataError { code: "E9004", message: format!("{}: not a vocabulary: {e}", vocab.display()) })?;
+            let text = read_text(&input)?;
+            let tokens = presk_data::encode(&text, &words)?;
+            let mut s = String::with_capacity(tokens.len() * 3);
+            for (i, t) in tokens.iter().enumerate() {
+                if i > 0 {
+                    s.push(' ');
+                }
+                s.push_str(&t.to_string());
+            }
+            std::fs::write(&out, s).map_err(|e| DataError { code: "E9003", message: format!("{}: {e}", out.display()) })?;
+            eprintln!("presk data: wrote {} ({} tokens over a vocabulary of {})", out.display(), tokens.len(), words.len());
         }
         DataCommand::LmWindows { vocab, seq, stride, input, out } => {
             let text = read_text(&input)?;
@@ -979,7 +1058,10 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
             eprint!("{}", render_all(&[presk_syntax::Diagnostic::error(e.code, e.message)], &sm, color()));
             return ExitCode::from(1);
         }
+        let before = backend.launches + backend.fused;
+        let pct = if before > 0 { 100.0 * backend.fused as f64 / before as f64 } else { 0.0 };
         println!("-- {} kernels, {} launches, {}", backend.kernels.len(), backend.launches, backend.dtype);
+        println!("-- fusion: {before} launches without it, {} saved ({pct:.0}%)", backend.fused);
         for k in &backend.kernels {
             print!("{k}");
         }
@@ -1017,6 +1099,28 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
                 ExitCode::SUCCESS
             }
         },
+        DumpStage::Sched => match core(file, consts, unroll_stack) {
+            Err(c) => c,
+            Ok((sm, _prog, mut core)) => {
+                let diags = presk_core::ad::transform(&mut core);
+                eprint!("{}", render_all(&diags, &sm, color()));
+                if has_errors(&diags) {
+                    return ExitCode::from(1);
+                }
+                let (mut lets, mut saved, mut groups) = (0usize, 0usize, 0usize);
+                for f in &core.funcs {
+                    let plan = presk_sched::plan(f);
+                    lets += f.body.lets.len();
+                    saved += plan.saved();
+                    groups += plan.groups.len();
+                    if !plan.groups.is_empty() {
+                        print!("{}", presk_sched::dump(f, &plan));
+                    }
+                }
+                println!("-- {} functions, {lets} lets, {groups} groups, {saved} lets fused away", core.funcs.len());
+                ExitCode::SUCCESS
+            }
+        },
         DumpStage::CoreAfterAd | DumpStage::CoreOpt => match core(file, consts, unroll_stack) {
             Err(c) => c,
             Ok((sm, prog, mut core)) => {
@@ -1050,7 +1154,7 @@ fn parse_dims(dims: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, json: bool, verbose: bool, unroll_stack: bool, backend: BackendKind, realize: presk_rt::Realize, opt: Opt) -> ExitCode {
+fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, json: bool, verbose: bool, unroll_stack: bool, backend: BackendKind, realize: presk_rt::Realize, opt: Opt, data: Option<PathBuf>, samples: Option<usize>) -> ExitCode {
     let dims = match parse_dims(dims) {
         Ok(d) => d,
         Err(c) => return c,
@@ -1084,7 +1188,11 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
         return c;
     }
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits, digits };
-    match with_backend(backend, &core, &prog, bits, seed, realize, |b| presk_rt::run_with(b, &core, &prog, &opts, realize)) {
+    let evaluate = |b: &mut dyn presk_rt::Backend| match &data {
+        Some(path) => presk_train::run_on_data(b, &core, &prog, &opts, realize, path, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span }),
+        None => presk_rt::run_with(b, &core, &prog, &opts, realize),
+    };
+    match with_backend(backend, &core, &prog, bits, seed, realize, evaluate) {
         Err(e) => {
             let mut d = presk_syntax::Diagnostic::error(e.code, e.message);
             if let Some(s) = e.span {

@@ -136,6 +136,37 @@ impl Kernel {
     pub fn out_buf(&self) -> usize {
         self.inputs.len()
     }
+
+    /// The bound of the outermost loop when splitting it across threads is
+    /// safe. Two conditions: the body is a single loop nest, and every store
+    /// indexes the output with that loop's variable *directly*, so different
+    /// iterations write different elements. A reduction over the outer axis
+    /// fails the second (its store has no such index), and so does a
+    /// scatter like `embed_vjp`, whose index is a loaded value.
+    ///
+    /// Splitting on such an axis is exact: each output element is computed by
+    /// the same inner loops in the same order, only on another thread.
+    pub fn parallel_outer(&self) -> Option<usize> {
+        let [Stmt::For { var, bound, body }] = self.body.as_slice() else { return None };
+        let (mut stores, mut ok) = (0usize, true);
+        fn walk(stmts: &[Stmt], var: usize, stores: &mut usize, ok: &mut bool) {
+            for s in stmts {
+                match s {
+                    Stmt::For { body, .. } => walk(body, var, stores, ok),
+                    Stmt::If { then, .. } => walk(then, var, stores, ok),
+                    Stmt::Store { index, .. } | Stmt::StoreI { index, .. } => {
+                        *stores += 1;
+                        if !index.iter().any(|e| matches!(e, Expr::Iv(v) if *v == var)) {
+                            *ok = false;
+                        }
+                    }
+                    Stmt::Set { .. } | Stmt::SetI { .. } => {}
+                }
+            }
+        }
+        walk(body, *var, &mut stores, &mut ok);
+        if ok && stores > 0 { Some(*bound) } else { None }
+    }
 }
 
 // ----- textual form ----------------------------------------------------------

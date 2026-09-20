@@ -563,6 +563,43 @@ pub fn shuffle_indices(n: usize, seed: u64, epoch: u64) -> Vec<usize> {
     v
 }
 
+// ----- text -------------------------------------------------------------
+
+/// The character vocabulary of a text: every distinct character, sorted, one
+/// token each. Tokens are `String`s so that the same format can later hold
+/// sub-word tokens; index `i` denotes `vocab[i]`.
+pub fn char_vocab(text: &str) -> Vec<String> {
+    let mut chars: Vec<char> = text.chars().collect();
+    chars.sort_unstable();
+    chars.dedup();
+    chars.into_iter().map(String::from).collect()
+}
+
+/// Encode a text against a vocabulary. Only single-character vocabularies are
+/// supported: sub-word tokens need longest-match encoding, which comes with
+/// `presk data bpe`.
+pub fn encode(text: &str, vocab: &[String]) -> Result<Vec<u64>> {
+    let mut map = std::collections::HashMap::with_capacity(vocab.len());
+    for (i, t) in vocab.iter().enumerate() {
+        let mut cs = t.chars();
+        let (Some(c), None) = (cs.next(), cs.next()) else {
+            return err("E9004", format!("the vocabulary holds the multi-character token `{t}`; only character vocabularies can be encoded in this version"));
+        };
+        map.insert(c, i as u64);
+    }
+    text.chars()
+        .map(|c| map.get(&c).copied().ok_or_else(|| DataError { code: "E9004", message: format!("the character `{}` (U+{:04X}) is not in the vocabulary", c.escape_debug(), c as u32) }))
+        .collect()
+}
+
+/// Decode a token stream back to text (the inverse of [`encode`]).
+pub fn decode_text(tokens: &[u64], vocab: &[String]) -> Result<String> {
+    tokens
+        .iter()
+        .map(|t| vocab.get(*t as usize).map(String::as_str).ok_or_else(|| DataError { code: "E9004", message: format!("token {t} is beyond the vocabulary of {}", vocab.len()) }))
+        .collect()
+}
+
 // ----- data preparation --------------------------------------------------
 
 /// Language-modelling windows of a token stream: sample `k` is

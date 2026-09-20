@@ -38,12 +38,15 @@ pub struct Interp<'p, R: Real> {
     pub prec: u32,
     /// Stream used by `sample` (the `Rand` effect without an explicit key in 0.1.0).
     pub sample_rng: ChaCha20Rng,
+    /// Whether `dropout` drops: off, its mask is all ones, which is the
+    /// expectation of the random function it denotes.
+    pub training: bool,
     _r: std::marker::PhantomData<R>,
 }
 
 impl<'p, R: Real> Interp<'p, R> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32, seed: u64) -> Self {
-        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), _r: std::marker::PhantomData }
+        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), training: false, _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.

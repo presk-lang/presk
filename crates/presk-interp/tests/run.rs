@@ -263,6 +263,105 @@ fn ad_through_fold_matches_finite_differences() {
     assert!(err <= Float::with_val(bits, &tol * Float::with_val(bits, g.clone().abs()).max(&Float::with_val(bits, 1))), "scale: ad = {g}, fd = {fd}");
 }
 
+/// The gradient through `dropout` (0.4.0 step 3) agrees with central finite
+/// differences *while dropping*. The mask is a function of the key alone, so
+/// the backward pass, which recomputes the forward, recomputes the same mask;
+/// a mask drawn from a stream instead would make this test fail, which is why
+/// the key is explicit in the signature.
+#[test]
+fn ad_through_dropout_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/dropout_grad.psk";
+    let (prog, core) = prepare(rel, &[]);
+    let opts = presk_interp::RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 2)], seed: 0, bits, digits: 12 };
+    let (gradf, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+    let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
+    let (theta, x, key) = (args[0].clone(), args[1].clone(), args[2].clone());
+    // Training on: without it the mask is all ones and nothing is dropped.
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    interp.training = true;
+    let grad = interp.call(gradf, dims.clone(), args.clone()).unwrap();
+
+    let loss = core.find("loss").unwrap();
+    let ldims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut checked = 0;
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&grad, path) else { panic!("gradient leaf missing") };
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, ldims.clone(), vec![plus, x.clone(), key.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, ldims.clone(), vec![minus, x.clone(), key.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "leaf {path:?}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 4 * 6 + 6 * 4, "every element of both layers");
+
+    // The gradient is a function of the key: the same one twice gives the same
+    // answer, another one a different mask and so a different answer.
+    let sum = |v: &Value<Float>| -> f64 {
+        leaf_paths(v).iter().filter_map(|p| match get_leaf(v, p) {
+            Value::Real(t) => Some(t.data.iter().map(|x| x.to_f64().abs()).sum::<f64>()),
+            _ => None,
+        }).sum()
+    };
+    let again = interp.call(gradf, dims.clone(), args.clone()).unwrap();
+    assert_eq!(sum(&again), sum(&grad), "the same key gives the same mask");
+    let Value::Key(k) = &key else { panic!("the third input is a key") };
+    let other = vec![theta.clone(), x.clone(), Value::Key(k.child(1))];
+    let elsewhere = interp.call(gradf, dims.clone(), other).unwrap();
+    assert!(sum(&elsewhere) != sum(&grad), "another key gives another mask");
+
+    // Training off, the mask is all ones: the model is its own expectation.
+    let mut plain: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let off = scalar(&plain.call(loss, ldims.clone(), vec![theta.clone(), x.clone(), key.clone()]).unwrap());
+    let on = scalar(&interp.call(loss, ldims, vec![theta, x, key]).unwrap());
+    assert!(off != on, "dropping must change the loss: off = {off}, on = {on}");
+}
+
+/// The adjoint of `merge` (0.4.0 step 1): flattening two adjacent axes moves
+/// no data, so its adjoint is the retag back, and the gradient of a model that
+/// goes through it must agree with central finite differences.
+#[test]
+fn ad_through_merge_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/merge_grad.psk";
+    let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
+    let (prog, core) = prepare(rel, &[]);
+    let loss = core.find("loss").unwrap();
+    let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
+    let theta = out.inputs[0].1.clone();
+    let ids = out.inputs[1].1.clone();
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut checked = 0;
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&out.result, path) else { panic!("gradient leaf missing") };
+        assert_eq!(t.axes, g.axes, "leaf {path:?} keeps its axes through the merge");
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, dims.clone(), vec![plus, ids.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, dims.clone(), vec![minus, ids.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "leaf {path:?}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 5 * 3 + 6 * 5, "every element of the table and the head");
+}
+
 /// A fold whose accumulator type has an open prefix (`ℝ[..., model: 4]`):
 /// the scanned accumulators keep their axis names (a regression of the
 /// tutorial's training run), and the gradient agrees with finite differences.

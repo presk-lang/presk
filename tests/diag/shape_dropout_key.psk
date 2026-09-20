@@ -1,0 +1,8 @@
+-- `dropout` draws its mask from a key, so a function that drops out takes a
+-- `key` parameter, as an initializer does. Without one the mask would come
+-- from a hidden stream, and the backward pass — which recomputes the
+-- forward — would get a different mask and therefore a wrong gradient.
+dim B
+
+fn bad(x : ℝ[batch: B, model: 4]) -> ℝ[batch: B, model: 4] uses Rand =
+  dropout(0.2, 0.5, x)

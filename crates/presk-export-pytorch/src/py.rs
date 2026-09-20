@@ -883,7 +883,35 @@ impl<'a> Printer<'a> {
                 let a = x(self, 0);
                 if pos.first().is_some_and(|e| matches!(self.ty_of(e), Some(Ty::Idx { .. }))) { format!("{a}.to(torch.get_default_dtype())") } else { a }
             }
+            "merge" => {
+                let k = self.axis_pos(args, pos).unwrap_or(-2);
+                format!("{}.flatten({k}, {})", x(self, 0), k + 1)
+            }
+            "split_key" => {
+                // The exported program never draws from a key: `dropout` is
+                // exported as its expectation, so both halves are dead.
+                let k = x(self, 0);
+                format!("({k}, {k})")
+            }
+            "dropout" => {
+                // The mask is a function of a Presk key, which PyTorch's
+                // generator cannot reproduce, so the export is the random
+                // function's expectation — the identity of inverted dropout,
+                // and what an inference deployment wants (question 33).
+                format!("F.dropout({}, {}, training=False)", x(self, 2), x(self, 0))
+            }
             "embed" => format!("{}[{}]", x(self, 0), x(self, 1)),
+            "one_hot" => {
+                let bound = pos.first().and_then(|e| match self.ty_of(e) {
+                    Some(Ty::Idx { bound, .. }) => Some(bound.clone()),
+                    _ => None,
+                });
+                let v = match bound {
+                    Some(b) => self.dim(&b),
+                    None => "None".to_string(),
+                };
+                format!("F.one_hot({}, {v}).to(torch.get_default_dtype())", x(self, 0))
+            }
             "cross_entropy" => {
                 let (l, y) = (x(self, 0), x(self, 1));
                 format!("F.cross_entropy({l}.flatten(0, -2), {y}.flatten(), reduction=\"none\").view({y}.shape)")

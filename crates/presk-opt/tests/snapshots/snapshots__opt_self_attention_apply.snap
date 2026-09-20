@@ -1,6 +1,5 @@
 ---
 source: crates/presk-opt/tests/snapshots.rs
-assertion_line: 24
 expression: text
 ---
 fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T, model: 16], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 16] {
@@ -8,14 +7,14 @@ fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T,
   wq : params Linear{16, 16} = θ.wq
   %25 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wq, x)
   q : ℝ[batch: B, heads: 2, seq: T, hd: 8] = split_heads 2x8 %25
+  %27 : nat = 8
+  %28 : ℝ[] = real %27
+  %29 : ℝ[] = sqrt %28
+  %30 : ℝ[batch: B, heads: 2, seq: T, hd: 8] = div q, %29
   wk : params Linear{16, 16} = θ.wk
-  %28 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wk, x)
-  k : ℝ[batch: B, heads: 2, seq: T, hd: 8] = split_heads 2x8 %28
-  %30 : ℝ[batch: B, heads: 2, seq: T, seq2: T] = ein[batch, heads, seq, seq2]([batch, heads, seq, hd] * [batch, heads, seq2, hd]) q, k
-  %31 : nat = 8
-  %32 : ℝ[] = real %31
-  %33 : ℝ[] = sqrt %32
-  s : ℝ[batch: B, heads: 2, seq: T, seq2: T] = div %30, %33
+  %32 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wk, x)
+  k : ℝ[batch: B, heads: 2, seq: T, hd: 8] = split_heads 2x8 %32
+  s : ℝ[batch: B, heads: 2, seq: T, seq2: T] = ein[batch, heads, seq, seq2]([batch, heads, seq, hd] * [batch, heads, seq2, hd]) %30, k
   %35 : ℝ[batch: B, heads: 2, seq: T, seq2: T] = add s, mask
   a : ℝ[batch: B, heads: 2, seq: T, seq2: T] = softmax axis seq2 %35
   wv : params Linear{16, 16} = θ.wv

@@ -48,12 +48,25 @@ its header and says so.
 ## `presk data`
 
 ```text
+presk data chars INPUT.txt -o VOCAB.json
+presk data encode INPUT.txt --vocab VOCAB.json -o TOKENS.txt
 presk data pack --type TYPE INPUT.txt -o OUT.psk.d
 presk data lm-windows --vocab V --seq T [--stride S] TOKENS.txt -o OUT.psk.d
 presk data info FILE.psk.d [--samples N]
 presk data export FILE.psk.d -o OUT.json
 ```
 
+- **`chars`** builds a character vocabulary from a UTF-8 text: every distinct
+  character, sorted, one token each, written as a JSON array in which index
+  `i` denotes token `i`. Characters, not bytes: an accent is one token.
+- **`encode`** turns a text into a whitespace-separated stream of token
+  indices against such a vocabulary, which `lm-windows` then cuts into
+  windows. A character the vocabulary does not hold is an error naming it and
+  its code point. The vocabulary is a `String` array so that the same format
+  can later carry sub-word tokens; encoding one needs longest-match matching,
+  which this version refuses rather than guesses (`presk data bpe` is
+  planned, and the specification has not said whether a vocabulary belongs to
+  a program or to its data — question 47).
 - **`pack`** reads one sample per line, values separated by whitespace in
   leaf order (indices as integers, reals as decimals), and writes them with
   the given type. Empty lines and lines starting with `--` are skipped.
@@ -66,6 +79,28 @@ presk data export FILE.psk.d -o OUT.json
 - **`info`** prints the header and the first samples.
 - **`export`** writes the samples as JSON (tensors as nested lists, tuples as
   lists, trees as objects), for the PyTorch side and for tests.
+
+Text to a trainable dataset is the three-step chain, here on the 1.18 MB of
+Code civil the NLP corpus uses (`corpus` directory):
+
+```sh
+presk data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
+presk data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
+presk data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
+```
+
+```text
+presk data: wrote corpus/nlp/data/civil_vocab.json (92 characters over 1182121 of text)
+presk data: wrote corpus/nlp/data/civil_tokens.txt (1182121 tokens over a vocabulary of 92)
+presk data: wrote corpus/nlp/data/civil_T256.psk.d (4617 windows of type (idx[92][seq: 256], idx[92][seq: 256]) from 1182121 tokens)
+```
+
+At the default stride the windows do not overlap, so a million tokens make a
+2.4 MB file; `--stride 1` would make it 256 times larger, which is why the
+stride is a choice and not a default of 1. Training never holds the file: the
+reader seeks to each sample as the batch asks for it, so the resident memory
+of `presk train` is that of the model and its batch, not of the dataset —
+measured identical at 3 and at 12 steps on the corpus GPT.
 
 ```sh
 presk data lm-windows --vocab 64 --seq 8 tests/data/tokens.txt -o out/tokens.psk.d

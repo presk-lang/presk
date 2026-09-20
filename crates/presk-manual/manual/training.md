@@ -149,10 +149,22 @@ almost" experiment of the specification applied to training. The batch axis
 is the leading axis of every tensor of the batch in both `train.py` and the
 test.
 
+## Randomness per step
+
+An objective may take a key between the parameter
+tree and the batch, `fn loss(θ : params M, key : key, batch : …) -> ℝ[]`.
+The loop derives it from the run's seed as the step's child key, so a run is
+reproducible and every step drops differently; `dropout` draws its mask from
+that key (`language` chapter). A training run is the only place where
+dropout drops: everywhere else its mask is all ones, the expectation of the
+random function. A `stack{L}` fold passes the same extra arguments to each of
+its iterations, so the blocks of a stacked module would share one key; giving
+them independent ones needs a key derived from the loop index, which the
+specification has still to settle (question 33).
+
 ## Not in this version
 
-`inference serve` (loading `final.psk.d` for generation), `dropout` and
-per-step randomness (spec question 33), resuming from a checkpoint, the
+Resuming from a checkpoint, the
 `parallel` and `precision` clauses (checked, not executed; reproduced as
 comments in the export), optimizers other than `adamw`, `.psk.d` checkpoints
 from `train.py` (it writes `.pt`), a training loop in code generation.

@@ -1,0 +1,35 @@
+-- 02_bigram_neural.psk — the neural bigram of the NLP course, on the words of
+-- the Code civil (7223 words, 41 characters counting the boundary token `.`).
+--
+-- The model is one table of logits indexed by the current character:
+-- `embed(w, x)` denotes eₓᵀ·w, the one-hot contraction of the specification,
+-- so the "neural" bigram and the counting bigram (01) are the same function
+-- of the same parameters — one fitted by gradient descent, the other in
+-- closed form. Their losses must meet, which is the course's sanity check.
+const V : nat = 41           -- the vocabulary of data/vocab.txt
+dim B                        -- batch, bound by the training run
+
+module Bigram {
+  param w : ℝ[V, V]  init = zeros      -- zeros: a uniform start, loss = ln V
+
+  fn apply(x : idx[V][batch: B]) -> ℝ[batch: B, vocab: V] = embed(w, x)
+}
+
+-- The batch is a pair of index tensors: the character and the one that follows.
+fn loss(θ : params Bigram, batch : (idx[V][batch: B], idx[V][batch: B])) -> ℝ[] =
+  let (x, y) = batch
+  mean(cross_entropy(Bigram.apply(θ, x), y))
+
+optimizer adamw {
+  lr           : f64 = 0.5
+  weight_decay : f64 = 0.0
+  schedule     : cosine(warmup = 50)
+}
+
+training run {
+  model     = Bigram
+  objective = loss
+  optimizer = adamw
+  data      = stream "data/bigrams.psk.d" |> shuffle(seed = 1) |> batch(B = 512)
+  epochs    : nat = 30
+}

@@ -107,6 +107,8 @@ impl From<presk_data::DataError> for TrainError {
 #[derive(Clone, Debug)]
 pub struct TrainingFns {
     pub model: String,
+    /// The objective takes a per-step key between `θ` and the batch.
+    pub key: bool,
     pub objective: FuncId,
     pub vjp: FuncId,
     pub init: FuncId,
@@ -140,7 +142,8 @@ pub fn prepare_training(core: &mut Program, elab: &ElabProgram, typed: &TypedPro
     let (Some(opt_init), Some(opt_step), Some(opt_lr)) = (core.find(&format!("{opt}.init")), core.find(&format!("{opt}.step")), core.find(&format!("{opt}.lr"))) else {
         return err("E7001", format!("optimizer `{opt}` has no lowered functions (only `adamw` is implemented)"));
     };
-    Ok(TrainingFns { model, objective, vjp, init, opt_init, opt_step, opt_lr })
+    Ok(TrainingFns {
+        key: matches!(core.func(objective).params.get(1).map(|p| &p.ty), Some(Ty::Key)), model, objective, vjp, init, opt_init, opt_step, opt_lr })
 }
 
 /// Runs the (first) `training run` of the program over `backend`, built
@@ -192,7 +195,10 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
         std::fs::create_dir_all(dir).map_err(|e| TrainError { code: "E9003", message: format!("{}: {e}", dir.display()), span: None })?;
     }
     // θ₀, s₀.
-    let mut theta = backend.call(&init, vec![Value::Key(Key::from_seed(opts.seed))])?;
+    let run_key = Key::from_seed(opts.seed);
+    // A training run trains: `dropout` drops here and nowhere else.
+    backend.set_training(true);
+    let mut theta = backend.call(&init, vec![Value::Key(run_key.clone())])?;
     let theta0 = theta.clone();
     let mut batches: Vec<Vec<usize>> = Vec::new();
     let mut state = backend.call(&opt_init, vec![theta.clone()])?;
@@ -207,8 +213,21 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
             let samples: Vec<presk_data::Value> = group.iter().map(|i| reader.get(*i)).collect::<std::result::Result<_, _>>()?;
             let refs: Vec<&presk_data::Value> = samples.iter().collect();
             let batch = batch_value(&run.batch_ty, &layout, &refs, &d_obj)?;
-            let loss = backend.call(&objective, vec![theta.clone(), batch.clone()])?;
-            let cts = backend.call(&vjp, vec![theta.clone(), batch, one.clone()])?;
+            // A fresh key per step, derived from the run's seed: `dropout`
+            // draws its mask from it, and the backward pass, which recomputes
+            // the forward, recomputes the same mask from the same key.
+            let mut obj_args = vec![theta.clone()];
+            let mut vjp_args = vec![theta.clone()];
+            if fns.key {
+                let k = Value::Key(run_key.child(t));
+                obj_args.push(k.clone());
+                vjp_args.push(k);
+            }
+            obj_args.push(batch.clone());
+            vjp_args.push(batch);
+            vjp_args.push(one.clone());
+            let loss = backend.call(&objective, obj_args)?;
+            let cts = backend.call(&vjp, vjp_args)?;
             let g = match cts {
                 Value::Tuple(mut parts) if !parts.is_empty() => parts.swap_remove(0),
                 other => return err("E7001", format!("vjp returned a {}", other.kind())),
@@ -247,6 +266,57 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
         None => None,
     };
     Ok(TrainOutput { model: fns.model.clone(), logs, theta0, batches, theta, final_path, checkpoints, total })
+}
+
+/// `presk run --data FILE.psk.d`: evaluate an entry with its **last** parameter
+/// taken from a data file instead of synthesized, the others synthesized as
+/// usual. The `batch` axis of that parameter is bound to the number of samples
+/// read, so an objective can be evaluated on its own dataset and a plain
+/// function on a corpus.
+pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, realize: Realize, path: &std::path::Path, samples: Option<usize>) -> Result<presk_interp::RunOutput> {
+    let to_train = |e: presk_interp::RunError| TrainError { code: "E7001", message: e.message, span: e.span };
+    let (entry_fn, _, _) = presk_interp::run::resolve_entry(core, elab, &opts.entry).map_err(to_train)?;
+    let Some(last) = core.func(entry_fn).params.last() else {
+        return err("E7001", format!("`{}` takes no argument to fill from a data file", opts.entry));
+    };
+    let last_ty = last.ty.clone();
+    let mut reader = Reader::open(path)?;
+    let count = samples.unwrap_or(usize::MAX).min(reader.len());
+    if count == 0 {
+        return err("E9003", format!("{}: no samples to read", path.display()));
+    }
+    let layout = reader.layout()?.clone();
+    // The batch dimension of that parameter is the number of samples taken.
+    let mut dims = opts.dims.clone();
+    if let Some(name) = batch_dim(&last_ty, elab)
+        && !dims.iter().any(|(n, _)| *n == name)
+    {
+        dims.push((name, count as u64));
+    }
+    let opts = presk_interp::RunOptions { entry: opts.entry.clone(), dims, seed: opts.seed, bits: opts.bits, digits: opts.digits };
+    let (func, fdims, inputs) = presk_interp::run::prepare_run(core, elab, &opts).map_err(to_train)?;
+    let values: Vec<presk_data::Value> = (0..count).map(|i| reader.get(i)).collect::<std::result::Result<_, _>>()?;
+    let refs: Vec<&presk_data::Value> = values.iter().collect();
+    let batch = batch_value(&last_ty, &layout, &refs, &fdims)?;
+    let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<std::result::Result<_, _>>()?;
+    *args.last_mut().unwrap() = batch;
+    let prepared = backend.prepare(func, &fdims, realize)?;
+    let result = backend.call(&prepared, args)?;
+    let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
+    Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })
+}
+
+/// The name of the dimension that lengths the `batch` axis of `ty`, when it is
+/// a single dimension variable.
+fn batch_dim(ty: &Ty, elab: &ElabProgram) -> Option<String> {
+    match ty {
+        Ty::Real(s) | Ty::Idx { shape: s, .. } => s.axes.iter().find(|a| a.name.as_deref() == Some("batch")).and_then(|a| {
+            let vs: Vec<_> = a.len.vars().collect();
+            if vs.len() == 1 && a.len == presk_types::dim::DimExpr::var(vs[0]) { Some(elab.dim_name(vs[0])) } else { None }
+        }),
+        Ty::Tuple(ts) => ts.iter().find_map(|t| batch_dim(t, elab)),
+        _ => None,
+    }
 }
 
 /// `B` samples stacked under the `batch` axis of every leaf of the batch type,

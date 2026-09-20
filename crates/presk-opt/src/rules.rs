@@ -22,7 +22,7 @@ use egg::{Applier, EGraph, Id, PatternAst, Rewrite, Subst, Symbol, Var, rewrite}
 use presk_types::ty::Ty;
 
 use crate::analysis::{Ana, Data, Konst, field_names, is_real_scalar, is_tensorish, ty_of};
-use crate::lang::Node;
+use crate::lang::{Node, Opaque};
 
 type G = EGraph<Node, Ana>;
 type Rw = Rewrite<Node, Ana>;
@@ -122,6 +122,70 @@ fn add_record(eg: &mut G, eclass: Id, names: Vec<String>, comps: Vec<Id>, ty: Ty
         eg[id].data.ty = Some(ty);
     }
     if eg.union(eclass, id) { vec![id] } else { vec![] }
+}
+
+/// A contraction: scaling one of its operands scales its result, because a
+/// sum of products is linear in each operand.
+fn contraction(op: &presk_core::PrimOp) -> bool {
+    matches!(op, presk_core::PrimOp::Dot | presk_core::PrimOp::Matmul | presk_core::PrimOp::Ein { .. })
+}
+
+/// `(op (contraction a b) s)` with `s` a real scalar becomes
+/// `(contraction (op a s) b)` and `(contraction a (op b s))`: exact over ℝ,
+/// since `(Σ aᵢbᵢ) · s = Σ (aᵢ · s) bᵢ`, and cheaper whenever an operand holds
+/// fewer elements than the result — the attention scores of a transformer are
+/// `T/HD` times larger than the queries they come from. Which form wins is a
+/// question about *sizes*, so only a calibrated profile can answer it;
+/// operation counts see one division either way.
+struct ScaleIntoContraction {
+    divide: bool,
+}
+
+impl Applier<Node, Ana> for ScaleIntoContraction {
+    fn apply_one(&self, eg: &mut G, eclass: Id, subst: &Subst, _: Option<&PatternAst<Node>>, _: Symbol) -> Vec<Id> {
+        let (x, s) = (subst[var("?x")], subst[var("?s")]);
+        if !ty_of(eg, s).is_some_and(is_real_scalar) {
+            return vec![];
+        }
+        let Some(xty) = ty_of(eg, x).cloned() else { return vec![] };
+        let nodes: Vec<(crate::lang::OpKey, Vec<Id>)> = eg[x]
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                Node::Other(k, ch) if matches!(eg.analysis.table.get_op(*k), Opaque::Prim(op) if contraction(op)) => Some((*k, ch.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (k, ch) in nodes {
+            for i in 0..ch.len() {
+                let Some(aty) = ty_of(eg, ch[i]).cloned() else { continue };
+                // Only a real tensor can carry the scalar.
+                if !matches!(aty, Ty::Real(_)) {
+                    continue;
+                }
+                let scaled = if self.divide { eg.add(Node::Div([ch[i], s])) } else { eg.add(Node::Mul([ch[i], s])) };
+                if eg[scaled].data.ty.is_none() {
+                    eg[scaled].data.ty = Some(aty);
+                }
+                let mut nch = ch.clone();
+                nch[i] = scaled;
+                let moved = eg.add(Node::Other(k, nch));
+                // The result's shape is unchanged: only an operand was scaled.
+                if eg[moved].data.ty.is_none() {
+                    eg[moved].data.ty = Some(xty.clone());
+                }
+                if eg.union(eclass, moved) {
+                    out.push(moved);
+                }
+            }
+        }
+        out
+    }
+
+    fn vars(&self) -> Vec<Var> {
+        vec![var("?x"), var("?s")]
+    }
 }
 
 /// `(field ?n ?r)` where `?r` is a record: its component.
@@ -273,6 +337,8 @@ pub fn rules() -> Vec<Rw> {
         rewrite!("add-set"; "(add (set_field ?n ?r ?a) ?s)" => "(set_field ?n (add ?r ?s) (add ?a (field ?n ?s)))" if both(same_ty("?r", "?s"), has_fields("?s"))),
         rewrite!("set-add"; "(add ?s (set_field ?n ?r ?a))" => "(set_field ?n (add ?s ?r) (add (field ?n ?s) ?a))" if both(same_ty("?r", "?s"), has_fields("?s"))),
     ];
+    rs.push(Rewrite::new("div-into-contraction", "(div ?x ?s)".parse::<egg::Pattern<Node>>().unwrap(), ScaleIntoContraction { divide: true }).unwrap());
+    rs.push(Rewrite::new("mul-into-contraction", "(mul ?x ?s)".parse::<egg::Pattern<Node>>().unwrap(), ScaleIntoContraction { divide: false }).unwrap());
     rs.push(Rewrite::new("field-record", "(field ?n ?r)".parse::<egg::Pattern<Node>>().unwrap(), FieldRecord).unwrap());
     rs.push(Rewrite::new("set-record", "(set_field ?n ?r ?v)".parse::<egg::Pattern<Node>>().unwrap(), SetRecord).unwrap());
     rs.push(Rewrite::new("set-zeros-record", "(set_field ?n (zeros_like ?t) ?v)".parse::<egg::Pattern<Node>>().unwrap(), SetZerosRecord).unwrap());

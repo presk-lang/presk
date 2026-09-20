@@ -83,7 +83,7 @@ report is a snapshot test; adding a code means adding such a file.
 | `E2009` | index tensor mixed with reals | `+ - * /` between an `idx` tensor and a real; use `real(…)` |
 | `E2010` | configuration block errors | unknown or duplicate field, missing required field, value not of the expected form, `objective` whose parameter tree is not the model's or that has no batch parameter, a batch tensor without a `batch` axis, a data file whose sample type does not match the objective's (both types and the offending axis are shown), an unreadable data file, an `optimizer` block whose name is not `adamw` (the name is the algorithm), unknown optimizer name |
 | `E2011` | `f` returns `U` but is declared `-> T` | the body's type does not unify with the declared return type (the unification error is reported first) |
-| `E2012` | not implemented in 0.1.0 | `vjp`, `jvp`, `concat`, `dropout`, `clamp`, `max`, `min`; ascription to a type other than `ℝ`; a function used as a value; `split_heads`/`merge_heads` without `const H` and `const HD` in scope; a function without return type called before it is checked |
+| `E2012` | not implemented in 0.1.0 | `vjp`, `jvp`, `concat`, `clamp`, `max`, `min`; ascription to a type other than `ℝ`; a function used as a value; `split_heads`/`merge_heads` without `const H` and `const HD` in scope; a function without return type called before it is checked |
 | `E2013` | invalid initializer | `init =` is not one of `xavier_uniform`, `zeros`, `ones`, `normal(std = f)` with `f` a decimal literal (the vocabulary of the clause, see the `language` chapter, "Initializers"); a `param` without `init =` is zero-initialized |
 | `E2015` | not part of the core language | a string, quantity, `|>`, `|`, `⊗`, `∘` or `%` inside a function body |
 

@@ -75,6 +75,12 @@ of equal cost it may pick one that duplicates a shared subterm; a power now
 costs slightly less than a product (it reads one operand), and negations
 stay where the program put them.
 
+Since 0.4.0 the backends fuse elementwise chains into one loop nest
+(`scheduling` chapter), which makes `Q` a property of a *group* rather than
+of a node. Extraction does not know that yet: it costs each node on its own
+and the partition is computed afterwards, so the model under-counts what
+fusion saves. Making the two one decision is question 49.
+
 **Not in this version**: the reassociation and merging of consecutive
 `ein` contractions (the `(q · k) · v` decision), `merge_heads (split_heads
 x) = x`, the `mean_vjp`/`dot_vjp` identities of the plan, and the
@@ -208,6 +214,58 @@ presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 -
      --dim B=2 --dim T=8 --calibrate out/profile.json
 presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt --profile out/profile.json
 ```
+
+## Moving a scalar across a contraction
+
+The rule the plan of this version named — reassociating `(q·k)·v` into
+`q·(k·v)` — turned out to have nowhere to fire. Counted on the corpus GPT
+after differentiation, the number of contractions whose operand is itself a
+contraction is **zero**: a transformer puts a softmax, a GELU or a
+normalization between every pair, and a nonlinearity blocks the
+reassociation. That is a fact about the architecture, not about this
+compiler, and it is why the rule is not in the set.
+
+The rule that does fire moves a *scalar* across a contraction:
+
+```text
+(Σ aᵢ bᵢ) / s  =  Σ (aᵢ / s) bᵢ
+```
+
+exact over ℝ, and cheaper whenever an operand holds fewer elements than the
+result. Attention is exactly that case. Its scores are divided by `√hd`:
+
+| Tensor | Elements at `B=16, H=6, T=256, hd=64` |
+|---|---|
+| the scores, `ℝ[batch, heads, seq, seq2]` | 6 291 456 |
+| the queries, `ℝ[batch, heads, seq, hd]` | 1 572 864 |
+
+so dividing the queries instead of the scores does a quarter of the work.
+The e-graph proposes scaling *every* operand and lets the cost decide.
+
+This is the kind of choice a cost model exists for, because it is a question
+about sizes and nothing else. The calibrated roofline prices the two forms
+apart — `SelfAttention.apply` at 10 205 µs against 9 489 µs — and prefers the
+moved one for a reason. Operation counts price them the *same*, one division
+either way, and land on the same form only as a tie-break.
+
+Measured, on the corpus GPT at `D=64`, forty training steps, twelve threads:
+
+| | seconds a step | extraction |
+|---|---|---|
+| no rewriting | 0.710 | — |
+| `--opt` (operation counts) | 0.626 | 0.41 s |
+| `--opt --profile` (roofline) | 0.617 | 2.54 s |
+
+The rewriting is worth about 12 %, and the losses of all three runs are
+identical to every digit printed. Two honest observations about the profile.
+Its *predictions* are much the better: on this program the rank correlation
+with measured kernel times is 0.96 against 0.59 for counts. Its *decisions*
+are barely better, 0.617 against 0.626 a step, because the rule set offers
+few choices where size is what separates the alternatives. And its extraction
+costs six times more, since the roofline recomputes each node's work and
+traffic from the types; at this rate it takes some 230 steps to repay itself.
+A cost model can rank kernels well and still not change which program you
+extract.
 
 ## Limits, reported
 

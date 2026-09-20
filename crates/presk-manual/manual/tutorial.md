@@ -1077,7 +1077,102 @@ rewrites of this version remove cheap kernels; the decisions that move time
 (the order of the attention contractions, fusing elementwise chains) are the
 next rules to write, and the model is now there to arbitrate them.
 
-## 13. Testing everything
+## 13. A model that is not a toy
+
+Everything so far was small enough to read. This step runs the same tool on
+the corpus of an actual course — the NLP course at Mines Paris, whose ladder
+of models is in `corpus/nlp/` and whose data is the text of the French civil
+code. `make corpus` runs all of it; what follows is the shape of it.
+
+**Text becomes a dataset** in three steps, each of which says what it did:
+
+```sh
+presk data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
+presk data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
+presk data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
+```
+
+```text
+presk data: wrote corpus/nlp/data/civil_vocab.json (92 characters over 1182121 of text)
+presk data: wrote corpus/nlp/data/civil_tokens.txt (1182121 tokens over a vocabulary of 92)
+presk data: wrote corpus/nlp/data/civil_T256.psk.d (4617 windows of type (idx[92][seq: 256], idx[92][seq: 256]) from 1182121 tokens)
+```
+
+Characters, not bytes, so an accent is one token; the vocabulary is a JSON
+array, so a served model can carry it.
+
+**The first rung is a model with nothing to learn.** The counting bigram is
+the maximum-likelihood estimate in closed form, and in Presk it is one
+contraction of two indicator tensors — the decomposition the specification
+ascribes to `embed`, now writable because `one_hot` exists:
+
+```text
+fn counts(ox : ℝ[batch: N, prev: V], oy : ℝ[batch: N, next: V]) -> ℝ[prev: V, next: V] =
+  ein[prev, next](ox * oy)
+```
+
+`one_hot` leaves its new axis unnamed, as `embed` does; passing the result to
+these parameters is what names it, and what lets `ein` tell the two apart.
+Evaluate it on all 67 652 character pairs of the civil code's vocabulary —
+`--data` fills the entry's last argument from a file instead of synthesizing
+it:
+
+```sh
+presk check corpus/nlp/01_bigram_count.psk --summary
+presk run corpus/nlp/01_bigram_count.psk --entry loss \
+    --data corpus/nlp/data/bigrams.psk.d --backend native --digits 10
+```
+
+```text
+01_bigram_count.psk counts : ℝ[prev: 41, next: 41]
+01_bigram_count.psk probs : ℝ[prev: 41, next: 41]
+    let c : ℝ[prev: 41, next: 41]
+01_bigram_count.psk loss : ℝ[]
+    let x : idx[41][batch: N]
+    let y : idx[41][batch: N]
+    let p : ℝ[prev: 41, next: 41]
+ℝ[] = 2.343771504
+```
+
+The reference interpreter gives the same ten digits, and so does NumPy. That
+number is the point of the next rung: `02_bigram_neural.psk` is the *same
+function of the same parameters*, fitted by AdamW instead of solved, and
+`make corpus` shows its batch losses closing on 2.3438 from above. Gradient
+descent recovering a closed form is the course's own sanity check, and it is
+a good one for a compiler too.
+
+`03_mlp.psk` is the first rung that needed something new. Three characters of
+context are embedded and then have to become *one* vector, which is
+`merge(axis ctx, axis emb, ·)`: two adjacent axes joined, row-major, without
+moving any data. It trains to 1.73 against the bigram's 2.34 — more context
+predicts better, which is why the rung exists.
+
+**The last rung is the course's GPT**, width 384, six heads, six blocks,
+context 256, on the civil code:
+
+```sh
+presk check corpus/nlp/05_gpt.psk --summary
+```
+
+```text
+training run: model GPT, objective loss, optimizer adamw
+    batch   : (idx[92][batch: B, seq: T], idx[92][batch: B, seq: T])
+    sample  : (idx[92][seq: T], idx[92][seq: T])
+    data    : data/civil_T256.psk.d (shuffle 7, batch 16) — file holds (idx[92][seq: 256], idx[92][seq: 256])
+    epochs  : 1
+    ckpt    : every 500 steps to ckpt/
+    dims    : B = 16, T = 256
+```
+
+The checker opened the data file, matched its sample type against the
+objective's and bound both `B` and `T` from it. The model is real: it trains,
+and one step of it costs 39.8 s here against PyTorch's 0.405 s. The
+`experiments` chapter says what that ratio is made of and what it does and
+does not say about the ideas this tool is built on; the short version is that
+every optimization in this version is exact, the losses never moved, and the
+remaining distance is a matrix coprocessor presk does not reach yet.
+
+## 14. Testing everything
 
 | Command | What it verifies |
 |---|---|
@@ -1090,6 +1185,10 @@ next rules to write, and the model is now there to arbitrate them.
 | `make serve-examples` | `presk serve` on the tiny MiniGPT's checkpoint: greedy tokens identical on every backend, `--serve` export (`make serve-pt` runs the exported `serve.py`) |
 | `make opt-examples` | the e-graph optimizer's report on the examples; the same outputs with and without `--opt`, on the reference and natively |
 | `make calibrate` | `presk bench --calibrate` on the tiny MiniGPT's entries, then the entries timed with the profile |
+| `make corpus`, `make corpus-gpt` | the NLP-course ladder on the French civil code, and the course GPT |
+| `make sched` | the fusion groups of the corpus GPT, the launches they remove, and a 1024³ matmul |
+| `make coverage` | `presk check` on the MLPerf transcriptions (`coverage` chapter) |
+| `make experiment-gpt` | the course GPT trained by `presk train` and by the exported `train.py` |
 | `make bench` | `presk bench` on the tiny MiniGPT: forward, loss, optimizer step, on every backend |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |

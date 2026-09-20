@@ -197,6 +197,9 @@ pub enum PrimOp {
     Softmax { axis: String },
     /// `embed(table, indices)`
     Embed,
+    /// `one_hot(indices)`: the indicator vectors of an `idx[V]` tensor, along a
+    /// new trailing axis of length `V`. `embed(w, x)` denotes `one_hot(x) · w`.
+    OneHot,
     /// `cross_entropy(logits, targets)`: per-position losses.
     CrossEntropy,
     Argmax,
@@ -204,6 +207,13 @@ pub enum PrimOp {
     Sample,
     /// `t[axis: index]` (negative indices count from the end).
     IndexConst { axis: String, index: i64 },
+    /// `merge(axis a, axis b, x)`: two adjacent axes become one, row-major
+    /// (`(i, j) ↦ i·|b| + j`). The new axis is unnamed, as `embed`'s is. A
+    /// pure retag: row-major buffers make this metadata-only.
+    MergeAxes { a: String, b: String },
+    /// `(x, template)`: `x`'s buffer under the template's axes, which must
+    /// hold as many elements. The adjoint of `MergeAxes`, and a retag like it.
+    ReshapeLike,
     SplitHeads { h: u64, hd: u64 },
     MergeHeads { h: u64, hd: u64 },
     Positions { axis: String, len: DimExpr },
@@ -213,6 +223,14 @@ pub enum PrimOp {
     Ones { ty: Ty },
     Normal { ty: Ty, std: String },
     XavierUniform { ty: Ty },
+    /// `(rate, key, template)`: the inverted-dropout mask of the template's
+    /// shape — `0` with probability `rate`, `1/(1 − rate)` otherwise, drawn
+    /// from the key alone. `dropout(rate, key, x)` lowers to `x · mask`, so
+    /// differentiation needs no rule of its own: the backward pass recomputes
+    /// the mask *from the same key* and therefore gets the same one. Outside
+    /// training the mask is all ones, which is the random function's
+    /// expectation.
+    DropoutMask,
     /// Split a random key into `n` keys (a tuple).
     SplitKey { n: usize },
     /// The `index`-th slice of a stacked parameter tree.
@@ -287,10 +305,13 @@ impl PrimOp {
             PrimOp::Mean { axis } => format!("mean axis {axis}"),
             PrimOp::Softmax { axis } => format!("softmax axis {axis}"),
             PrimOp::Embed => "embed".into(),
+            PrimOp::OneHot => "one_hot".into(),
             PrimOp::CrossEntropy => "cross_entropy".into(),
             PrimOp::Argmax => "argmax".into(),
             PrimOp::Sample => "sample".into(),
             PrimOp::IndexConst { axis, index } => format!("index {axis}: {index}"),
+            PrimOp::MergeAxes { a, b } => format!("merge {a}, {b}"),
+            PrimOp::ReshapeLike => "reshape_like".into(),
             PrimOp::SplitHeads { h, hd } => format!("split_heads {h}x{hd}"),
             PrimOp::MergeHeads { h, hd } => format!("merge_heads {h}x{hd}"),
             PrimOp::Positions { axis, .. } => format!("positions {axis}"),
@@ -299,6 +320,7 @@ impl PrimOp {
             PrimOp::Ones { .. } => "ones".into(),
             PrimOp::Normal { std, .. } => format!("normal std={std}"),
             PrimOp::XavierUniform { .. } => "xavier_uniform".into(),
+            PrimOp::DropoutMask => "dropout_mask".into(),
             PrimOp::SplitKey { n } => format!("split_key {n}"),
             PrimOp::SliceParams { index } => format!("slice_params {index}"),
             PrimOp::StackParams { n } => format!("stack_params {n}"),
@@ -325,6 +347,6 @@ impl PrimOp {
 
     /// Whether the primitive draws randomness.
     pub fn uses_rand(&self) -> bool {
-        matches!(self, PrimOp::Sample | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. })
+        matches!(self, PrimOp::Sample | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. } | PrimOp::DropoutMask)
     }
 }

@@ -275,3 +275,74 @@ fn native_training_matches_reference() {
         eprintln!("native {realize:?} vs reference after 200 steps: worst relative gap {w:.3e}");
     }
 }
+
+/// Splitting a kernel's outermost axis across threads (0.4.0 step 5) changes
+/// nothing but the time: each output element is computed by the same inner
+/// loops in the same order, so one worker and twelve must agree bit for bit.
+#[test]
+fn threads_do_not_change_a_single_bit() {
+    let (prog, core) = prepare("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 64), ("H", 2), ("L", 2)]);
+    for realize in [Realize::F64, Realize::F32] {
+        let opts = presk_interp::RunOptions { entry: "GPT.apply".into(), dims: vec![("B".into(), 4), ("T".into(), 24)], seed: 0, bits: 64, digits: 12 };
+        let (func, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+        let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
+        let run = |threads: usize| -> Vec<f64> {
+            let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, realize, 0, threads).unwrap();
+            let p = presk_rt::Backend::prepare(&mut b, func, &dims, realize).unwrap();
+            let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
+            let Value::Real(t) = out else { panic!("the model returns logits") };
+            t.data.to_f64()
+        };
+        let one = run(1);
+        assert!(one.len() > 1000, "a real tensor, not a scalar: {} elements", one.len());
+        for threads in [2, 5, 12] {
+            let many = run(threads);
+            assert_eq!(one.len(), many.len());
+            for (i, (a, b)) in one.iter().zip(&many).enumerate() {
+                assert_eq!(a.to_bits(), b.to_bits(), "{realize:?}, {threads} threads, element {i}: {a} against {b}");
+            }
+        }
+    }
+}
+
+/// The blocked contraction (0.4.0 step 6) holds a tile of the result in
+/// registers across the whole sum. Each accumulator still adds `k` in
+/// increasing order, so the result is bit-identical to the form used when the
+/// width is not a multiple of the tile — which is what this compares.
+#[test]
+fn the_blocked_contraction_is_exact() {
+    chdir_root();
+    for realize in [Realize::F64, Realize::F32] {
+        // 16 is a multiple of the tile and 12 is not, so the two widths take
+        // the two paths; the shared prefix of the results must agree exactly.
+        let wide = gemm_row(16, realize);
+        let narrow = gemm_row(12, realize);
+        assert_eq!(wide.len(), 16);
+        assert_eq!(narrow.len(), 12);
+        for (i, (a, b)) in wide.iter().zip(&narrow).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{realize:?} column {i}: blocked {a} against row-wise {b}");
+        }
+    }
+}
+
+/// One row of `a · b` where `b` has `n` columns, `a` and the shared part of
+/// `b` being the same values whatever `n`.
+fn gemm_row(n: usize, realize: Realize) -> Vec<f64> {
+    use presk_rt::{Axis, Buf, Tensor};
+    let k = 37;
+    let a: Vec<f64> = (0..k).map(|i| ((i * 7 + 1) as f64).sin()).collect();
+    let b: Vec<f64> = (0..k).flat_map(|i| (0..n).map(move |j| ((i * 31 + j * 3) as f64).cos())).collect();
+    let (prog, core) = prepare("tests/data/gemm_exact.psk", &[("K", k as u64), ("N", n as u64)]);
+    let f = core.find("gemm").unwrap();
+    let dims: presk_interp::eval::Dims = core.func(f).dims.iter().map(|d| (*d, 1)).collect();
+    let mut back = presk_cranelift::native_backend(&core, &prog, realize, 0).unwrap();
+    let mk = |axes: Vec<Axis>, data: Vec<f64>| Value::Real(Tensor { axes, data: if realize == Realize::F32 { Buf::F32(data.iter().map(|x| *x as f32).collect()) } else { Buf::F64(data) } });
+    let args = vec![
+        mk(vec![Axis { name: Some("row".into()), len: 1 }, Axis { name: None, len: k }], a),
+        mk(vec![Axis { name: None, len: k }, Axis { name: None, len: n }], b),
+    ];
+    let p = presk_rt::Backend::prepare(&mut back, f, &dims, realize).unwrap();
+    let out = presk_rt::Backend::call(&mut back, &p, args).unwrap();
+    let Value::Real(t) = out else { panic!("a real tensor") };
+    t.data.to_f64()
+}

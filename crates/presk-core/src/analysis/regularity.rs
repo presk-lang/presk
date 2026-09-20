@@ -93,7 +93,7 @@ pub fn analyze(prog: &Program, elab: &ElabProgram, diags: &mut Vec<Diagnostic>) 
 /// Class of primitive `op` in its `arg`-th argument, given the argument's type.
 fn prim_class(op: &PrimOp, arg: usize, arg_ty: &Ty) -> Class {
     match op {
-        PrimOp::Argmax | PrimOp::Sample => Class::Disc,
+        PrimOp::Argmax | PrimOp::Sample | PrimOp::OneHot => Class::Disc,
         PrimOp::Embed | PrimOp::CrossEntropy => {
             if arg == 1 { Class::Disc } else { Class::Smooth }
         }
