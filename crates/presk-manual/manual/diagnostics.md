@@ -113,7 +113,7 @@ report is a snapshot test; adding a code means adding such a file.
 
 | Code | Message | Cause |
 |---|---|---|
-| `E7001` | (message) | `presk run`: unknown entry or module, wrong number of module arguments, an unbound dimension (`give --dim T=N`), a `--dim` value that violates a file bound (`dim T <= 1024`), an unknown `--dim` name, a value that cannot be synthesized (a module-typed or function-typed parameter), or a runtime error of the interpreter (an index out of range, a shape the primitives cannot align), labelled with the source of the failing binding; on `--backend kernel\|native`, a shape with an open prefix that cannot be materialized, a dimension that does not evaluate to a natural number, or a kernel the lowering does not support |
+| `E7001` | (message) | `presk run`: unknown entry or module, wrong number of module arguments, an unbound dimension (`give --dim T=N`), a `--dim` value that violates a file bound (`dim T <= 1024`), an unknown `--dim` name, a value that cannot be synthesized (a module-typed or function-typed parameter), or a runtime error of the interpreter (an index out of range, a shape the primitives cannot align), labelled with the source of the failing binding; on `--backend kernel\|native`, a shape with an open prefix that cannot be materialized, a dimension that does not evaluate to a natural number, or a kernel the lowering does not support; a realization whose `quant` map names a path that is not a parameter, an axis the parameter does not have (or a name two of its axes share), a width other than 8 or 4 bits, an entry whose first argument is not a parameter tree, or `presk train` with a quantised realization (0.6.0 step 5a) |
 
 ## Export codes
 
@@ -129,7 +129,7 @@ report is a snapshot test; adding a code means adding such a file.
 | `E9002` | not a .psk.d file | bad magic, unsupported version, unreadable path |
 | `E9003` | truncated | fewer bytes than the header announces, a sample index beyond the count, an I/O error |
 | `E9004` | value out of bound / not an index / not a real | an index at or above its `idx[N]` bound, an unparsable text value, too few or too many values on a line of `presk data pack` |
-| `E9005` | sample does not match the type | leaf count, element count or kind (reals where indices are expected) |
+| `E9005` | sample does not match the type | leaf count, element count or kind (reals where indices are expected); a `params` checkpoint larger than the program's layout at the given dimensions — a model of other dimensions, such as `pos : ℝ[T, D]` trained at another `T` (0.6.0 step 5d) |
 
 ## Warnings
 
@@ -138,3 +138,35 @@ report is a snapshot test; adding a code means adding such a file.
 | `W0001` | implicit dimension `B` | an undeclared name in a dimension position of a function signature is taken as a dimension of that function; declare it with `dim B` or `{B : dim}` to silence the warning |
 | `W0002` | data file `path` not found | the `data` file of a `training run` is not readable at check time; its sample type is checked by `presk train` |
 | `W0003` | no generation function for this `inference serve` | the file has no top-level `fn (θ : params M, ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]`; `presk serve --entry FN` names one (`serve` chapter) |
+
+## Precision reports
+
+`presk check --precision` prints no coded diagnostic, but four lines of its
+report say that part of the bound is not what it claims to be:
+
+| Line | Meaning |
+|---|---|
+| `uncovered` | sites the envelope does not mention; their magnitude was guessed from their inputs, which usually means the envelope was measured on another entry |
+| `unbounded` | a quotient whose divisor reached zero in the samples, so it has no relative bound; the bound is infinite and says so |
+| `fallback` | sums and contractions whose terms the envelope did not record, so the rule of `--model` fell back to 0.5.0's `k` one there — an envelope written before 0.6.0 step 6; calibrate again |
+| `estimate rss` | the root-sum-square propagation is an **estimate**, not a bound, and is printed under that word (D51) |
+
+The reports of a training step, `presk calibrate --step` and `presk solve
+--step` (0.6.0 step 7b), have three columns that qualify the gap:
+
+| Column | Meaning |
+|---|---|
+| `storage floor` | the update gap of the exact `θ′` merely rounded to the type the optimizer stores it in: the part of the gap no arithmetic can remove. When the update gap equals it, the realization's arithmetic is not the problem; when the floor alone exceeds the budget, no realization with that storage can meet it (question 61) |
+| `grad gap` | where the error enters; it is **not** what the budget binds, and it can be hundreds of times smaller than the update gap, since AdamW divides by `√v` (D52) |
+| `noise` | the sampling noise between two batches of the same size, the scale a rounding error is to be compared with; not a threshold |
+
+`presk solve --step` prints `OUTSIDE the budget` when widening has run out
+of narrowed functions and the measurement is still above the budget; it
+still exits with code 0. An envelope measured on an entry rather than a step
+exits with code 2; `presk calibrate --step` without `--weights` exits with
+code 2 and names the reason (a step from initialisation measures an
+untrained network).
+
+`--model` other than `cond`, `normwise`, `k`, `rss` or `all` exits with code 2;
+`--measure` on an envelope whose weights or data file cannot be read exits
+with code 1 and names the file (a checkpoint of other dimensions is `E9005`).

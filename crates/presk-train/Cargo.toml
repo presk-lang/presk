@@ -18,3 +18,5 @@ presk-rt.workspace = true
 [dev-dependencies]
 insta.workspace = true
 rug.workspace = true
+presk-kernel.workspace = true
+presk-precision.workspace = true

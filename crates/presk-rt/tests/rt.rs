@@ -7,7 +7,7 @@ use rug::Float;
 #[test]
 fn exact_values_round_trip() {
     let x = Float::with_val(256, 1) / Float::with_val(256, 3);
-    let iv = presk_interp::Value::Record(vec![("w".into(), presk_interp::Value::Real(presk_interp::Tensor { axes: vec![Axis { name: Some("model".into()), len: 1 }], data: vec![x.clone()] }))]);
+    let iv = presk_interp::Value::record(vec![("w".into(), presk_interp::Value::Real(presk_interp::Tensor { axes: vec![Axis { name: Some("model".into()), len: 1 }], data: vec![x.clone()] }))]);
     let v = Value::from_interp(&iv).unwrap();
     let Value::Real(t) = v.field("w").unwrap() else { panic!() };
     assert!(matches!(t.data, Buf::Exact(_)));
@@ -33,7 +33,7 @@ fn realizations_round_once() {
 
 #[test]
 fn indices_and_scalars() {
-    let iv = presk_interp::Value::Tuple(vec![
+    let iv = presk_interp::Value::tuple(vec![
         presk_interp::Value::Idx { bound: 64, t: presk_interp::Tensor { axes: vec![Axis { name: Some("seq".into()), len: 2 }], data: vec![3, 7] } },
         presk_interp::Value::Nat(5),
         presk_interp::Value::F64(0.25),
@@ -66,6 +66,19 @@ fn a_realization_survives_its_file_form() {
     assert_eq!(back.accum_at("loss/%23"), Dtype::F64, "an unmentioned accumulator follows its storage");
     assert_eq!(back.accum_at("loss/%42"), Dtype::F32);
 
+    // By function (0.6.0 step 7b): a site takes its function's type unless
+    // it is named itself, and a file written before the field still loads.
+    let mut f = back.clone();
+    f.functions.insert("adamw.step".into(), Dtype::Bf16);
+    f.functions.insert("loss".into(), Dtype::F64);
+    assert_eq!(f.dtype_at("adamw.step/%3"), Dtype::Bf16);
+    assert_eq!(f.dtype_at("Linear.apply.vjp/%3"), Dtype::F32, "another function takes the default");
+    assert_eq!(f.dtype_at("loss/%17"), Dtype::Bf16, "a site named itself overrides its function");
+    assert_eq!(f.dtype_at("loss/%99"), Dtype::F64);
+    let again: Realization = serde_json::from_str(&f.to_json()).unwrap();
+    assert_eq!(again, f);
+    assert!(!again.to_json().is_empty() && !Realization::uniform(Dtype::F32).to_json().contains("functions"));
+
     // A uniform realization is the thing every earlier version could write,
     // and it must still be recognisable as one.
     let u = Realization::uniform(Dtype::F64);
@@ -93,4 +106,23 @@ fn bf16_rounds_to_nearest_even() {
     let tie = f32::from_bits(0x3F808000); // 1 + 2^-8, halfway between two bf16
     assert_eq!(f32_to_bf16(tie), 0x3F80, "ties go to even");
     assert!(bf16_to_f32(f32_to_bf16(f32::NAN)).is_nan(), "NaN stays NaN");
+}
+
+/// A `params` file records its model's name, not its leaves' shapes, so it
+/// must be exactly the size the program's layout implies. A file from a
+/// model of other dimensions is refused, never decoded from shifted offsets
+/// (0.6.0 step 5d, D48: `pos : ℝ[T, D]` trained at `T = 256` and opened at
+/// `T = 32` read every later leaf from the wrong place).
+#[test]
+fn a_checkpoint_of_other_dimensions_is_refused() {
+    use presk_rt::{Axis, Buf, Tensor, Value, load_params, save_params};
+    let leaf = |n: usize| Value::Real(Tensor { axes: vec![Axis { name: None, len: n }, Axis { name: None, len: 2 }], data: Buf::F64((0..2 * n).map(|i| i as f64).collect()) });
+    let tree = |t: usize| Value::Record(vec![("pos".into(), leaf(t)), ("w".into(), leaf(3))]);
+    let dir = std::env::temp_dir().join(format!("presk-rt-ckpt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("big.psk.d");
+    save_params(&path, "M", &tree(8)).unwrap();
+    assert_eq!(load_params(&path, &tree(8)).unwrap(), tree(8), "the same dimensions load");
+    assert_eq!(load_params(&path, &tree(4)).unwrap_err().code, "E9005", "a longer file is a model of other dimensions");
+    assert_eq!(load_params(&path, &tree(16)).unwrap_err().code, "E9003", "a shorter one is truncated");
 }

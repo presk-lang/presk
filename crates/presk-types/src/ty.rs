@@ -139,6 +139,32 @@ impl ParamsTree {
         out
     }
 
+    /// Every real leaf's rank *as declared*, without the axes `stack{n}`
+    /// prepends: a stacked bias is a vector, whatever rank its leaf has.
+    pub fn declared_ranks(&self) -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        self.collect("", &[], &mut out);
+        let depth = |path: &str| -> usize {
+            fn go(t: &ParamsTree, path: &[&str], d: usize) -> usize {
+                match t {
+                    ParamsTree::Leaf(_) => d,
+                    ParamsTree::Stacked { inner, .. } => go(inner, path, d + 1),
+                    ParamsTree::Node(fields) => match path.split_first() {
+                        Some((h, rest)) => fields.iter().find(|(n, _)| n == h).map_or(d, |(_, s)| go(s, rest, d)),
+                        None => d,
+                    },
+                }
+            }
+            go(self, &path.split('.').collect::<Vec<_>>(), 0)
+        };
+        out.into_iter()
+            .filter_map(|(p, ty)| match &ty {
+                Ty::Real(s) => s.rank().map(|r| (p.clone(), r - depth(&p))),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn collect(&self, prefix: &str, stacks: &[DimExpr], out: &mut Vec<(String, Ty)>) {
         match self {
             ParamsTree::Leaf(ty) => {

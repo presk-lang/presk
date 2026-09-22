@@ -14,6 +14,15 @@
 #   make calibrate        presk bench --calibrate: time the kernels of the tiny MiniGPT natively, fit the roofline profile (out/profile.json)
 #   make corpus           the NLP-course corpus (corpus/nlp): the ladder checked, run and trained on the Code civil
 #   make corpus-gpt       tokenize the Code civil and train the course GPT (reduced constants: the full size is the wall 0.4.0 has to break)
+#   make gpt-trained      the corpus GPT trained 600 steps at D = 64: the weights of the precision targets
+#   make precision        envelope, bound, sensitivity and solve on the corpus GPT (0.5.0, 0.6.0 step 6)
+#   make curve            the epsilon-to-quality curve: seven budgets solved, each trained from scratch (about two hours)
+#   make quant-table      int8/int4 gaps split into representation and arithmetic, statement K (0.6.0 step 5d)
+#   make step-table       one training step under each realization against the exact step (0.6.0 step 7b)
+#   make j-step           statement J′: the solved step at course scale, time and update gap
+#   make step-train       600 steps from scratch under the solved step, against the seeds
+#   make foil             MLPerf's accuracy rule and a budget on one model (0.6.0 step 8)
+#   make bert             BERT-large inference at MLPerf's constants (about five hours; L=2 for minutes)
 #   make experiment       exact versus almost: the realization gap of float32/float64 training (manual, `experiments`)
 #   make experiment-gpt   the course GPT trained by presk and by PyTorch on the same data (manual, `experiments` §3)
 #   make coverage         presk check on the MLPerf transcriptions (manual, `coverage`)
@@ -34,7 +43,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: tutorial-precision curve precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -75,11 +84,16 @@ conformance: export-examples
 	    echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; \
 	done
 
-# The commands of the tutorial chapter, in order (crates/presk-manual/manual/tutorial.md).
-# The PyTorch conformance tests at the end need `make venv`.
+# The commands of the tutorial chapter, steps 0 to 16, in order
+# (crates/presk-manual/manual/tutorial.md): every output the chapter quotes is
+# one of these commands'. The PyTorch conformance tests need `make venv`.
 tutorial: build
+	$(PRESK) --help
+	$(PRESK) check tests/examples/mlp/mlp.psk
 	$(PRESK) check tutorial/01_linear.psk
+	! $(PRESK) run tutorial/01_linear.psk
 	$(PRESK) run tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --verbose
+	$(PRESK) run tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --seed 1 --bits 64 --digits 6
 	$(PRESK) check tutorial/02_norm.psk --summary
 	$(PRESK) run tutorial/02_norm.psk --entry 'RMSNorm{4}.apply' --dim batch=2 --digits 6
 	$(PRESK) check tutorial/03_attention.psk --summary
@@ -95,12 +109,19 @@ tutorial: build
 	$(PRESK) dump tutorial/06_tower.psk --stage elab
 	$(PRESK) run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6
 	$(PRESK) run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6 --const L=1
+	$(PRESK) dump tutorial/04_grad.psk --stage core | sed -n '/^fn loss{/,/^}/p'
 	$(PRESK) dump tutorial/04_grad.psk --stage core-after-ad | grep '^fn'
 	$(PRESK) export tutorial/06_tower.psk --target pytorch --mode readable --shapes=check \
 	    --conformance-entry Tower.apply --dim batch=2 -o out/tutorial_tower
 	$(PRESK) export tutorial/04_grad.psk --target pytorch --mode readable \
 	    --conformance-entry loss_grad --dim D=3 --dim B=2 -o out/tutorial_grad
 	@for d in out/tutorial_tower out/tutorial_grad; do echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; done
+	$(PRESK) check tests/examples/minigpt/minigpt.psk --summary
+	$(PRESK) run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply \
+	     --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
+	$(PRESK) run tests/examples/minigpt/train_minigpt.psk --entry loss \
+	     --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
+	! $(PRESK) run tests/examples/minigpt/train_minigpt.psk
 	$(PRESK) data pack --type '(ℝ[model: 4], ℝ[model: 4])' tutorial/data/pairs.txt -o tutorial/data/pairs.psk.d
 	$(PRESK) check tutorial/07_train.psk --summary
 	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
@@ -123,6 +144,24 @@ tutorial: build
 	$(PRESK) check corpus/nlp/01_bigram_count.psk --summary
 	$(PRESK) run corpus/nlp/01_bigram_count.psk --entry loss --data corpus/nlp/data/bigrams.psk.d --backend native --digits 10
 	$(PRESK) check corpus/nlp/05_gpt.psk --summary
+	$(PRESK) calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 \
+	    --bits 128 --out out/tut_env.json
+	$(PRESK) check --precision out/tut_env.json tutorial/07_train.psk --realize f32
+	$(PRESK) solve tutorial/07_train.psk --precision out/tut_env.json \
+	    --budget 1e-3 --out out/tut_solved.json --sites 0
+	$(PRESK) run tutorial/07_train.psk --entry loss --dim B=4 \
+	    --backend native --realize @out/tut_solved.json --digits 10
+	$(PRESK) calibrate --step tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d \
+	    --warmup 20 --samples 8 --realize f64 --realize f32 --realize bf16 --realize recipe \
+	    --out out/tut_step.json
+	$(PRESK) solve --step tutorial/07_train.psk --precision out/tut_step.json \
+	    --budget 1e-3 --out out/tut_step_solved.json
+	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 20 --backend native \
+	    --realize @out/tut_step_solved.json --ckpt out/tutorial_ckpt_step
+	$(PRESK) data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_step/final.psk.d
+	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
+	    --seed 1 --ckpt out/tutorial_ckpt_seed1
+	$(PRESK) data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_seed1/final.psk.d
 
 train-examples: build
 	$(PRESK) train tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
@@ -137,10 +176,15 @@ train-examples: build
 	    --steps 100 --log-every 25 --backend native --ckpt out/ckpt_large
 
 # The MLPerf transcriptions of the manual's `coverage` chapter: what the shape
-# fragment can say. Nothing is run; the question is whether it type-checks.
+# fragment can say. Both type-check; since 0.6.0 step 8 BERT-large also runs,
+# here at tiny constants on the reference and natively (`make bert` runs it at
+# MLPerf's own).
+BERT_TINY = --const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16
 coverage: build
 	$(PRESK) check coverage/bert.psk --summary | head -12
 	$(PRESK) check coverage/llama.psk --summary | head -12
+	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --bits 128 --digits 6 | cut -c1-120
+	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
 
 # The three experiments of the manual's `experiments` chapter (needs `make venv`).
 # The third trains the course GPT against PyTorch on the same model and data.
@@ -214,25 +258,54 @@ corpus: build
 	$(PRESK) check corpus/nlp/03_mlp.psk --summary
 	$(PRESK) train corpus/nlp/03_mlp.psk --backend native --log-every 400 --ckpt out/nlp_mlp
 
-# The Code civil as a character-level dataset, then the course GPT. `presk
-# check` passes at the course's own constants (D=384, H=6, L=6, T=256); what
-# trains here is reduced, because a course-scale step is the wall this version
-# exists to break (corpus/nlp/EXPECTED.md).
-# The magnitude envelope a precision bound is conditional on (0.5.0 step 3),
-# and the property the whole analysis rests on: two disjoint sets of samples
-# must give magnitudes within a small factor of each other.
 # The epsilon-to-quality curve (0.5.0 step 8): one program, one parameter
 # varying, every point verified by measurement against the exact reference.
-# Tutorial step 15: every command of "A budget, and what it buys".
-tutorial-precision: build
-	$(PRESK) calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out out/tut_env.json
-	$(PRESK) check --precision out/tut_env.json tutorial/07_train.psk --realize f32
-	$(PRESK) solve tutorial/07_train.psk --precision out/tut_env.json --budget 1e-3 --out out/tut_solved.json --sites 0
-	$(PRESK) run tutorial/07_train.psk --entry loss --dim B=4 --backend native --realize @out/tut_solved.json --digits 10
-
 curve: build
 	./experiments/curve.sh out/curve.md
 
+# The gap of every realization split into representation and arithmetic, and
+# statement K (plan 0.6.0 step 5d). Needs trained weights: `make gpt-trained`.
+quant-table:
+	$(CARGO) build --release -p presk
+	./experiments/quant_table.sh out/quant_table.md
+
+# The MLPerf comparison (plan 0.6.0 step 8, D53). `foil`: MLPerf's accuracy
+# rule and a budget applied to the same realizations of the corpus GPT, on its
+# held-out tenth, with what each costs (needs `make curve`'s runs; minutes).
+# `bert`: BERT-large inference at MLPerf's constants on its initialization —
+# the exact reference of one feature, each realization's gap on the SQuAD
+# logits, the split on two blocks, and the time per sequence (about five
+# hours, up to 76 GB; `L=2 make bert` for a quick version).
+foil:
+	$(CARGO) build --release -p presk
+	./experiments/foil.sh out/foil.md
+bert:
+	$(CARGO) build --release -p presk
+	./experiments/bert.sh out/bert.md
+
+# A budget on one training step's update (plan 0.6.0 step 7b, D52): the gap
+# table at D = 64 (needs `make gpt-trained` and out/gpt_prof.json), statement
+# J′ at course scale (about half an hour), and 600 steps from scratch under
+# the solved step against D50's seeds (needs `make curve`'s runs).
+step-table:
+	$(CARGO) build --release -p presk
+	./experiments/step_table.sh out/step_table.md
+j-step:
+	$(CARGO) build --release -p presk
+	./experiments/j_step.sh out/j_step.md
+step-train:
+	$(CARGO) build --release -p presk
+	./experiments/step_train.sh out/step_train.md
+
+# The corpus GPT trained for 600 steps at D = 64, the weights statement K and
+# the quantisation table are measured on (a few minutes natively).
+gpt-trained: build
+	$(PRESK) train corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+	    --steps 600 --epochs 3 --log-every 100 --backend native --realize f32 --ckpt out/gpt_trained
+
+# The magnitude envelope a precision bound is conditional on (0.5.0 step 3),
+# and the property the whole analysis rests on: two disjoint sets of samples
+# must give magnitudes within a small factor of each other.
 precision: build
 	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
 	    --const D=32 --const H=2 --const L=2 --dim T=256 \
@@ -250,21 +323,38 @@ precision: build
 	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f64
 	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f32 --sites 6
 	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize bf16
+	# At T = 256, the dimension the weights were trained at: `pos : ℝ[T, D]`
+	# makes T part of the parameters, and 0.5.0 opened a T = 256 checkpoint at
+	# T = 32 without noticing (D48).
+	# On trained weights and two windows of text, the envelope now records
+	# each sum's terms as well (0.6.0 step 6); the four rules for sums side by
+	# side, each against the gap measured natively on the same inputs.
 	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
-	    --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=32 --bits 128 \
-	    --out out/gpt_env.json
+	    --const D=64 --const H=2 --const L=2 --dim T=256 --bits 128 \
+	    --data corpus/nlp/data/civil_T256.psk.d --samples 2 --from 0 \
+	    --weights out/gpt_trained/final.psk.d --out out/gpt_env.json
+	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize f64 --model all --measure
+	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize f32 --model all --measure
+	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize bf16 --model all --measure
 	# Where a budget should go, from one reverse sweep on trained weights
 	# (0.5.0 step 5). Without --weights the zero-initialized head makes every
 	# upstream gradient exactly zero and the ranking says nothing.
+	# The weights are `make gpt-trained`'s: 600 steps, not the 12 of
+	# `corpus-gpt`, whose head has barely left zero.
 	$(PRESK) dump corpus/nlp/05_gpt.psk --stage sensitivity --entry loss \
-	    --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=32 \
-	    --weights out/gpt_tiny/final.psk.d --sites 8
+	    --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=256 \
+	    --weights out/gpt_trained/final.psk.d --sites 8
 	# A budget in, a realization out (0.5.0 step 6); then run what it chose.
 	$(PRESK) solve corpus/nlp/05_gpt.psk --precision out/gpt_env.json --budget 1e-3 \
-	    --weights out/gpt_tiny/final.psk.d --out out/solved.json --sites 6
+	    --weights out/gpt_trained/final.psk.d --out out/solved.json --sites 6
+	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize @out/solved.json --model all --measure
 	$(PRESK) run corpus/nlp/05_gpt.psk --entry loss --const D=64 --const H=2 --const L=2 \
-	    --dim B=2 --dim T=32 --backend native --realize @out/solved.json --digits 10
+	    --dim B=2 --dim T=256 --backend native --realize @out/solved.json --digits 10
 
+# The Code civil as a character-level dataset, then the course GPT. `presk
+# check` passes at the course's own constants (D=384, H=6, L=6, T=256); what
+# trains here is reduced, because a course-scale step is the wall this version
+# exists to break (corpus/nlp/EXPECTED.md).
 corpus-gpt: build
 	python3 corpus/nlp/data/prepare.py
 	$(PRESK) data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
@@ -314,7 +404,8 @@ bench: build
 
 sync-examples:
 	rsync -a --delete --exclude PROVENANCE.md $(PRESK_SPECS_DIR)/examples/ tests/examples/
-	@sed -i '' "s/^Commit: .*/Commit: $$(git -C $(PRESK_SPECS_DIR) rev-parse --short HEAD)/" tests/examples/PROVENANCE.md
+	@sed -i.bak "s/^Commit: .*/Commit: $$(git -C $(PRESK_SPECS_DIR) rev-parse --short HEAD)/" tests/examples/PROVENANCE.md \
+	  && rm tests/examples/PROVENANCE.md.bak   # -i.bak: the one spelling GNU and BSD sed both accept
 	git status --short tests/examples
 
 snap:

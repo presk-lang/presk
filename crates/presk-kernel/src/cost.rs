@@ -31,6 +31,8 @@ pub struct KernelCost {
 fn elem_bytes(kind: BufKind, dtype: Dtype) -> f64 {
     match (kind, dtype) {
         (BufKind::Idx, _) => 8.0,
+        // The integers; the scales are one per channel and are not counted.
+        (BufKind::Quant { bits, .. }, _) => bits as f64 / 8.0,
         (BufKind::Real, Dtype::F64) => 8.0,
         (BufKind::Real, Dtype::F32) => 4.0,
         (BufKind::Real, Dtype::Bf16) => 2.0,
@@ -42,6 +44,10 @@ fn expr_ops(e: &Expr) -> f64 {
         Expr::F(_) | Expr::I(_) | Expr::Iv(_) | Expr::Sv(_) | Expr::Si(_) => 0.0,
         // Address arithmetic is not work.
         Expr::Load(_, _) | Expr::LoadI(_, _) => 0.0,
+        // A lane is an element, so a vector operation is `width` of them.
+        Expr::Vv(_) | Expr::VLoad(_, _) => 0.0,
+        Expr::VSplat(x) => expr_ops(x),
+        Expr::VBin(_, a, b) => 1.0 + expr_ops(a) + expr_ops(b),
         Expr::Bin(op, a, b) => {
             let own = match op {
                 crate::ir::BinOp::IAdd | crate::ir::BinOp::IMul => 0.0,
@@ -62,15 +68,21 @@ fn expr_ops(e: &Expr) -> f64 {
     }
 }
 
-fn stmts_ops(stmts: &[Stmt]) -> f64 {
+fn stmts_ops(stmts: &[Stmt], lanes: f64) -> f64 {
     stmts
         .iter()
         .map(|s| match s {
-            Stmt::For { bound, body, .. } => *bound as f64 * stmts_ops(body),
+            Stmt::For { bound, body, .. } => *bound as f64 * stmts_ops(body, lanes),
             Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::SetL { value, .. } => expr_ops(value),
+            // A vector statement covers `lanes` elements, so it is `lanes`
+            // times the work of one. Counting it as one made the fitted `π`
+            // of a vector kernel come out *below* its scalar form's, which
+            // is the opposite of what the hardware does.
+            Stmt::VSet { value, .. } => lanes * expr_ops(value),
+            Stmt::VStore { index, value, .. } => lanes * expr_ops(value) + index.iter().map(expr_ops).sum::<f64>(),
             Stmt::Store { index, value, .. } | Stmt::StoreI { index, value, .. } => expr_ops(value) + index.iter().map(expr_ops).sum::<f64>(),
             // The branch is counted as taken: an upper bound.
-            Stmt::If { cond, then } => expr_ops(cond) + stmts_ops(then),
+            Stmt::If { cond, then } => expr_ops(cond) + stmts_ops(then, lanes),
         })
         .sum()
 }
@@ -78,7 +90,7 @@ fn stmts_ops(stmts: &[Stmt]) -> f64 {
 /// The work and traffic of a kernel at its shapes.
 pub fn kernel_cost(k: &Kernel) -> KernelCost {
     let bytes = k.inputs.iter().map(|b| b.numel() as f64 * elem_bytes(b.kind, k.dtype)).sum::<f64>() + k.output.numel() as f64 * elem_bytes(k.output.kind, k.dtype);
-    KernelCost { work: stmts_ops(&k.body), bytes }
+    KernelCost { work: stmts_ops(&k.body, k.lanes as f64), bytes }
 }
 
 /// One timed launch: the kernel's index in the backend and the seconds it took.
@@ -152,6 +164,8 @@ mod tests {
             nloops: 2,
             nreal: 0,
             nint: 0,
+            nvec: 0,
+            lanes: 1,
             body: vec![Stmt::For { var: 0, bound: 2, body: vec![Stmt::For { var: 1, bound: 3, body: vec![Stmt::Store { buf: 2, index: vec![Expr::Iv(0), Expr::Iv(1)], value: Expr::Bin(BinOp::Add, Box::new(load(0)), Box::new(load(1))) }] }] }],
         };
         let c = kernel_cost(&k);

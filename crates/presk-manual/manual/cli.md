@@ -4,15 +4,22 @@
 presk <COMMAND>
 
 Commands:
-  check   Type-check a program: shapes, regularity classes, effects
-  run     Evaluate an entry point on the reference interpreter
-  export  Export a program to another framework
-  dump    Dump an intermediate representation (development aid)
-  train   Run the `training run` of a file on the reference interpreter
-  data    Produce and inspect `.psk.d` data files
+  check      Type-check a program: shapes, regularity classes, effects
+  run        Evaluate an entry point on the reference interpreter or natively
+  export     Export a program to another framework
+  dump       Dump an intermediate representation (development aid)
+  train      Run the `training run` of a file, on the reference interpreter or natively
+  serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
+  bench      Time an entry on every backend (the reference at --bits, the kernel interpreter, native f64, f32 and bf16)
+  calibrate  Measure the magnitude envelope of an entry, or one training step under each realization (--step)
+  solve      Solve for a realization under a declared error budget
+  quantize   Quantise parameters as a realization's `quant` map says, and measure the gap in two parts: the weights' rounding and the arithmetic
+  data       Produce and inspect `.psk.d` data files
+  help       Print this message or the help of the given subcommand(s)
 ```
 
-`presk --help` and `presk <command> --help` print the full option lists.
+`presk --help` and `presk <command> --help` print the full option lists;
+`presk --version` prints the version.
 
 ## Exit codes
 
@@ -92,14 +99,20 @@ output format is not stable.
 | `sched` | the fusion groups of every function (`scheduling` chapter): one line per group with its steps, its inputs and the launches it removes | implemented (0.4.0 step 4) |
 | `core-opt` | PSK-Core after AD and the e-graph optimizer (`optimization` chapter); the report (functions rewritten, `let`s and cost before and after, stop reason) goes to standard error; `--profile FILE.json` makes the roofline of that profile the extraction cost, `--dim` binds the dimensions it evaluates | implemented (0.3.0 steps 6–7) |
 
+`--unroll-stack` lowers `stack{L}` as `L` calls, as on `presk run`; `kernel`
+and `sensitivity` take `--entry`, `--dim`, `--const` and `--realize` as `presk
+run` does, `sensitivity` also `--weights` and `--sites`, and `core-opt` takes
+`--profile`.
+
 Diagnostics (if any) are reported on standard error; the exit code is 1 when
 there are errors, 0 otherwise.
 
 ## `presk run FILE.psk --entry ENTRY …`
 
-Evaluates one function on the reference interpreter: the whole pipeline
-(`check`, lowering, automatic differentiation) runs first, then the entry
-point is called on synthesized inputs and its result printed.
+Evaluates one function, on the reference interpreter unless `--backend`
+says otherwise: the whole pipeline (`check`, lowering, automatic
+differentiation) runs first, then the entry point is called on synthesized
+inputs and its result printed.
 
 ```sh
 presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
@@ -122,11 +135,12 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--verbose` | also print the synthesized inputs. |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
 | `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
-| `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter). Ignored by the interpreter, which computes at `--bits`. |
+| `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), and since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it). The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
 | `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
 | `--threads N` | workers a parallel kernel may use on the native backend (`native` chapter); the default is the machine's cores, `1` keeps every kernel on one thread. Also on `presk train` and `presk bench`. |
-| `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`. The other arguments are synthesized from `--seed` as usual. |
+| `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`, from sample `--from I` (default 0). The other arguments are synthesized from `--seed` as usual. |
+| `--weights ckpt/final.psk.d` | take the entry's **first** argument, its parameters, from a checkpoint (0.6.0 step 7): with `--data`, a trained model's loss on held-out text is one command. The checkpoint must be of the dimensions the entry is run at (`E9005` otherwise). |
 
 **Inputs** are synthesized from the parameter types: real tensors from a
 standard normal, index tensors uniformly in `[0, N)`, `params M` by running
@@ -173,6 +187,7 @@ python3 -m py_compile out/minigpt_pt/*.py    # syntax; `pytest out/minigpt_pt` w
 | `--shapes=check` | insert `assert x.shape == (…)` after every parameter and `let` with a closed shape. |
 | `--stack=loop\|unroll` | `stack{L}(M)` as a `for` over an `nn.ModuleList` (default) or as `L` explicit calls. |
 | `--conformance-entry ENTRY` | also run the reference interpreter on `ENTRY` (with `--dim`, `--const`, `--seed` as for `presk run`, at 256 bits) and write `conformance/inputs.json`, `conformance/expected.json` and `test_conformance.py`; `adamw.step` compares one optimizer step with `torch.optim.AdamW`; `train:K` runs `K` steps of the training run on the interpreter (implies `--train`) and generates a test that replays the same batches in PyTorch and compares the parameters (`training` chapter); the same `K` steps also run natively in `f64` and `f32`, written to `conformance/native_{f64,f32}.json` for the `experiments` chapter. |
+| `--opt`, `--profile FILE.json` | rewrite the program with the e-graph optimizer before computing the conformance data, extracting by the profile when given; the exported code is the source's. |
 
 **The conformance test** loads the interpreter's inputs and expected result,
 builds the model or function (`MiniGPT(8)`, `MLP(4, 16)` — the dimension
@@ -196,7 +211,11 @@ ONNX Runtime are not dependencies of the compiler.
 Executes the file's `training run` on the backend of `--backend`/`--realize`
 (the reference interpreter by default): see the `training` chapter for the
 loop, the flags (`--const`, `--data`, `--steps`, `--epochs`, `--seed`,
-`--bits`, `--log-every`, `--ckpt`, `--json`, `--opt`) and two runs.
+`--bits`, `--log-every`, `--ckpt`, `--json`, `--threads`, `--opt`,
+`--profile`) and two runs. `--realize @R.json` takes a realization solved for
+the training step (`presk solve --step`), whose `functions` map gives each
+function of the step its type; a realization that quantises weights is
+refused.
 
 ```sh
 presk train tests/train/mlp_regression.psk --steps 200 --ckpt out/reg_ckpt
@@ -215,7 +234,8 @@ Generates tokens with the file's `inference serve`: its model, its weights
 `--backend`/`--realize`; `--tokens N` (16), `--temperature x` (0 is greedy;
 default the function's own), `--dim NAME=N` for a dimension of the parameters
 not fixed by the prompt (`T` of a positional embedding), `--seed`, `--bits`,
-`--json`, `--opt`. The `serve` chapter has the loop and the rules.
+`--json`, `--opt`, `--profile`. A realization with a `quant` map serves its
+parameters as integers. The `serve` chapter has the loop and the rules.
 
 ```sh
 presk serve tests/examples/minigpt/serve_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
@@ -230,7 +250,8 @@ serve`, no weights file, or a malformed `--prompt`/`--dim`.
 ```sh
 presk calibrate --precision FILE.psk --entry ENTRY [--data FILE.psk.d]
     [--samples N] [--from K] [--dim NAME=N] [--const NAME=N]
-    [--bits 256] [--seed 0] [--out ENV.json] [--compare OTHER.json]
+    [--weights ckpt/final.psk.d] [--bits 256] [--seed 0] [--out ENV.json]
+    [--compare OTHER.json]
 ```
 
 Measures the **magnitude envelope**: the largest `|x|` at each site, on the
@@ -242,27 +263,162 @@ two envelopes disagree. `--precision` is required and is the only mode — the
 roofline calibration is `presk bench --calibrate`, a different measurement of
 a different thing. See the `precision` chapter.
 
+At every sum and contraction it also records what the terms add up to
+without cancelling — `Σ|xᵢwᵢ|`, `√Σ(xᵢwᵢ)²` and each operand's normwise
+factor — and prints the five worst condition numbers `Σ|xᵢwᵢ| / |Σxᵢwᵢ|`
+(0.6.0 step 6). `--weights` reads the entry's first argument from a
+checkpoint, which is refused if it is not exactly the layout's size (D48);
+the envelope records the weights and the data slice, so that a gap measured
+beside the bound, and a realization solved from it, are on the same inputs.
+
+### `presk calibrate --step`: one training step
+
+```sh
+presk calibrate --step FILE.psk --weights ckpt/final.psk.d [--warmup 10] [--steps N]
+    [--data FILE.psk.d] [--samples 2] [--from 0] [--const NAME=N]
+    [--realize f64|f32|bf16|recipe|@R.json]… [--profile FILE.json]
+    [--reference exact|f64] [--bits 256] [--seed 0] [--out ENV.json]
+```
+
+Measures one **optimizer step** of the file's `training run` instead of an
+entry (0.6.0 step 7b, D52): the thing a budget in a training run binds. The
+state is the checkpoint's `θ` followed by `--warmup` steps of the run's own
+pipeline natively in `f64`, so that AdamW's second moment is not the zero of
+initialisation; the measured step is number `warmup + 1` of `--steps` (the
+run's horizon by default), on `--samples` samples of `--data` (the run's
+file by default) from `--from`. The envelope is recorded on the **exact**
+step — the objective's `vjp` and `adamw.step` on the reference interpreter —
+and so covers the reverse sweep's and the optimizer's sites; `entry` is
+`"step"` and a `step` record says how to rebuild the state.
+
+It prints the step's size, the **sampling noise** `‖g_B − g_B′‖₂ / ‖g_B‖₂`
+between the batch and the next `--samples` (the scale a rounding error is to
+be compared with), and for each `--realize` a row: the **update gap**
+`‖θ̂′ − θ′‖₂ / ‖θ′ − θ‖₂`, the **storage floor** (the same with `θ′` exact and
+only rounded to the type the optimizer stores it in), the **gradient gap**
+`‖ĝ − g‖₂ / ‖g‖₂` and the predicted cost of the step (seconds with
+`--profile`, bytes otherwise). Each realization runs natively from the state
+rounded to its default type and is compared with the exact step from the
+same rounded state. `recipe` is mixed precision as practitioners use it:
+every function but the optimizer in `bf16`, the optimizer and the master
+weights in `f32`. `--reference f64` compares against a native `f64` step
+instead of the exact one, for a model too large for the reference
+interpreter, and writes no envelope. See the `precision` chapter, "A budget
+on the training step".
+
+**Exit codes**: 0; 1 a diagnostic, a run-time error or a checkpoint that
+does not load (of other dimensions: `E9005`); 2 no `training run`, no
+`--weights`, an unknown `--reference`, or `--reference f64` with `--out`;
+`--steps`, `--realize`, `--profile` or `--reference` without `--step` is
+refused with 2 rather than ignored.
+
+## `presk check FILE.psk --precision ENVELOPE.json`
+
+```sh
+presk check --precision ENV.json FILE.psk [--realize f64|f32|bf16|@R.json]
+    [--model cond|normwise|k|rss|all] [--measure] [--sites N]
+```
+
+Propagates the rounding error of the entry the envelope was measured on,
+under a realization, and prints the bound on its output. `--model` chooses
+the rule for sums and contractions: `cond`, the condition number (the
+default); `normwise`, sound without assumption; `k`, 0.5.0's worst case; `rss`,
+the root-sum-square, printed as an **estimate**; `all` prints the four.
+`--measure` runs the realization natively on the envelope's own inputs and
+weights and prints the measured distance to the exact reference, with each
+row's ratio to it. `--sites N` lists the `N` widest sites with their condition
+numbers. See the `precision` chapter, "Does the condition number rescue the
+bound?".
+
 ## `presk solve FILE.psk --precision ENVELOPE.json --budget ε`
 
 ```sh
 presk solve FILE.psk --precision ENV.json [--budget 1e-3] [--weights ckpt/final.psk.d]
-    [--no-verify] [--bits 128] [--seed 0] [--out R.json] [--sites N]
+    [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--no-verify] [--bits 128]
+    [--seed 0] [--out R.json] [--sites N]
 ```
 
-Chooses a machine type per site to minimise traffic under an error budget,
-and writes a realization `--realize @R.json` can run. It **verifies by
+Chooses a machine type per site under an error budget, minimising the
+predicted time of the roofline fitted per machine type when given a
+`--profile` (0.6.0 step 4; `precision` chapter, "Time, not traffic") and the
+traffic otherwise, and writes a realization `--realize @R.json` can run. It **verifies by
 measurement** against the exact reference rather than by the propagated
 bound, which is vacuous on a real model; `--no-verify` gives the proposal
 alone. `--weights` matters: a sensitivity ranking at initialization is
-vacuous. See the `precision` chapter.
+vacuous. The inputs are the envelope's: when it was measured on a data slice,
+the sweep and every measurement run on that slice. `--quant` also offers every matrix parameter as `int8` or `int4`
+(`--scheme absmax|pow2`), priced by the parameters' gradient and accepted by
+measurement, and prints the three first-order readings per parameter with
+`--sites`. A `--weights` file of other dimensions is an error, not a fallback
+to the initial parameters. See the `precision` chapter.
+
+### `presk solve --step`: a budget on the update
+
+```sh
+presk solve --step FILE.psk --precision ENV.json [--budget 1e-3] [--profile FILE.json]
+    [--no-verify] [--bits 128] [--out R.json]
+```
+
+With an envelope written by `presk calibrate --step`, solves the whole
+training step under a budget on its **update** (0.6.0 step 7b, D52): the
+state is rebuilt from the envelope's `step` record, every function of the
+step (`Linear.apply.vjp`, `adamw.step`, the forward functions the reverse
+sweep recomputes) is run natively alone in `f32` and in `bf16`, everything
+else in `f64`, and its update gap measured against the one exact step; the
+functions are then narrowed greedily by predicted time saved per unit of
+isolated gap while the gaps' root-sum-square fits the budget, the
+combination is measured, and while it is outside the function with the
+largest isolated gap is widened one step of the menu. It prints a row per
+function (sites, cost in `f64`, isolated gaps, chosen type), the predicted
+cost against all-`f64`, and the combination's measured update gap, storage
+floor and gradient gap. `--out` writes a realization whose `functions` map
+gives each narrowed function its type; `presk train --realize @R.json` trains
+with it.
+
+**Exit codes**: 0, whether or not the measured gap is inside the budget (the
+report says which); 1 a run-time error; 2 an envelope of an entry rather than
+of a step.
+
+## `presk quantize FILE.psk --entry ENTRY --realize @R.json …`
+
+```sh
+presk quantize FILE.psk --entry ENTRY [--dim N=n] [--const N=n] [--realize @R.json]
+    [--weights ckpt/final.psk.d] [--data FILE.psk.d [--samples N] [--from I]]
+    [--backend interp|kernel|native] [--bits 128] [--seed 0] [--list]
+```
+
+Quantises the parameters the realization's `quant` map names and measures
+what it costs, in two parts: the **representation** error (the exact
+denotation on the dequantised weights against the exact denotation on the
+true ones) and the **arithmetic** error (the `--backend` run of the
+realization on the dequantised weights against the former). The entry's
+first argument must be the parameter tree. A realization without a `quant`
+map is measured too, its representation part zero, which is how the float
+rows of `make quant-table` are made; `--list` lists the parameters, with
+their paths and shapes, so a map can be written. `--data` takes the entry's
+last argument from a data file as `presk run --data` does — the loss a model
+was trained for, rather than its loss on random tokens. Per
+parameter it prints the scheme, the axis, the number of channels, the largest
+scale, the largest `|w − ŵ|` beside the largest `s/2` it must not exceed, and
+the bytes stored. Without `--weights` it quantises the initial parameters,
+which says little: a zero-initialized head makes the loss `ln V` whatever the
+other weights are. See the `precision` chapter.
 
 ## `presk bench FILE.psk --entry ENTRY …`
 
 Times one entry on every backend (the reference at `--bits`, the kernel
-interpreter, native f64 and f32) with `--dim`/`--const` as `presk run`, and
-prints the median of `--repeat` calls with the speedup over the reference
-(`native` chapter); `--opt [--profile FILE.json]` times the rewritten
-program.
+interpreter, native `f64`, `f32` and `bf16`, the first two also with vector
+lanes) with `--dim`/`--const`/`--seed` as `presk run`, and prints the median
+of `--repeat` calls with the speedup over the first row (`native` chapter);
+`--opt [--profile FILE.json]` times the rewritten program, `--threads N` as
+for `presk run`. `--native-only` drops the reference and kernel-interpreter
+rows: the exact interpreter at a thousand cubed is what kept a large
+benchmark from finishing at all (0.5.0 step 7). A `--realize` that is not one of the uniform rows gets a row of its
+own, and a quantised one runs on its integer weights. The inputs are rounded
+to each row's machine type, and weights quantised, **once, outside the
+timing** — since 0.6.0 step 5b; before it, every native row also paid a
+conversion of its inputs from the reference's exact reals on every call,
+which on a 1024³ matmul was most of the time measured (D46).
 
 `--calibrate FILE.json` instead times every kernel the entry launches on the
 native backend in the `--realize` machine type (`--repeat` calls, at least
@@ -279,7 +435,7 @@ presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 -
      --dim B=2 --dim T=8 --calibrate out/profile.json
 ```
 
-## `presk data chars | encode | pack | lm-windows | info | export`
+## `presk data chars | encode | pack | lm-windows | info | diff | export`
 
 Produces and inspects `.psk.d` files (the `data` chapter has the format and
 the rules):
@@ -290,8 +446,13 @@ presk data encode INPUT.txt --vocab VOCAB.json -o TOKENS.txt
 presk data pack --type TYPE INPUT.txt -o OUT.psk.d        # one sample per line, values in leaf order
 presk data lm-windows --vocab V --seq T [--stride S] TOKENS.txt -o OUT.psk.d
 presk data info FILE.psk.d [--samples N]                  # header and first samples (default 3)
+presk data diff A.psk.d B.psk.d                           # ‖a − b‖₂ over the reals, and relative to ‖a‖₂
 presk data export FILE.psk.d -o OUT.json                  # samples as nested JSON lists
 ```
+
+`diff` compares two files of the same type value for value; two checkpoints
+(`params M`) are compared without the program, a parameter tree being only
+reals in file order — how far two training runs ended apart (0.6.0 step 7b).
 
 **Exit codes**: 0 written or printed; 1 a data error (`E9xxx`, see the
 `diagnostics` chapter); 2 an unreadable input file.

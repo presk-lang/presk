@@ -1,33 +1,33 @@
--- serve_minigpt.psk — Inférence et génération (§7).
--- Illustre : inference serve, quantification sous budget, kv_cache comme transformation
--- CERTIFIÉE du graphe, et échantillonnage sous l'effet Rand.
+-- serve_minigpt.psk — Inference and generation (§7).
+-- Illustrates: inference serve, quantization under a budget, kv_cache as a CERTIFIED
+-- graph transformation, and sampling under the Rand effect.
 import "minigpt.psk" as m
 
--- ── Échantillonnage d'un token ───────────────────────────────────────────────────
--- argmax et sample renvoient un idx[V] (classe Disc). sample porte l'effet Rand :
--- la graine circule explicitement façon PRNG splittable, pas d'état global (§2.2, §3.5).
+-- ── Sampling one token ───────────────────────────────────────────────────────────
+-- argmax and sample return an idx[V] (class Disc). sample carries the Rand effect and takes
+-- no key yet: the compiler draws it from a stream seeded by the run's seed (§2.2, §10).
 fn next_token(θ : params m.MiniGPT, ctx : idx[m.V][batch: B, seq: T],
               temperature : f64 = 0.8) -> idx[m.V][batch: B] uses Rand =
   let logits = m.MiniGPT.apply(θ, ctx)            -- ℝ[batch, seq, vocab: V]
-  let last   = logits[seq: -1]                    -- ℝ[batch, vocab: V] : dernière position
-  sample(last / real(temperature))               -- idx[V] par batch
+  let last   = logits[seq: -1]                    -- ℝ[batch, vocab: V]: last position
+  sample(last / real(temperature))               -- idx[V] per batch element
 
--- ── Configuration de service ─────────────────────────────────────────────────────
+-- ── Serving configuration ────────────────────────────────────────────────────────
 inference serve {
   model   = m.MiniGPT
   weights = "ckpt/final"
 
-  -- Budget d'erreur absolu, PUIS quantification int8 calibrée. Le compilateur garantit
-  -- la borne ; int8 est un choix de représentation, pas une réécriture du modèle (§7).
+  -- Absolute error budget, THEN calibrated int8 quantization. The budget is discharged by
+  -- measurement (§8.3); int8 is a representation choice, not a rewrite of the model (§7).
   precision = budget(abs_error = 1e-2) | quantize(int8, calibration = "data/calib.psk.d")
 
-  -- Cibles alternatives ; le même source sert les deux via des backends distincts (§8).
+  -- Alternative targets; the same source serves both through distinct backends (§8).
   target    = gpu(sm_90) | cpu(avx512)
 
   batching  = dynamic(max_batch = 64, timeout = 5ms)
 
-  -- kv_cache : transformation de programme VÉRIFIÉE. Le graphe avec cache dénote la même
-  -- fonction que sans cache, sous l'hypothèse de causalité portée par le type du masque
-  -- (causal_mask dans minigpt.psk) — pas un hack manuel (§7).
+  -- kv_cache: a VERIFIED program transformation. The graph with cache denotes the same
+  -- function as without cache, under the causality hypothesis carried by the mask's type
+  -- (causal_mask in minigpt.psk) — not a manual hack (§7).
   cache     = kv_cache(axis seq)
 }

@@ -244,3 +244,56 @@ fn kernel_dump_snapshot() {
     let text: String = backend.kernels.iter().map(|k| k.to_string()).collect();
     insta::assert_snapshot!("linear_kernels", text);
 }
+
+/// Statement H of plan 0.6.0, on the interpreter: a vector kernel is
+/// **bit-identical** to the scalar one, not merely within a tolerance.
+///
+/// That is the whole reason the vector form is cheap. Each lane is a
+/// different output column, so every output still accumulates the contracted
+/// axis in increasing order; the lanes change where partial results live,
+/// not the order in which anything is added (D42). A tolerance here would
+/// mean the design had gone wrong.
+#[test]
+fn a_vector_kernel_is_bit_identical_to_the_scalar_one() {
+    type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
+    let cases: &[Case] = &[
+        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 32), ("B", 4)]),
+        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 32), ("B", 4)]),
+        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+        ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
+    ];
+    let mut widened = 0usize;
+    for (rel, consts, entry, dims) in cases {
+        for d in [Dtype::F64, Dtype::F32] {
+            let r = Realization::uniform(d);
+            let (prog, core) = prepare(rel, consts);
+            let opts = RunOptions { entry: (*entry).into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
+            let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+            let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(d)).collect();
+            let run = |lanes: usize| -> Vec<u64> {
+                let mut b = KernelBackend::new(&core, &prog, &r, 0);
+                b.lanes = lanes;
+                let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
+                let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
+                bits_of(&out)
+            };
+            let scalar = run(1);
+            for lanes in [2usize, 4] {
+                let vector = run(lanes);
+                assert_eq!(scalar, vector, "{rel} {entry} ({d}, {lanes} lanes): a vector kernel must be bit-identical, not close");
+            }
+            widened += 1;
+        }
+    }
+    assert!(widened > 0);
+}
+
+/// Every real leaf's bits, in order.
+fn bits_of(v: &Value) -> Vec<u64> {
+    match v {
+        Value::Real(t) => t.data.to_f64().into_iter().map(|x| x.to_bits()).collect(),
+        Value::Tuple(xs) => xs.iter().flat_map(bits_of).collect(),
+        Value::Record(xs) => xs.iter().flat_map(|(_, x)| bits_of(x)).collect(),
+        _ => vec![],
+    }
+}

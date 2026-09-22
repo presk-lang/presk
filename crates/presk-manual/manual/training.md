@@ -1,7 +1,8 @@
 # Training: `presk train`
 
 `presk train FILE.psk` executes the `training run` of a file on the reference
-interpreter (0.2.0, step 5). Nothing in the loop is special to the
+interpreter (0.2.0, step 5) or, with `--backend native`, on compiled kernels
+(0.3.0 step 4, `native` chapter). Nothing in the loop is special to the
 interpreter: the objective and its gradient are PSK-Core functions (the
 gradient by reverse-mode differentiation, see the `language` chapter), the
 optimizer is the PSK-Core `adamw.init`, `adamw.lr` and `adamw.step` lowered
@@ -43,6 +44,8 @@ write ckpt/final.psk.d
 ```text
 presk train FILE.psk [--const NAME=N]… [--data FILE.psk.d] [--steps N] [--epochs N]
                      [--seed S] [--bits B] [--log-every N] [--ckpt DIR] [--json]
+                     [--backend interp|kernel|native] [--realize f64|f32|bf16|@R.json]
+                     [--threads N] [--opt [--profile FILE.json]]
 ```
 
 | Flag | Meaning |
@@ -55,6 +58,10 @@ presk train FILE.psk [--const NAME=N]… [--data FILE.psk.d] [--steps N] [--epoc
 | `--log-every N` | one line per `N` steps on standard error (default 1; 0 prints the last step only) |
 | `--ckpt DIR` | override the checkpoint directory |
 | `--json` | on standard output: `{model, steps, total, log: [{step, epoch, loss, lr, grad_norm}], final, checkpoints}` |
+| `--backend B` | the executor: `interp` (the default, at `--bits`), `kernel` (PSK-Kernel interpreted) or `native` (compiled by Cranelift) |
+| `--realize R` | the machine types on `kernel` and `native`: `f64` (the default), `f32`, `bf16`, or `@R.json`, a realization file — per site, per function (`presk solve --step`, below) or both; a realization that quantises weights is refused, since gradients and optimizer state are never quantised (D44) |
+| `--threads N` | workers a parallel kernel may use on `native` (default: the cores; `native` chapter) |
+| `--opt`, `--profile FILE` | rewrite the program with the e-graph optimizer first, extracting by the profile's predicted time when given (`optimization` chapter) |
 
 Exit codes: 0; 1 a diagnostic (compile time, or `E7001`/`E9xxx` at run
 time); 2 no `training run` in the file or an unreadable data file.
@@ -82,7 +89,7 @@ the specification, on the example data (`examples/minigpt/data/tokens.psk.d`,
 
 ```sh
 presk train tests/examples/minigpt/train_minigpt.psk \
-     --const V=64 --const D=16 --const H=2 --const L=2 --steps 20 --bits 64 --ckpt out/ckpt
+     --const V=64 --const D=16 --const H=2 --const L=2 --steps 20 --bits 64 --log-every 5 --ckpt out/ckpt
 ```
 
 ```text
@@ -120,7 +127,7 @@ run's seed, the model built with the run's dimensions, `torch.optim.AdamW`
 with the block's hyperparameters, the schedule as a multiplier set before
 every step, `clip_grad_norm_`, epochs or `--steps`, checkpoints with
 `torch.save` to the run's directory or `--ckpt`; `--dtype float64` for
-comparisons), and a copy of the data file. The same 20 steps take a tenth
+comparisons), and a copy of the data file. The same 20 steps take a fifth
 of a second where the interpreter takes half a minute:
 
 ```text
@@ -128,7 +135,7 @@ step 5/20  epoch 1  loss 4.158875  lr 7.500e-07
 step 10/20  epoch 1  loss 4.158844  lr 1.500e-06
 step 15/20  epoch 1  loss 4.158791  lr 2.250e-06
 step 20/20  epoch 2  loss 4.158709  lr 3.000e-06
-train.py: 20 steps in 0.1 s, final loss 4.158709, weights in …/ckpt/final.pt
+train.py: 20 steps in 0.2 s, final loss 4.158709, weights in …/ckpt/final.pt
 ```
 
 The loss differs from the interpreter's in the last digits because the
@@ -143,8 +150,9 @@ export also runs the same `K` steps on the native backend in `f64` and `f32`
 and writes `conformance/native_f64.json` and `native_f32.json`, which the
 `experiments` chapter reads.
 On the tiny MiniGPT, 20 steps with weight decay, clipping and the cosine
-warm-up agree to a worst relative gap of `1.3e-10` (tolerance `rtol 1e-6`,
-`atol 1e-9`; the test prints the measured gap). This is the "exact versus
+warm-up agree to a worst relative gap of `1.5e-10` with PyTorch 2.14 on
+falicon (`1.3e-10` on the development machine; tolerance `rtol 1e-6`, `atol
+1e-9`; the test prints the measured gap). This is the "exact versus
 almost" experiment of the specification applied to training. The batch axis
 is the leading axis of every tensor of the batch in both `train.py` and the
 test.
@@ -158,13 +166,50 @@ reproducible and every step drops differently; `dropout` draws its mask from
 that key (`language` chapter). A training run is the only place where
 dropout drops: everywhere else its mask is all ones, the expectation of the
 random function. A `stack{L}` fold passes the same extra arguments to each of
-its iterations, so the blocks of a stacked module would share one key; giving
-them independent ones needs a key derived from the loop index, which the
-specification has still to settle (question 33).
+its iterations, so blocks handed the key that way would share it. Since 0.5.0
+step 1 the key rides in the fold's *accumulator* instead, which is already
+threaded from one block to the next: each block splits it, uses one half and
+passes the other on, so every block drops differently and nothing new was
+needed (D37, question 51; the corpus GPT does this, `language` chapter).
+
+## A precision budget on the step
+
+A `training run` may declare `precision = budget(rel_error = ε)`. Since
+0.6.0 step 7b the budget has a meaning (D52): it binds **one optimizer
+step's parameter update**, measured against the exact step from the same
+state,
+
+```text
+‖θ̂′ − θ′‖₂ / ‖θ′ − θ‖₂ ≤ ε
+```
+
+where `θ′` is the objective's `vjp` followed by `adamw.step` over the reals
+and `θ̂′` the same step under a realization. It is discharged by measurement,
+never by a bound (D41, D51), on a stated state: a checkpoint followed by a
+warm-up in `f64` (`presk calibrate --step`). `presk solve --step` chooses a
+type for every function of the step under it and writes a realization with a
+`functions` map, which `presk train --realize @R.json` hands to every
+function it prepares (tutorial step 16 walks the three commands on the
+tutorial's tower; here they are on the corpus GPT):
+
+```sh
+presk calibrate --step corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+    --weights out/gpt_trained/final.psk.d --warmup 100 --steps 600 \
+    --realize f64 --realize f32 --realize recipe --out out/step_env.json
+presk solve --step corpus/nlp/05_gpt.psk --precision out/step_env.json --budget 1e-3 \
+    --profile out/gpt_prof.json --out out/step_1e-3.json
+presk train corpus/nlp/05_gpt.psk --backend native --realize @out/step_1e-3.json
+```
+
+A per-step budget does not bound a trajectory, and is not claimed to:
+`make step-train` measures where a run ends against the spread between
+seeds. The `precision` chapter, "A budget on the training step", has the
+numbers.
 
 ## Not in this version
 
-Resuming from a checkpoint, the
-`parallel` and `precision` clauses (checked, not executed; reproduced as
+Resuming from a checkpoint, the `parallel` clause, the `precision` clause
+read by `presk train` itself (it is discharged by `presk solve --step`, and
+the realization is passed with `--realize`; both clauses are reproduced as
 comments in the export), optimizers other than `adamw`, `.psk.d` checkpoints
 from `train.py` (it writes `.pt`), a training loop in code generation.

@@ -113,6 +113,9 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
 }
 
 const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
+// The MLPerf transcription, executed since 0.6.0 step 8 (D53): BERT-large's
+// program at tiny constants — post-normalized, three embeddings, the span head.
+const BERT_TINY: &[(&str, u64)] = &[("V", 100), ("D", 16), ("H", 2), ("L", 2)];
 
 #[test]
 fn examples_conform() {
@@ -129,6 +132,7 @@ fn examples_conform() {
         ("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)]),
         ("tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)]),
         ("tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
+        ("coverage/bert.psk", BERT_TINY, "BertSquad.apply", &[("B", 2), ("T", 8)]),
     ];
     let mut report = String::new();
     for (rel, consts, entry, dims) in cases {
@@ -358,4 +362,115 @@ fn gemm_row(n: usize, realize: &Realization) -> Vec<f64> {
     let out = presk_rt::Backend::call(&mut back, &p, args).unwrap();
     let Value::Real(t) = out else { panic!("a real tensor") };
     t.data.to_f64()
+}
+
+
+/// Statement H on the *compiled* path: the emitted vector kernel is
+/// bit-identical to the emitted scalar one. Step 1 checked this on the
+/// interpreter; a backend that got it wrong would be a silent wrong answer,
+/// which is the failure mode this whole design exists to prevent.
+#[test]
+fn the_emitted_vector_kernel_is_bit_identical() {
+    chdir_root();
+    type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
+    let cases: &[Case] = &[
+        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 32), ("B", 4)]),
+        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 32), ("B", 4)]),
+        ("tests/examples/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+    ];
+    for (rel, consts, entry, dims) in cases {
+        for (d, lanes) in [(Dtype::F64, 2usize), (Dtype::F32, 4)] {
+            let r = Realization::uniform(d);
+            let (prog, core) = prepare(rel, consts);
+            let opts = RunOptions { entry: (*entry).into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
+            let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+            let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(d)).collect();
+            let run = |n: usize| -> Vec<u64> {
+                let mut b = presk_cranelift::native_backend(&core, &prog, &r, 0).unwrap();
+                b.lanes = n;
+                let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
+                let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
+                leaf_bits(&out)
+            };
+            assert_eq!(run(1), run(lanes), "{rel} {entry} ({d}, {lanes} lanes): the emitted vector kernel must be bit-identical");
+        }
+    }
+}
+
+fn leaf_bits(v: &Value) -> Vec<u64> {
+    match v {
+        Value::Real(t) => t.data.to_f64().into_iter().map(|x| x.to_bits()).collect(),
+        Value::Tuple(xs) => xs.iter().flat_map(leaf_bits).collect(),
+        Value::Record(xs) => xs.iter().flat_map(|(_, x)| leaf_bits(x)).collect(),
+        _ => vec![],
+    }
+}
+
+/// Integer weights (0.6.0 steps 5b and 5c, D44). A kernel handed `int8` or
+/// `int4` weights loads them as `f32(q)·s`, which is exactly the value the
+/// reference path of step 5a substituted for them — so running on the integers must be
+/// **bit-identical** to running on their dequantised `f32` values, on both
+/// executors, scalar and in lanes, in `f32` and in `f64`. The integers are
+/// storage; nothing about the arithmetic may change.
+#[test]
+fn integer_weights_load_as_their_values() {
+    chdir_root();
+    type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], usize);
+    let cases: &[Case] = &[
+        ("tests/examples/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)], 0),
+        // Odd widths: an `int4` row of 13 starts every other row mid-byte.
+        ("tests/quant/odd.psk", &[], "L.apply", &[("B", 3)], 0),
+    ];
+    for (rel, consts, entry, dims, over) in cases {
+        integer_weights_case(rel, consts, entry, dims, *over);
+    }
+}
+
+fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], over: usize) {
+    use presk_rt::quant::{dequantize_params, param_paths, quantize_params, quantized_leaves};
+    use presk_rt::{AxisRef, Quant, QuantScheme};
+    let (prog, core) = prepare(rel, consts);
+    let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
+    let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+    let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(Dtype::F64)).collect();
+    for (bits, scheme) in [(8u8, QuantScheme::Absmax), (8, QuantScheme::Pow2), (4, QuantScheme::Absmax), (4, QuantScheme::Pow2)] {
+        // Every matrix, stacked ones included, over its second-to-last axis.
+        let mut r = Realization::uniform(Dtype::F32);
+        for p in param_paths(&args[0]) {
+            if p == "w" || p.ends_with(".w") {
+                r.quant.insert(p, Quant { bits, over: AxisRef::Pos(-2), scheme });
+            }
+        }
+        assert!(!r.quant.is_empty(), "{:?}", r.quant.keys());
+        let qs = quantize_params(&args[0], &r.quant).unwrap();
+        for d in [Dtype::F32, Dtype::F64] {
+            let r = Realization { default: d, ..r.clone() };
+            let with = |theta: Value| -> Vec<Value> {
+                let mut a: Vec<Value> = args.iter().map(|v| v.realize(d)).collect();
+                a[0] = theta;
+                a
+            };
+            let ints = with(quantized_leaves(&args[0].realize(d), &qs));
+            let floats = with(dequantize_params(&args[0].realize(d), &qs));
+            let reference = |n: usize| {
+                let mut b = presk_cranelift::native_backend(&core, &prog, &Realization::uniform(d), 0).unwrap();
+                b.lanes = n;
+                let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &Realization::uniform(d)).unwrap();
+                leaf_bits(&presk_rt::Backend::call(&mut b, &p, floats.clone()).unwrap())
+            };
+            let expected = reference(1);
+            assert_eq!(expected, reference(d.natural_lanes()), "{d}: the float path itself is lane-exact");
+            for n in [1, d.natural_lanes()] {
+                let mut b = presk_cranelift::native_backend(&core, &prog, &r, 0).unwrap();
+                b.lanes = n;
+                let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
+                let got = leaf_bits(&presk_rt::Backend::call(&mut b, &p, ints.clone()).unwrap());
+                assert!(b.kernels.iter().any(|k| k.inputs.iter().any(|s| s.kind == presk_kernel::ir::BufKind::Quant { bits, over })), "{rel} int{bits}: no kernel loaded integers");
+                assert_eq!(got, expected, "int{bits} {scheme:?} {d}, {n} lane(s): native on integers against native on f32(q·s)");
+            }
+            let mut b = presk_kernel::KernelBackend::new(&core, &prog, &r, 0);
+            let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
+            assert_eq!(leaf_bits(&presk_rt::Backend::call(&mut b, &p, ints.clone()).unwrap()), expected, "int{bits} {scheme:?} {d}: the kernel interpreter on integers");
+        }
+    }
 }

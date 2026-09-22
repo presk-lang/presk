@@ -69,3 +69,29 @@ since the first vector kernel is what forces it. The coprocessor and the GPU
 after, and the GPU only once PSK-Sched has a memory hierarchy, since a GPU
 kernel without one is a slow GPU kernel. `presk bench --calibrate` already
 fits the constants these would be tuned against.
+
+## Two things BERT-large showed (2026-09-22, 0.6.0 step 8)
+
+Running BERT-large's inference at MLPerf's constants (D53) measured two
+properties of today's kernels that the course GPT, at batch 16 and width 384,
+had not exposed.
+
+- **At batch 1 a forward pass runs on one core.** A kernel's threads split its
+  outermost exact axis (D31), and at batch 1 that axis has length one: one
+  sequence of 384 tokens takes 62 s in `f32` on one core of twenty. Splitting
+  the next exact axis when the outermost is too short — a contraction's rows,
+  `seq` — is exact for the same reason the batch split is, since every output
+  still accumulates its terms in order. It is the obvious fix, and it is not
+  in 0.6.0.
+- **At BERT-large's width the contraction waits for memory.** `int8` weights
+  run a sequence 2.2× faster than `f32`, at batch 1 as at batch 20; at batch
+  20 `bf16`, which only halves the bytes, is faster than `f32` too, and `f32`'s
+  vector lanes are slower than its scalar code. The blocked kernel loops over
+  the rows of the result, then over blocks of eight columns, then over the
+  contracted axis, so it reads the whole weight matrix again for every row: at
+  1024 × 4096, 16 MB in `f32` for each of 7 680 rows at batch 20, it streams
+  from memory, and an `int8` matrix is a quarter of the bytes. Packed panels
+  and cache blocking, item 1 above, would make it compute-bound there, and the
+  gain from narrow storage would shrink to what a memory-bound regime leaves.
+  The speedup measured is therefore partly a statement about the blocking this
+  kernel lacks, and it has to be measured again when item 1 exists.

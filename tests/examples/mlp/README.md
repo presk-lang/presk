@@ -1,20 +1,21 @@
-# `mlp/` — Le plus petit programme Presk complet
+# `mlp/` — The smallest complete Presk program
 
-Un perceptron à deux couches. À lire en premier : il ne montre que le socle du langage
-et rien de spécifique aux Transformers.
+A two-layer perceptron, to be read first: it shows only the foundation of the language
+and nothing specific to Transformers.
 
-## Ce que ça illustre
+## What it illustrates
 
-- `module` avec paramètres `param` et leur `init` (§4.1).
-- Composition de modules par `use` (§4.2).
-- Le pytree de paramètres `params net` engendré automatiquement (§6).
-- `grad` typé : `mse` est de classe `C∞`, donc dérivable — la régularité est inférée (§3.3, §5).
+- A `module` with `param` parameters and their `init` (§4.1).
+- Composition of modules through `use` (§4.2).
+- The parameter pytree `params net`, generated automatically (§3.4, §6).
+- Typed `grad`: `mse` is of class `C∞`, hence differentiable; the regularity is inferred,
+  not declared (§3.3, §5).
 
-## Fichiers
+## Files
 
-- [`mlp.psk`](mlp.psk) — les modules `Linear`, `MLP`, l'objectif `mse` et son gradient.
+- [`mlp.psk`](mlp.psk) — the `Linear` and `MLP` modules, the `mse` objective and its gradient.
 
-## Commandes (prospectives)
+## Commands
 
 ```sh
 presk check mlp.psk

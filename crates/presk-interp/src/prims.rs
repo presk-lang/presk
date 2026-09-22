@@ -529,7 +529,7 @@ impl<R: Real> Interp<'_, R> {
             }
             PrimOp::SplitKey { n } => {
                 let key = self.key_of(a(0)?)?;
-                Ok(Value::Tuple(key.split(*n).into_iter().map(Value::Key).collect()))
+                Ok(Value::tuple(key.split(*n).into_iter().map(Value::Key).collect()))
             }
             PrimOp::SliceParams { index } => Ok(self.slice_tree(a(0)?, *index as usize)),
             PrimOp::SetSlice => {
@@ -605,11 +605,11 @@ impl<R: Real> Interp<'_, R> {
                 other => other.clone(),
             })),
             PrimOp::SetField { name: field } => match a(0)? {
-                Value::Record(fs) => Ok(Value::Record(fs.iter().map(|(n, v)| (n.clone(), if n == field { a(1).unwrap().clone() } else { v.clone() })).collect())),
+                Value::Record(fs) => Ok(Value::record(fs.iter().map(|(n, v)| (n.clone(), if n == field { a(1).unwrap().clone() } else { v.clone() })).collect())),
                 other => err(format!("set_field on a {}", other.kind())),
             },
             PrimOp::SetElem { index } => match a(0)? {
-                Value::Tuple(vs) => Ok(Value::Tuple(vs.iter().enumerate().map(|(i, v)| if i == *index { a(1).unwrap().clone() } else { v.clone() }).collect())),
+                Value::Tuple(vs) => Ok(Value::tuple(vs.iter().enumerate().map(|(i, v)| if i == *index { a(1).unwrap().clone() } else { v.clone() }).collect())),
                 other => err(format!("set_elem on a {}", other.kind())),
             },
             PrimOp::SumTo => {
@@ -869,7 +869,7 @@ impl<R: Real> Interp<'_, R> {
                     }).collect();
                     out.push((n.clone(), self.stack_trees(&subs)?));
                 }
-                Ok(Value::Record(out))
+                Ok(Value::record(out))
             }
             Value::Tuple(vs) => {
                 let mut out = Vec::new();
@@ -880,7 +880,7 @@ impl<R: Real> Interp<'_, R> {
                     }).collect();
                     out.push(self.stack_trees(&subs)?);
                 }
-                Ok(Value::Tuple(out))
+                Ok(Value::tuple(out))
             }
             other => Ok(other.clone()),
         }

@@ -98,6 +98,17 @@ fn loss(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[] uses Rand =
   let (x, y) = batch
   mean(cross_entropy(GPT.apply(θ, x, k), y))
 
+-- Next-character accuracy: the fraction of positions whose most likely
+-- character is the one that follows, the kind of task metric MLPerf's
+-- accuracy rule thresholds (0.6.0 step 8). An evaluation, not an objective:
+-- `argmax` is discontinuous. `hits` names the axis `one_hot` leaves unnamed.
+fn hits(p : ℝ[batch: B, seq: T, vocab: V], q : ℝ[batch: B, seq: T, vocab: V]) -> ℝ[batch: B, seq: T] =
+  sum(axis vocab, p * q)
+
+fn accuracy(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[] uses Rand =
+  let (x, y) = batch
+  mean(hits(one_hot(argmax(GPT.apply(θ, x, k))), one_hot(y)))
+
 optimizer adamw {
   lr           : f64 = 3e-4
   betas        : (f64, f64) = (0.9, 0.95)

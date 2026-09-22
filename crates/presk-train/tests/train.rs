@@ -130,3 +130,48 @@ fn dropout_trains_from_a_per_step_key() {
     // right while it does, are checked in `presk-interp` against finite
     // differences; here the point is that the loop threads a fresh key.
 }
+
+/// A quantised realization (plan 0.6.0 step 5a, D44) runs on the dequantised
+/// parameters wherever an entry is run, and training refuses it: it applies
+/// to trained weights, and a quantised forward pass inside a training step
+/// would be quantisation-aware training.
+#[test]
+fn a_quantised_realization_runs_on_dequantised_weights() {
+    use presk_rt::{AxisRef, Quant, QuantScheme};
+    let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
+    let fns = prepare_training(&mut core, &prog, &typed).unwrap();
+    let mut r = Realization::uniform(Dtype::F64);
+    for (path, bits) in [("l1.w", 8u8), ("l2.w", 4)] {
+        r.quant.insert(path.into(), Quant { bits, over: AxisRef::Pos(-2), scheme: QuantScheme::Absmax });
+    }
+    let opts = presk_interp::RunOptions { entry: "loss".into(), dims: vec![("B".into(), 4)], seed: 3, bits: 128, digits: 17 };
+    let run = |realize: &Realization| {
+        let mut b = InterpBackend::new(&core, &prog, 128, 3);
+        Value::from_interp(&presk_rt::run_with(&mut b, &core, &prog, &opts, realize).unwrap().result).unwrap()
+    };
+    let exact = run(&Realization::uniform(Dtype::F64));
+    let quantised = run(&r);
+    assert_ne!(exact, quantised, "the quant map took effect");
+
+    // The same numbers as quantising the arguments by hand: the reference
+    // path is `f32(q·s)` substituted for the parameters, and nothing else.
+    let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+    let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
+    args[0] = r.quantized_params(&args[0]).unwrap();
+    let mut b = InterpBackend::new(&core, &prog, 128, 3);
+    let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
+    let by_hand = presk_rt::Backend::call(&mut b, &p, args).unwrap();
+    assert_eq!(by_hand, quantised);
+
+    // A misspelt parameter is refused rather than ignored.
+    let mut bad = r.clone();
+    bad.quant.insert("l3.w".into(), Quant { bits: 8, over: AxisRef::Pos(-2), scheme: QuantScheme::Absmax });
+    let mut b = InterpBackend::new(&core, &prog, 128, 3);
+    let Err(e) = presk_rt::run_with(&mut b, &core, &prog, &opts, &bad) else { panic!("a misspelt parameter ran") };
+    assert_eq!(e.code, "E7001");
+
+    let topts = TrainOptions { data: None, steps: Some(1), epochs: None, seed: 0, bits: 64, realize: r, ckpt: None, checkpoints: false };
+    let mut b = InterpBackend::new(&core, &prog, 64, 0);
+    let e = train(&mut b, &core, &prog, &typed, &fns, &topts, |_| {}).unwrap_err();
+    assert!(e.message.contains("trained weights"), "{}", e.message);
+}

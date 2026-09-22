@@ -88,3 +88,12 @@ module BertSquad {
   fn apply(ids : Tokens, types : idx[S][batch: B, seq: T], mask : ℝ[batch: B, seq2: T]) -> ℝ[batch: B, seq: T, ends: 2] =
     head.apply(bert.apply(ids, types, mask))
 }
+
+-- A SQuAD feature as MLPerf's harness hands it to the model: token ids,
+-- segment ids and the additive padding mask, in one tuple so that a data
+-- file can supply it (`presk run --data`, 0.6.0 step 8).
+type Feature = (Tokens, idx[S][batch: B, seq: T], ℝ[batch: B, seq2: T])
+
+fn squad(θ : params BertSquad, f : Feature) -> ℝ[batch: B, seq: T, ends: 2] =
+  let (ids, types, mask) = f
+  BertSquad.apply(θ, ids, types, mask)

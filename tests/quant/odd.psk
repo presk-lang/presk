@@ -1,0 +1,12 @@
+-- odd.psk — one contraction with odd widths (0.6.0 step 5c): an `int4`
+-- weight row of odd length starts every other row in the middle of a byte,
+-- so the four-lane load of the native backend is exercised from both
+-- nibbles of a byte.
+dim B
+const In = 5
+const Out = 13
+
+module L {
+  param w : ℝ[In, Out] init = xavier_uniform
+  fn apply(x : ℝ[batch: B, In]) -> ℝ[batch: B, Out] = x · w
+}

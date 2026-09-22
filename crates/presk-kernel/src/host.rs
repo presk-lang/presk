@@ -55,6 +55,12 @@ pub struct KernelBackend<'p> {
     pub dtype: Dtype,
     /// `"<function>/%<let>"` — the fusion group a dtype is assigned to.
     site: String,
+    /// Whether vector kernels are emitted (0.6.0 step 1). One is scalar,
+    /// which is every kernel before this version; anything greater asks for
+    /// **each kernel's own natural width**, since a mixed realization has
+    /// kernels of several types. Lanes are independent output elements, so a
+    /// vector kernel is bit-identical to its scalar form.
+    pub lanes: usize,
     /// Kernels in order of first use.
     pub kernels: Vec<Kernel>,
     outs: Vec<(Vec<Axis>, BufKind, u64)>,
@@ -105,7 +111,7 @@ impl<'p> KernelBackend<'p> {
     /// A kernel backend whose kernels are run by `exec`.
     pub fn with_exec(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64, exec: Box<dyn KernelExec>) -> Self {
         let dtype = realize.default;
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, plans: HashMap::new(), fused: 0, exec }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), lanes: 1, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, plans: HashMap::new(), fused: 0, exec }
     }
 
     // ----- buffers and values ------------------------------------------------
@@ -121,6 +127,8 @@ impl<'p> KernelBackend<'p> {
     /// Every real leaf in the backend's dtype (exact inputs rounded once).
     fn realize_value(&self, v: &Value) -> Value {
         v.map_leaves(&mut |leaf| match leaf {
+            // Integer weights stay integers: the kernels load them (D44).
+            Value::Real(t) if matches!(t.data, Buf::Quant(_)) => leaf.clone(),
             Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: self.buf(t.data.to_f64()) }),
             other => other.clone(),
         })
@@ -163,22 +171,30 @@ impl<'p> KernelBackend<'p> {
         // wrote in a different type. Converting here, at the kernel's edge,
         // is where the cost of a mixed assignment actually is, and it keeps
         // the loop nest monomorphic.
-        let converted: Vec<Buf> = inputs
+        // A buffer already in the kernel's type is lent, not copied: a copy
+        // per launch of every weight is a cost of the host, not of the
+        // realization, and it would be charged to every float row of a
+        // benchmark and to none of the integer ones.
+        let converted: Vec<std::borrow::Cow<Buf>> = inputs
             .iter()
-            .map(|b| match b {
-                Buf::I64(_) | Buf::Exact(_) => (*b).clone(),
-                b if b.dtype() == k.dtype.name() => (*b).clone(),
-                b => Buf::of(k.dtype, &b.to_f64()),
+            .zip(&k.inputs)
+            .map(|(b, spec)| match b {
+                Buf::I64(_) | Buf::Exact(_) => std::borrow::Cow::Borrowed(*b),
+                // Integer weights reach a kernel whose input the host marked;
+                // any other kernel reads their values, `f32(q)·s`.
+                Buf::Quant(_) if matches!(spec.kind, BufKind::Quant { .. }) => std::borrow::Cow::Borrowed(*b),
+                b if b.dtype() == k.dtype.name() => std::borrow::Cow::Borrowed(*b),
+                b => std::borrow::Cow::Owned(Buf::of(k.dtype, &b.to_f64())),
             })
             .collect();
-        let refs: Vec<&Buf> = converted.iter().collect();
+        let refs: Vec<&Buf> = converted.iter().map(|c| c.as_ref()).collect();
         let k = &self.kernels[idx];
         let mut out = output_buf(k);
         self.exec.run(idx, k, &refs, &mut out)?;
         self.launches += 1;
         let (axes, kind, bound) = self.outs[idx].clone();
         Ok(match kind {
-            BufKind::Real => Value::Real(Tensor { axes, data: out }),
+            BufKind::Real | BufKind::Quant { .. } => Value::Real(Tensor { axes, data: out }),
             BufKind::Idx => Value::Idx { bound, t: Tensor { axes, data: out } },
         })
     }
@@ -729,10 +745,27 @@ impl<'p> KernelBackend<'p> {
         // the cache key: two realizations that differ only in their order are
         // two different programs and must not share a compiled loop nest.
         let order = self.realize.order;
-        let key = format!("{op:?}|{dtype}|{}|{}", order.name(), operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"));
+        let lanes = if self.lanes > 1 { dtype.natural_lanes() } else { 1 };
+        // Integer weights: the lowering sees a real operand and emits real
+        // loads, and the kernel's input is marked afterwards, so the loads
+        // dequantise (D44). The marking is part of the kernel, so it is part
+        // of the key.
+        let quant: Vec<Option<BufKind>> = ins.iter().map(|t| match &t.data {
+            Buf::Quant(q) => Some(BufKind::Quant { bits: q.bits, over: q.over }),
+            _ => None,
+        }).collect();
+        let key = format!("{op:?}|{dtype}|{}|{lanes}|{}|{:?}", order.name(), operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"), quant);
         let bufs: Vec<&Buf> = ins.iter().map(|t| &t.data).collect();
         let op = op.clone();
-        self.launch(key, move || lower::lower_ordered(&op, &operands, dtype, order).unwrap_or_else(|| Err(format!("`{}`: no kernel for these operands", op.name()))), &bufs)
+        self.launch(key, move || {
+            let mut l = lower::lower_vec(&op, &operands, dtype, order, lanes).unwrap_or_else(|| Err(format!("`{}`: no kernel for these operands", op.name())))?;
+            for (spec, q) in l.kernel.inputs.iter_mut().zip(&quant) {
+                if let Some(kind) = q {
+                    spec.kind = *kind;
+                }
+            }
+            Ok(l)
+        }, &bufs)
     }
 }
 
@@ -787,6 +820,9 @@ fn with_data(t: &Tensor, axes: Vec<Axis>, data: Vec<f64>) -> Tensor {
 /// Slice `i` along the leading axis of every tensor leaf.
 pub fn slice_tree(v: &Value, i: usize) -> Value {
     v.map_leaves(&mut |leaf| match leaf {
+        // A stacked matrix keeps its integers: each layer's slice is still
+        // quantised, which is what puts a `stack{L}` fold's blocks on them.
+        Value::Real(Tensor { axes, data: Buf::Quant(q) }) if let Some(s) = q.slice_leading(i, axes[0].len) => Value::Real(Tensor { axes: axes[1..].to_vec(), data: Buf::Quant(std::sync::Arc::new(s)) }),
         Value::Real(t) if t.rank() >= 1 => {
             let chunk = t.numel() / t.axes[0].len.max(1);
             let data = t.data.to_f64()[i * chunk..(i + 1) * chunk].to_vec();

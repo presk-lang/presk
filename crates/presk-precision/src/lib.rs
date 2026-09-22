@@ -30,9 +30,12 @@
 //! distance to the denotation and it guarantees something. A *sensitivity*
 //! (`sensitivity`) is a first-order estimate of how much an output moves when
 //! a value is perturbed: it guarantees nothing and it ranks well. The solver
-//! **proposes with the sensitivity and verifies with the bound**, which is
-//! what the specification means by calling precision assignment an inverse
-//! Herbie. Code in this crate that mixes the two is wrong.
+//! **proposes with the sensitivity and verifies by measurement** against the
+//! exact reference (D41), because the bound, though sound, is vacuous on a
+//! transformer — still ten orders above the error once each sum's condition
+//! number is measured (D51). The root-sum-square reading of `propagate`
+//! (`Model::Statistical`) is an estimate like the sensitivity, and is printed
+//! as one. Code in this crate that mixes bounds and estimates is wrong.
 //!
 //! # What a bound is conditional on
 //!
@@ -46,9 +49,11 @@
 //!
 //! # Status
 //!
-//! The realization (step 2) lives in `presk-rt`, at the seam every backend
-//! already crosses. The magnitude envelope (step 3) is here. `propagate`,
-//! `sensitivity` and `solve` are still empty and are filled by steps 4 to 6.
+//! The realization lives in `presk-rt`, at the seam every backend already
+//! crosses. The magnitude envelope, the propagation (four rules for sums since
+//! 0.6.0 step 6), the sensitivities, the solver — over an entry's sites, and
+//! since 0.6.0 step 7b over a training step's functions — and the choice of
+//! quantised parameters are here.
 
 /// The realization: per fusion group a storage and an accumulator type, plus
 /// the reduction order a contraction is allowed to use.
@@ -66,5 +71,8 @@ pub mod envelope;
 pub mod propagate;
 
 pub mod sensitivity;
+
+/// Which parameters to store as integers (0.6.0 step 5d, D44).
+pub mod quant;
 
 pub mod solve;

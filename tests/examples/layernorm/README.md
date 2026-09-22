@@ -1,21 +1,21 @@
-# `layernorm/` — Normalisation de couche
+# `layernorm/` — Layer normalization
 
-Montre comment Presk traite la stabilité numérique : **elle n'est pas dans le code**.
-La sémantique est la division par l'écart-type réel exact ; le compilateur choisit
-sous le budget d'erreur comment l'évaluer sans débordement (§8.2).
+Shows how Presk handles numerical stability: **it is not in the code**.
+The semantics is the division by the exact real standard deviation; the compiler chooses,
+under the error budget, how to evaluate it without overflow (§8.2).
 
-## Ce que ça illustre
+## What it illustrates
 
-- Réductions sur un **axe nommé** : `mean(axis model, …)`.
-- `param` vecteurs (gain `γ`, biais `β`) et broadcast sur les axes de tête.
-- L'injection explicite `real : f64 -> ℝ` pour mêler un hyperparamètre (`eps`) à un réel.
-- Une variante `RMSNorm` sur le même patron.
+- Reductions over a **named axis**: `mean(axis model, …)`.
+- Vector `param`s (gain `γ`, bias `β`), broadcast over the leading axes.
+- The explicit injection `real : f64 -> ℝ` to mix a hyperparameter (`eps`) with a real.
+- An `RMSNorm` variant on the same pattern.
 
-## Fichiers
+## Files
 
-- [`layernorm.psk`](layernorm.psk) — `LayerNorm` et `RMSNorm`.
+- [`layernorm.psk`](layernorm.psk) — `LayerNorm` and `RMSNorm`.
 
-## Commandes (prospectives)
+## Commands
 
 ```sh
 presk check layernorm.psk

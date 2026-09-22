@@ -1,6 +1,8 @@
 //! Runtime values: tensors with named axes, indices, hyperparameters, keys,
 //! tuples, parameter records and function values.
 
+use std::sync::Arc;
+
 use presk_core::FuncId;
 
 use crate::key::Key;
@@ -113,6 +115,14 @@ impl Iterator for Indices {
 /// A binary operation on leaves, for [`Value::zip_leaves`].
 pub type LeafCombiner<'a, R> = dyn FnMut(&Value<R>, &Value<R>) -> Result<Value<R>, String> + 'a;
 
+/// The elements of a tuple or a record, shared rather than owned. The
+/// evaluator clones a value at every use, and a parameter record can hold
+/// hundreds of millions of exact reals — BERT-large at MLPerf's constants
+/// would have held about eight copies of its 335M parameters, some 180 GB
+/// (0.6.0 step 8) — so cloning a tree copies pointers and never a tensor. Build with
+/// [`Value::tuple`] and [`Value::record`]; read through `Deref`.
+pub type Shared<T> = Arc<Vec<T>>;
+
 #[derive(Clone, Debug)]
 pub enum Value<R: Real> {
     Real(Tensor<R>),
@@ -122,12 +132,20 @@ pub enum Value<R: Real> {
     F64(f64),
     Bool(bool),
     Key(Key),
-    Tuple(Vec<Value<R>>),
-    Record(Vec<(String, Value<R>)>),
+    Tuple(Shared<Value<R>>),
+    Record(Shared<(String, Value<R>)>),
     Closure { f: FuncId, captured: Vec<Value<R>> },
 }
 
 impl<R: Real> Value<R> {
+    pub fn tuple(vs: Vec<Value<R>>) -> Self {
+        Value::Tuple(Arc::new(vs))
+    }
+
+    pub fn record(fs: Vec<(String, Value<R>)>) -> Self {
+        Value::Record(Arc::new(fs))
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Value::Real(_) => "real tensor",
@@ -153,8 +171,8 @@ impl<R: Real> Value<R> {
     /// Apply `f` to every tensor leaf of a tree (records, tuples), keeping the structure.
     pub fn map_leaves(&self, f: &mut dyn FnMut(&Value<R>) -> Value<R>) -> Value<R> {
         match self {
-            Value::Tuple(vs) => Value::Tuple(vs.iter().map(|v| v.map_leaves(f)).collect()),
-            Value::Record(fs) => Value::Record(fs.iter().map(|(n, v)| (n.clone(), v.map_leaves(f))).collect()),
+            Value::Tuple(vs) => Value::tuple(vs.iter().map(|v| v.map_leaves(f)).collect()),
+            Value::Record(fs) => Value::record(fs.iter().map(|(n, v)| (n.clone(), v.map_leaves(f))).collect()),
             leaf => f(leaf),
         }
     }
@@ -162,16 +180,16 @@ impl<R: Real> Value<R> {
     /// Combine two trees of the same structure leaf by leaf.
     pub fn zip_leaves(&self, other: &Value<R>, f: &mut LeafCombiner<'_, R>) -> Result<Value<R>, String> {
         match (self, other) {
-            (Value::Tuple(a), Value::Tuple(b)) if a.len() == b.len() => Ok(Value::Tuple(a.iter().zip(b).map(|(x, y)| x.zip_leaves(y, f)).collect::<Result<_, _>>()?)),
+            (Value::Tuple(a), Value::Tuple(b)) if a.len() == b.len() => Ok(Value::tuple(a.iter().zip(b.iter()).map(|(x, y)| x.zip_leaves(y, f)).collect::<Result<_, _>>()?)),
             (Value::Record(a), Value::Record(b)) if a.len() == b.len() => {
                 let mut out = Vec::new();
-                for (x, y) in a.iter().zip(b) {
+                for (x, y) in a.iter().zip(b.iter()) {
                     if x.0 != y.0 {
                         return Err(format!("record fields differ: `{}` vs `{}`", x.0, y.0));
                     }
                     out.push((x.0.clone(), x.1.zip_leaves(&y.1, f)?));
                 }
-                Ok(Value::Record(out))
+                Ok(Value::record(out))
             }
             (Value::Tuple(_), _) | (Value::Record(_), _) | (_, Value::Tuple(_)) | (_, Value::Record(_)) => Err(format!("structure mismatch: {} vs {}", self.kind(), other.kind())),
             (a, b) => f(a, b),

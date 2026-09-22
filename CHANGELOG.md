@@ -1,6 +1,290 @@
 # Changelog
 
-## Unreleased — 0.5.0-dev
+## 0.6.0 — 2026-09-22
+
+Make it pay (`presk-specs/implementation/presk-plan-0.6.0.md`). Two versions
+have ended with the same sentence: 0.4.0 showed the exactness discipline
+affordable and the speed not there, 0.5.0 showed precision declarable, solved
+and verified and the speed still not there — statement D holds by
+measurement, statement E fails at 0.96×. A budget that buys nothing is a
+guarantee nobody will pay for, and the MLPerf comparison needs one
+realization that is both inside a budget *and* faster.
+
+0.5.0 established which three things must become true: arithmetic width must
+buy throughput (vector lanes, which D42 showed are **bit-exact** in the shape
+the blocked contraction already has), the objective must be time and not
+traffic, and the menu must be wide enough for the choice to matter (int8/int4
+with per-channel scales). The version also settles whether the condition
+number rescues the deterministic bound, and gives the ε curve its quality
+axis.
+
+**What it shows.** A narrower type buys time, twice, each time inside a
+declared budget measured against the exact denotation. A training step
+solved under a 10⁻³ budget on its update is **1.99×** faster than all-`f64`
+at course scale (statement J′), once the budget was given the whole step as
+its scope — a budget on the loss alone had given 1.13× (J). And `int8`
+weights run BERT-large inference at MLPerf's own constants **2.2×** faster
+than `f32`, 5.7·10⁻² from the exact logits: inside a budget of 10⁻¹, not
+10⁻². Vector lanes are bit-identical to the scalar kernels (H); `int8`
+weights stay inside a 10⁻² budget on the corpus GPT's loss (K); a quantised
+gap splits into the weights' rounding and the arithmetic, which only an
+exact reference can separate; and MLPerf's accuracy rule admits all eight
+realizations of the corpus GPT that a budget separates over twelve orders of
+magnitude. **What it does not show** is a realization inside a budget and
+faster than FP32, MLPerf's reference: the solved step is `f32` in every
+function and level with all-`f32` (30.0 against 31.0 s). Lanes buy little on
+a matmul where 3× was asked (I, retired: the factor is an instruction set's).
+The condition number does not rescue the deterministic bound, so a budget is
+discharged by measurement (question 56, option (c)); the quality axis is
+flat at this scale; and the 94× against PyTorch is still 0.4.0's, measured
+on another machine.
+
+- Step 9: documentation, tutorial step 16, version 0.6.0. The manual brought
+  to 0.6.0 as implemented: `status` closed with H, I, J, J′ and K and with
+  what the version has and has not; `experiments` §6, the statements of
+  0.6.0, and a rewritten "What these experiments do not show"; `cli`,
+  `native`, `training`, `serve`, `optimization`, `precision`, `language`,
+  `install`, `data` and the index corrected where they still described
+  0.3.0 to 0.5.0 (vectorization "not in this version", `solve` minimising
+  traffic, `train` without its native flags, per-layer keys before D37, lanes
+  said to make every run faster). Tutorial step 16, "A budget on the training
+  step": `presk calibrate --step`, `presk solve --step` and `presk train
+  --realize` on the tutorial's tower, where `bf16` loses the step to its
+  storage rounding, the recipe is 8.5·10⁻³ from the exact step, and the
+  solved step's run ends four thousand times closer to the `f64` run than a
+  change of seed. `make tutorial` now runs every command of the chapter,
+  steps 0 to 16 — step 0's, step 9's and step 15's were outside it — and
+  every quoted output was regenerated: step 0 still quoted the `presk --help`
+  of 0.2.0, step 12 a calibration from before fusion, step 15 a `traffic`
+  line `solve` no longer prints. `presk --help` takes its version from the
+  workspace (it said 0.4.0), and two stale help lines are fixed. Spec
+  questions 57–62 copied to `presk-specs` (`presk-spec-questions-0.6.0.md`).
+  The plan's §5 verification, on falicon: `make test` (120 tests),
+  `check-examples`, `conformance`, `precision`, `curve` (its eight training
+  runs redone from scratch, byte-identical), `coverage`, `experiment` and
+  `tutorial` pass; `quant-table`, `step-table` and `foil` give their tables
+  again; J′ re-measured at 2.02×; `--realize f64` byte-identical to 0.4.0's
+  on thirty outputs; every golden of 0.1.0–0.5.0 unchanged. Too long to run: one
+  course-scale epoch (two steps ran, and `make j-step`) and `make bert` at 24
+  blocks (run at two). `make experiment-gpt` fails, and has since 0.5.0 step
+  1: the exported `train.py` omits the dropout key the corpus GPT's objective
+  takes. Also found, and fixed: the day an envelope records was a constant
+  in the source (it is now the day of measurement, in UTC, with a test), and
+  `make curve`'s bound column printed the rule's name instead of the bound.
+  The 0.5.0 heading of this file said "Unreleased" although `v0.5.0` is
+  tagged.
+- Step 8: the MLPerf comparison, with numbers (D53). The foil rests on what
+  holds, each result stated as what it is. **Both rules on one model**
+  (`make foil`, `experiments/foil.sh`): MLPerf's rule — task accuracy within
+  99 % or 99.9 % of FP32 over the whole validation set — and a budget, applied
+  to the same eight realizations of the corpus GPT, on D50's all-`f64`
+  checkpoint and its held-out tenth (461 windows, 118 016 predictions; a new
+  entry of `05_gpt.psk`, `accuracy`, scored in `f64` as MLPerf's harness
+  scores from outside). The accuracy rule admits all eight, at 99.9 % as at
+  99 %, seven predictions being the largest change; the budget separates them
+  over twelve orders of magnitude from two windows and attributes every
+  quantised gap to the weights. A check takes 0.1 s, a pass 4 s, the exact
+  reference 7.5 s once. K restated: on held-out windows `int8` weights are
+  1.46·10⁻⁴ from the exact loss, not 3.23·10⁻⁶ — still inside 10⁻² by
+  seventy. **BERT-large runs** (`make bert`, `experiments/bert.sh`): inference
+  at MLPerf's constants on its initialization and SQuAD-shaped features
+  (`experiments/bert_features.py`, a new entry `squad`); the exact reference
+  of one feature in 1 h 57 min and 44 GB; on the logits, `int8` weights 5.7·10⁻²
+  from it (outside 10⁻²) and 2.2× faster than `f32` at batch 1 and 20, the first type
+  narrower than `f32` to buy time on a model; at batch 1 one core does all the
+  work. The exact interpreter **shares tuples and records** instead of
+  cloning them at every use, and its backend consumes its arguments: four
+  full-width blocks 40 → 13.5 GB, byte-identical, every golden unchanged. The
+  tiny BERT joins the native conformance suite; `make coverage` runs it. The
+  foil's 0.5.0 sentences that overclaimed are withdrawn; question 62, new.
+- Step 7b: a budget on the training step, and J again (D52). A budget in a
+  `training run` binds **one optimizer step's update**,
+  `‖θ̂′ − θ′‖₂ / ‖θ′ − θ‖₂`, against the exact step from the same state.
+  `presk calibrate --step` builds the state (a checkpoint plus `--warmup`
+  steps in `f64`), records the envelope of the exact step (the `vjp`'s and
+  `adamw.step`'s sites), and prints per `--realize` the update gap, the
+  **storage floor** (the exact `θ′` merely rounded to its storage type), the
+  gradient gap and the sampling noise between two batches; `recipe` is mixed
+  precision as practitioners use it, and `--reference f64` measures where the
+  exact step is not affordable. `presk solve --step` measures every function
+  of the step alone in `f32` and `bf16`, narrows greedily by predicted time
+  per unit of gap under a root-sum-square, verifies and widens; a
+  realization gains a `functions` map (a type per function). At `D = 64`: the
+  `f32` update is 2.2·10⁻⁴ from the exact one while its gradient is 6.4·10⁻⁷
+  — AdamW multiplies the error by 340, so **question 60 is answered with the
+  update, not the gradient**; the recipe is 2.9·10⁻², outside 10⁻²; the
+  solver takes `f32` for all sixteen functions and `bf16` nowhere, the profile
+  predicting it slower. **J′ holds at course scale: 1.99×** per step (`f64`
+  59.7 s, solved 30.0 s, all-`f32` 31.0 s, recipe 34.6 s), the solved step
+  6.7·10⁻⁵ from `f64` there and 2.2·10⁻⁴ from the exact step at `D = 64`.
+  Trained from scratch for 600 steps under the solved step, the GPT ends
+  2.9·10⁻⁴ from all-`f64`'s validation loss and 5.0·10⁻³ from its weights,
+  where two seeds end 1.22 apart. The storage floor grows as the learning rate falls,
+  so a relative update budget is stated at a state (question 61, new). New
+  `presk data diff`; `make step-table`, `make j-step`, `make step-train`.
+- Step 6: the condition number, and the answer about the bound (D51).
+  `presk calibrate` records at every sum and contraction `Σ|xᵢwᵢ|`,
+  `√Σ(xᵢwᵢ)²` and each operand's normwise factor (by re-evaluating it on
+  `|operands|`, `operands²` and ones), prints the worst condition numbers, and
+  takes `--weights`; the envelope records its weights and data slice. The
+  propagation has four rules for sums — `k` (0.5.0's), `normwise` (sound),
+  `cond` (the condition number, now the default, sound in every case tested)
+  and `rss` (an estimate) — chosen by `presk check --precision --model`, and
+  `--measure` prints the gap measured natively on the envelope's inputs
+  beside each. Median bound/gap on the conformance entries 1.8·10³ → 18; on
+  the trained corpus GPT 10³³ → 10¹⁰ in `f32`: **the condition number does
+  not rescue the bound**. The root-sum-square estimate is 3.7–10× the
+  measured gap in `f64`/`f32`/`bf16`, 2.4·10³× on a mixed realization.
+  Recommended to the specification: question 56 (c), a budget is discharged
+  by measurement; question 58 yes, a statistical model to propose and not to
+  discharge. `presk solve` runs on the envelope's data slice; `make
+  precision` measures the GPT on trained weights and text.
+- Step 7: the quality axis, and J at course scale (D50). `experiments/
+  curve.sh` gains a validation-loss column: each of the seven solved
+  realizations trains the corpus GPT (`D = 64`) from scratch, 600 steps on
+  90 % of the Code civil, evaluated in `f64` on the other 10 %. **The axis is
+  flat**: every run within 1.2·10⁻³ of all-`f64` (3.0263), no trend, while
+  changing the seed moves it by 0.13 — no knee in quality at this scale. The
+  solver columns are re-measured on trained weights at `T = 256` (D48): all
+  inside, 3.22× to 1.20× less traffic. **J fails at course scale: 1.13×** per
+  training step (`f64` 56.9 s, solved 50.2 s), while all-`f32` is 1.87×; the
+  solved realization covers the loss's sites, and the reverse sweep and the
+  optimizer, most of a step, stay at its `f64` default — question 60. The
+  sensitivity ranking re-measured on trained weights **reverses 0.5.0's
+  finding**: per element the token embedding is the most sensitive
+  parameter and the head the second, twenty times the down-projection, as
+  the folklore says. Statement D re-measured: 4.48·10⁻⁶ against a 10⁻³
+  budget. New `presk run --weights` and `--from`; the curve script reads
+  `solve`'s `cost` line again.
+- Step 5d: which weights to quantise, and statement K (D49). `presk solve
+  --quant [--scheme pow2]` offers every matrix parameter — by *declared*
+  rank, so a stacked bias is not one — as `int8` or `int4` on top of the
+  float assignment, priced by the gradient the reverse sweep already
+  computes and accepted by measurement. The signed first-order prediction
+  `Σ ∂L/∂w·(ŵ − w)` came within ten per cent of the measured gap where the
+  bound `Σ|g|·|δ|` was 230× too large and quantised nothing; the proposal
+  uses the root-sum-square. At 10⁻³ it quantises all nine matrices (five
+  `int8`, four `int4`, 11× fewer weight bytes), measured 3.11·10⁻³. `presk
+  quantize` gained `--data`, `--list`, and float realizations;
+  `make quant-table` and `make gpt-trained`. **Statement K holds**: `int8`
+  weights 3.23·10⁻⁶ from the exact loss on text, against a 10⁻² budget;
+  `int4` 8.32·10⁻⁵, `bf16` everywhere 4.27·10⁻⁴.
+- **A checkpoint of other dimensions was read from shifted offsets (D48).**
+  A `params` file records no shapes, and the reader only checked it was not
+  too short: the corpus GPT trained at `T = 256` and opened at `T = 32` —
+  which every "trained weights" measurement since 0.5.0 step 5 did — read
+  every leaf after `pos` from the wrong place, and `solve` ignored load
+  errors. Now refused (`E9005`). 0.5.0's statement D number, its sensitivity
+  ranking (and the finding against the folklore), the ε curve and 0.6.0 step
+  4's assignments were measured on those weights; they are to be redone on
+  properly trained ones in step 7. `make precision` and the curve now run at
+  `T = 256`.
+- Step 5c: `int4` kernels (D47). Both executors load a nibble as the
+  packing stores it; the JIT reads four lanes as one 32-bit word, shifted by
+  the first element's parity, each lane's nibble moved to the top of its
+  `i32` by a per-lane multiplication and shifted back arithmetically. `int4`
+  buffers carry four bytes of padding for that word, and a layer's slice
+  stays quantised when it starts on a byte. The bit-identity test covers
+  `int4` in both schemes, and a program of odd widths (`tests/quant/odd.psk`)
+  makes half its rows start mid-byte. Measured: the 16 MB contraction 52.9 →
+  10.1 ms (5.2×, level with `int8`); the GPT forward level at `D = 256`,
+  0.82× at `D = 64`.
+- Step 5b: integer kernels (D45). Integer weights cross the runtime seam as
+  `Buf::Quant` — integers and scales, shared rather than copied — and stay
+  integers through a `stack{L}` fold's slicing. The lowering is unchanged:
+  the host marks a kernel input that receives them (`BufKind::Quant`, part of
+  the cache key), and both executors load a marked input as `f32(q)·s`, the
+  JIT in four lanes at once (four bytes, sign-extended twice, converted,
+  times four scales). Running on the integers is **bit-identical** to running
+  on their dequantised values, on both executors, scalar and in lanes, in
+  `f32` and `f64`, which a test asserts; and with `pow2` scales, applying the
+  scale after the sum is bit-identical to applying it on load, which another
+  asserts. Measured (lanes on): a 64 × 1024 × 4096 contraction 47.6 → 10.7 ms
+  (4.4×), the GPT forward at `D = 256` 28.6 → 26.0 ms (1.10×), at `D = 64`
+  unchanged. `int4` is still read as values (5c).
+- **`presk bench` timed the loading of its inputs (D46).** Its inputs come
+  from the reference interpreter as exact reals, and every native row rounded
+  them to its machine type on every call, inside the timing; now each row
+  rounds (and quantises) once, outside it. On this machine that conversion
+  was most of a 1024³ matmul — `f64` 183 → 68 ms — so every `bench` figure
+  before this entry carries a constant on both sides and its ratios are
+  diluted, statements I and J included. Calibrated profiles are unaffected:
+  they time kernels, and the conversion was outside every kernel.
+- Step 5a: integer weights, the reference path (D44). A realization gains a
+  `quant` map: parameters by path (`blocks.attn.wq.w`), each with `bits` (8
+  or 4), the axis it is contracted over (`over`, a name or a position from
+  the end, since module parameters are written without axis names), and a
+  `scheme` (`absmax`, or `pow2` for exact dequantisation). Scales are
+  computed from the weights at load and never written into the realization
+  (question 57). `run`, `run --data` and `serve` run on the dequantised
+  parameters, `train` refuses a quantised realization, and a misspelt path is
+  an error rather than a no-op. New `presk quantize` splits the gap of the
+  output into its **representation** part (exact on `ŵ` against exact on `w`)
+  and its **arithmetic** part (the machine run on `ŵ` against exact on `ŵ`),
+  which only an exact reference can separate. On the corpus GPT at `D = 64`
+  after 12 steps, blocks and head quantised: `int8` 2.52·10⁻⁶ relative
+  (arithmetic 1.81·10⁻⁷), `int4` 1.06·10⁻⁴ (arithmetic 4.4·10⁻⁸), `pow2`
+  `int8` 4.40·10⁻⁶ — rounding the weights dominates by one to three orders.
+  No integer kernels yet (5b): the numbers are right and the bytes are not
+  saved at run time.
+- Vector lanes are **on by default** on the native backend, because they are
+  bit-exact: no accuracy to trade, no realization to declare, no gap to
+  measure, and a transformation that is free and exact has no reason to be
+  opt-in. It does not close statement J — it raises both sides, and the
+  solved realization is still 1.06× — but on the development machine it
+  made every native run faster for nothing (not everywhere: on falicon,
+  BERT-large at batch 20 is 15 % slower in lanes in `f32`, step 8). Turning it on exposed a bug: the lane width was taken from the
+  *realization's default*, so a mixed assignment sent a two-lane request to a
+  `bf16` kernel that cannot take one. The width belongs to each kernel's own
+  type.
+- Step 4: time as the solver's objective. `presk solve --profile` prices each
+  site with the roofline's own prediction, the dtype in `Q` and not in `W`,
+  and `W` from the site's elements and the weight of its primitive, which the
+  envelope now records. Under traffic the solver reported 2.67× less; under
+  time it reports 1.19× faster and the **relaxation floor rises above the
+  chosen cost** — narrowing everything would be slower, which the traffic
+  objective could not express. **Statement J fails at 1.06×** against 1.3×,
+  but the sign has turned: 0.5.0's traffic-solved assignment was 0.96×,
+  *slower* than doing nothing. Conversion costs at kernel edges are **not**
+  in the model, and the solved realization is not run with lanes; the uniform
+  rows show both are worth more than the assignment is.
+- Step 3: the machine profile fitted per realization. One profile now holds
+  the constants of every machine type and lane width on that machine, because
+  a narrow type's `π` is not a wide type's — which is the whole reason lanes
+  exist — and a cost model meant to compare types cannot have one `π`. Files
+  written before this step still load and still mean what they said.
+  Measured on the corpus GPT: `f64` π 6.36e9, `f32` 8.03e9, **`f32` with four
+  lanes 1.59e10**, two and a half times the `f64` figure. A bug of step 1 was
+  caught by this: the cost model counted a vector statement as *one*
+  element's work, which made the fitted π of a vector kernel come out below
+  its scalar form's — the opposite of what the hardware does.
+- Step 2: Cranelift vector emission. The lane count is the machine type's —
+  four `f32` or two `f64`, since Cranelift's vector types are 128 bits — and
+  anything else is refused rather than quietly rounded. **Statement H holds
+  on both paths**, asserted as an equality: the emitted vector kernel is
+  bit-identical to the emitted scalar one. **Statement I fails**: on a 1024³
+  matmul the lanes give 1.25× in `f64` (104.1 → 83.3 ms) and 1.15× in `f32`
+  (87.2 → 75.8), where it asked for 3×. The gain is real and free, the same
+  bits faster, but the blocked form already ran eight independent accumulator
+  chains so most of the parallelism was there. **Packed panels are not
+  written** and are the first thing to try before concluding anything about
+  the ceiling.
+- Step 1: the vector form in PSK-Kernel. Vector variables of `lanes` reals,
+  a contiguous load, a broadcast and lane-wise arithmetic, executed by the
+  kernel interpreter; the blocked contraction emits them when asked.
+  **Statement H holds on the interpreter**: a vector kernel is
+  *bit-identical* to the scalar one at two and four lanes in `f64` and `f32`,
+  which a test asserts as an equality rather than a tolerance. A lane is a
+  different output column, never a partial sum of one, so every output still
+  accumulates in increasing order — a layout change, not a reassociation, and
+  it owes no declared order and no gap. The Cranelift backend refuses a
+  vector kernel with a message; emitting them is step 2.
+- Step 0: version `0.6.0-dev`; **statement G retired in favour of H** (D43),
+  because G asked the wrong question — the kernel it describes is exact, so
+  the claim to make is bit-identity, which is stronger than any tolerance;
+  spec questions 57 to 59.
+
+## 0.5.0 — 2026-09-20
 
 Precision as a resource
 (`presk-specs/implementation/presk-plan-0.5.0.md`): RA3 of the research

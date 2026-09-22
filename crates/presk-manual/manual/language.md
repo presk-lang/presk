@@ -228,6 +228,12 @@ the schema, the checker resolves the block into a typed record (printed by
   types and the offending axis. When the file is missing the check is
   deferred to `presk train` with the warning `W0002`.
 - `epochs` and `checkpoint every N steps to "dir"` are recorded for the loop.
+- `parallel` and `precision` pass the schema and are not read. Since 0.6.0
+  step 7b, `precision = budget(rel_error = ε)` has a meaning — it binds one
+  optimizer step's parameter update, measured against the exact step
+  (`training` chapter, D52) — but the number is given to `presk solve --step
+  --budget ε` on the command line, and the realization it writes is passed
+  to `presk train --realize`.
 
 The `data` chapter defines the file format and the pipeline's semantics.
 
@@ -323,8 +329,8 @@ All binary operators are left-associative except `^`.
 ## Elaboration: what is resolved and checked today
 
 After parsing, `presk check` elaborates the file and its imports. This is
-the part of the semantics implemented so far; function *bodies* are still
-untyped.
+the first half of the static semantics; function bodies are typed after it
+("Typing", below).
 
 **Imports.** `import "path" as m` loads `path` relative to the importing
 file, elaborates it first, and makes its constants, dimensions, type aliases
@@ -540,7 +546,9 @@ fn block(x : ℝ[batch: B, model: D], key : key) -> ℝ[batch: B, model: D] uses
 
 Outside a training run the mask is all ones, which is the expectation of the
 random function `dropout` denotes: `presk run`, `presk serve` and the export
-evaluate the model's mean, and only `presk train` drops. An objective may
+evaluate the model with every mask at its expectation — the usual inference
+rule, which is the model's mean only where its output is affine in each mask —
+and only `presk train` drops. An objective may
 take a per-step key between `θ` and the batch (`training` chapter).
 
 **A key inside `stack{L}`** needs one idiom, and it is worth stating because

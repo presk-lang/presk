@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- A Rust toolchain, `rustc` ≥ 1.85 (edition 2024). Developed with 1.92.
+- A Rust toolchain, `rustc` ≥ 1.85 (edition 2024). Developed with 1.92 and 1.98.
 - `make` (the `Makefile` is a thin layer over `cargo`; every recipe can be
   run as the `cargo` command it wraps).
 - `m4` and a C compiler: the interpreter uses MPFR through the `rug` crate,
@@ -45,10 +45,14 @@ make tutorial                    # every command of the tutorial chapter (ends w
 make train-examples              # presk train on the regression and the tiny MiniGPT
 make experiment                  # exact versus almost (manual chapter `experiments`)
 make bench                       # every backend on the tiny MiniGPT (manual chapter `native`)
+make precision curve quant-table step-table j-step step-train foil bert
+                                 # the experiments of 0.5.0 and 0.6.0 (chapters `precision`, `experiments`; minutes to hours)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
-ignored by git and created with [uv](https://docs.astral.sh/uv/).
+ignored by git and created with [uv](https://docs.astral.sh/uv/). Without
+`uv`, `python3 -m venv .venv` followed by `.venv/bin/pip install` of the
+packages the `venv` target names does the same.
 
 Snapshot tests (crate `insta`) record the tokens, ASTs and rendered
 diagnostics of reference inputs under `crates/*/tests/snapshots/`; a change
@@ -78,15 +82,18 @@ crates/presk-train           the training loop over a Backend, presk train      
 crates/presk-serve           the generation loop over a Backend, presk serve         (0.3.0 step 5)
 crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles    (0.3.0 steps 6–7)
 crates/presk-sched           PSK-Sched v0: fusion groups over PSK-Core bodies       (0.4.0 step 4)
-crates/presk-precision       realizations, error bounds, sensitivity, the solver    (0.5.0 steps 2–6)
+crates/presk-precision       envelope, error bounds, sensitivity, the solver         (0.5.0 steps 2–6, 0.6.0)
 crates/presk-cli             the `presk` binary
 crates/presk-manual          this manual
 tests/examples               the example programs of presk-specs (do not edit here)
 tutorial                     the programs of the tutorial chapter
 tests/diag                   one erroneous program per diagnostic, with snapshots
 tests/data                   a token stream for the .psk.d tests
-tests/train                  a linear regression trained by presk train
-experiments                  the script of the `experiments` chapter
+tests/train                  regressions trained by presk train
+tests/quant                  a program of odd widths for the int4 kernels
+corpus/nlp                   the corpus of an NLP course (manual chapter `corpus`)
+coverage                     the MLPerf transcriptions (manual chapter `coverage`)
+experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert
 ```
 
 The example programs are refreshed from the specification repository with

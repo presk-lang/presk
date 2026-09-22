@@ -11,7 +11,8 @@ backend against the reference.
 An executor `prepare`s an entry (a PSK-Core function at bound dimensions
 and a realization) and `call`s it on runtime values. A runtime value is a
 tree (tuples, records) of tensors with named axes whose buffers are `f64`,
-`f32`, `i64` or *exact* MPFR reals. The reference interpreter is the first
+`f32`, `bf16`, `i64`, quantised weights (integers with their scales, since
+0.6.0) or *exact* MPFR reals. The reference interpreter is the first
 backend (`--backend interp`); its exact values cross the seam untouched, so
 the training loop written over the seam reproduces 0.2.0's results digit for
 digit. Input synthesis stays with the interpreter: any backend runs on the
@@ -57,6 +58,12 @@ record answers both (D34):
   realization assumed, because a bound without one is a different and
   unsupported claim (D35).
 
+A parameter a realization quantises (`precision` chapter) reaches the
+kernels as integers: `presk dump --stage kernel` shows such an input as
+`int8/o[…]` or `int4/o[…]`, `o` the axis its scales are constant along, and the kernel loads
+each element as `f32(q)·s` — in four lanes at a time when it has them — which
+is bit-for-bit the value the reference path substitutes (D45).
+
 `bf16` is **storage only**: buffers hold sixteen bits, arithmetic is `f32`,
 and conversion is a shift on the way in and one round to nearest even on the
 way out (D38). It halves the traffic of the memory-bound sweeps — `adamw.step`
@@ -78,9 +85,10 @@ arithmetic rather than by traffic and the conversion on every load and store
 is pure overhead. That is the whole reason precision has to be *solved* per
 site rather than chosen globally: the narrow type pays on the memory-bound
 sweeps and costs on the compute-bound contractions, and which is which is a
-question for a cost model, not for a flag. It is also why this version does
-the vectorized kernel before the curve — without vector lanes there is no
-regime in which arithmetic width alone buys time.
+question for a cost model, not for a flag. It is also why 0.5.0 planned the
+vectorized kernel before the curve — without vector lanes there is no regime
+in which arithmetic width alone buys time — and why 0.6.0 made the solver's
+objective predicted time (`precision` chapter, "Time, not traffic").
 
 Reductions and contractions accumulate in the accumulator type, indices are
 `i64`, hyperparameters and `nat` values are converted at their injection.
@@ -89,6 +97,76 @@ subtract the row maximum (a value-preserving rewrite over ℝ). Where a site
 hands a buffer to a kernel of another type, the conversion happens at the
 kernel's edge, which is where the cost of a mixed assignment actually is.
 The interpreter ignores the realization and computes at `--bits`.
+
+## The vector form
+
+Since 0.6.0 step 1 a kernel may hold **vector variables**: registers of
+`lanes` reals, with a contiguous load, a broadcast and lane-wise arithmetic.
+The one place they are used is the blocked contraction, whose shape was
+already right — eight accumulators over eight contiguous output columns, an
+inner loop reading one element of the left operand and eight of the right.
+
+**A lane is a different output column, never a partial sum of one.** Every
+output still accumulates the contracted axis in increasing order, so a vector
+kernel is **bit-identical** to its scalar form, and a test asserts exactly
+that at two and four lanes in `f64` and `f32` rather than a tolerance. That
+is statement H of plan 0.6.0, and it is why the vector kernel owes no
+declared reduction order and no measured gap: it is a layout change, not a
+reassociation. Decision D31 feared the other thing — splitting the *inner*
+sum — which is `Interleaved` and is still a different realization.
+
+Both executors emit it. Cranelift's vector types are 128 bits wide, so the
+lane count is the machine type's: four `f32` or two `f64`, and a request for
+anything else is refused rather than quietly rounded. `bf16` stays scalar,
+since a narrow lane would need a conversion per element. Lanes are **on by
+default** on the native backend (`run`, `train`, `serve`), each kernel at its
+own type's width: they change no bit, so there is nothing to declare and
+nothing to measure but the time. `presk bench` times every uniform
+realization with and without them (the `+lanes` rows). They do not always
+pay. On BERT-large at MLPerf's constants (step 8, `coverage` chapter), lanes
+make `int8` weights 1.9× faster at batch 1 and 1.5× at batch 20, and `f32`
+1.1× faster at batch 1 — but 15 % *slower* at batch 20, where scalar `f32`
+code wins. Lanes are chosen for the whole run, not by the cost model per
+kernel.
+
+**Statement H holds on both paths**, asserted as an equality: the emitted
+vector kernel is bit-identical to the emitted scalar one, and so is the
+interpreted one.
+
+`presk bench --native-only` on a 1024³ matmul, twelve cores, medians of
+three:
+
+| | median ms |
+|---|---|
+| `f64` scalar | 104.1 |
+| `f64`, two lanes | **83.3** |
+| `f32` scalar | 87.2 |
+| `f32`, four lanes | **75.8** |
+| `bf16` scalar | 97.2 |
+
+**Statement I fails.** It asked for at least three times the scalar figure;
+the lanes give 1.25× in `f64` and 1.15× in `f32`. The gain is real and it is
+free — the same bits, faster — but it is not the order of magnitude the
+kernels roadmap expects from vectorization, and the reason is worth naming
+rather than guessing at: the blocked form already ran eight independent
+accumulator chains, so the instruction-level parallelism the lanes add was
+largely there, and what remains is bound by loads rather than by issue. The
+packed panels this step also planned, which would make those loads
+unit-stride and aligned, are **not written**, and that is the first thing to
+try before concluding anything about the ceiling.
+
+These figures were taken on the development machine before D46 took the
+conversion of `bench`'s inputs out of the timing, so their ratios are
+diluted. Measured again on falicon (aarch64, twenty cores) at the end of
+0.6.0, four runs of the same command: `f64` 78–85 ms scalar and 68–75 ms in
+two lanes (1.1–1.2×), `f32` 46–53 ms scalar and 46–59 ms in four lanes (no
+measurable gain), `bf16` 40 ms, the fastest row. That is 41–46 GFLOP/s for
+the better `f32` row of each run and 54 for `bf16`, about 0.4.0's scalar
+figure (47–56) where I asked for three times it. At this size, on this machine, the kernel waits for memory, and a
+wider register does not help a load-bound loop. I is retired rather than
+pursued (plan 0.6.0, revision of 2026-09-20): the factor it asks for is in
+the matrix coprocessor, which `docs/kernels-roadmap.md` puts after this
+version.
 
 ## PSK-Kernel v0: `--backend kernel`
 
@@ -102,8 +180,9 @@ runtime values: calls, folds, tuples and records, the structural
 primitives of parameter trees (`slice`, `stack`, `set_field`, …), the
 initializers and `sample` (on the host, with the interpreter's ChaCha keys,
 so native and reference runs draw the same numbers), and one kernel launch
-per tensor primitive. `presk dump --stage kernel` runs an entry and prints
-the kernels it launched:
+per tensor primitive — since 0.4.0, per fusion group, a chain of elementwise
+primitives sharing one loop nest (`scheduling` chapter). `presk dump --stage
+kernel` runs an entry and prints the kernels it launched:
 
 ```sh
 presk dump tutorial/01_linear.psk --stage kernel --entry 'Linear{3, 2}.apply' --dim batch=4 --realize f32
@@ -111,14 +190,17 @@ presk dump tutorial/01_linear.psk --stage kernel --entry 'Linear{3, 2}.apply' --
 
 ```text
 -- 2 kernels, 2 launches, f32
+-- fusion: 2 launches without it, 0 saved (0%)
 kernel dot (%0 : f32[batch: 4, 3], %1 : f32[3, 2]) -> %2 : f32[batch: 4, 2] {
   for i0 in 0..4 {
-    for i1 in 0..2 {
-      s0 = 0
-      for i2 in 0..3 {
-        s0 = (s0 + (%0[i0, i2] * %1[i2, i1]))
+    for i2 in 0..2 {
+      %2[i0, i2] = 0
+    }
+    for i1 in 0..3 {
+      s0 = %0[i0, i1]
+      for i2 in 0..2 {
+        %2[i0, i2] = (%2[i0, i2] + (s0 * %1[i1, i2]))
       }
-      %2[i0, i1] = s0
     }
   }
 }
@@ -131,7 +213,10 @@ kernel add (%0 : f32[batch: 4, 2], %1 : f32[2]) -> %2 : f32[batch: 4, 2] {
 }
 ```
 
-The lowering follows the interpreter's semantics rule for rule: its
+The contraction is in the row-wise form of "Contractions" below, since two
+output columns are not a multiple of eight; each output still sums `k` in
+increasing order. The lowering follows the interpreter's semantics rule for
+rule: its
 alignment of axes for broadcasting (trailing positions when names agree,
 else by name), the contraction axes of `dot` and its adjoints, the general
 `ein`, the row-wise `softmax` and `cross_entropy`, gathers and scatter-adds
@@ -142,9 +227,11 @@ evaluator in the kernel's machine type, every operation rounded to that
 type: it is the first native-arithmetic realization and the yardstick of
 the code generator to come, not a fast path yet.
 
-Not in v0: tiles, memory spaces other than one global space, parallel
-axes, collectives, a dependency graph between launches (they are
-sequential), fusion, the versioned binary `.pskk` (spec question 35).
+Not in v0: tiles, memory spaces other than one global space, collectives, a
+dependency graph between launches (they are sequential), the versioned
+binary `.pskk` (spec question 35). Fusion groups (0.4.0), a parallel
+outermost loop split across threads (0.4.0, below) and the vector form
+(0.6.0, above) have been added since.
 
 ## Conformance
 
@@ -210,7 +297,7 @@ tolerance).
 
 ## Training natively
 
-`presk train --backend native [--realize f64|f32]` is the training loop of
+`presk train --backend native [--realize f64|f32|bf16|@R.json]` is the training loop of
 0.2.0 over the native backend: the objective, its `vjp` and `adamw.step` are
 compiled kernels, the folds over stacked blocks and the loop itself run on
 the host, the data pipeline, the schedule and the checkpoints are unchanged.
@@ -285,8 +372,10 @@ A 1024³ matmul in `f32` on twelve cores:
 The machine's scalar peak is about 84 GFLOP/s (twelve cores, one
 fused multiply-add per cycle, two flops each), so the blocked form reaches
 roughly two thirds of what this compiler can address without vector
-instructions. The remaining factor of four would come from those, and the
-`native` backend does not emit them yet — for the reason given under threads.
+instructions. The remaining factor of four was expected from those. 0.4.0
+did not emit them, for the reason given under threads; 0.6.0 does, exactly
+(the vector form, above), and they buy 1.1–1.25× rather than four, because
+the eight accumulators already gave the loop its parallelism.
 
 ## Threads: `--threads N`
 
@@ -324,15 +413,18 @@ split, because the outer loop bounds the workers (a batch of sixteen cannot
 use more than sixteen), and because what is left — host dispatch, small
 kernels, the sequential reductions — does not parallelize.
 
-**Vectorization is not in this version.** The kernels that would vectorize
+**Vectorization was not in 0.4.0.** The kernels that would vectorize
 exactly, the elementwise ones, are not where the time is; the time is in the
 contractions, whose innermost loop is a sum. Vectorizing a sum computes
 partial sums per lane and adds them at the end, which *reassociates* it and
 changes the result. That is a new realization, not an implementation detail:
 it needs its own declared reduction order and its own measured gap to the
-exact reference, which is how this tool treats every other realization. The
-plan of this version says so, and it is the honest reason the work stopped at
-threads.
+exact reference, which is how this tool treats every other realization, and
+it is why the work stopped at threads (D31). 0.5.0 then found the other way
+to put a contraction in lanes (D42): the blocked form's eight accumulators
+are eight different output *columns*, so lanes across them leave every sum
+in order. That is the vector form 0.6.0 emits, bit-identical to the scalar
+kernel.
 
 ## Speed
 
@@ -355,13 +447,14 @@ Training end to end, `presk train --backend native`:
 | MiniGPT `V=64 D=64 H=4 L=4`, 100 steps, batches of 32 | — | — | 32 s |
 | MiniGPT `V=64 D=64 H=4 L=4`, 500 steps, batches of 32 | — | — | 159 s |
 
-What these numbers are and are not. The kernels are naive loop nests, one
-per primitive, without fusion, tiling or vectorization: `adamw.step` is a
-dozen elementwise passes over every parameter and `MiniGPT.apply` a chain of
-small contractions; the host program is still interpreted between launches.
-Against the reference the gain is two orders of magnitude, which is what a
-native path is for; against PyTorch's BLAS on the same shapes it is far
-behind, as the plan expects, and the 0.3.0 e-graph pass with its calibrated
-cost model is the first tool for closing that gap. `f32` is not faster than
-`f64` here because the work is dominated by loop overhead, not by arithmetic
-width.
+What these numbers are and are not. They are 0.3.0's, taken before fusion,
+threads and blocked contractions (0.4.0) and vector lanes (0.6.0); the
+`experiments` chapter and the sections above have the later figures. The
+kernels were then naive loop nests, one per primitive, without fusion,
+tiling or vectorization: `adamw.step` was a dozen elementwise passes over
+every parameter and `MiniGPT.apply` a chain of small contractions, and the
+host program is still interpreted between launches. Against the reference
+the gain is two orders of magnitude, which is what a native path is for;
+against PyTorch's BLAS on the same shapes it was far behind, as the plan
+expected. `f32` is not faster than `f64` here because the work is dominated
+by loop overhead, not by arithmetic width.

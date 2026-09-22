@@ -215,6 +215,18 @@ presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 -
 presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt --profile out/profile.json
 ```
 
+**One profile, every machine type.** Since 0.6.0 step 3 a profile holds the
+constants of every machine type and lane width of the machine. A narrow
+type's `π` is not a wide type's — that is the reason lanes exist — and a cost
+model meant to compare machine types cannot have one `π`. `--calibrate` fits
+the `--realize` type as before and then times the same kernels in the other
+uniform realizations, `f64`, `f32` and `bf16`, each with and without lanes,
+keeping one set of constants per type and width; files written before still
+load and mean what they said. On the corpus GPT: `f64` π 6.36·10⁹ ops/s,
+`f32` 8.03·10⁹, `f32` in four lanes 1.59·10¹⁰, two and a half times the `f64`
+figure. The precision solver prices each site with its own type's constants
+(`precision` chapter, "Time, not traffic").
+
 ## Moving a scalar across a contraction
 
 The rule the plan of this version named — reassociating `(q·k)·v` into

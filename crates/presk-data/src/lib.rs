@@ -432,13 +432,42 @@ impl Reader {
     }
 
     /// Supplies the layout of a `params M` file (from the program).
+    ///
+    /// A `params` file records its model's name and not its leaves' shapes,
+    /// so the layout comes from the program at the dimensions it is opened
+    /// with, and the file must then be *exactly* the size that layout
+    /// implies. A longer file is not a truncation check passing: it is a
+    /// model of other dimensions, and decoding it by this layout would read
+    /// every leaf after the first mismatch from the wrong offsets (0.6.0 step
+    /// 5d, D48 — `pos : ℝ[T, D]` trained at `T = 256` and opened at `T = 32`).
     pub fn with_layout(mut self, layout: Layout) -> Result<Reader> {
         let need = self.data_start + self.header.count * layout.sample_bytes() as u64;
         if self.file_len < need {
             return err("E9003", format!("truncated: {} samples of {} bytes announced, {} bytes of data present", self.header.count, layout.sample_bytes(), self.file_len.saturating_sub(self.data_start)));
         }
+        if self.file_len > need {
+            return err("E9005", format!("{} bytes of data where {} samples of {} bytes were expected: the file holds a model of other dimensions (a parameter shaped by a dimension, such as `pos : ℝ[T, D]`, at another `T`?)", self.file_len.saturating_sub(self.data_start), self.header.count, layout.sample_bytes()));
+        }
         self.layout = Some(layout);
         Ok(self)
+    }
+
+    /// Every value of a `params M` file, in file order, without its layout.
+    /// A parameter tree holds only reals, stored as `f64`, so two
+    /// checkpoints of one model can be compared value for value without
+    /// the program that gives the tree its shape (`presk data diff`).
+    pub fn params_reals(&mut self) -> Result<Vec<f64>> {
+        if !self.header.sample_ty.starts_with("params ") {
+            return err("E9005", format!("`{}` is not a parameter tree", self.header.sample_ty));
+        }
+        let n = self.file_len.saturating_sub(self.data_start);
+        if n % 8 != 0 {
+            return err("E9003", format!("{n} bytes of parameters, not a whole number of f64"));
+        }
+        self.file.seek(SeekFrom::Start(self.data_start)).map_err(io)?;
+        let mut buf = vec![0u8; n as usize];
+        self.file.read_exact(&mut buf).map_err(io)?;
+        Ok(buf.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect())
     }
 
     pub fn header(&self) -> &Header {

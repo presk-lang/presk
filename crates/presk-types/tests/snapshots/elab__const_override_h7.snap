@@ -1,5 +1,6 @@
 ---
 source: crates/presk-types/tests/elab.rs
+assertion_line: 51
 expression: rendered
 ---
 [W0001] Warning: implicit dimension `B`
@@ -23,7 +24,7 @@ expression: rendered
 [E1005] Error: `HD` is not a natural number
     ,-[ tests/examples/minigpt/minigpt.psk:13:18 ]
     |
- 13 | const HD : nat = D / H     -- dimension par tête
+ 13 | const HD : nat = D / H     -- dimension per head
     |                  ^^|^^  
     |                    `---- evaluates to 768/7
     | 
@@ -32,7 +33,7 @@ expression: rendered
 [E1004] Error: static assertion fails: D % H == 0
     ,-[ tests/examples/minigpt/minigpt.psk:15:1 ]
     |
- 15 | static assert D % H == 0   -- fragment décidable de Presburger (§3.1)
+ 15 | static assert D % H == 0   -- decidable Presburger fragment (§3.1)
     | ^^^^^^^^^^^^|^^^^^^^^^^^  
     |             `------------- `D % H == 0` is false with the constants of this file
 ----'

@@ -17,7 +17,7 @@ fn run_opt(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)],
 /// A plausible machine profile (the fitted constants of a laptop), for the
 /// roofline extraction without measuring anything.
 fn synthetic_profile() -> presk_opt::Profile {
-    presk_opt::Profile { version: 1, dtype: "f64".into(), machine: "test".into(), pi: 2.0e9, beta: 1.0e10, lambda: 2.0e-7, spearman: Default::default(), kernels: vec![] }
+    presk_opt::Profile { version: 1, dtype: "f64".into(), machine: "test".into(), pi: 2.0e9, beta: 1.0e10, lambda: 2.0e-7, spearman: Default::default(), kernels: vec![], others: Default::default() }
 }
 
 fn run_with(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], bits: u32, profile: Option<presk_opt::Profile>) -> String {

@@ -17,6 +17,31 @@ pub enum BufKind {
     Real,
     /// Indices, `i64`.
     Idx,
+    /// A parameter stored as integers with a scale per channel, the scales
+    /// constant along axis `over` (0.6.0 step 5b, D44). A `Load` or `VLoad`
+    /// of it yields `f32(q)·s` in the kernel's arithmetic type. The lowering
+    /// never produces it: it emits ordinary real loads, and the host marks
+    /// an input it hands integer weights to, so no kernel shape needs to
+    /// know about quantisation.
+    Quant { bits: u8, over: usize },
+}
+
+impl BufSpec {
+    /// The strides of the scales of a [`BufKind::Quant`] buffer, one per
+    /// axis, zero along `over`: the scale of element `ix` is at
+    /// `Σ ix_a · sstride_a`.
+    pub fn scale_strides(&self) -> Vec<usize> {
+        let BufKind::Quant { over, .. } = self.kind else { return vec![0; self.dims.len()] };
+        let mut s = vec![0; self.dims.len()];
+        let mut acc = 1;
+        for a in (0..self.dims.len()).rev() {
+            if a != over {
+                s[a] = acc;
+                acc *= self.dims[a];
+            }
+        }
+        s
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -96,6 +121,23 @@ pub enum Expr {
     Select(Box<Expr>, Box<Expr>, Box<Expr>),
     ToF(Box<Expr>),
     ToI(Box<Expr>),
+
+    // ----- the vector form (0.6.0 step 1) -----
+    //
+    // A *lane* is an independent element of the same computation, never a
+    // partial sum of one: the blocked contraction's accumulators are
+    // different output columns, so lanes touch no addition's position and a
+    // vector kernel is bit-identical to its scalar form (D42). Nothing here
+    // may be used to split a reduction — that would be an `Interleaved`
+    // order and owes a declared reassociation.
+    /// A vector variable of the kernel's lane width.
+    Vv(usize),
+    /// `width` contiguous reals from buffer `.0`, the index naming the first.
+    VLoad(usize, Vec<Expr>),
+    /// The same scalar in every lane.
+    VSplat(Box<Expr>),
+    /// Lane-wise arithmetic.
+    VBin(BinOp, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,6 +152,10 @@ pub enum Stmt {
     /// (0.5.0 step 7). The variable is not a loop bound and carries no
     /// iteration of its own.
     SetL { var: usize, value: Expr },
+    /// Assign a vector variable (0.6.0 step 1).
+    VSet { var: usize, value: Expr },
+    /// Store a vector to `width` contiguous reals, the index naming the first.
+    VStore { buf: usize, index: Vec<Expr>, value: Expr },
     Store { buf: usize, index: Vec<Expr>, value: Expr },
     StoreI { buf: usize, index: Vec<Expr>, value: Expr },
     If { cond: Expr, then: Vec<Stmt> },
@@ -126,6 +172,10 @@ pub struct Kernel {
     pub nloops: usize,
     pub nreal: usize,
     pub nint: usize,
+    /// Vector variables, and how many lanes each holds. A width of one is a
+    /// scalar kernel, which is every kernel before 0.6.0.
+    pub nvec: usize,
+    pub lanes: usize,
     pub body: Vec<Stmt>,
 }
 
@@ -161,7 +211,13 @@ impl Kernel {
                     // variable would break the disjointness the analysis is
                     // about, so it disqualifies the axis.
                     Stmt::SetL { var: v, .. } if *v == var => *ok = false,
-                    Stmt::Set { .. } | Stmt::SetI { .. } | Stmt::SetL { .. } => {}
+                    Stmt::VStore { index, .. } => {
+                        *stores += 1;
+                        if !index.iter().any(|e| matches!(e, Expr::Iv(v) if *v == var)) {
+                            *ok = false;
+                        }
+                    }
+                    Stmt::Set { .. } | Stmt::SetI { .. } | Stmt::SetL { .. } | Stmt::VSet { .. } => {}
                 }
             }
         }
@@ -180,6 +236,7 @@ fn spec(s: &BufSpec, dtype: Dtype) -> String {
     let t = match s.kind {
         BufKind::Real => dtype.to_string(),
         BufKind::Idx => "i64".into(),
+        BufKind::Quant { bits, over } => format!("int{bits}/{over}"),
     };
     format!("{t}[{}]", axes.join(", "))
 }
@@ -193,6 +250,15 @@ impl fmt::Display for Expr {
             Expr::Iv(v) => write!(f, "i{v}"),
             Expr::Sv(v) => write!(f, "s{v}"),
             Expr::Si(v) => write!(f, "n{v}"),
+            Expr::Vv(v) => write!(f, "v{v}"),
+            Expr::VLoad(b, ix) => write!(f, "%{b}[{}]<v>", ix.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")),
+            Expr::VSplat(x) => write!(f, "splat({x})"),
+            Expr::VBin(op, a, b) => write!(f, "({a} {} {b})<v>", match op {
+                BinOp::Add | BinOp::IAdd => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul | BinOp::IMul => "*",
+                BinOp::Div => "/",
+            }),
             Expr::Bin(op, a, b) => {
                 let s = match op {
                     BinOp::Add | BinOp::IAdd => "+",
@@ -232,6 +298,8 @@ fn fmt_stmts(stmts: &[Stmt], indent: usize, out: &mut String) {
             Stmt::Set { var, value } => out.push_str(&format!("{pad}s{var} = {value}\n")),
             Stmt::SetI { var, value } => out.push_str(&format!("{pad}n{var} = {value}\n")),
             Stmt::SetL { var, value } => out.push_str(&format!("{pad}i{var} = {value}\n")),
+            Stmt::VSet { var, value } => out.push_str(&format!("{pad}v{var} = {value}\n")),
+            Stmt::VStore { buf, index, value } => out.push_str(&format!("{pad}%{buf}[{}] <v= {value}\n", index.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", "))),
             Stmt::Store { buf, index, value } | Stmt::StoreI { buf, index, value } => {
                 out.push_str(&format!("{pad}%{buf}[{}] = {value}\n", index.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")));
             }

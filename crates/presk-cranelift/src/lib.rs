@@ -109,6 +109,16 @@ impl NativeExec {
     }
 
     fn compile(&mut self, idx: usize, k: &Kernel) -> Result<KernelFn> {
+        // Cranelift's vector types are 128 bits wide, so the lane count a
+        // kernel asks for has to be the one the machine type gives: four
+        // `f32` or two `f64`. `bf16` is storage-only and would need a
+        // conversion per lane, which is step 5's business.
+        let vty = match (k.dtype, k.lanes) {
+            (_, 1) => None,
+            (Dtype::F32, 4) => Some(types::F32X4),
+            (Dtype::F64, 2) => Some(types::F64X2),
+            (d, n) => return err(format!("the native backend has no {n}-lane vector for {d}")),
+        };
         // `bf16` is a *storage* type: the loop nest is generated in `f32` and
         // only the loads and stores narrow (D34). So the arithmetic type and
         // the element size part company here, and nowhere else.
@@ -155,12 +165,41 @@ impl NativeExec {
                 b.def_var(*v, zero_f);
             }
             let strides: Vec<Vec<usize>> = k.inputs.iter().map(|s| s.strides()).chain(std::iter::once(k.output.strides())).collect();
-            let esize: Vec<i64> = k.inputs.iter().map(|s| if s.kind == BufKind::Idx { 8 } else { real_bytes }).chain(std::iter::once(if k.output.kind == BufKind::Idx { 8 } else { real_bytes })).collect();
+            let esize: Vec<i64> = k
+                .inputs
+                .iter()
+                .map(|s| match s.kind {
+                    BufKind::Idx => 8,
+                    BufKind::Quant { .. } => 1,
+                    BufKind::Real => real_bytes,
+                })
+                .chain(std::iter::once(if k.output.kind == BufKind::Idx { 8 } else { real_bytes }))
+                .collect();
+            // The scales of each integer input, in the pointer slots after the
+            // output, in input order (`NativeExec::run` puts them there).
+            let mut slot = nbufs;
+            let scales: Vec<Option<(CV, Vec<usize>)>> = k
+                .inputs
+                .iter()
+                .map(|s| match s.kind {
+                    BufKind::Quant { .. } => {
+                        let p = b.ins().load(types::I64, MemFlags::trusted(), bufs_ptr, (8 * slot) as i32);
+                        slot += 1;
+                        Some((p, s.scale_strides()))
+                    }
+                    _ => None,
+                })
+                .collect();
             let mut refs: HashMap<&'static str, cranelift_codegen::ir::FuncRef> = HashMap::new();
             for (n, id) in &libm_ids {
                 refs.insert(n, self.module.declare_func_in_func(*id, b.func));
             }
-            let mut g = Gen { b, fty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, loops, reals, ints, libm: refs };
+            let vecs: Vec<Variable> = match vty {
+                Some(t) => (0..k.nvec).map(|_| b.declare_var(t)).collect(),
+                None => Vec::new(),
+            };
+            let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
+            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, loops, reals, ints, vecs, libm: refs };
             // The outermost loop runs over the range the caller gives, so one
             // compiled kernel serves the sequential call and every worker.
             match (k.parallel_outer(), k.body.as_slice()) {
@@ -223,7 +262,8 @@ fn collect_libm(stmts: &[Stmt], out: &mut Vec<&'static str>) {
     for s in stmts {
         match s {
             Stmt::For { body, .. } => collect_libm(body, out),
-            Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::SetL { value, .. } => expr(value, out),
+            Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::SetL { value, .. } | Stmt::VSet { value, .. } => expr(value, out),
+            Stmt::VStore { value, .. } => expr(value, out),
             Stmt::Store { index, value, .. } | Stmt::StoreI { index, value, .. } => {
                 index.iter().for_each(|x| expr(x, out));
                 expr(value, out);
@@ -246,8 +286,16 @@ struct Gen<'a> {
     bufs: Vec<CV>,
     strides: Vec<Vec<usize>>,
     esize: Vec<i64>,
+    /// The kernel's vector type, when it has lanes.
+    vty: Option<Type>,
+    /// One Cranelift variable per vector variable of the kernel.
+    vecs: Vec<Variable>,
     /// Real buffers hold `bf16`: loads widen and stores round.
     narrow: bool,
+    /// For an integer input, the pointer to its scales and their strides.
+    scales: Vec<Option<(CV, Vec<usize>)>>,
+    /// Which integer inputs are `int4`, two to a byte (0.6.0 step 5c).
+    nibbles: Vec<bool>,
     loops: Vec<Variable>,
     reals: Vec<Variable>,
     ints: Vec<Variable>,
@@ -264,6 +312,65 @@ impl Gen<'_> {
         }
         let bytes = self.b.ins().imul_imm(off, self.esize[buf]);
         self.b.ins().iadd(self.bufs[buf], bytes)
+    }
+
+    /// Element `ix` of an integer input as the realization denotes it,
+    /// `f32(q)·s` — one `f32` multiplication, as `presk_rt::QBuf::value`
+    /// computes it, so the JIT and the kernel interpreter load the same bits —
+    /// widened exactly when the kernel computes in `f64`. `lane` moves along
+    /// the last axis, for the lanes of a vector load.
+    /// Whether buffer `buf` holds integer weights. The output never does, and
+    /// a kernel may read its own output back.
+    fn is_quant(&self, buf: usize) -> bool {
+        matches!(self.scales.get(buf), Some(Some(_)))
+    }
+
+    fn load_quant(&mut self, buf: usize, index: &[Expr], lane: i64) -> CV {
+        let (sp, sstrides) = self.scales[buf].clone().expect("an integer input has scales");
+        let q = if self.nibbles.get(buf).copied().unwrap_or(false) {
+            // `int4`: element `e` is the low nibble of byte `e/2` when `e` is
+            // even and the high one when it is odd, two's complement — the
+            // packing of `presk_rt::quant`. Shift it to the top of an `i32`
+            // and back arithmetically, which sign-extends four bits.
+            let mut e = self.b.ins().iconst(types::I64, lane);
+            for (x, s) in index.iter().zip(self.strides[buf].clone()) {
+                let i = self.gen_i(x);
+                let t = self.b.ins().imul_imm(i, s as i64);
+                e = self.b.ins().iadd(e, t);
+            }
+            let byte = self.b.ins().ushr_imm(e, 1);
+            let a = self.b.ins().iadd(self.bufs[buf], byte);
+            let b = self.b.ins().load(types::I8, MemFlags::trusted(), a, 0);
+            let b = self.b.ins().uextend(types::I32, b);
+            let odd = self.b.ins().band_imm(e, 1);
+            let odd = self.b.ins().ireduce(types::I32, odd);
+            let shift = self.b.ins().imul_imm(odd, 4);
+            let top = self.b.ins().iconst(types::I32, 28);
+            let up = self.b.ins().isub(top, shift);
+            let hi = self.b.ins().ishl(b, up);
+            let q = self.b.ins().sshr_imm(hi, 28);
+            self.b.ins().fcvt_from_sint(types::F32, q)
+        } else {
+            let a = self.addr(buf, index);
+            let q = self.b.ins().load(types::I8, MemFlags::trusted(), a, lane as i32);
+            let q = self.b.ins().sextend(types::I32, q);
+            self.b.ins().fcvt_from_sint(types::F32, q)
+        };
+        let mut off = self.b.ins().iconst(types::I64, 0);
+        for (e, s) in index.iter().zip(sstrides.clone()) {
+            if s == 0 {
+                continue;
+            }
+            let i = self.gen_i(e);
+            let t = self.b.ins().imul_imm(i, s as i64);
+            off = self.b.ins().iadd(off, t);
+        }
+        let last = sstrides.last().copied().unwrap_or(0) as i64;
+        let bytes = self.b.ins().imul_imm(off, 4);
+        let sa = self.b.ins().iadd(sp, bytes);
+        let s = self.b.ins().load(types::F32, MemFlags::trusted(), sa, (4 * last * lane) as i32);
+        let v = self.b.ins().fmul(q, s);
+        if self.fty == types::F64 { self.b.ins().fpromote(types::F64, v) } else { v }
     }
 
     /// `f32` to the sixteen bits of the nearest `bf16`, ties to even — the
@@ -285,9 +392,120 @@ impl Gen<'_> {
         self.b.ins().ireduce(types::I16, pick)
     }
 
+    /// A vector expression. Each lane is an independent output element, so
+    /// nothing here may reorder an addition; the instructions below are
+    /// lane-wise by construction (D42).
+    fn gen_v(&mut self, e: &Expr) -> CV {
+        let vty = self.vty.expect("a vector expression in a scalar kernel");
+        match e {
+            Expr::Vv(v) => self.b.use_var(self.vecs[*v]),
+            // Integer lanes are converted one at a time: the same arithmetic
+            // as the scalar load, lane by lane, so the vector kernel stays
+            // bit-identical to the scalar one (statement H).
+            // Four integer lanes in one go. `int8`: four bytes, sign-extended twice to
+            // `i32x4`, converted, and multiplied by four scales — the same
+            // `f32(q)·s` in each lane as the scalar load computes.
+            Expr::VLoad(buf, ix) if self.is_quant(*buf) && vty == types::F32X4 => {
+                let (sp, sstrides) = self.scales[*buf].clone().expect("an integer input has scales");
+                let v = if self.nibbles[*buf] {
+                    // Four `int4` lanes: the 32-bit word at byte `e/2`,
+                    // shifted so lane 0's nibble is at the bottom; then each
+                    // lane's nibble moved to the top of its `i32` by a
+                    // per-lane multiplication and brought back down
+                    // arithmetically, which sign-extends it. The word may
+                    // reach two bytes past the last element, which is why
+                    // `int4` buffers carry four bytes of padding.
+                    let mut e = self.b.ins().iconst(types::I64, 0);
+                    for (x, s) in ix.iter().zip(self.strides[*buf].clone()) {
+                        let i = self.gen_i(x);
+                        let t = self.b.ins().imul_imm(i, s as i64);
+                        e = self.b.ins().iadd(e, t);
+                    }
+                    let byte = self.b.ins().ushr_imm(e, 1);
+                    let a = self.b.ins().iadd(self.bufs[*buf], byte);
+                    let w = self.b.ins().load(types::I32, MemFlags::trusted(), a, 0);
+                    let odd = self.b.ins().band_imm(e, 1);
+                    let odd = self.b.ins().ireduce(types::I32, odd);
+                    let shift = self.b.ins().imul_imm(odd, 4);
+                    let w = self.b.ins().ushr(w, shift);
+                    let v = self.b.ins().splat(types::I32X4, w);
+                    let mut bytes = Vec::with_capacity(16);
+                    for j in 0..4u32 {
+                        bytes.extend_from_slice(&(1u32 << (28 - 4 * j)).to_le_bytes());
+                    }
+                    let c = self.b.func.dfg.constants.insert(cranelift_codegen::ir::ConstantData::from(bytes));
+                    let m = self.b.ins().vconst(types::I32X4, c);
+                    let v = self.b.ins().imul(v, m);
+                    self.b.ins().sshr_imm(v, 28)
+                } else {
+                    let a = self.addr(*buf, ix);
+                    let w = self.b.ins().load(types::I32, MemFlags::trusted(), a, 0);
+                    let v = self.b.ins().scalar_to_vector(types::I32X4, w);
+                    let v = self.b.ins().bitcast(types::I8X16, MemFlags::new().with_endianness(cranelift_codegen::ir::Endianness::Little), v);
+                    let v = self.b.ins().swiden_low(v);
+                    self.b.ins().swiden_low(v)
+                };
+                let q = self.b.ins().fcvt_from_sint(types::F32X4, v);
+                let mut off = self.b.ins().iconst(types::I64, 0);
+                for (e, st) in ix.iter().zip(sstrides.clone()) {
+                    if st == 0 {
+                        continue;
+                    }
+                    let i = self.gen_i(e);
+                    let t = self.b.ins().imul_imm(i, st as i64);
+                    off = self.b.ins().iadd(off, t);
+                }
+                let bytes = self.b.ins().imul_imm(off, 4);
+                let sa = self.b.ins().iadd(sp, bytes);
+                // Contiguous scales when the lanes run along a channel axis,
+                // one scale for all four when they run along `over`.
+                let s = if sstrides.last().copied().unwrap_or(0) == 1 {
+                    self.b.ins().load(types::F32X4, MemFlags::new(), sa, 0)
+                } else {
+                    let s = self.b.ins().load(types::F32, MemFlags::trusted(), sa, 0);
+                    self.b.ins().splat(types::F32X4, s)
+                };
+                self.b.ins().fmul(q, s)
+            }
+            Expr::VLoad(buf, ix) if self.is_quant(*buf) => {
+                let lanes = vty.lane_count() as i64;
+                let first = self.load_quant(*buf, ix, 0);
+                let mut v = self.b.ins().splat(vty, first);
+                for l in 1..lanes {
+                    let x = self.load_quant(*buf, ix, l);
+                    v = self.b.ins().insertlane(v, x, l as u8);
+                }
+                v
+            }
+            Expr::VLoad(buf, ix) => {
+                let a = self.addr(*buf, ix);
+                // Unaligned: the column a tile starts at need not be aligned.
+                self.b.ins().load(vty, MemFlags::new(), a, 0)
+            }
+            Expr::VSplat(x) => {
+                let s = self.gen_f(x);
+                self.b.ins().splat(vty, s)
+            }
+            Expr::VBin(op, a, c) => {
+                let (x, y) = (self.gen_v(a), self.gen_v(c));
+                match op {
+                    BinOp::Add | BinOp::IAdd => self.b.ins().fadd(x, y),
+                    BinOp::Sub => self.b.ins().fsub(x, y),
+                    BinOp::Mul | BinOp::IMul => self.b.ins().fmul(x, y),
+                    BinOp::Div => self.b.ins().fdiv(x, y),
+                }
+            }
+            other => {
+                let s = self.gen_f(other);
+                self.b.ins().splat(vty, s)
+            }
+        }
+    }
+
     fn gen_f(&mut self, e: &Expr) -> CV {
         match e {
             Expr::F(x) => fconst(&mut self.b, self.fty, *x),
+            Expr::Load(buf, ix) if self.is_quant(*buf) => self.load_quant(*buf, ix, 0),
             Expr::Load(buf, ix) => {
                 let a = self.addr(*buf, ix);
                 if self.narrow {
@@ -447,6 +665,19 @@ impl Gen<'_> {
                     let x = self.gen_i(value);
                     self.b.def_var(self.loops[*var], x);
                 }
+                // Vector kernels are refused before generation begins, so
+                // reaching here would mean the guard in `compile` was lost.
+                Stmt::VSet { var, value } => {
+                    let x = self.gen_v(value);
+                    self.b.def_var(self.vecs[*var], x);
+                }
+                Stmt::VStore { buf, index, value } => {
+                    // The lanes are contiguous output columns, so one store
+                    // of the whole register writes them all in order.
+                    let x = self.gen_v(value);
+                    let a = self.addr(*buf, index);
+                    self.b.ins().store(MemFlags::new(), x, a, 0);
+                }
                 Stmt::Store { buf, index, value } => {
                     let x = self.gen_f(value);
                     let a = self.addr(*buf, index);
@@ -485,6 +716,7 @@ fn buf_ptr(b: &Buf) -> Result<*mut u8> {
         Buf::F32(v) => v.as_ptr() as *mut u8,
         Buf::Bf16(v) => v.as_ptr() as *mut u8,
         Buf::I64(v) => v.as_ptr() as *mut u8,
+        Buf::Quant(q) => q.data.as_ptr() as *mut u8,
         Buf::Exact(_) => return err("native backend: an exact buffer reached a kernel"),
     })
 }
@@ -512,8 +744,14 @@ impl KernelExec for NativeExec {
             Buf::F32(v) => v.as_mut_ptr() as *mut u8,
             Buf::Bf16(v) => v.as_mut_ptr() as *mut u8,
             Buf::I64(v) => v.as_mut_ptr() as *mut u8,
-            Buf::Exact(_) => return err("native backend: an exact output buffer"),
+            Buf::Exact(_) | Buf::Quant(_) => return err("native backend: an exact or integer output buffer"),
         });
+        // The scales of the integer inputs, after the output (`compile`).
+        for (b, spec) in inputs.iter().zip(&k.inputs) {
+            if let (Buf::Quant(q), BufKind::Quant { .. }) = (b, spec.kind) {
+                ptrs.push(q.scales.as_ptr() as *mut u8);
+            }
+        }
         // Threads over the outermost axis, when the analysis says the writes are
         // disjoint and the kernel is big enough to pay for spawning. Each output
         // element is computed by the same inner loops in the same order, so the
@@ -552,7 +790,24 @@ impl KernelExec for NativeExec {
 
 /// A kernel backend whose kernels are JIT-compiled by Cranelift.
 pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64) -> Result<KernelBackend<'p>> {
-    Ok(KernelBackend::with_exec(prog, elab, realize, seed, Box::new(NativeExec::new()?)))
+    let mut b = KernelBackend::with_exec(prog, elab, realize, seed, Box::new(NativeExec::new()?));
+    b.lanes = 2;
+    Ok(b)
+}
+
+/// The lane count a machine type gets by default.
+///
+/// **On, not off.** A lane is an independent output column, so a vector
+/// kernel is bit-identical to its scalar form (D42, asserted by test on both
+/// executors): there is no accuracy to trade, no realization to declare and
+/// no gap to measure. A transformation that is free and exact has no reason
+/// to be opt-in, and leaving it off is how 0.6.0 step 4 came to measure a
+/// solved realization against a scalar baseline and under-report it.
+///
+/// `bf16` stays scalar: a narrow lane needs a conversion per element, which
+/// is a different kernel and a different measurement.
+pub fn natural_lanes(d: Dtype) -> usize {
+    d.natural_lanes()
 }
 
 /// The same backend with an explicit number of workers, so a caller can pin it
@@ -560,5 +815,7 @@ pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Re
 pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64, threads: usize) -> Result<KernelBackend<'p>> {
     let mut exec = NativeExec::new()?;
     exec.threads = threads.max(1);
-    Ok(KernelBackend::with_exec(prog, elab, realize, seed, Box::new(exec)))
+    let mut b = KernelBackend::with_exec(prog, elab, realize, seed, Box::new(exec));
+    b.lanes = 2;
+    Ok(b)
 }

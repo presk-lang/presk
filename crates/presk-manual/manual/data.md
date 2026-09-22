@@ -53,6 +53,7 @@ presk data encode INPUT.txt --vocab VOCAB.json -o TOKENS.txt
 presk data pack --type TYPE INPUT.txt -o OUT.psk.d
 presk data lm-windows --vocab V --seq T [--stride S] TOKENS.txt -o OUT.psk.d
 presk data info FILE.psk.d [--samples N]
+presk data diff A.psk.d B.psk.d
 presk data export FILE.psk.d -o OUT.json
 ```
 
@@ -77,6 +78,10 @@ presk data export FILE.psk.d -o OUT.json
   gives every window. The shift between input and target is done here, once,
   rather than by the language's `stream` (question 29).
 - **`info`** prints the header and the first samples.
+- **`diff`** compares two files of the same type value for value, over their
+  real leaves: `‖a − b‖₂`, and relative to `‖a‖₂` (0.6.0 step 7b). Two
+  checkpoints compared this way say how far two training runs ended apart,
+  without the program (tutorial step 16).
 - **`export`** writes the samples as JSON (tensors as nested lists, tuples as
   lists, trees as objects), for the PyTorch side and for tests.
 

@@ -73,15 +73,25 @@ struct B {
     nloops: usize,
     nreal: usize,
     nint: usize,
+    /// Vector variables and the lane width this kernel uses (1 = scalar).
+    nvec: usize,
+    lanes: usize,
 }
 
 impl B {
     fn new() -> B {
-        B { nloops: 0, nreal: 0, nint: 0 }
+        B { nloops: 0, nreal: 0, nint: 0, nvec: 0, lanes: 1 }
     }
     fn iv(&mut self) -> usize {
         self.nloops += 1;
         self.nloops - 1
+    }
+    /// A vector variable of `lanes` reals. The first call fixes the kernel's
+    /// lane width; every vector in one kernel shares it.
+    fn vv(&mut self, lanes: usize) -> usize {
+        self.lanes = lanes;
+        self.nvec += 1;
+        self.nvec - 1
     }
     fn sv(&mut self) -> usize {
         self.nreal += 1;
@@ -142,7 +152,7 @@ fn load(buf: usize, index: Vec<Expr>) -> Expr {
 }
 
 fn kernel(name: impl Into<String>, dtype: Dtype, ins: &[Operand], out_axes: &[Axis], out_kind: BufKind, b: &B, body: Vec<Stmt>) -> Kernel {
-    Kernel { name: name.into(), dtype, inputs: ins.iter().map(|o| spec(&o.axes, o.kind)).collect(), output: spec(out_axes, out_kind), nloops: b.nloops, nreal: b.nreal, nint: b.nint, body }
+    Kernel { name: name.into(), dtype, inputs: ins.iter().map(|o| spec(&o.axes, o.kind)).collect(), output: spec(out_axes, out_kind), nloops: b.nloops, nreal: b.nreal, nint: b.nint, nvec: b.nvec, lanes: b.lanes, body }
 }
 
 fn done(kernel: Kernel, out_axes: Vec<Axis>) -> Result<Lowered> {
@@ -210,11 +220,17 @@ pub fn lower(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Option<Result<Lowere
 /// `Interleaved` order selects a contraction that reassociates and says so
 /// (D31); every other order keeps the exact forms of 0.4.0.
 pub fn lower_ordered(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Option<Result<Lowered>> {
+    lower_vec(op, ins, dtype, order, 1)
+}
+
+/// The same, emitting `lanes`-wide vectors where the shape allows (0.6.0
+/// step 1). Lanes are independent output elements, so this is exact.
+pub fn lower_vec(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: ReductionOrder, lanes: usize) -> Option<Result<Lowered>> {
     Some(match op {
         PrimOp::Add | PrimOp::Sub | PrimOp::Mul | PrimOp::Div => elementwise_binary(op, ins, dtype),
         PrimOp::Neg | PrimOp::Exp | PrimOp::Log | PrimOp::Tanh | PrimOp::Sqrt | PrimOp::Sin | PrimOp::Cos | PrimOp::Abs | PrimOp::Gelu | PrimOp::GeluDeriv | PrimOp::Relu | PrimOp::Heaviside | PrimOp::Sign | PrimOp::Sigmoid | PrimOp::Pow(_) => unary(op, ins, dtype),
         PrimOp::Real if ins.len() == 1 && ins[0].kind == BufKind::Idx => unary(op, ins, dtype),
-        PrimOp::Dot | PrimOp::Matmul => dot(ins, dtype, order),
+        PrimOp::Dot | PrimOp::Matmul => dot(ins, dtype, order, lanes),
         PrimOp::DotVjpL => dot_vjp_l(ins, dtype),
         PrimOp::DotVjpR => dot_vjp_r(ins, dtype),
         PrimOp::Ein { operands, output } => ein(ins, operands, output, dtype),
@@ -282,7 +298,7 @@ pub fn fused(steps: &[Step], ins: &[Operand], out: &[Axis], dtype: Dtype) -> Res
             .map(|src| match src {
                 Src::Input(k) => match ins[*k].kind {
                     BufKind::Idx => Expr::ToF(Box::new(Expr::LoadI(*k, idx[*k].clone()))),
-                    BufKind::Real => load(*k, idx[*k].clone()),
+                    BufKind::Real | BufKind::Quant { .. } => load(*k, idx[*k].clone()),
                 },
                 Src::Step(k) => vals[*k].clone(),
             })
@@ -399,7 +415,7 @@ fn contraction_ordered(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>
 const GEMM_TILE: usize = 8;
 
 /// `x[..., K] · w[K, rest…]`.
-fn dot(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> {
+fn dot(ins: &[Operand], dtype: Dtype, order: ReductionOrder, lanes: usize) -> Result<Lowered> {
     let (x, w) = (tensor_in(ins, 0, "dot")?, tensor_in(ins, 1, "dot")?);
     if x.axes.is_empty() || w.axes.is_empty() {
         return Err("dot: both operands need at least one axis".into());
@@ -432,6 +448,37 @@ fn dot(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> 
         let mut bd = B::new();
         let ov = bd.loops(&opre);
         let (jb, kv) = (bd.iv(), bd.iv());
+        // Lanes, when asked for. Each lane is a different output column, so
+        // every output still accumulates `k` in increasing order and the
+        // vector kernel is **bit-identical** to the scalar one (D42) — this
+        // is a layout change, not a reassociation, and it is why it owes no
+        // realization and no gap.
+        if lanes > 1 && GEMM_TILE % lanes == 0 {
+            let groups = GEMM_TILE / lanes;
+            let accs: Vec<usize> = (0..groups).map(|_| bd.vv(lanes)).collect();
+            let col0 = |g: usize| bin(BinOp::IAdd, bin(BinOp::IMul, Expr::Iv(jb), Expr::I(GEMM_TILE as i64)), Expr::I((g * lanes) as i64));
+            let xs = bd.sv();
+            let mut xix: Vec<Expr> = ov[..lead].iter().map(|v| Expr::Iv(*v)).collect();
+            xix.push(Expr::Iv(kv));
+            let mut inner = vec![Stmt::Set { var: xs, value: load(0, xix) }];
+            for (g, a) in accs.iter().enumerate() {
+                let mut wix = vec![Expr::Iv(kv)];
+                wix.extend(ov[lead..].iter().map(|v| Expr::Iv(*v)));
+                wix.push(col0(g));
+                let prod = Expr::VBin(BinOp::Mul, Box::new(Expr::VSplat(Box::new(Expr::Sv(xs)))), Box::new(Expr::VLoad(1, wix)));
+                inner.push(Stmt::VSet { var: *a, value: Expr::VBin(BinOp::Add, Box::new(Expr::Vv(*a)), Box::new(prod)) });
+            }
+            let mut body: Vec<Stmt> = accs.iter().map(|a| Stmt::VSet { var: *a, value: Expr::VSplat(Box::new(f(0.0))) }).collect();
+            body.push(Stmt::For { var: kv, bound: k, body: inner });
+            for (g, a) in accs.iter().enumerate() {
+                let mut cix: Vec<Expr> = ov.iter().map(|v| Expr::Iv(*v)).collect();
+                cix.push(col0(g));
+                body.push(Stmt::VStore { buf: 2, index: cix, value: Expr::Vv(*a) });
+            }
+            let tiles = Stmt::For { var: jb, bound: jn / GEMM_TILE, body };
+            let kern = kernel("dot", dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &opre, vec![tiles]));
+            return done(kern, out);
+        }
         let acc: Vec<usize> = (0..GEMM_TILE).map(|_| bd.sv()).collect();
         // `jb · TILE + t`, the column this accumulator owns.
         let col = |t: usize| bin(BinOp::IAdd, bin(BinOp::IMul, Expr::Iv(jb), Expr::I(GEMM_TILE as i64)), Expr::I(t as i64));

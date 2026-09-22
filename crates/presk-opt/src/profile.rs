@@ -7,6 +7,8 @@
 //! ones; the quality metric is Spearman's rank correlation between predicted
 //! and measured times, the roadmap's evaluation metric for cost models.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// One measured kernel.
@@ -39,6 +41,24 @@ pub struct Profile {
     /// Rank correlations of three predictors with the measured times.
     pub spearman: Correlations,
     pub kernels: Vec<Sample>,
+    /// Constants fitted for *other* realizations on the same machine, keyed
+    /// by realization label (0.6.0 step 3).
+    ///
+    /// A narrow type's `π` is not a wide type's — that is the whole reason
+    /// vector lanes exist — so a cost model that means to compare machine
+    /// types cannot have one `π`. The top-level fields stay the profile's
+    /// own realization, so every file written before this step still loads
+    /// and still means what it said.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub others: BTreeMap<String, Fit>,
+}
+
+/// One realization's fitted constants.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Fit {
+    pub pi: f64,
+    pub beta: f64,
+    pub lambda: f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -55,6 +75,23 @@ impl Profile {
     /// Predicted seconds of one kernel launch.
     pub fn predict(&self, work: f64, bytes: f64) -> f64 {
         self.lambda + (work / self.pi).max(bytes / self.beta)
+    }
+
+    /// The constants of a realization, its own or another's.
+    pub fn fit_for(&self, label: &str) -> Fit {
+        if label == self.dtype {
+            return Fit { pi: self.pi, beta: self.beta, lambda: self.lambda };
+        }
+        self.others.get(label).copied().unwrap_or(Fit { pi: self.pi, beta: self.beta, lambda: self.lambda })
+    }
+
+    /// Predicted seconds for a realization the profile may have measured
+    /// separately. Falls back to its own constants, which is the honest
+    /// behaviour: a prediction for an unmeasured type is the wide type's and
+    /// the caller should know it.
+    pub fn predict_for(&self, label: &str, work: f64, bytes: f64) -> f64 {
+        let f = self.fit_for(label);
+        f.lambda + (work / f.pi).max(bytes / f.beta)
     }
 
     /// Bytes of one real in the profile's realization. This is the axis along
@@ -134,7 +171,7 @@ pub fn fit(samples: &[Sample], dtype: &str, machine: &str, counts: &dyn Fn(&Samp
         work: spearman(&valid.iter().map(|s| s.work).collect::<Vec<_>>(), &measured),
         roofline: spearman(&valid.iter().map(|s| lambda + (s.work / pi).max(s.bytes / beta)).collect::<Vec<_>>(), &measured),
     };
-    Profile { version: 1, dtype: dtype.to_string(), machine: machine.to_string(), pi, beta, lambda, spearman, kernels: samples.to_vec() }
+    Profile { version: 1, dtype: dtype.to_string(), machine: machine.to_string(), pi, beta, lambda, spearman, kernels: samples.to_vec(), others: BTreeMap::new() }
 }
 
 /// Average ranks (ties share the mean rank).

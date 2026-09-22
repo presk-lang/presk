@@ -33,6 +33,8 @@ use presk_types::check::training::TrainingRun;
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{ModRef, Ty};
 
+pub mod step;
+
 #[derive(Clone, Debug)]
 pub struct TrainOptions {
     /// Overrides the run's `data` path.
@@ -149,6 +151,13 @@ pub fn prepare_training(core: &mut Program, elab: &ElabProgram, typed: &TypedPro
 /// Runs the (first) `training run` of the program over `backend`, built
 /// over the program returned by [`prepare_training`].
 pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, typed: &TypedProgram, fns: &TrainingFns, opts: &TrainOptions, mut on_step: impl FnMut(&StepLog)) -> Result<TrainOutput> {
+    if !opts.realize.quant.is_empty() {
+        // Quantisation is of trained weights (D44): gradients and optimizer
+        // state are never integers here, and a quantised forward pass inside
+        // a training step would be quantisation-aware training, which this
+        // compiler does not do.
+        return err("E7001", "the realization quantises parameters, which applies to trained weights: train with a float realization, then run or serve the result with this one");
+    }
     let run: &TrainingRun = typed.training.first().ok_or_else(|| TrainError { code: "E7001", message: "no `training run` in this file".into(), span: None })?;
     // Data.
     let Some(pipe) = &run.data else {
@@ -227,21 +236,10 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
             vjp_args.push(batch);
             vjp_args.push(one.clone());
             let loss = backend.call(&objective, obj_args)?;
-            let cts = backend.call(&vjp, vjp_args)?;
-            let g = match cts {
-                Value::Tuple(mut parts) if !parts.is_empty() => parts.swap_remove(0),
-                other => return err("E7001", format!("vjp returned a {}", other.kind())),
-            };
+            let g = gradient(backend, &vjp, vjp_args)?;
             let grad_norm = g.sum_squares_f64().sqrt();
             let lr = backend.call(&opt_lr, vec![Value::Nat(t), Value::Nat(total)])?;
-            let next = backend.call(&opt_step, vec![theta, state, g, Value::Nat(t), Value::Nat(total)])?;
-            match next {
-                Value::Tuple(mut parts) if parts.len() == 2 => {
-                    state = parts.pop().unwrap();
-                    theta = parts.pop().unwrap();
-                }
-                other => return err("E7001", format!("optimizer step returned a {}", other.kind())),
-            }
+            (theta, state) = update(backend, &opt_step, theta, state, g, t, total)?;
             let log = StepLog { step: t, epoch, loss: loss.scalar_f64(), lr: lr.scalar_f64(), grad_norm };
             on_step(&log);
             logs.push(log);
@@ -268,6 +266,26 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
     Ok(TrainOutput { model: fns.model.clone(), logs, theta0, batches, theta, final_path, checkpoints, total })
 }
 
+/// `objective.vjp(θ, [key,] batch, 1).θ`: the gradient, the first of the
+/// cotangents.
+pub fn gradient(backend: &mut dyn Backend, vjp: &Prepared, args: Vec<Value>) -> Result<Value> {
+    match backend.call(vjp, args)? {
+        Value::Tuple(mut parts) if !parts.is_empty() => Ok(parts.swap_remove(0)),
+        other => err("E7001", format!("vjp returned a {}", other.kind())),
+    }
+}
+
+/// `adamw.step(θ, s, g, t, total)`, split into the new `θ` and state.
+pub fn update(backend: &mut dyn Backend, opt_step: &Prepared, theta: Value, state: Value, g: Value, t: u64, total: u64) -> Result<(Value, Value)> {
+    match backend.call(opt_step, vec![theta, state, g, Value::Nat(t), Value::Nat(total)])? {
+        Value::Tuple(mut parts) if parts.len() == 2 => {
+            let state = parts.pop().unwrap();
+            Ok((parts.pop().unwrap(), state))
+        }
+        other => err("E7001", format!("optimizer step returned a {}", other.kind())),
+    }
+}
+
 /// `presk run --data FILE.psk.d`: evaluate an entry with its **last** parameter
 /// taken from a data file instead of synthesized, the others synthesized as
 /// usual. The `batch` axis of that parameter is bound to the number of samples
@@ -282,6 +300,21 @@ pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram
 /// which is how the magnitude envelope's stability is tested (0.5.0 step 3).
 #[allow(clippy::too_many_arguments)]
 pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, realize: Realization, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<presk_interp::RunOutput> {
+    let (func, fdims, inputs, mut args) = args_on_data(core, elab, opts, path, from, samples)?;
+    realize.quantize_args(&mut args)?;
+    let prepared = backend.prepare(func, &fdims, &realize)?;
+    let result = backend.call(&prepared, args)?;
+    let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
+    Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })
+}
+
+/// The arguments of an entry whose last one is filled from `samples` entries
+/// of a data file starting at `from`, the others synthesized as `presk run`
+/// does: the entry, its dimensions (the `batch` axis bound to the number of
+/// samples read), the synthesized inputs, and the arguments at the seam.
+pub type DataArgs = (FuncId, Dims, presk_interp::run::Inputs, Vec<Value>);
+
+pub fn args_on_data(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<DataArgs> {
     let to_train = |e: presk_interp::RunError| TrainError { code: "E7001", message: e.message, span: e.span };
     let (entry_fn, _, _) = presk_interp::run::resolve_entry(core, elab, &opts.entry).map_err(to_train)?;
     let Some(last) = core.func(entry_fn).params.last() else {
@@ -309,10 +342,7 @@ pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabPr
     let batch = batch_value(&last_ty, &layout, &refs, &fdims)?;
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<std::result::Result<_, _>>()?;
     *args.last_mut().unwrap() = batch;
-    let prepared = backend.prepare(func, &fdims, &realize)?;
-    let result = backend.call(&prepared, args)?;
-    let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
-    Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })
+    Ok((func, fdims, inputs, args))
 }
 
 /// The name of the dimension that lengths the `batch` axis of `ty`, when it is

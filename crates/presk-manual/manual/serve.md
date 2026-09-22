@@ -46,8 +46,15 @@ inference serve: model MiniGPT
 ```sh
 presk serve FILE.psk [--const NAME=N]... [--weights FILE.psk.d] --prompt "t₁ t₂ …" [--tokens N]
      [--temperature x] [--entry FN] [--dim NAME=N]... [--seed S] [--bits 256]
-     [--backend interp|kernel|native] [--realize f64|f32] [--json]
+     [--backend interp|kernel|native] [--realize f64|f32|bf16|@R.json] [--json]
+     [--opt [--profile FILE.json]]
 ```
+
+A realization file whose `quant` map names parameters serves them as
+integers with per-channel scales, computed from the loaded weights (0.6.0
+step 5, `precision` chapter, "Integer weights"): the reference interpreter
+runs on their dequantised values, and the native kernels load the integers
+themselves, bit-identical to running on those values (D45).
 
 The loop, in `presk-serve`:
 
@@ -154,9 +161,10 @@ travels with the script (`data` chapter, question 28).
 ## Not in this version
 
 Sessions, batching (`batching = dynamic(…)`), the KV cache (`cache =
-kv_cache(axis seq)`, proposed as an e-graph rewrite for 0.4.0), quantization
-and targets (`precision`, `target`), a server process: the block's fields
-are checked and ignored, and `presk serve` is a command-line loop, not a
-service. What it fixes is the seam: the generation function of the language,
+kv_cache(axis seq)`, proposed as an e-graph rewrite for 0.4.0), the block's
+`precision` and `target` (weights are quantised through `--realize @R.json`
+instead, above, and `quantize(int8, calibration = …)` in the block is not
+read), a server process: the block's fields are checked and ignored, and
+`presk serve` is a command-line loop, not a service. What it fixes is the seam: the generation function of the language,
 run through `Backend`, agreeing bit for bit with the reference on the
 deterministic path.

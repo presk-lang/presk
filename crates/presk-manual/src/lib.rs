@@ -19,12 +19,13 @@ pub mod cli {}
 #[doc = include_str!("../manual/language.md")]
 pub mod language {}
 
-/// Training on the reference interpreter: `presk train`, the loop, checkpoints.
+/// Training: `presk train` on any backend, the loop, checkpoints, and what a
+/// precision budget binds in a training run.
 #[doc = include_str!("../manual/training.md")]
 pub mod training {}
 
-/// Native execution: the `Backend` seam, PSK-Kernel v0, realizations, the
-/// conformance suite and the measured gaps.
+/// Native execution: the `Backend` seam, PSK-Kernel v0 and its vector form,
+/// realizations, the Cranelift backend, threads, the conformance suite.
 #[doc = include_str!("../manual/native.md")]
 pub mod native {}
 
@@ -33,17 +34,20 @@ pub mod native {}
 pub mod corpus {}
 
 /// Coverage: what the shape fragment can say, measured on the MLPerf
-/// architectures — which families are expressible and what the rest cost.
+/// architectures — which families are expressible and what the rest cost —
+/// and BERT-large run at MLPerf's constants.
 #[doc = include_str!("../manual/coverage.md")]
 pub mod coverage {}
 
-/// Precision as a resource: the magnitude envelope a bound is conditional
-/// on, and what a budget does and does not promise.
+/// Precision as a resource: the magnitude envelope, the bound and the
+/// condition number, sensitivities, the solver, integer weights, a budget on
+/// the training step, and what a budget does and does not promise.
 #[doc = include_str!("../manual/precision.md")]
 pub mod precision {}
 
-/// Experiments: shapes as types against silent broadcasting, and the
-/// realization gap of float32/float64 training against the exact reference.
+/// Experiments: shapes as types, the realization gap of training against the
+/// exact reference, the statements of 0.4.0 to 0.6.0 answered by measurement,
+/// and MLPerf's acceptance rule beside a budget.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
 

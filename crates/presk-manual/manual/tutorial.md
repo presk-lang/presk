@@ -2,7 +2,9 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.1.0 prints. The programs written here are in the
+shown is what version 0.6.0 prints (timings vary from one run and one machine
+to the next; these are from an aarch64 Linux machine with twenty cores). The
+programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
 specification are in `tests/examples/`.
 
@@ -19,7 +21,11 @@ What you will do, in order:
 9. export to PyTorch and run the generated conformance test;
 10. run the reference examples;
 11. train a model, on the interpreter and in PyTorch;
-12. run the whole test suite.
+12. run it natively, and let the compiler rewrite it;
+13. run the same tool on a model that is not a toy;
+14. run the whole test suite;
+15. give an entry an error budget, and let the compiler choose the types;
+16. give the training step a budget, and train under what it chooses.
 
 Commands are run from the root of the repository. Presk source files use
 Unicode symbols (`ℝ`, `λ`, `·`, `θ`); each has an ASCII synonym (`Real`,
@@ -40,17 +46,27 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.2.0: front-end, reference interpreter, training, PyTorch export)
+Presk compiler (0.6.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, PyTorch export)
 
 Usage: presk <COMMAND>
 
 Commands:
-  check   Type-check a program: shapes, regularity classes, effects
-  run     Evaluate an entry point on the reference interpreter
-  export  Export a program to another framework
-  dump    Dump an intermediate representation (development aid)
-  train   Run the `training run` of a file on the reference interpreter
-  data    Produce and inspect `.psk.d` data files
+  check      Type-check a program: shapes, regularity classes, effects
+  run        Evaluate an entry point on the reference interpreter or natively
+  export     Export a program to another framework
+  dump       Dump an intermediate representation (development aid)
+  train      Run the `training run` of a file, on the reference interpreter or natively
+  serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
+  bench      Time an entry on every backend (the reference at --bits, the kernel interpreter, native f64, f32 and bf16)
+  calibrate  Measure the magnitude envelope of an entry, or one training step under each realization (--step)
+  solve      Solve for a realization under a declared error budget
+  quantize   Quantise parameters as a realization's `quant` map says, and measure the gap in two parts: the weights' rounding and the arithmetic
+  data       Produce and inspect `.psk.d` data files
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 Check the smallest reference program, a two-layer perceptron:
@@ -69,10 +85,20 @@ presk check tests/examples/mlp/mlp.psk
     |
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
+[W0001] Warning: implicit dimension `B`
+    ,-[ tests/examples/mlp/mlp.psk:34:35 ]
+    |
+ 34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
+    |                                   |
+    |                                   `-- not declared; taken as a dimension of this function
+    |
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'
 ```
 
-The program is correct (exit code 0): the checker only warns that `B` is
-used as a dimension without being declared, and says how to declare it. Read
+The program is correct (exit code 0): the checker only warns, once for each
+function that uses `B` as a dimension without declaring it (`mse` and
+`mse_grad`), and says how to declare it. Read
 a diagnostic from its code (`W` warning, `E` error, then a range per phase:
 `E0` syntax, `E1` elaboration, `E2` typing, `E3` regularity, `E4` effects,
 `E7` run time, `E8` export), then its labels, then its help line. The
@@ -654,8 +680,9 @@ a development aid and is not stable.
 | `tokens` | the token stream (`Kw(Module) @ 77..83`, `Ident("Linear") @ 84..90`, …) |
 | `ast` | the syntax tree |
 | `elab` | the elaborated program: imports, constants, instances, signatures (step 6) |
-| `core` | PSK-Core, the intermediate representation: one typed instruction per line, explicit parameter trees, `stack` unrolled |
+| `core` | PSK-Core, the intermediate representation: one typed instruction per line, explicit parameter trees, `stack{L}` as a fold (`--unroll-stack` for `L` calls) |
 | `core-after-ad` | PSK-Core after automatic differentiation: `grad` replaced by generated `.vjp` and `.grad` functions |
+| `core-opt`, `sched`, `kernel`, `sensitivity` | after the e-graph optimizer (step 12), the fusion groups, the kernels an entry launches, and where a precision budget should go (the `cli` chapter) |
 
 For instance, `loss` of step 4 in PSK-Core, then the functions that
 differentiation adds:
@@ -777,8 +804,10 @@ Then:
 ```
 
 ```text
-1 passed in 0.64s
-1 passed in 1.01s
+.                                                                        [100%]
+1 passed in 0.50s
+.                                                                        [100%]
+1 passed in 1.00s
 ```
 
 ## 9. The reference examples
@@ -934,13 +963,14 @@ presk export tutorial/07_train.psk --target pytorch --mode readable \
 ```
 
 ```text
-K-step conformance: 10 steps, worst relative gap 1.386e-14
-1 passed in 1.29s
+K-step conformance: 10 steps, worst relative gap 1.333e-14
+.
+1 passed in 0.99s
 step 25/100  epoch 2  loss 1.111248  lr 9.904e-03
 step 50/100  epoch 4  loss 0.727428  lr 6.913e-03
 step 75/100  epoch 5  loss 0.968215  lr 2.222e-03
 step 100/100  epoch 7  loss 0.833188  lr 0.000e+00
-train.py: 100 steps in 0.1 s, final loss 0.833188, weights in …/out/tutorial_train/ckpt/final.pt
+train.py: 100 steps in 0.4 s, final loss 0.833188, weights in …/out/tutorial_train/ckpt/final.pt
 ```
 
 `train.py` is the run as a PyTorch loop over the exported objective and
@@ -954,10 +984,11 @@ reference runs of the compiler's own tests.
 ## 12. Run it natively, then let the compiler rewrite
 
 Everything so far ran on the reference interpreter at 256 bits. Since 0.3.0
-the same programs run *natively*: every tensor primitive of PSK-Core is
-lowered to a loop-nest kernel at the shapes of the run (PSK-Kernel v0),
-compiled to machine code by Cranelift on first use, in `f64` or `f32`. The
-interpreter stays the reference; the native backend is measured against it.
+the same programs run *natively*: every tensor primitive of PSK-Core — since
+0.4.0, every chain of elementwise ones — is lowered to a loop-nest kernel at
+the shapes of the run (PSK-Kernel v0), compiled to machine code by Cranelift
+on first use, in `f64`, `f32` or `bf16`. The interpreter stays the reference;
+the native backend is measured against it.
 
 ```sh
 presk bench tutorial/07_train.psk --entry loss --dim B=8
@@ -965,18 +996,23 @@ presk bench tutorial/07_train.psk --entry loss --dim B=8
 
 ```text
 backend               median ms      best ms   speedup
-interp 64 bits            0.976        0.852      1.0x
-kernel f64                0.318        0.314      3.1x
-native f64                0.163        0.162      6.0x
-native f32                0.142        0.142      6.8x
+interp 64 bits            0.306        0.293      1.0x
+kernel f64                0.123        0.115      2.5x
+native f64                0.075        0.071      4.1x
+native f64 +lanes         0.071        0.070      4.3x
+native f32                0.079        0.072      3.9x
+native f32 +lanes         0.073        0.071      4.2x
+native bf16               0.075        0.072      4.1x
 ```
 
 Four executors of one program: the reference (here at 64 bits, its cheapest
-setting), the kernels interpreted, the kernels compiled in `f64` and in
-`f32`. Timings are one run's, and vary by a few tens of percent from run to
-run at these sizes. The speedups are modest — a batch of eight through a
-model of width four is dominated by dispatch, not arithmetic; the `native`
-chapter has the tiny MiniGPT at 27×. Train the tower of step 11 natively:
+setting), the kernels interpreted, and the kernels compiled, in `f64`, `f32`
+and `bf16`, the first two also in vector lanes, which change no bit (`native`
+chapter). Timings are one run's, and vary by a few tens of percent from run
+to run at these sizes. The speedups are modest, and the narrower types and
+the lanes buy nothing — a batch of eight through a model of width four is
+dominated by dispatch, not arithmetic; the `native` chapter has larger
+programs. Train the tower of step 11 natively:
 
 ```sh
 presk train tutorial/07_train.psk --steps 100 --log-every 20 --backend native --ckpt out/tutorial_ckpt_native
@@ -988,11 +1024,14 @@ step 40  epoch 3  loss 0.843784  lr 8.536e-3  |g| 8.2585e-1
 step 60  epoch 4  loss 0.521466  lr 5.000e-3  |g| 6.9388e-1
 step 80  epoch 5  loss 0.432558  lr 1.464e-3  |g| 5.8567e-1
 step 100  epoch 7  loss 0.320685  lr 0.000e0  |g| 4.6561e-1
+presk train: 259 kernel launches a step, 419 without fusion (38% removed)
 presk train: 100 steps of Tower, final loss 0.320685, weights in out/tutorial_ckpt_native/final.psk.d
 ```
 
 Compare with step 11: the same log, digit for digit, at the six digits
-printed. The only difference between the two runs is the arithmetic —
+printed; the line before the last counts a step's kernel launches, with and
+without the fusion of elementwise chains (`scheduling` chapter). The only
+difference between the two runs is the arithmetic —
 correctly rounded 256-bit reals against `f64` — and here it is invisible
 (`--realize f32` prints the same six digits too). The `experiments` chapter
 measures what is invisible here: after twenty AdamW steps of the tiny
@@ -1041,41 +1080,49 @@ presk bench tutorial/07_train.psk --entry loss --dim B=8 --repeat 7 --calibrate 
 ```
 
 ```text
-kernel gelu (%0 : f64[batch: 8, model: 4]) …          384          512        0.71        0.56
-kernel dot (%0 : f64[batch: 8, 4], %1 : f64…          256          640        0.42        0.40
-kernel add (%0 : f64[batch: 8, 4], %1 : f64…           32          544        0.21        0.17
-kernel add (%0 : f64[batch: 8, model: 4], %…           32          768        0.17        0.20
-kernel sub (%0 : f64[batch: 8, model: 4], %…           32          768        0.21        0.20
-kernel mean (%0 : f64[batch: 8, model: 4]) …           33          264        0.21        0.14
--- 12 kernels timed (0 kept from out/tutorial_profile.json), 7 calls, f64
--- roofline: π = 8.411e8 ops/s, β = 8.119e9 bytes/s, λ = 0.10 µs per launch
--- Spearman with the measured times: operation counts 0.336, work 0.488, roofline 0.511
+kernel                                               work        bytes measured µs predicted µs
+kernel pow 2 (%0 : f64[batch: 8, model: 4])…           32          512        0.22        0.23
+kernel mean axis model (%0 : f64[batch: 8, …           40          320        0.26        0.22
+kernel fused 2 steps (%0 : f64[batch: 8], %…           72          136        0.19        0.26
+kernel fused 2 steps (%0 : f64[batch: 8, mo…           64          608        0.26        0.25
+kernel gelu (%0 : f64[batch: 8, model: 4]) …          384          512        0.75        0.63
+kernel dot (%0 : f64[batch: 8, 4], %1 : f64…          256          640        0.48        0.48
+kernel add (%0 : f64[batch: 8, 4], %1 : f64…           32          544        0.26        0.23
+kernel add (%0 : f64[batch: 8, model: 4], %…           32          768        0.24        0.25
+kernel fused 2 steps (%0 : f64[batch: 8, mo…           96          768        0.27        0.29
+kernel mean (%0 : f64[batch: 8, model: 4]) …           33          264        0.29        0.21
+-- 10 kernels timed (0 kept from out/tutorial_profile.json), 7 calls, f64
+-- roofline: π = 8.321e8 ops/s, β = 9.162e9 bytes/s, λ = 0.17 µs per launch
+-- Spearman with the measured times: operation counts 0.747, work 0.602, roofline 0.350
+-- profile written to out/tutorial_profile.json
 ```
 
-(The last six of twelve lines.) Twelve kernels of a few dozen operations
-each make a thin sample: the constants are those of tiny loop nests, they
-move from one run to the next, and the rank correlation (0.51 here) is far
-below the 0.95 the ninety kernels of the tiny MiniGPT give (`optimization`
-chapter). The shape of the result is the point: the model's quality is a
-*number*, measured against the machine, and even on this sample it improves
-over counting operations (0.34). `--opt --profile
-out/tutorial_profile.json` then makes that profile decide the extraction:
+Ten kernels of a few dozen operations each, some of them fused chains, make
+a thin sample: the constants are those of tiny loop nests and move from one
+run to the next, and so do the rank correlations. In this run the fitted
+roofline (0.35) ranks the kernels *worse* than counting operations (0.75):
+at a quarter of a microsecond each, these kernels differ by less than the
+timer's noise, and no model can be ranked on them. On the ninety kernels of
+the tiny MiniGPT the roofline reaches 0.95 against 0.15 for counts
+(`optimization` chapter). The shape of the result is the point: the model's
+quality is a *number*, measured against the machine and printed whether it
+flatters the model or not. `--opt --profile out/tutorial_profile.json` then
+makes that profile decide the extraction:
 
 ```sh
 presk bench tutorial/07_train.psk --entry loss --dim B=8 --opt --profile out/tutorial_profile.json
 ```
 
 ```text
-presk-opt: 5 of 12 functions rewritten, 139 → 131 lets, cost 687.5 µs → 687.3 µs (roofline, profile macos aarch64 f64)
+presk-opt: 5 of 12 functions rewritten, 139 → 131 lets, cost 697.8 µs → 697.7 µs (roofline, profile linux aarch64 f64)
 ```
 
 On this program the profile finds almost nothing to save: the objective and
 the tower are already what the rules can make them, and the costs are now in
-the model's microseconds. The `optimization` chapter reports what the
-profile does on the MiniGPT entries — the same, within noise — and why: the
-rewrites of this version remove cheap kernels; the decisions that move time
-(the order of the attention contractions, fusing elementwise chains) are the
-next rules to write, and the model is now there to arbitrate them.
+the model's microseconds. On the corpus GPT the one rule that turns on sizes
+— moving attention's scale onto its smaller operand — is worth 12 % a step,
+and the profile tells the two forms apart where operation counts price them
+the same (`optimization` chapter).
 
 ## 13. A model that is not a toy
 
@@ -1166,11 +1213,14 @@ training run: model GPT, objective loss, optimizer adamw
 
 The checker opened the data file, matched its sample type against the
 objective's and bound both `B` and `T` from it. The model is real: it trains,
-and one step of it costs 39.8 s here against PyTorch's 0.405 s. The
+and one step of it cost 39.8 s against PyTorch's 0.405 s when 0.4.0 measured
+both on the development machine (30.8 s in `f32` on the machine of this
+chapter at 0.6.0, where PyTorch has not been measured). The
 `experiments` chapter says what that ratio is made of and what it does and
 does not say about the ideas this tool is built on; the short version is that
-every optimization in this version is exact, the losses never moved, and the
-remaining distance is a matrix coprocessor presk does not reach yet.
+every optimization of versions 0.4.0 to 0.6.0 is exact, the losses never
+moved, and most of the remaining distance is a matrix coprocessor presk does
+not reach yet.
 
 ## 14. Testing everything
 
@@ -1187,14 +1237,18 @@ remaining distance is a matrix coprocessor presk does not reach yet.
 | `make calibrate` | `presk bench --calibrate` on the tiny MiniGPT's entries, then the entries timed with the profile |
 | `make corpus`, `make corpus-gpt` | the NLP-course ladder on the French civil code, and the course GPT |
 | `make sched` | the fusion groups of the corpus GPT, the launches they remove, and a 1024³ matmul |
-| `make coverage` | `presk check` on the MLPerf transcriptions (`coverage` chapter) |
+| `make coverage` | `presk check` on the MLPerf transcriptions, and BERT-large at tiny constants on the reference and natively (`coverage` chapter) |
 | `make experiment-gpt` | the course GPT trained by `presk train` and by the exported `train.py` |
 | `make bench` | `presk bench` on the tiny MiniGPT: forward, loss, optimizer step, on every backend |
+| `make gpt-trained`, `make precision` | the corpus GPT trained for 600 steps; its envelope, bound, sensitivities and solved realization (`precision` chapter) |
+| `make curve` | the ε-to-quality curve: seven budgets, each solved and trained from scratch (about two hours) |
+| `make quant-table`, `make step-table`, `make j-step`, `make step-train`, `make foil` | the experiments of 0.6.0: integer weights, the training step's budget, statement J′ at course scale, the trajectory, and MLPerf's rule beside a budget (`precision` and `experiments` chapters) |
+| `make bert` | BERT-large inference at MLPerf's constants (about five hours; `L=2 make bert` for a quick version) |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
-Exit codes, for scripts: 0 success, 1 diagnostics with an error, 2 usage or
-not implemented, 3 valid but not executable in this version.
+Exit codes, for scripts: 0 success, 1 diagnostics with an error or a
+run-time error, 2 usage or not implemented (the `cli` chapter).
 
 ## 15. A budget, and what it buys
 
@@ -1216,9 +1270,19 @@ presk calibrate: 30 sites over 1 samples of `loss` at 128 bits
   loss/%6                      7.4759e0
   RMSNorm.apply/%3             4.0212e0
   loss/%5                      2.7342e0
+  loss/%3                      2.2073e0
+  loss/%7                      2.1038e0
+presk calibrate: 3 sums and contractions, worst condition numbers Σ|xᵢwᵢ| / |Σxᵢwᵢ|:
+  Linear.apply/%3              1.1620e0
+  RMSNorm.apply/%4             1.0000e0
+  loss/%7                      1.0000e0
+presk calibrate: wrote out/tut_env.json
 ```
 
-Then ask what a given realization costs:
+It also records, at every sum and contraction, what the terms add up to
+without cancelling; divided by the sum itself, that is the sum's condition
+number, and here nothing cancels (the worst is 1.16). Then ask what a given
+realization costs:
 
 ```sh
 presk check --precision out/tut_env.json tutorial/07_train.psk --realize f32
@@ -1227,56 +1291,218 @@ presk check --precision out/tut_env.json tutorial/07_train.psk --realize f32
 ```text
 presk check --precision: `loss` under f32
   magnitude   2.1038e0
-  bound       3.0878e-2  (1.47e-2 relative)
-  envelope    out/tut_env.json over 1 samples, 30 sites
+  bound    cond      9.4199e-5  (4.48e-5 relative)
+  envelope    out/tut_env.json over 1 samples, 30 sites, initial weights
 ```
 
-That bound is *sound* and, as the `precision` chapter explains at length,
-loose — worth reading on a kernel and not on a network. Which is why the
-third command does not trust it:
+That bound is *sound*, and since 0.6.0 it uses each sum's measured condition
+number (`--model cond`, the default). On a program this small it is worth
+reading: 4.5·10⁻⁵ of the loss in `f32`. On a network it is not — ten orders
+of magnitude above the error actually committed on the corpus GPT, as the
+`precision` chapter shows at length. Which is why the third command does not
+rely on it:
 
 ```sh
 presk solve tutorial/07_train.psk --precision out/tut_env.json \
-    --budget 1e-3 --out out/tut_solved.json
+    --budget 1e-3 --out out/tut_solved.json --sites 0
 ```
 
 ```text
 presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2.104e0)
   sites       22 narrowable, 22 assigned away from f64
-  traffic     1.2900e3 bytes against 2.6000e3 all-f64 (2.02x), relaxation floor 6.5000e2
+  cost        1.2900e3 against 2.6000e3 all-f64 (2.02x), relaxation floor 6.5000e2
+  proposal    1.2900e3 before measurement widened anything (time when --profile is given, bytes otherwise)
   estimate    1.044e-3 (sensitivity-weighted, first order: it ranks, it does not guarantee)
   measured    3.663e-8 against the exact reference, after 0 widening round(s) — inside the budget
+  optimal     not searched (the space is too large); the relaxation floor above is the lower bound
+presk solve: wrote out/tut_solved.json — run it with `--realize @out/tut_solved.json`
 ```
 
-Read the last two lines together, because they are the point. The
-**estimate** ranks: it says where the budget should go, from one reverse
-sweep of the derivative the compiler already computes. The **measurement**
-decides: the candidate is run and compared against the exact denotation, and
-3.663e-8 is inside the 2.104e-3 the budget allows. A bound would have
-accepted this too, and would have accepted much worse.
+Read the `estimate` and `measured` lines together, because they are the
+point. The **estimate** ranks: it says where the budget should go, from one
+reverse sweep of the derivative the compiler already computes. The
+**measurement** decides: the candidate is run and compared against the exact
+denotation, and 3.663e-8 is inside the 2.104e-3 the budget allows. On this
+program the bound would have accepted it too; on a network the bound is too
+loose to accept anything, which is why a budget is discharged by
+measurement.
 
 The file it writes is a realization, and `--realize @FILE` runs it:
 
 ```sh
 presk run tutorial/07_train.psk --entry loss --dim B=4 \
-    --backend native --realize @out/tut_solved.json
+    --backend native --realize @out/tut_solved.json --digits 10
+```
+
+```text
+ℝ[] = 2.10375823
 ```
 
 Two honest notes to end on. Half the values got a narrower type and the
 program moves half as many bytes — but on these shapes that does **not** make
 it faster, because the kernels are bound by arithmetic rather than by memory
-(the `experiments` chapter's statement E, which fails). And the budget
-guarantees the distance to the *mathematics*, not the quality of the model;
-what it buys is that a degradation beyond it is a compiler bug, provably, and
-below it is the model's own sensitivity, measurably.
+(the `experiments` chapter's statement E, which fails; step 16 says what
+changed that). And the budget is about the distance to the *mathematics*,
+not the quality of the model: a degradation beyond it, on the inputs it was
+measured on, is the compiler's, and below it is the model's own sensitivity —
+both by measurement, not by proof.
+
+## 16. A budget on the training step
+
+Step 15 put a budget on an entry, `loss`. A training step is mostly *other*
+functions — the reverse sweep and the optimizer — and a budget on the loss
+gives the compiler no licence over them; on the course's GPT that is exactly
+why a solved realization bought 1.13× where all-`f32` bought 1.87×. So since
+0.6.0 a budget in a `training run` binds the step itself: **one optimizer
+step's parameter update**, measured against the exact step from the same
+state,
+
+```text
+‖θ̂′ − θ′‖₂ / ‖θ′ − θ‖₂ ≤ ε
+```
+
+where `θ′` is the objective's `vjp` followed by `adamw.step` over the reals,
+and `θ̂′` the same step under a realization. First, measure one step. The
+state is the tower trained in step 11, followed by twenty steps of its own
+pipeline in `f64` — the schedule's warm-up, so that AdamW's moments are not
+the zeros of initialisation and the measured step is at the peak learning
+rate — and the batch is eight samples, the run's own size:
+
+```sh
+presk calibrate --step tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d \
+    --warmup 20 --samples 8 --realize f64 --realize f32 --realize bf16 --realize recipe \
+    --out out/tut_step.json
+```
+
+```text
+presk calibrate: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of tutorial/data/pairs.psk.d (noise: the next 8)
+presk calibrate: 226 sites in 12 functions of one exact step at 256 bits (0.0 s)
+  |θ′ − θ|    3.7830e-2   |g| 5.6012e-1   |θ| 5.2636e0
+  noise       7.1633e-1   ‖g_B − g_B′‖₂ / ‖g_B‖₂ between two batches of 8 (f64): what a rounding error is to be compared with
+realization                    update gap storage floor     grad gap    predicted B
+f64                             7.577e-15     7.565e-15    3.600e-16       5.3320e4
+f32                              6.963e-6      3.826e-6     2.737e-7       2.6660e4
+bf16                              1.000e0      2.111e-1     1.618e-2       1.3330e4
+recipe                           8.489e-3      3.826e-6     2.147e-2       1.6918e4
+presk calibrate: wrote out/tut_step.json
+```
+
+One row per realization, each run natively from the state rounded to its
+type and compared with the exact step at 256 bits:
+
+- The **update gap** is what the budget binds.
+- The **storage floor** is the exact `θ′` merely rounded to the type the
+  optimizer keeps it in. `θ` is some 140 times the step here, so that
+  rounding alone costs 3.8·10⁻⁶ of the update in `f32`, and no `f32`
+  realization can go below it; `f64`'s whole gap *is* its floor.
+- The **gradient gap** says where the error enters. In `f32` the update is 25
+  times further from the exact one than the gradient: AdamW divides by
+  `√v`, which amplifies the gradient's error, and that is why the budget binds
+  the update rather than the gradient (340 times on the corpus GPT, D52).
+- **`bf16` loses the step.** An update gap of exactly one means `θ̂′` is as
+  far from `θ′` as `θ` is: a learning-rate-sized change is below `bf16`'s
+  resolution, so the parameters come back unchanged. That is why practice
+  keeps master weights in `f32`, and the **recipe** row is mixed precision as
+  it is practised — `bf16` everywhere but the optimizer and its weights —
+  8.5·10⁻³ from the exact step, a number no framework can produce. Against
+  the sampling noise between two batches, 0.72, it is small, which is the
+  recipe's justification.
+
+Then solve the step under a budget of 10⁻³:
+
+```sh
+presk solve --step tutorial/07_train.psk --precision out/tut_step.json \
+    --budget 1e-3 --out out/tut_step_solved.json
+```
+
+```text
+presk solve: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of tutorial/data/pairs.psk.d (noise: the next 8)
+presk solve: the step under an update budget of 1.00e-3 (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), 12 functions, 25 native steps measured
+function                        sites     f64 cost     gap f32    gap bf16   chosen
+Block.apply                         6      1.216e3     5.10e-8     2.58e-3      f32
+Block.apply.vjp                    23      5.312e3     1.74e-8     8.67e-4     bf16
+Linear.apply                        4      6.720e2     2.34e-8     4.77e-3      f32
+Linear.apply.vjp                   14      2.560e3     1.28e-8     6.61e-4      f32
+RMSNorm.apply                       8      1.000e3     4.94e-8     3.17e-3      f32
+RMSNorm.apply.vjp                  32      4.992e3     3.77e-8     2.57e-3      f32
+Tower.apply                         4      1.120e3    7.58e-15    7.58e-15     bf16
+Tower.apply.fold_bwd                7      3.136e3    7.58e-15    7.58e-15     bf16
+Tower.apply.vjp                    20      1.046e4     2.83e-9     1.78e-4     bf16
+adamw.lr                           29      2.320e2     5.46e-8     1.10e-3      f32
+adamw.step                         37      1.412e4     8.73e-6      1.06e0      f32
+loss.vjp                           23      8.496e3     2.08e-8     2.38e-3      f32
+  chosen      0 f64, 8 f32, 4 bf16
+  cost        2.1652e4 against 5.3320e4 all-f64 (2.46x), bytes
+  estimate    8.853e-4 (√Σ of the chosen functions' isolated gaps: it proposes, it does not guarantee)
+  measured    8.689e-4 update gap (storage floor 3.803e-6), 3.012e-3 gradient gap, after 0 widening round(s) — inside the budget
+presk solve: wrote out/tut_step_solved.json — train with it with `presk train --realize @out/tut_step_solved.json`
+```
+
+Every function of the step is run alone in `f32` and in `bf16`, everything
+else in `f64`, and measured against the one exact step; the functions are
+then narrowed greedily by bytes saved per unit of gap, and the combination is
+measured, not predicted. Here it keeps the update inside the budget with
+2.46 times fewer bytes. With `--profile`, the objective is predicted seconds
+instead of bytes, and on the corpus GPT that objective refuses `bf16`
+everywhere: its conversions cost more than its traffic saves. The file is a
+realization whose `functions` map gives each function its type, and `presk
+train` takes it. A per-step budget does not bound a whole run, so measure
+where the run ends, against step 12's `f64` run and against a change of
+seed:
+
+```sh
+presk train tutorial/07_train.psk --steps 100 --log-every 20 --backend native \
+    --realize @out/tut_step_solved.json --ckpt out/tutorial_ckpt_step
+presk data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_step/final.psk.d
+presk train tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
+    --seed 1 --ckpt out/tutorial_ckpt_seed1
+presk data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_seed1/final.psk.d
+```
+
+```text
+step 20  epoch 2  loss 1.472082  lr 1.000e-2  |g| 2.0667e0
+step 40  epoch 3  loss 0.843842  lr 8.536e-3  |g| 8.2499e-1
+step 60  epoch 4  loss 0.521410  lr 5.000e-3  |g| 6.9372e-1
+step 80  epoch 5  loss 0.432535  lr 1.464e-3  |g| 5.8522e-1
+step 100  epoch 7  loss 0.320654  lr 0.000e0  |g| 4.6536e-1
+presk train: 259 kernel launches a step, 419 without fusion (38% removed)
+presk train: 100 steps of Tower, final loss 0.320654, weights in out/tutorial_ckpt_step/final.psk.d
+presk data: ‖a − b‖₂ 1.138262e-3   ‖a‖₂ 5.344120e0   relative 2.129934e-4   over 76 reals
+step 100  epoch 7  loss 0.296131  lr 0.000e0  |g| 4.6998e-1
+presk train: 259 kernel launches a step, 419 without fusion (38% removed)
+presk train: 100 steps of Tower, final loss 0.296131, weights in out/tutorial_ckpt_seed1/final.psk.d
+presk data: ‖a − b‖₂ 4.842373e0   ‖a‖₂ 5.344120e0   relative 9.061123e-1   over 76 reals
+```
+
+The log moves in the fifth digit against step 12's, which is the four `bf16`
+functions showing. The weights end 2.1·10⁻⁴ from the `f64` run's, where
+another seed ends 0.91 away: four thousand times closer than the ordinary
+variation of training, and over a hundred steps nothing accumulated into a
+different model.
+
+Two honest notes again. On a tower of width four none of this is faster:
+every kernel is dispatch-bound, so time is not what the tower can show. At
+the course's scale the same three commands give the `experiments` chapter's
+statement J′: the corpus GPT's step, solved under 10⁻³, runs 1.99× faster
+than all-`f64` and stays inside the budget by measurement. And the budget is
+stated at a state, here the peak learning rate, because the floor grows as
+the rate falls: at the end of a cosine schedule every realization, `f64`
+included, would fail a relative budget on the update (question 61).
 
 
 ## Where to go next
 
 - The `experiments` chapter for what these tools show about the approach
   (`make experiment`): a silent broadcasting bug of plain PyTorch that the
-  types rule out, and the gap of float32 and float64 training to the exact
-  reference — and presk's own native realizations next to PyTorch's.
+  types rule out, the gap of float32 and float64 training to the exact
+  reference with presk's own realizations next to PyTorch's, and the
+  falsifiable statements of 0.4.0, 0.5.0 and 0.6.0, each answered by
+  measurement.
+- The `precision` chapter for everything behind steps 15 and 16: the
+  envelope, the bound and the condition number, sensitivities, the solver,
+  `int8` and `int4` weights (`presk quantize`), and the budget on the
+  training step at the course's scale; the `coverage` chapter for BERT-large
+  run at MLPerf's constants.
 - The `native` chapter for the runtime seam, PSK-Kernel v0 and the
   Cranelift backend with their conformance suites; the `optimization`
   chapter for the rules, the oracle and the calibrated cost model; the
@@ -1286,4 +1512,5 @@ below it is the model's own sensitivity, measurably.
 - `docs/spec-questions.md` for the points where this implementation had to
   choose what the specification leaves open.
 - The specification itself, in the `presk-specs` repository, for the
-  design: exact semantics, error budgets, the phases after 0.3.0.
+  design: exact semantics, error budgets, and the research programme beyond
+  this compiler.

@@ -30,6 +30,17 @@
 //! of the analysis (D34), not bookkeeping: a vectorized kernel is provably
 //! looser than a scalar one by a factor this prints.
 //!
+//! # Four rules for a sum
+//!
+//! What a sum does to the error its inputs carry is where the bound is won
+//! or lost, and [`Model`] names four answers (0.6.0 step 6, D51): 0.5.0's
+//! `k · max|w| · max|δx|`; a normwise rule with the measured `Σ|wᵢ|`; the
+//! condition number, `(|δx|/|x|) · Σ|xᵢwᵢ|`, the default; and a
+//! root-sum-square *estimate*. The last three read the sums of terms the
+//! envelope records. The condition number takes the corpus GPT's bound from
+//! 10³³ to 10¹⁰ times the error and no further: the rest is the roundings'
+//! independence, which only the estimate sees.
+//!
 //! # What the result promises
 //!
 //! A bound here is conditional on the envelope it was computed from (D35),
@@ -85,6 +96,50 @@ impl Bound {
     }
 }
 
+/// Which rule a sum or a contraction propagates its inputs' error by
+/// (0.6.0 step 6, D51). Everything else — quotients, softmax, residuals — is
+/// the same in all four.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Model {
+    /// `k · max|w| · max|δx|`, the rule of 0.5.0. Sound, needs no
+    /// measurement beyond the magnitudes, and vacuous on a transformer (D39).
+    Worst,
+    /// `max|δx| · Σ|wᵢ|`, with the sums measured. Still sound: it only
+    /// replaces `k · max|w|` by what the weights actually add up to.
+    Normwise,
+    /// `(|δx|/|x|) · Σ|xᵢwᵢ|`: the condition number. Sound when every
+    /// element's error is proportional to its magnitude, which holds of a
+    /// value rounded once and is assumed after that.
+    #[default]
+    Conditioned,
+    /// `(|δx|/|x|) · √Σ(xᵢwᵢ)²` and `√c` roundings: the terms' errors taken
+    /// as independent, so they cancel as `√k`. An *estimate*, not a bound.
+    Statistical,
+}
+
+impl Model {
+    pub const ALL: [Model; 4] = [Model::Worst, Model::Normwise, Model::Conditioned, Model::Statistical];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Model::Worst => "k",
+            Model::Normwise => "normwise",
+            Model::Conditioned => "cond",
+            Model::Statistical => "rss",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Model> {
+        Model::ALL.into_iter().find(|m| m.name() == s)
+    }
+
+    /// Whether what this model computes is a bound. The statistical one is
+    /// an estimate and has to be printed as one.
+    pub fn is_bound(self) -> bool {
+        self != Model::Statistical
+    }
+}
+
 /// What a propagation found.
 #[derive(Clone, Debug)]
 pub struct Analysis {
@@ -102,6 +157,12 @@ pub struct Analysis {
     /// Sites where a divisor's floor was unknown, so the quotient's error
     /// could not be bounded at all.
     pub unbounded: Vec<String>,
+    /// The rule sums and contractions were propagated by.
+    pub model: Model,
+    /// Sums and contractions whose terms the envelope did not record, so the
+    /// model's rule fell back to the `k` one there. An envelope written
+    /// before 0.6.0 step 6 has none recorded.
+    pub fallback: Vec<String>,
 }
 
 impl Analysis {
@@ -110,8 +171,14 @@ impl Analysis {
     }
 }
 
-/// Propagate the error of `entry` under `realize`, given `env`.
+/// Propagate the error of `entry` under `realize`, given `env`, by the
+/// default rule, the condition number.
 pub fn propagate(core: &Program, elab: &ElabProgram, entry: FuncId, dims: &BTreeMap<presk_types::dim::DimVar, u64>, env: &Envelope, realize: &Realization) -> Analysis {
+    propagate_with(core, elab, entry, dims, env, realize, Model::default())
+}
+
+/// The same, by a chosen rule for sums and contractions.
+pub fn propagate_with(core: &Program, elab: &ElabProgram, entry: FuncId, dims: &BTreeMap<presk_types::dim::DimVar, u64>, env: &Envelope, realize: &Realization, model: Model) -> Analysis {
     let mut a = Analysis {
         sites: BTreeMap::new(),
         output: Bound::EXACT_ZERO,
@@ -119,9 +186,11 @@ pub fn propagate(core: &Program, elab: &ElabProgram, entry: FuncId, dims: &BTree
         samples: env.samples,
         uncovered: Vec::new(),
         unbounded: Vec::new(),
+        model,
+        fallback: Vec::new(),
     };
     let _ = elab;
-    let mut p = Prop { core, env, realize, out: &mut a, depth: 0 };
+    let mut p = Prop { core, env, realize, out: &mut a, depth: 0, model };
     // The entry's arguments arrive rounded once into their storage type,
     // which is what every backend does when a value crosses the seam.
     let args: Vec<Bound> = core
@@ -146,6 +215,7 @@ struct Prop<'a> {
     realize: &'a Realization,
     out: &'a mut Analysis,
     depth: usize,
+    model: Model,
 }
 
 /// How deep the walk follows calls. A Core program's call graph is a DAG of
@@ -404,11 +474,18 @@ impl Prop<'_> {
             // ----- reductions and contractions: the order enters here -----
             PrimOp::SumAll | PrimOp::Sum { .. } | PrimOp::SumTo | PrimOp::SumSquares => {
                 let m = self.mag_of(site, x.mag * k);
+                let c = self.order_constant(k);
+                if let Some(t) = self.terms(site) {
+                    // A sum of squares has terms `xᵢ²`, whose relative error
+                    // is twice `x`'s.
+                    let rho = if matches!(op, PrimOp::SumSquares) { 2.0 * x.relative() } else { x.relative() };
+                    let normwise = t.norms.first().copied().unwrap_or(k) * x.err;
+                    return self.summed(normwise, rho, &t, 1.0, c, u, self.u_acc(site), m);
+                }
                 // Partial sums can be larger than the result when terms
                 // cancel, so the rounding is counted against `k·|x|` rather
                 // than against the output.
                 let partial = (x.mag * k).max(m);
-                let c = self.order_constant(k);
                 Bound { mag: m, floor: 0.0, err: k * x.err + c * self.u_acc(site) * partial }
             }
             PrimOp::MeanAll | PrimOp::Mean { .. } | PrimOp::MeanVjp { .. } => {
@@ -419,16 +496,38 @@ impl Prop<'_> {
                 // sum cost a factor of the batch size in the first version
                 // of these rules.
                 let m = self.mag_of(site, x.mag);
-                let partial = (x.mag * k).max(m);
                 let c = self.order_constant(k);
+                // `mean_vjp` spreads a cotangent back over `k` elements; it
+                // sums nothing, and nothing is recorded for it.
+                if !matches!(op, PrimOp::MeanVjp { .. })
+                    && let Some(t) = self.terms(site)
+                {
+                    // The recorded sums are of the *mean*'s terms `xᵢ/k`
+                    // already, except the root-sum-square, recorded as
+                    // `√(Σxᵢ²/k)`: independent errors average down by `√k`.
+                    return self.summed(x.err, x.relative(), &t, 1.0 / k.sqrt(), c, u, self.u_acc(site), m);
+                }
+                let partial = (x.mag * k).max(m);
                 Bound { mag: m, floor: 0.0, err: x.err + c * self.u_acc(site) * partial / k + u * m }
             }
             PrimOp::Dot | PrimOp::Matmul | PrimOp::Ein { .. } | PrimOp::DotVjpL | PrimOp::DotVjpR => {
                 let m = self.mag_of(site, x.mag * y.mag * k);
+                let c = self.order_constant(k);
+                if let Some(t) = self.terms(site) {
+                    let rho: f64 = a.iter().map(|b| b.relative()).sum();
+                    let normwise = if t.norms.len() == a.len() {
+                        a.iter().zip(&t.norms).map(|(b, n)| b.err * n).sum()
+                    } else {
+                        k * (x.mag * y.err + y.mag * x.err)
+                    };
+                    // Each term is a product of `n` operands, rounded
+                    // `n − 1` times before it is added.
+                    let products = (a.len() as f64 - 1.0).max(0.0);
+                    return self.summed(normwise, rho, &t, 1.0, c + products, u, self.u_acc(site), m);
+                }
                 let term = x.mag * y.mag;
                 let term_err = x.mag * y.err + y.mag * x.err;
                 let partial = (term * k).max(m);
-                let c = self.order_constant(k);
                 Bound { mag: m, floor: 0.0, err: k * term_err + c * self.u_acc(site) * partial }
             }
             // ----- the conditioning the specification names -----
@@ -446,6 +545,48 @@ impl Prop<'_> {
                 rounded(2.0 * x.err, m)
             }
         }
+    }
+
+    /// The sums of a site's terms, when the model uses them and the envelope
+    /// has them. A site that should have them and does not is listed, since
+    /// its rule silently reverts to the `k` one.
+    fn terms(&mut self, site: &str) -> Option<crate::envelope::Terms> {
+        if self.model == Model::Worst {
+            return None;
+        }
+        match self.env.terms(site) {
+            Some(t) => Some(t.clone()),
+            None => {
+                if !self.out.fallback.iter().any(|s| s == site) {
+                    self.out.fallback.push(site.to_string());
+                }
+                None
+            }
+        }
+    }
+
+    /// The rule of a sum whose terms were measured: the error its inputs
+    /// carry in, plus the rounding of `c` additions, plus the store.
+    ///
+    /// `normwise` is the sound propagated term, `Σⱼ errⱼ · Σ Π_{i≠j}|·|`;
+    /// `rho` the operands' relative errors summed, which the conditioned and
+    /// statistical rules multiply by `Σ|terms|` and `√Σ terms²`; `scale`
+    /// corrects the root-sum-square of a mean, recorded per term of the sum.
+    ///
+    /// The rounding is Higham's `γ_c · Σ|terms|`: every partial sum is at most
+    /// `Σ|terms|`, which is sound whatever the model. The statistical model
+    /// takes `√c` for `c`, the independent roundings' own cancellation.
+    #[allow(clippy::too_many_arguments)]
+    fn summed(&self, normwise: f64, rho: f64, t: &crate::envelope::Terms, scale: f64, c: f64, u: f64, u_acc: f64, m: f64) -> Bound {
+        let (prop, c) = match self.model {
+            Model::Worst | Model::Normwise => (normwise, c),
+            // Componentwise: `|Σ wᵢ δxᵢ| ≤ ρ Σ|xᵢwᵢ|` when every `|δxᵢ| ≤
+            // ρ|xᵢ|`. That holds of a value rounded once and is *assumed*
+            // after that — the soundness test is what checks it.
+            Model::Conditioned => (rho * t.abs, c),
+            Model::Statistical => (rho * t.rss * scale, c.sqrt()),
+        };
+        Bound { mag: m, floor: 0.0, err: prop + c * u_acc * t.abs + u * m }
     }
 
     /// `c` in `c · u`, the rounding a sum of `k` terms accumulates.

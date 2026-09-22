@@ -44,9 +44,12 @@ pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunO
     Ok(RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result })
 }
 
+/// The synthesized inputs of an entry, by parameter name.
+pub type Inputs = Vec<(String, Value<Float>)>;
+
 /// An entry resolved and its inputs synthesized: the function, its bound
 /// dimensions and the named inputs.
-pub type PreparedRun = (FuncId, Dims, Vec<(String, Value<Float>)>);
+pub type PreparedRun = (FuncId, Dims, Inputs);
 
 /// Resolve `--entry`, bind the dimensions and synthesize the inputs (the
 /// reference's job, whatever backend then runs the entry).
@@ -118,12 +121,12 @@ pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Res
 /// inside its warm-up.
 fn optimizer_input<R: Real>(name: &str, v: Value<R>) -> Value<R> {
     match (name, v) {
-        ("s", Value::Tuple(mut parts)) if parts.len() == 2 => {
-            parts[1] = parts[1].map_leaves(&mut |leaf| match leaf {
+        ("s", Value::Tuple(parts)) if parts.len() == 2 => {
+            let second = parts[1].map_leaves(&mut |leaf| match leaf {
                 Value::Real(t) => Value::Real(t.map(|x: &R| x.mul(x))),
                 other => other.clone(),
             });
-            Value::Tuple(parts)
+            Value::tuple(vec![parts[0].clone(), second])
         }
         ("t", Value::Nat(_)) => Value::Nat(3),
         ("total", Value::Nat(_)) => Value::Nat(10),
@@ -210,7 +213,7 @@ fn synthesize(interp: &mut Interp<Float>, ty: &Ty, dims: &Dims, key: &Key, defau
         Ty::Key => Ok(Value::Key(key.clone())),
         Ty::Tuple(ts) => {
             let keys = key.split(ts.len());
-            Ok(Value::Tuple(ts.iter().zip(&keys).map(|(t, k)| synthesize(interp, t, dims, k, None, prefix)).collect::<Result<_>>()?))
+            Ok(Value::tuple(ts.iter().zip(&keys).map(|(t, k)| synthesize(interp, t, dims, k, None, prefix)).collect::<Result<_>>()?))
         }
         Ty::Params(r) => {
             // The module's initializer, with the instance's dimensions.
@@ -255,7 +258,7 @@ pub fn render(v: &Value<Float>, digits: usize, indent: usize) -> String {
         Value::Tuple(vs) => format!("({})", vs.iter().map(|v| render(v, digits, indent)).collect::<Vec<_>>().join(", ")),
         Value::Record(fs) => {
             let mut s = String::from("{\n");
-            for (n, v) in fs {
+            for (n, v) in fs.iter() {
                 s.push_str(&format!("{pad}  {n} = {}\n", render(v, digits, indent + 2)));
             }
             s.push_str(&format!("{pad}}}"));
@@ -309,7 +312,7 @@ pub fn to_json(v: &Value<Float>, digits: usize) -> serde_json::Value {
         Value::Tuple(vs) => J::Array(vs.iter().map(|v| to_json(v, digits)).collect()),
         Value::Record(fs) => {
             let mut m = Map::new();
-            for (n, v) in fs {
+            for (n, v) in fs.iter() {
                 m.insert(n.clone(), to_json(v, digits));
             }
             J::Object(m)

@@ -1,27 +1,34 @@
-# Presk — Exemples
+# Presk — Examples
 
-Code source Presk illustrant les constructions de la [spécification](../presk-draft-spec.md).
-Chaque exemple vit dans **son propre dossier**, avec un `README.md` local qui explique
-ce qu'il montre et les commandes prospectives associées.
+Presk source code illustrating the constructs of the [specification](../report/chapters/02-spec.tex)
+(Chapter 3 of the [report](../report/main.pdf); a reference §N.M below and in the programs
+is section N.M of the specification, printed 3.N.M in the report).
+Each example lives in **its own directory**, with a local `README.md` that explains
+what it shows and gives the `presk` commands that go with it.
 
-> **Statut.** Presk n'a pas encore d'implémentation : ces fichiers ne compilent pas,
-> ils *spécifient par l'exemple*. Ils sont pensés pour rester valides une fois le
-> front-end écrit, et pour exercer chaque coin du système de types.
+> **Status.** These files *specify by example*, and they are designed to exercise
+> every corner of the type system. The `presk` compiler, in a separate repository,
+> keeps a copy of them, which it checks as acceptance tests (`make check-examples`).
+> The `presk` commands quoted in each local `README.md` are those of the
+> specification: the compiler implements `presk check` and `presk export` under these
+> names, training is `presk train` there rather than `presk run`, and `presk build`
+> is not implemented.
 
-## Progression suggérée
+## Suggested progression
 
-| Dossier | Ce qu'il illustre |
+| Directory | What it illustrates |
 |---|---|
-| [`mlp/`](mlp/) | Le minimum : `module`, `param`, `fn apply`, composition, `grad` typé. |
-| [`layernorm/`](layernorm/) | Réductions sur axe nommé, `param` vecteur, stabilité laissée au compilateur. |
-| [`minigpt/`](minigpt/) | Le cœur : attention causale, blocs Transformer, `stack{N}`, `idx[V]`, embeddings, **entraînement**, **inférence** et **build** vers un SoC ARM+GPU. |
+| [`mlp/`](mlp/) | The bare minimum: `module`, `param`, `fn apply`, composition, typed `grad`. |
+| [`layernorm/`](layernorm/) | Reductions over a named axis, vector `param`, numerical stability left to the compiler. |
+| [`minigpt/`](minigpt/) | The core: causal attention, Transformer blocks, `stack{N}`, `idx[V]`, embeddings, **training**, **inference** and **build** toward an ARM+GPU SoC. |
 
-## Conventions rappelées
+## Conventions
 
-- `ℝ[…]` est un tenseur réel **exact** dans la sémantique ; aucun `float32` dans le source.
-- Les axes sont **nommés** (`batch:`, `seq:`, `model:`, `heads:`, `hd:`) — le broadcasting
-  et les contractions `ein[…]` sont vérifiés axe par axe.
-- Les entiers du graphe sont des **indices** `idx[N]` (tokens, labels), jamais mélangés
-  arithmétiquement aux réels sans `real(…)`.
-- `let x = …` est une liaison immuable (shadowing autorisé) ; il n'y a jamais de mutation.
-- La précision est un **budget** déclaré au niveau `training`/`inference`, pas un dtype dans le code.
+- `ℝ[…]` is an **exact** real tensor in the semantics (§2); no `float32` appears in the source.
+- Axes are **named** (`batch:`, `seq:`, `model:`, `heads:`, `hd:`); broadcasting and
+  `ein[…]` contractions are checked axis by axis (§3.2).
+- The integers of the graph are **indices** `idx[N]` (tokens, labels), never mixed
+  arithmetically with reals without an explicit `real(…)` (§3.5).
+- `let x = …` is an immutable binding (shadowing allowed); there is never any mutation.
+- Precision is a **budget** declared at the `training`/`inference` level (§6, §7), not a
+  dtype in the code.

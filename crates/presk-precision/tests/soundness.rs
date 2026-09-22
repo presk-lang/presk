@@ -15,7 +15,7 @@ use std::sync::Once;
 use presk_interp::{Interp, RunOptions};
 use presk_kernel::KernelBackend;
 use presk_precision::envelope::Envelope;
-use presk_precision::propagate::propagate;
+use presk_precision::propagate::{Model, propagate_with};
 use presk_rt::{Dtype, Realization, Value};
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
@@ -73,8 +73,16 @@ fn gap(reference: &IValue, got: &Value) -> f64 {
     }
 }
 
-/// `(measured gap, propagated bound)` for one entry under one realization.
+/// `(measured gap, propagated bound)` for one entry under one realization,
+/// the bound by the default rule.
 fn measure(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], r: &Realization) -> (f64, f64) {
+    let (g, b) = measure_all(rel, consts, entry, dims, r);
+    (g, b[Model::ALL.iter().position(|m| *m == Model::default()).unwrap()])
+}
+
+/// The measured gap, and what each of the four rules propagates, in the
+/// order of [`Model::ALL`].
+fn measure_all(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], r: &Realization) -> (f64, [f64; 4]) {
     let (prog, core) = prepare(rel, consts);
     let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
 
@@ -84,10 +92,12 @@ fn measure(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)],
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 256, 0);
     interp.magnitudes = Some(Default::default());
     interp.minima = Some(Default::default());
+    interp.terms = Some(Default::default());
     let reference = interp.call(func, fdims.clone(), args.clone()).unwrap();
     let mut env = Envelope::new(rel, entry, 256, "2026-09-20");
     env.observe(&interp.magnitudes.take().unwrap());
     env.observe_minima(&interp.minima.take().unwrap());
+    env.observe_terms(&interp.terms.take().unwrap());
 
     // The same entry on the kernel backend, in this realization.
     let mut backend = KernelBackend::new(&core, &prog, r, 0);
@@ -96,8 +106,12 @@ fn measure(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)],
     let got = presk_rt::Backend::call(&mut backend, &p, rargs).unwrap();
 
     let dmap: BTreeMap<_, _> = fdims.iter().map(|(v, n)| (*v, *n)).collect();
-    let a = propagate(&core, &prog, func, &dmap, &env, r);
-    (gap(&reference, &got), a.output.err)
+    let bounds = Model::ALL.map(|m| {
+        let a = propagate_with(&core, &prog, func, &dmap, &env, r, m);
+        assert!(m == Model::Worst || a.fallback.is_empty(), "{rel} {entry}: no terms recorded at {:?}", a.fallback);
+        a.output.err
+    });
+    (gap(&reference, &got), bounds)
 }
 
 type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
@@ -118,44 +132,55 @@ const CASES: &[Case] = &[
 /// entry and every realization. This is the whole claim of the analysis, and
 /// it is checkable exactly here because the reference interpreter gives the
 /// exact value to compare against.
+///
+/// Four rules for sums and contractions are tabulated side by side (0.6.0
+/// step 6, D51): the `k` rule of 0.5.0, the sound normwise one, the
+/// condition number, and the root-sum-square estimate. The three bounds must
+/// all be above the measurement; the estimate is not a bound, and how often
+/// it falls below is reported rather than asserted.
 #[test]
 fn the_bound_is_above_the_measured_gap() {
-    let mut report = String::from("\nentry                   realization   measured     bound     ratio\n");
-    let mut ratios: Vec<f64> = Vec::new();
+    let mut report = String::from("\nentry                   realization   measured         k  normwise      cond       rss   k/gap  norm/gap cond/gap  rss/gap\n");
+    let mut ratios: [Vec<f64>; 4] = Default::default();
     for (rel, consts, entry, dims) in CASES {
         for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
             let r = Realization::uniform(d);
-            let (measured, bound) = measure(rel, consts, entry, dims, &r);
-            assert!(
-                bound >= measured || measured == 0.0,
-                "{rel} {entry} ({d}): measured {measured:.3e} exceeds the bound {bound:.3e} — the analysis is unsound"
-            );
-            let ratio = if measured > 0.0 { bound / measured } else { f64::NAN };
-            if ratio.is_finite() {
-                ratios.push(ratio);
+            let (measured, bounds) = measure_all(rel, consts, entry, dims, &r);
+            for (m, bound) in Model::ALL.iter().zip(bounds) {
+                assert!(
+                    !m.is_bound() || bound >= measured || measured == 0.0,
+                    "{rel} {entry} ({d}): measured {measured:.3e} exceeds the {} bound {bound:.3e} — the rule is unsound",
+                    m.name()
+                );
             }
-            report.push_str(&format!("{entry:<22}  {d:<10} {measured:>10.2e} {bound:>9.2e} {ratio:>9.1e}\n"));
+            let r = bounds.map(|b| if measured > 0.0 { b / measured } else { f64::NAN });
+            for (v, x) in ratios.iter_mut().zip(r) {
+                if x.is_finite() {
+                    v.push(x);
+                }
+            }
+            report.push_str(&format!(
+                "{entry:<22}  {d:<10} {measured:>10.2e} {:>9.2e} {:>9.2e} {:>9.2e} {:>9.2e} {:>7.1e} {:>9.1e} {:>8.1e} {:>8.1e}\n",
+                bounds[0], bounds[1], bounds[2], bounds[3], r[0], r[1], r[2], r[3]
+            ));
         }
     }
-    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = ratios[ratios.len() / 2];
-    report.push_str(&format!(
-        "\n{} ratios: median {:.1e}, worst {:.1e}, {} within 1e3\n",
-        ratios.len(),
-        median,
-        ratios.last().copied().unwrap_or(f64::NAN),
-        ratios.iter().filter(|r| **r <= 1e3).count()
-    ));
+    for (m, v) in Model::ALL.iter().zip(ratios.iter_mut()) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        report.push_str(&format!(
+            "\n{:<9} {} ratios: median {:.1e}, worst {:.1e}, {} within 1e3, {} below 1",
+            m.name(),
+            v.len(),
+            v[v.len() / 2],
+            v.last().copied().unwrap_or(f64::NAN),
+            v.iter().filter(|r| **r <= 1e3).count(),
+            v.iter().filter(|r| **r < 1.0).count(),
+        ));
+    }
+    report.push('\n');
     eprintln!("{report}");
-    // A smoke test, not statement F. The looseness here is understood and
-    // located: a contraction of `k` terms multiplies its input error by `k`,
-    // which is worst-case correct and which no amount of care removes, so a
-    // network with four contractions in series carries `k⁴`. Measured errors
-    // grow like `√k` because roundings are independent. The bound that would
-    // close the gap needs the *condition number* of each sum — `Σ|xᵢwᵢ| /
-    // |Σxᵢwᵢ|` — measured into the envelope, and that is named future work.
-    // Statement F is reported at step 9, whatever it says.
-    assert!(ratios.iter().all(|r| *r < 1e25), "a bound is loose enough to be a missing rule:\n{report}");
+    // A smoke test: the medians are the result and D51 reports them.
+    assert!(ratios[0].iter().all(|r| *r < 1e25), "a bound is loose enough to be a missing rule:\n{report}");
 }
 
 /// The declared reduction order is an argument of the analysis, not
@@ -168,7 +193,11 @@ fn the_reduction_order_changes_the_bound() {
     blocked.order = presk_rt::ReductionOrder::Blocked { width: 8 };
     let mut inter = seq.clone();
     inter.order = presk_rt::ReductionOrder::Interleaved { partials: 8 };
-    let (rel, consts, entry, dims) = ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)][..]);
+    // A program whose output depends on a long contraction: MiniGPT at
+    // initialization has a zero head, so under the conditioned rule its
+    // whole bound is exactly zero — a product with an exact zero commits no
+    // error — and no order can shorten it.
+    let (rel, consts, entry, dims) = ("tests/examples/mlp/mlp.psk", &[][..], "mse", &[("D", 32), ("B", 4)][..]);
     let (_, b_seq) = measure(rel, consts, entry, dims, &seq);
     let (_, b_blocked) = measure(rel, consts, entry, dims, &blocked);
     let (_, b_inter) = measure(rel, consts, entry, dims, &inter);
@@ -256,7 +285,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
             let p = presk_rt::Backend::prepare(&mut b, entry, &fdims, r).unwrap();
             gap(&reference, &presk_rt::Backend::call(&mut b, &p, a).unwrap())
         };
-        let sol = solve::solve(&env, &sens, &output_site, budget, &menu, Dtype::F64, Some(&mut measure));
+        let sol = solve::solve(&env, &sens, &output_site, budget, &menu, Dtype::F64, &solve::Traffic, Some(&mut measure));
         let measured = sol.measured.expect("a verifier was supplied");
         assert!(
             measured <= sol.budget_abs,
@@ -267,7 +296,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
         assert!(sol.bytes >= sol.relaxation_bytes, "and cannot beat the relaxation floor");
 
         // The proposal against the optimum of the same estimate.
-        if let Some((_, best)) = solve::exhaustive(&env, &sens, &output_site, budget, &menu, Dtype::F64, 200_000) {
+        if let Some((_, best)) = solve::exhaustive(&env, &sens, &output_site, budget, &menu, Dtype::F64, &solve::Traffic, 200_000) {
             let ratio = sol.proposed_bytes / best.max(1.0);
             assert!(ratio >= 0.999, "the greedy proposal cannot beat an exhaustive search of the same estimate");
             assert!(ratio <= 1.25, "budget {budget:.0e}: greedy is {ratio:.3}x the optimum, which is worse than the heuristic should be");
@@ -327,4 +356,43 @@ fn an_interleaved_order_reassociates_and_says_so() {
     );
     assert!(g_int.is_finite() && g_seq.is_finite());
     eprintln!("gap to the exact reference: sequential {g_seq:.3e}, interleaved(8) {g_int:.3e}");
+}
+
+/// What a contraction records for the conditioned and statistical rules
+/// (0.6.0 step 6), on one dot product checked by hand: `x = [1, −2]`,
+/// `w = [3, 1]`, so `Σxᵢwᵢ = 1` while `Σ|xᵢwᵢ| = 5` — a condition number of
+/// five — `√Σ(xᵢwᵢ)² = √13`, and the normwise factors are `Σ|w| = 4` for
+/// `x`'s error and `Σ|x| = 3` for `w`'s.
+#[test]
+fn a_contraction_records_its_sums_of_terms() {
+    let (prog, core) = prepare("tests/data/terms.psk", &[]);
+    let (f, _, _) = presk_interp::run::resolve_entry(&core, &prog, "f").unwrap();
+    let t = |xs: &[f64]| IValue::Real(presk_interp::Tensor { axes: vec![presk_interp::value::Axis { name: None, len: xs.len() }], data: xs.iter().map(|x| Float::with_val(128, *x)).collect() });
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    interp.magnitudes = Some(Default::default());
+    interp.terms = Some(Default::default());
+    interp.call(f, Default::default(), vec![t(&[1.0, -2.0]), t(&[3.0, 1.0])]).unwrap();
+    let mut env = Envelope::new("tests/data/terms.psk", "f", 128, "2026-09-21");
+    env.observe(&interp.magnitudes.take().unwrap());
+    env.observe_terms(&interp.terms.take().unwrap());
+    let site = "f/%2";
+    let terms = env.terms(site).expect("the dot recorded its terms").clone();
+    assert_eq!(terms.abs, 5.0);
+    assert!((terms.rss - 13f64.sqrt()).abs() < 1e-15);
+    assert_eq!(terms.norms, vec![4.0, 3.0]);
+    assert_eq!(env.condition(site), Some(5.0));
+    // The file form carries them, and an envelope without them still loads.
+    let back: Envelope = serde_json::from_str(&env.to_json()).unwrap();
+    assert_eq!(back, env);
+    let mut old = env.clone();
+    old.terms.clear();
+    let old: Envelope = serde_json::from_str(&old.to_json()).unwrap();
+    assert!(old.terms.is_empty());
+    // Without them the rule falls back to `k`, and says where.
+    let dims = BTreeMap::new();
+    let r = Realization::uniform(Dtype::F32);
+    let a = propagate_with(&core, &prog, f, &dims, &old, &r, Model::Conditioned);
+    assert_eq!(a.fallback, vec![site.to_string()]);
+    let a = propagate_with(&core, &prog, f, &dims, &env, &r, Model::Conditioned);
+    assert!(a.fallback.is_empty());
 }

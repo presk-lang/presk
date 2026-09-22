@@ -157,7 +157,7 @@ fn get_leaf<'a>(v: &'a Value<Float>, path: &[String]) -> &'a Value<Float> {
 
 fn set_leaf_elem(v: &Value<Float>, path: &[String], i: usize, x: Float) -> Value<Float> {
     match (v, path.split_first()) {
-        (Value::Record(fs), Some((h, rest))) => Value::Record(fs.iter().map(|(n, sub)| (n.clone(), if n == h { set_leaf_elem(sub, rest, i, x.clone()) } else { sub.clone() })).collect()),
+        (Value::Record(fs), Some((h, rest))) => Value::record(fs.iter().map(|(n, sub)| (n.clone(), if n == h { set_leaf_elem(sub, rest, i, x.clone()) } else { sub.clone() })).collect()),
         (Value::Real(t), None) => {
             let mut t = t.clone();
             t.data[i] = x;
@@ -193,8 +193,8 @@ fn optimizer_schedule_and_step() {
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
     let step = core.find("adamw.step").unwrap();
     let tensor = |x: f64| Value::Real(presk_interp::Tensor { axes: vec![Axis { name: None, len: 64 }, Axis { name: None, len: 4 }], data: vec![Float::with_val(128, x); 256] });
-    let tree = |x: f64| Value::Record(vec![("w".to_string(), tensor(x))]);
-    let out = interp.call(step, Default::default(), vec![tree(1.0), Value::Tuple(vec![tree(0.0), tree(0.0)]), tree(0.5), Value::Nat(1), Value::Nat(10)]).unwrap();
+    let tree = |x: f64| Value::record(vec![("w".to_string(), tensor(x))]);
+    let out = interp.call(step, Default::default(), vec![tree(1.0), Value::tuple(vec![tree(0.0), tree(0.0)]), tree(0.5), Value::Nat(1), Value::Nat(10)]).unwrap();
     let leaf = |v: &Value<Float>| -> f64 {
         match v {
             Value::Record(fs) => match &fs[0].1 {

@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use presk_core::ir::{Func, Lit, Rhs};
-use presk_core::{FuncId, Program, VarId};
+use presk_core::{FuncId, PrimOp, Program, VarId};
 use presk_syntax::Span;
 use presk_types::dim::{DimExpr, DimVar};
 use presk_types::elab::ElabProgram;
@@ -60,12 +60,24 @@ pub struct Interp<'p, R: Real> {
     /// traffic, and traffic is elements times bytes per element, so the count
     /// belongs with the magnitudes (0.5.0 step 6).
     pub elems: Option<BTreeMap<String, u64>>,
+    /// And the primitive each site computes. The solver's objective becomes
+    /// *time* in 0.6.0 step 4, and the roofline needs `W` as well as `Q`;
+    /// the work of a site is its element count times the weight of its
+    /// operation, and only the name of that operation is needed here.
+    pub ops: Option<BTreeMap<String, String>>,
+    /// And, at each sum and contraction, what its terms add up to *without*
+    /// cancelling: the condition number's numerator `Σ|xᵢwᵢ|`, the
+    /// root-sum-square `√Σ(xᵢwᵢ)²`, and per operand the sum the rule for
+    /// that operand's error needs (0.6.0 step 6, D51). Each is a maximum over
+    /// output elements. They cost a second and third evaluation of every
+    /// contraction, which is why they are recorded only when asked for.
+    pub terms: Option<BTreeMap<String, TermSums>>,
     _r: std::marker::PhantomData<R>,
 }
 
 impl<'p, R: Real> Interp<'p, R> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32, seed: u64) -> Self {
-        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), training: false, magnitudes: None, minima: None, sums: None, elems: None, _r: std::marker::PhantomData }
+        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), training: false, magnitudes: None, minima: None, sums: None, elems: None, ops: None, terms: None, _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.
@@ -122,7 +134,18 @@ impl<'p, R: Real> Interp<'p, R> {
                 closures.insert(l.var, (*f, captured.iter().map(|c| env[c].clone()).collect()));
             }
             let v = self.retag(v, &l.ty, &dims);
-            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.elems.is_some() {
+            if self.terms.is_some()
+                && let Rhs::Prim { op, args } = &l.rhs
+                && let Some(kind) = TermKind::of(op)
+            {
+                let vals: Vec<Value<R>> = args.iter().filter_map(|a| env.get(a).cloned()).collect();
+                if vals.len() == args.len() {
+                    let t = self.term_sums(op, kind, &vals, &l.ty, &dims)?;
+                    let site = format!("{}/%{}", func.name, l.var.0);
+                    self.terms.as_mut().expect("just checked").entry(site).or_default().join(&t);
+                }
+            }
+            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.elems.is_some() || self.ops.is_some() {
                 let site = format!("{}/%{}", func.name, l.var.0);
                 let m = max_abs(&v);
                 if self.magnitudes.is_some() && m.is_finite() {
@@ -130,6 +153,11 @@ impl<'p, R: Real> Interp<'p, R> {
                     if m > *e {
                         *e = m;
                     }
+                }
+                if let Some(o) = self.ops.as_mut()
+                    && let Rhs::Prim { op, .. } = &l.rhs
+                {
+                    o.insert(site.clone(), op.name().to_string());
                 }
                 if let Some(el) = self.elems.as_mut() {
                     let n = count_reals(&v) as u64;
@@ -163,7 +191,8 @@ impl<'p, R: Real> Interp<'p, R> {
     }
 
     fn rhs(&mut self, rhs: &Rhs, ty: &Ty, dims: &Dims, env: &HashMap<VarId, Value<R>>, closures: &HashMap<VarId, (FuncId, Vec<Value<R>>)>) -> Result<Value<R>> {
-        let get = |v: &VarId| -> Result<Value<R>> { env.get(v).cloned().ok_or_else(|| RunError { message: format!("variable %{} undefined", v.0), span: None }) };
+        let look = |v: &VarId| -> Result<&Value<R>> { env.get(v).ok_or_else(|| RunError { message: format!("variable %{} undefined", v.0), span: None }) };
+        let get = |v: &VarId| -> Result<Value<R>> { look(v).cloned() };
         match rhs {
             Rhs::Lit(Lit::Nat(n)) => Ok(Value::Nat(*n)),
             Rhs::Lit(Lit::Float(s)) => Ok(Value::F64(s.parse().map_err(|_| RunError { message: format!("bad float literal `{s}`"), span: None })?)),
@@ -184,14 +213,16 @@ impl<'p, R: Real> Interp<'p, R> {
                 }
                 self.call(*f, callee_dims, vals)
             }
-            Rhs::Tuple(vs) => Ok(Value::Tuple(vs.iter().map(get).collect::<Result<_>>()?)),
-            Rhs::Proj(v, i) => match get(v)? {
-                Value::Tuple(vs) => vs.into_iter().nth(*i).ok_or_else(|| RunError { message: format!("tuple has no element {i}"), span: None }),
+            Rhs::Tuple(vs) => Ok(Value::tuple(vs.iter().map(get).collect::<Result<_>>()?)),
+            // A projection or a field clones the element it selects and
+            // nothing else (0.6.0 step 8).
+            Rhs::Proj(v, i) => match look(v)? {
+                Value::Tuple(vs) => vs.get(*i).cloned().ok_or_else(|| RunError { message: format!("tuple has no element {i}"), span: None }),
                 other => err(format!("projection on a {}", other.kind())),
             },
-            Rhs::Record(fields) => Ok(Value::Record(fields.iter().map(|(n, v)| Ok((n.clone(), get(v)?))).collect::<Result<_>>()?)),
-            Rhs::Field(v, name) => match get(v)? {
-                Value::Record(fs) => fs.into_iter().find(|(n, _)| n == name).map(|(_, v)| v).ok_or_else(|| RunError { message: format!("record has no field `{name}`"), span: None }),
+            Rhs::Record(fields) => Ok(Value::record(fields.iter().map(|(n, v)| Ok((n.clone(), get(v)?))).collect::<Result<_>>()?)),
+            Rhs::Field(v, name) => match look(v)? {
+                Value::Record(fs) => fs.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).ok_or_else(|| RunError { message: format!("record has no field `{name}`"), span: None }),
                 other => err(format!("field `{name}` of a {}", other.kind())),
             },
             Rhs::Closure { f, captured } => Ok(Value::Closure { f: *f, captured: captured.iter().map(get).collect::<Result<_>>()? }),
@@ -228,7 +259,7 @@ impl<'p, R: Real> Interp<'p, R> {
                     pre.sort_by_key(|(i, _)| *i);
                     let parts: Vec<Value<R>> = pre.into_iter().map(|(_, v)| v).collect();
                     let stacked = self.stack_trees(&parts)?;
-                    Ok(Value::Tuple(vec![acc, stacked]))
+                    Ok(Value::tuple(vec![acc, stacked]))
                 } else {
                     Ok(acc)
                 }
@@ -294,6 +325,50 @@ impl<'p, R: Real> Interp<'p, R> {
         Tensor { axes: t.axes.clone(), data: vec![R::from_u64(0, self.prec); t.numel()] }
     }
 
+    /// The sums of terms of one sum or contraction, by evaluating it again on
+    /// transformed operands. Every primitive this applies to is linear in
+    /// each operand it sums over, so on `|x|` and `|w|` it computes
+    /// `Σ|xᵢwᵢ|` per output element, on `x²` and `w²` it computes
+    /// `Σ(xᵢwᵢ)²`, and with operand `j` replaced by ones and the others by
+    /// their absolute values it computes `Σ Π_{i≠j}|·|` — the factor that
+    /// multiplies operand `j`'s error in a normwise rule.
+    fn term_sums(&mut self, op: &PrimOp, kind: TermKind, vals: &[Value<R>], ty: &Ty, dims: &Dims) -> Result<TermSums> {
+        let summed = match kind {
+            TermKind::Linear => 1,
+            TermKind::Multilinear => vals.len(),
+        };
+        let with = |f: &dyn Fn(&R) -> R, which: &dyn Fn(usize) -> bool| -> Vec<Value<R>> {
+            vals.iter()
+                .enumerate()
+                .map(|(i, v)| if which(i) { v.map_leaves(&mut |leaf| match leaf { Value::Real(t) => Value::Real(t.map(|x| f(x))), other => other.clone() }) } else { v.clone() })
+                .collect()
+        };
+        let one = R::from_u64(1, self.prec);
+        let s = self.prim(op, &with(&|x: &R| x.abs(), &|i| i < summed), ty, dims)?;
+        let mut t = TermSums { abs: max_abs(&s), rss: 0.0, norms: Vec::new() };
+        if matches!(op, PrimOp::SumSquares) {
+            // Its terms are `xᵢ²`: the squares of the terms are `xᵢ⁴`, and
+            // the factor on `x`'s error is `2Σ|xᵢ|`.
+            let q = self.prim(op, &with(&|x: &R| x.mul(x), &|_| true), ty, dims)?;
+            t.rss = max_abs(&q).sqrt();
+            t.norms = vec![2.0 * vals.iter().map(sum_abs).sum::<f64>()];
+            return Ok(t);
+        }
+        let q = self.prim(op, &with(&|x: &R| x.mul(x), &|i| i < summed), ty, dims)?;
+        t.rss = max_abs(&q).sqrt();
+        if kind == TermKind::Multilinear {
+            for j in 0..summed {
+                let args: Vec<Value<R>> = with(&|x: &R| x.abs(), &|i| i != j)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| if i == j { v.map_leaves(&mut |leaf| match leaf { Value::Real(t) => Value::Real(t.map(|_| one.clone())), other => other.clone() }) } else { v })
+                    .collect();
+                t.norms.push(max_abs(&self.prim(op, &args, ty, dims)?));
+            }
+        }
+        Ok(t)
+    }
+
     pub(crate) fn key_of(&self, v: &Value<R>) -> Result<Key> {
         match v {
             Value::Key(k) => Ok(k.clone()),
@@ -302,6 +377,50 @@ impl<'p, R: Real> Interp<'p, R> {
     }
 }
 
+
+/// What a sum or contraction adds up to without cancelling (0.6.0 step 6).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TermSums {
+    /// `max Σ|xᵢwᵢ|` over output elements: the condition number's numerator.
+    pub abs: f64,
+    /// `max √Σ(xᵢwᵢ)²`: what independent errors in the terms add up to.
+    pub rss: f64,
+    /// Per summed operand `j`, `max Σ Π_{i≠j}|·|`: the normwise factor on
+    /// that operand's error. Empty for a plain sum, whose factor is `k`.
+    pub norms: Vec<f64>,
+}
+
+impl TermSums {
+    /// The pointwise maximum, since the envelope must cover every call.
+    pub fn join(&mut self, o: &TermSums) {
+        self.abs = self.abs.max(o.abs);
+        self.rss = self.rss.max(o.rss);
+        if self.norms.len() < o.norms.len() {
+            self.norms.resize(o.norms.len(), 0.0);
+        }
+        for (a, b) in self.norms.iter_mut().zip(&o.norms) {
+            *a = a.max(*b);
+        }
+    }
+}
+
+/// How a primitive sums: over its first operand only, or over the product of
+/// all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TermKind {
+    Linear,
+    Multilinear,
+}
+
+impl TermKind {
+    fn of(op: &PrimOp) -> Option<TermKind> {
+        match op {
+            PrimOp::Dot | PrimOp::Matmul | PrimOp::Ein { .. } | PrimOp::DotVjpL | PrimOp::DotVjpR => Some(TermKind::Multilinear),
+            PrimOp::SumAll | PrimOp::Sum { .. } | PrimOp::SumTo | PrimOp::MeanAll | PrimOp::Mean { .. } | PrimOp::SumSquares => Some(TermKind::Linear),
+            _ => None,
+        }
+    }
+}
 
 /// The largest `|x|` over every real leaf of a value, as an `f64`.
 ///

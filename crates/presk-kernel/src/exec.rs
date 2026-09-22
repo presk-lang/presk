@@ -83,6 +83,8 @@ struct Env<'a, E: Elem> {
     loops: Vec<usize>,
     reals: Vec<E>,
     ints: Vec<i64>,
+    /// One register per vector variable, each of `k.lanes` elements.
+    vecs: Vec<Vec<E>>,
 }
 
 impl<E: Elem> Env<'_, E> {
@@ -99,6 +101,9 @@ impl<E: Elem> Env<'_, E> {
             Buf::Bf16(v) => E::from_f64(presk_rt::bf16_to_f32(v[off]) as f64),
             Buf::I64(v) => E::from_f64(v[off] as f64),
             Buf::Exact(v) => E::from_f64(v[off].to_f64()),
+            // An integer weight: `f32(q)·s`, one `f32` multiplication, then
+            // widened exactly if the kernel computes in `f64` (D44).
+            Buf::Quant(q) => E::from_f64(q.value(off) as f64),
         }
     }
 
@@ -171,6 +176,31 @@ impl<E: Elem> Env<'_, E> {
         }
     }
 
+    /// A vector expression, lane by lane. Every lane is an independent
+    /// element of the same computation — never a partial sum of one — so the
+    /// arithmetic each lane performs is exactly the arithmetic the scalar
+    /// form performs for that element, in the same order (D42).
+    fn eval_v(&self, e: &Expr) -> Vec<E> {
+        let n = self.k.lanes;
+        match e {
+            Expr::Vv(v) => self.vecs[*v].clone(),
+            Expr::VLoad(buf, ix) => {
+                let off = self.offset(*buf, ix);
+                (0..n).map(|i| self.load_f(*buf, off + i)).collect()
+            }
+            Expr::VSplat(x) => {
+                let s = self.eval_f(x);
+                vec![s; n]
+            }
+            Expr::VBin(op, a, b) => {
+                let (x, y) = (self.eval_v(a), self.eval_v(b));
+                x.into_iter().zip(y).map(|(p, q)| p.bin(*op, q)).collect()
+            }
+            // A scalar in a vector position is one lane wide, broadcast.
+            other => vec![self.eval_f(other); n],
+        }
+    }
+
     fn store_f(&mut self, off: usize, x: E) {
         match self.out {
             Buf::F64(v) => v[off] = x.to_f64(),
@@ -179,7 +209,8 @@ impl<E: Elem> Env<'_, E> {
             // once, to nearest even, on the way to memory.
             Buf::Bf16(v) => v[off] = presk_rt::f32_to_bf16(x.to_f64() as f32),
             Buf::I64(v) => v[off] = x.to_f64() as i64,
-            Buf::Exact(_) => {}
+            // Parameters are quantised, results never are.
+            Buf::Exact(_) | Buf::Quant(_) => {}
         }
     }
 
@@ -203,6 +234,17 @@ impl<E: Elem> Env<'_, E> {
                 Stmt::SetL { var, value } => {
                     let x = self.eval_i(value);
                     self.loops[*var] = x.max(0) as usize;
+                }
+                Stmt::VSet { var, value } => {
+                    let x = self.eval_v(value);
+                    self.vecs[*var] = x;
+                }
+                Stmt::VStore { buf, index, value } => {
+                    let off = self.offset(*buf, index);
+                    let x = self.eval_v(value);
+                    for (i, e) in x.into_iter().enumerate() {
+                        self.store_f(off + i, e);
+                    }
                 }
                 Stmt::Store { buf, index, value } => {
                     let off = self.offset(*buf, index);
@@ -233,13 +275,13 @@ pub fn run_kernel(k: &Kernel, inputs: &[&Buf], out: &mut Buf) {
     strides.push(k.output.strides());
     match k.dtype {
         crate::ir::Dtype::F64 => {
-            let mut env = Env::<f64> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![0.0; k.nreal], ints: vec![0; k.nint] };
+            let mut env = Env::<f64> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![0.0; k.nreal], ints: vec![0; k.nint], vecs: vec![vec![0.0f64; k.lanes]; k.nvec] };
             env.run(&k.body);
         }
         // `bf16` is a storage type: the loop nest runs in `f32` and only the
         // buffers are narrow, which is the whole of the idiom (D34).
         crate::ir::Dtype::F32 | crate::ir::Dtype::Bf16 => {
-            let mut env = Env::<f32> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![0.0; k.nreal], ints: vec![0; k.nint] };
+            let mut env = Env::<f32> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![0.0; k.nreal], ints: vec![0; k.nint], vecs: vec![vec![0.0f32; k.lanes]; k.nvec] };
             env.run(&k.body);
         }
     }
@@ -250,8 +292,8 @@ pub fn output_buf(k: &Kernel) -> Buf {
     let n = k.output.numel();
     match (k.output.kind, k.dtype) {
         (BufKind::Idx, _) => Buf::I64(vec![0; n]),
-        (BufKind::Real, crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n]),
-        (BufKind::Real, crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n]),
-        (BufKind::Real, crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n]),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n]),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n]),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n]),
     }
 }

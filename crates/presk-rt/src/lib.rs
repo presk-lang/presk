@@ -25,6 +25,9 @@ use presk_types::elab::ElabProgram;
 use presk_types::ty::Shape;
 use rug::Float;
 
+pub mod quant;
+pub use quant::{AxisRef, QBuf, QTensor, Quant, QuantScheme};
+
 type IValue = presk_interp::Value<Float>;
 
 /// A machine type a real tensor can be stored in.
@@ -68,6 +71,22 @@ impl Dtype {
             Dtype::F64 => 8,
             Dtype::F32 => 4,
             Dtype::Bf16 => 2,
+        }
+    }
+
+    /// Lanes a 128-bit vector register holds of this type, which is the only
+    /// width the backends emit. `bf16` is one: a narrow lane needs a
+    /// conversion per element, which is a different kernel.
+    ///
+    /// This belongs to the *type*, not to a realization's default, because a
+    /// mixed assignment has kernels of several types and each takes its own
+    /// width. Deriving it from the default is how a mixed realization came to
+    /// ask for a two-lane `bf16` kernel, which is refused.
+    pub fn natural_lanes(self) -> usize {
+        match self {
+            Dtype::F64 => 2,
+            Dtype::F32 => 4,
+            Dtype::Bf16 => 1,
         }
     }
 
@@ -160,12 +179,20 @@ impl ReductionOrder {
 ///
 /// A site is `"<function>/<let>"` — a fusion group's root, which is the
 /// smallest unit at which a type is a decision rather than a conversion. A
-/// site the map does not mention takes `default`.
+/// site the map does not mention takes its function's type from
+/// `functions`, and failing that `default`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Realization {
     pub default: Dtype,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub storage: BTreeMap<String, Dtype>,
+    /// A type for every site of a function, by the function's name
+    /// (`Linear.apply.vjp`, `adamw.step`): the unit at which the solver
+    /// chooses over a training step, where the reverse sweep and the
+    /// optimizer have no per-site sensitivity to rank by (0.6.0 step 7b,
+    /// D52). A site named in `storage` overrides it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub functions: BTreeMap<String, Dtype>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accum: BTreeMap<String, Dtype>,
     pub order: ReductionOrder,
@@ -174,13 +201,20 @@ pub struct Realization {
     /// (D35), so the reference travels with the realization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope: Option<String>,
+    /// Parameters stored as integers with per-channel scales, keyed by their
+    /// path in the parameter tree (`blocks.attn.wq.w`), not by site: a
+    /// quantised weight is a property of one tensor feeding a contraction,
+    /// not of a loop nest (D44). The scales are not here — they are derived
+    /// from this and the weights whenever the weights are loaded.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub quant: BTreeMap<String, Quant>,
 }
 
 impl Realization {
     /// One dtype everywhere, additions in index order: what `--realize f64`
     /// and `--realize f32` meant in every version up to 0.4.0, and still do.
     pub fn uniform(d: Dtype) -> Realization {
-        Realization { default: d, storage: BTreeMap::new(), accum: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None }
+        Realization { default: d, storage: BTreeMap::new(), functions: BTreeMap::new(), accum: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None, quant: BTreeMap::new() }
     }
 
     /// `f64`, `f32`, `bf16`, or `@PATH` for a realization file.
@@ -195,9 +229,13 @@ impl Realization {
         }
     }
 
-    /// The storage type of a site.
+    /// The storage type of a site: its own, else its function's, else the
+    /// default.
     pub fn dtype_at(&self, site: &str) -> Dtype {
-        self.storage.get(site).copied().unwrap_or(self.default)
+        if let Some(d) = self.storage.get(site) {
+            return *d;
+        }
+        site.rsplit_once('/').and_then(|(f, _)| self.functions.get(f)).copied().unwrap_or(self.default)
     }
 
     /// The accumulator type of a site's contraction. It defaults to the
@@ -211,7 +249,7 @@ impl Realization {
     /// their order. Uniform realizations are the ones earlier versions could
     /// express, and the ones whose goldens must not move.
     pub fn is_uniform(&self) -> bool {
-        self.storage.is_empty() && self.accum.is_empty() && self.order == ReductionOrder::Sequential
+        self.storage.is_empty() && self.functions.is_empty() && self.accum.is_empty() && self.order == ReductionOrder::Sequential && self.quant.is_empty()
     }
 
     /// A short name for reports and cache keys.
@@ -223,11 +261,44 @@ impl Realization {
         if !self.storage.is_empty() {
             s.push_str(&format!("+{}sites", self.storage.len()));
         }
+        if !self.functions.is_empty() {
+            s.push_str(&format!("+{}fns", self.functions.len()));
+        }
+        if !self.quant.is_empty() {
+            s.push_str(&format!("+{}quant", self.quant.len()));
+        }
         s
     }
 
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("a realization serializes")
+    }
+
+    /// The parameters this realization runs on: `theta` with every quantised
+    /// leaf replaced by its integers and scales ([`Buf::Quant`]), which the
+    /// kernels load as `f32(q)·s` and the reference interpreter reads as the
+    /// same values. The identity when nothing is quantised.
+    pub fn quantized_params(&self, theta: &Value) -> Result<Value> {
+        if self.quant.is_empty() {
+            return Ok(theta.clone());
+        }
+        Ok(quant::quantized_leaves(theta, &quant::quantize_params(theta, &self.quant)?))
+    }
+
+    /// Quantise an entry's parameters, its first argument, before a run. A
+    /// realization that quantises must never be run on the true weights
+    /// unnoticed, so an entry without a parameter tree first is refused.
+    pub fn quantize_args(&self, args: &mut [Value]) -> Result<()> {
+        if self.quant.is_empty() {
+            return Ok(());
+        }
+        match args.first_mut() {
+            Some(theta @ Value::Record(_)) => {
+                *theta = self.quantized_params(theta)?;
+                Ok(())
+            }
+            _ => err("E7001", "the realization quantises parameters, and this entry's first argument is not a parameter tree"),
+        }
     }
 }
 
@@ -242,6 +313,9 @@ pub enum Buf {
     /// them happens in `f32`; only the traffic is halved.
     Bf16(Vec<u16>),
     I64(Vec<i64>),
+    /// Integers with a scale per channel (0.6.0 step 5b, D44): a parameter a
+    /// realization quantises. Read anywhere as `f32(q)·s`.
+    Quant(std::sync::Arc<QBuf>),
 }
 
 impl Buf {
@@ -252,6 +326,7 @@ impl Buf {
             Buf::F32(v) => v.len(),
             Buf::Bf16(v) => v.len(),
             Buf::I64(v) => v.len(),
+            Buf::Quant(q) => q.len(),
         }
     }
 
@@ -267,6 +342,7 @@ impl Buf {
             Buf::F32(v) => v.iter().map(|x| *x as f64).collect(),
             Buf::Bf16(v) => v.iter().map(|x| bf16_to_f32(*x) as f64).collect(),
             Buf::I64(v) => v.iter().map(|x| *x as f64).collect(),
+            Buf::Quant(q) => (0..q.len()).map(|e| q.value(e) as f64).collect(),
         }
     }
 
@@ -295,6 +371,7 @@ impl Buf {
             Buf::F32(_) => "f32",
             Buf::Bf16(_) => "bf16",
             Buf::I64(_) => "i64",
+            Buf::Quant(q) => q.dtype(),
         }
     }
 }
@@ -388,6 +465,7 @@ impl Value {
                     Buf::F32(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                     Buf::Bf16(v) => v.iter().map(|x| Float::with_val(prec, bf16_to_f32(*x))).collect(),
                     Buf::I64(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
+                    Buf::Quant(q) => (0..q.len()).map(|e| Float::with_val(prec, q.value(e))).collect(),
                 },
             }),
             Value::Idx { bound, t } => IValue::Idx {
@@ -405,8 +483,27 @@ impl Value {
             Value::F64(x) => IValue::F64(*x),
             Value::Bool(b) => IValue::Bool(*b),
             Value::Key(k) => IValue::Key(k.clone()),
-            Value::Tuple(vs) => IValue::Tuple(vs.iter().map(|v| v.to_interp(prec)).collect()),
-            Value::Record(fs) => IValue::Record(fs.iter().map(|(n, v)| (n.clone(), v.to_interp(prec))).collect()),
+            Value::Tuple(vs) => IValue::tuple(vs.iter().map(|v| v.to_interp(prec)).collect()),
+            Value::Record(fs) => IValue::record(fs.iter().map(|(n, v)| (n.clone(), v.to_interp(prec))).collect()),
+        }
+    }
+
+    /// The same, consuming the value: an exact buffer is moved rather than
+    /// copied, each real rounded in place to `prec` bits — the value
+    /// `with_val` gives, and no change at the precision it was made at. A
+    /// parameter tree then crosses the seam into the interpreter without a
+    /// second copy (0.6.0 step 8: BERT-large's 335M exact parameters).
+    pub fn into_interp(self, prec: u32) -> IValue {
+        match self {
+            Value::Real(Tensor { axes, data: Buf::Exact(mut v) }) => {
+                for x in &mut v {
+                    x.set_prec(prec);
+                }
+                IValue::Real(presk_interp::Tensor { axes, data: v })
+            }
+            Value::Tuple(vs) => IValue::tuple(vs.into_iter().map(|v| v.into_interp(prec)).collect()),
+            Value::Record(fs) => IValue::record(fs.into_iter().map(|(n, v)| (n, v.into_interp(prec))).collect()),
+            other => other.to_interp(prec),
         }
     }
 
@@ -468,6 +565,46 @@ impl Value {
             }
             leaf.clone()
         });
+        acc
+    }
+
+    /// `‖a − b‖₂²` over the real leaves of two values of the same type.
+    /// Where either side is exact the difference is taken exactly and
+    /// rounded once, so a distance between an update and its exact
+    /// reference is not swamped by rounding `θ` itself: the update is a
+    /// thousand times smaller than the parameters (0.6.0 step 7b).
+    pub fn dist2_f64(&self, other: &Value) -> f64 {
+        fn exact(b: &Buf, prec: u32) -> Vec<Float> {
+            match b {
+                Buf::Exact(v) => v.clone(),
+                other => other.to_f64().into_iter().map(|x| Float::with_val(prec, x)).collect(),
+            }
+        }
+        fn go(a: &Value, b: &Value, acc: &mut f64) {
+            match (a, b) {
+                (Value::Real(x), Value::Real(y)) => {
+                    let prec = [&x.data, &y.data].iter().find_map(|d| if let Buf::Exact(v) = d { v.first().map(|f| f.prec()) } else { None });
+                    match prec {
+                        Some(p) => {
+                            for (u, v) in exact(&x.data, p).iter().zip(exact(&y.data, p)) {
+                                let d = Float::with_val(p, u - &v).to_f64();
+                                *acc += d * d;
+                            }
+                        }
+                        None => {
+                            for (u, v) in x.data.to_f64().into_iter().zip(y.data.to_f64()) {
+                                *acc += (u - v) * (u - v);
+                            }
+                        }
+                    }
+                }
+                (Value::Tuple(xs), Value::Tuple(ys)) => xs.iter().zip(ys).for_each(|(x, y)| go(x, y, acc)),
+                (Value::Record(xs), Value::Record(ys)) => xs.iter().zip(ys).for_each(|((_, x), (_, y))| go(x, y, acc)),
+                _ => {}
+            }
+        }
+        let mut acc = 0.0;
+        go(self, other, &mut acc);
         acc
     }
 }
@@ -543,7 +680,7 @@ impl Backend for InterpBackend<'_> {
     }
 
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value> {
-        let args: Vec<IValue> = args.iter().map(|a| a.to_interp(self.prec)).collect();
+        let args: Vec<IValue> = args.into_iter().map(|a| a.into_interp(self.prec)).collect();
         let out = self.interp.call(p.func, p.dims.clone(), args)?;
         Value::from_interp(&out)
     }
@@ -555,7 +692,8 @@ impl Backend for InterpBackend<'_> {
 pub fn run_with(backend: &mut dyn Backend, prog: &Program, elab: &ElabProgram, opts: &RunOptions, realize: &Realization) -> Result<presk_interp::RunOutput> {
     let (func, dims, inputs) = presk_interp::run::prepare_run(prog, elab, opts)?;
     let p = backend.prepare(func, &dims, realize)?;
-    let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<Result<_>>()?;
+    let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<Result<_>>()?;
+    realize.quantize_args(&mut args)?;
     let result = backend.call(&p, args)?;
     let dims_named: Vec<(String, u64)> = dims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
     Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })
