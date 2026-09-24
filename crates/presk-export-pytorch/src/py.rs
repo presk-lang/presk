@@ -331,7 +331,12 @@ impl<'a> Printer<'a> {
             params.push(s);
         }
         if sig.effects.iter().any(|e| e == "Rand") {
+            // A `uses Rand` function takes the source of randomness of
+            // `sample` and the switch of `dropout`, both off by default and
+            // passed on to every `uses Rand` callee; `train.py` turns the
+            // switch on (D54).
             params.push("generator=None".into());
+            params.push("training=False".into());
         }
         if !method {
             let tps: Vec<String> = sig.typarams.iter().chain(&sig.implicit_dims).map(|v| self.elab.dim_name(*v)).collect();
@@ -445,10 +450,23 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// Whether `fid` is `uses Rand`, and so takes the `generator` and
+    /// `training` keywords.
+    fn has_rand(&self, fid: FnId) -> bool {
+        self.elab.function(fid).effects.iter().any(|e| e == "Rand")
+    }
+
+    /// The keywords a call to `callee` passes on: the caller's own, when both
+    /// are `uses Rand` (the effect discipline makes the caller so).
+    fn rand_kwargs(&self, callee: FnId) -> Option<String> {
+        (self.has_rand(callee) && self.fn_id.is_some_and(|f| self.has_rand(f))).then(|| "generator=generator, training=training".to_string())
+    }
+
     /// `blocks.apply(h0, mask)` through `stack{L}(Block)`: a loop.
     fn stack_loop(&mut self, init: &Expr, target: &str) -> Option<Vec<String>> {
         let Expr::Call { callee, args, span } = init else { return None };
-        let Some(Callee::Fn { module: Some(ModRef::Stack { n, .. }), .. }) = self.typed.callees.get(span) else { return None };
+        let Some(Callee::Fn { id, module: Some(ModRef::Stack { n, .. }), .. }) = self.typed.callees.get(span) else { return None };
+        let (id, n) = (*id, n.clone());
         let Expr::Var { path } = &**callee else { return None };
         let member = path.segs[0].name.clone();
         let mut vals: Vec<String> = Vec::new();
@@ -459,14 +477,21 @@ impl<'a> Printer<'a> {
         }
         let first = vals.first()?.clone();
         let rest = vals[1..].join(", ");
-        let comma = if rest.is_empty() { String::new() } else { format!(", {rest}") };
+        let mut comma = if rest.is_empty() { String::new() } else { format!(", {rest}") };
+        if let Some(kw) = self.rand_kwargs(id) {
+            comma.push_str(&format!(", {kw}"));
+        }
+        // A tuple accumulator (`let (hL, _) = blocks.apply((h0, kb), mask)`,
+        // the key threaded through the fold, D37) is bound by a tuple pattern
+        // and passed back as one argument.
+        let acc = if target.contains(',') { format!("({target})") } else { target.to_string() };
         match self.opts.stack {
-            StackMode::Loop => Some(vec![format!("{target} = {first}"), format!("for block in self.{member}:  # stack{{{}}}", self.dim(n)), format!("    {target} = block({target}{comma})")]),
+            StackMode::Loop => Some(vec![format!("{target} = {first}"), format!("for block in self.{member}:  # stack{{{}}}", self.dim(&n)), format!("    {target} = block({acc}{comma})")]),
             StackMode::Unroll => {
                 let count = n.as_nat()? as usize;
                 let mut out = vec![format!("{target} = {first}")];
                 for i in 0..count {
-                    out.push(format!("{target} = self.{member}[{i}]({target}{comma})"));
+                    out.push(format!("{target} = self.{member}[{i}]({acc}{comma})"));
                 }
                 Some(out)
             }
@@ -763,7 +788,7 @@ impl<'a> Printer<'a> {
                     None => "None".into(),
                 }
             }
-            Some(Callee::Fn { module, explicit_theta, .. }) => {
+            Some(Callee::Fn { id, module, explicit_theta }) => {
                 let Expr::Var { path } = callee else { return "None".into() };
                 let fname = path.segs.last().unwrap().name.clone();
                 let py_name = if fname == "apply" { None } else { Some(fname.clone()) };
@@ -777,10 +802,12 @@ impl<'a> Printer<'a> {
                         _ => {}
                     }
                 }
+                let kw = self.rand_kwargs(id);
                 match (module, explicit_theta) {
                     (Some(_), false) => {
                         // `l1.apply(x)` inside a module: a sub-module call.
                         let member = path.segs[0].name.clone();
+                        vals.extend(kw);
                         match py_name {
                             None => format!("self.{member}({})", vals.join(", ")),
                             Some(n) => format!("self.{member}.{n}({})", vals.join(", ")),
@@ -794,9 +821,13 @@ impl<'a> Printer<'a> {
                             None => modexpr,
                             Some(n) => format!("{modexpr}.{n}"),
                         };
-                        format!("torch.func.functional_call({target}, {theta}, ({},))", vals.join(", "))
+                        let kwargs = if kw.is_some() { ", {\"generator\": generator, \"training\": training}" } else { "" };
+                        format!("torch.func.functional_call({target}, {theta}, ({},){kwargs})", vals.join(", "))
                     }
-                    (None, _) => format!("{fname}({})", vals.join(", ")),
+                    (None, _) => {
+                        vals.extend(kw);
+                        format!("{fname}({})", vals.join(", "))
+                    }
                 }
             }
             Some(Callee::Builtin(name)) => self.builtin(&name, args, &pos, span),
@@ -902,17 +933,22 @@ impl<'a> Printer<'a> {
                 format!("{}.unflatten({k}, ({l1}, {l2}))", x(self, 0))
             }
             "split_key" => {
-                // The exported program never draws from a key: `dropout` is
-                // exported as its expectation, so both halves are dead.
+                // The exported program never draws from a key: `dropout` at
+                // its expectation ignores it, and under the `training` switch
+                // PyTorch's own generator draws the mask, so both halves are
+                // the same value.
                 let k = x(self, 0);
                 format!("({k}, {k})")
             }
             "dropout" => {
                 // The mask is a function of a Presk key, which PyTorch's
-                // generator cannot reproduce, so the export is the random
-                // function's expectation — the identity of inverted dropout,
-                // and what an inference deployment wants (question 33).
-                format!("F.dropout({}, {}, training=False)", x(self, 2), x(self, 0))
+                // generator cannot reproduce. With the switch off the export
+                // is the random function's expectation — the identity of
+                // inverted dropout, and what an inference deployment wants
+                // (question 33); `train.py` turns it on, and PyTorch draws
+                // masks of its own (D54).
+                let switch = if self.fn_id.is_some_and(|f| self.has_rand(f)) { "training" } else { "False" };
+                format!("F.dropout({}, {}, training={switch})", x(self, 2), x(self, 0))
             }
             "embed" => format!("{}[{}]", x(self, 0), x(self, 1)),
             "one_hot" => {

@@ -1,5 +1,227 @@
 # Changelog
 
+## 0.7.0 — 2026-09-24
+
+Ranking, not speed (`presk-specs/implementation/presk-plan-0.7.0.md`).
+Three versions have measured precision and speed; none has measured the
+thesis. RA4's hypothesis is that on regular tensor kernels a static cost
+model orders more than 90 % of the pairs of variants autotuning
+distinguishes, at a decision cost lower by orders of magnitude. 0.7.0 tests
+it on the CPU backend that exists, with attention as the case study: a
+layout space over each nest whose every point is exact by construction and
+asserted bit-identical to the scalar sequential kernel, a plan object that
+carries the layout beside the realization, a cost model that reads the
+layout (reuse-aware traffic, threads, register pressure, an uncertainty),
+calibrated on a GEMM the attention nests never enter, and an exhaustive
+sweep pinned to the ten X925 cores and repeated (four hours later, where
+the plan asked for a second day). Statements L to P. The version does not
+promise to close the 22× against PyTorch.
+
+**What it shows.** Exactness survives a space of variants: 17 879 points of
+the course GPT's attention, a GEMM and a BERT-shaped sample — register
+tiles, k-blocks, loop orders, lanes, packs, thread splits at any depth — are
+every one bit-identical to the scalar sequential kernel, natively and on the
+kernel interpreter (L). The space pays: its best points run the attention's
+`ein`s 9.2× and 16.5× faster than 0.6.0 at batch 16 and 47× and 77× at batch
+1, and a 1024³ `f32` product at 460 GFLOP/s, 5.49× 0.6.0's point (P). **What
+it does not show** is RA4. The static model orders 47.9 % and 43.9 % of the
+attention `ein`s' distinguished close pairs right where the hypothesis asks
+more than 90 % (M), chooses 582–717 times faster than the sweep at batch 16
+where it asks 10³ (N), and picks points 2.18–3.01 times slower than the best
+(O). The cause is named: the model gives a load no weight and counts traffic
+from L2, so it ranks lanes and thread splits (93–97 %) and cannot see a
+register tile. Its candidates within `1 + u` still hold the best point, or
+one within 1.08× of it, at 2.4–15 % of the space: a pruner, not a chooser.
+The version closes on these results; the load term is a design for a later
+one, to be tested on a fresh sweep.
+
+- Step 7: documentation, tutorial step 17, version 0.7.0. The manual brought
+  to 0.7.0 as implemented: `realize` gains a table of the layout decisions
+  (domains, defaults, what each changes), their well-formedness and how a
+  plan is chosen, and loses a paragraph that said this version lowers few
+  of them; `native` a packed, tiled and split kernel as `dump --stage kernel`
+  prints it, the GEMM's best point beside 0.6.0's and the model's pick, and
+  what the split at a depth buys at batch one; `optimization` what `u` is for
+  and what the layout model cannot see (D62); `cli` checked against `presk
+  --help` and each command's (`--seed` added to the synopses of `plan` and
+  `autotune`, a section name corrected); `experiments` §7, the statements of
+  0.7.0, and a closing section that no longer says RA4 is untested or quotes
+  the 94×; `status` closed with L to P, the verification and what the version
+  has and has not; the index, `install` and the chapter summaries. Tutorial
+  step 17, "A plan for attention": the layout model calibrated on a GEMM,
+  then `presk plan`, `presk run --plan` (the same output), `presk autotune
+  --space small` twice and `presk rank` on the tutorial's attention, in
+  `make tutorial`, which now runs steps 0 to 17. Its quoted outputs were
+  compared with a run: they agree but for timings, `presk --help` (the three
+  commands of 0.7.0), and step 16's `bf16` and recipe rows, which moved with
+  D58's `bf16` `dot` (the recipe 8.49·10⁻³ → 8.66·10⁻³ from the exact step;
+  every choice of the solver unchanged). The register-load term is recorded
+  as a design in `docs/kernels-roadmap.md`, with the evidence for it (thirty
+  points of the values `ein` that the model predicts equal, ordered by their
+  loads per vector multiply-add from 6.9–7.3 ms down to 2.5–2.9 ms), what it
+  will not fix alone, and how to test it on a sweep it was not designed on.
+  Spec questions 63–70 copied to `presk-specs`
+  (`presk-spec-questions-0.7.0.md`), 63, 64, 66, 67 and 68 marked as in the
+  reference, 65 and 69 given the measurement's numbers. Version 0.7.0; `presk
+  --help` lists `plan`, `autotune` and `rank` without their step numbers and
+  names layout plans among the compiler's parts. Found and fixed: `make
+  ra4-small` ranked its sweep with `presk rank`'s default entry,
+  `SelfAttention.apply`, so its report left M, N and O "not measured";
+  `experiments/ra4.sh` now passes its entry. Verification on falicon: `make
+  test` (140 tests), `check-examples`, `plan-check`, `ra4-small` (every point
+  exact on both executors), `tutorial` (twice), `conformance` and `cargo doc
+  -p presk-manual` pass; §5's `presk plan` on the course GPT's attention and
+  `presk run --plan` give the default's output byte for byte. The measurement
+  itself is step 6's and was not run again.
+- Step 6: the measurement (D62). One night on falicon ran four things:
+  - two pinned sweeps of the course GPT's attention (B = 1 and 16, `f32`
+    and `f64`, 16 324 points each), the GEMM at 1024³ and a BERT-shaped
+    sample, four hours apart;
+  - a 20-core sweep with its own calibration;
+  - statement L's check on the kernel interpreter, in 130 shards on every
+    core.
+
+  **L holds**: 17 879 points, none differing. **M fails**: the attention
+  `ein`s order 47.9 % and 43.9 % of their distinguished close pairs right,
+  37–46 % of them tied. **N fails**: 582–717× at B = 16 and 75–89× at
+  B = 1. **O fails**: top-1 regret 2.18–3.01. **P holds**: the best GEMM
+  point is 5.49× 0.6.0's, 460 GFLOP/s on ten cores.
+
+  The model is right on lanes and threads, and blind to register tiles,
+  loop orders and k-blocks: a load weighs nothing and its traffic starts
+  at L2, so every point is predicted compute-bound. Its candidates within
+  `1 + u` always hold the best point, at 2–15 % of the space.
+
+  The tools gained what the measurement needed:
+  - `autotune --top/--random` (a sample), `--repeat 0 --shard K/N` (the
+    check split over processes) and 0.6.0's point beside every space;
+  - `rank --check` and the statements decided in the report;
+  - `experiments/ra4_check.sh`, `make ra4-check` and `make ra4-20`.
+
+  `rank` counts a tie as not right and takes `presk plan`'s pick (question
+  70).
+- Step 5: `presk plan`, `presk autotune`, `presk rank` (D61). The entry runs
+  once natively, and the first launch of every nest at every shape is
+  captured with its input buffers. Each nest is lowered again under every
+  point of its space, the thread splits included and checked by condition 8.
+  `presk plan` costs the points with the profile's layout model and writes a
+  plan. `presk autotune` times every point on the captured buffers and
+  checks its output bit-identical to point 0's (the default layout, scalar,
+  one worker), natively and with `--interp` on the kernel interpreter. It
+  writes a JSON line per point with the prediction's terms. `presk rank`
+  applies plan §3.6's rule to two days: close pairs, distinguished pairs,
+  rank accuracy overall and on decided pairs, Spearman, top-1 and top-k
+  regret, per class, and the decision cost. `experiments/ra4.sh` runs them
+  pinned. `make ra4-small` takes 55 s on the tutorial's attention, every
+  point exact. At plan §3.4's shapes the space is 3 305 points per type at
+  B = 1 and 4 857 at B = 16. The scores nest's full sweep takes 18 s and
+  348 s, 57 and 360 times its static choice, where statement N asks 10³.
+  Checking every B = 16 point on the interpreter would take about 30 hours,
+  so `make ra4` checks B = 1 there by default (`RA4_INTERP`).
+- Step 4: the layout cost model and its calibration (D60). `planned_cost`
+  reads one worker's part of a kernel: its work, its traffic from L2, L3 and
+  memory (footprints from the affine indices against each cache), and its
+  register pressure. The machine is read from the cores the process runs on
+  (pinned to an X925: 2 MiB of L2, where `cpu0`, an A725, has 512 KiB). The
+  model `λ + spawn·[p>1] + max(W/π_g, Q_L2/β_L2, p·Q_L3/β_L3, p·Q_mem/β_mem)`
+  is fitted by coordinate descent into the profile's `layout`, with `π` per
+  (type, lanes, workers). `presk bench --calibrate FILE --space calib` times
+  a GEMM under 96 layouts; `make calibrate-ra4` runs it at three sizes in
+  `f32` and `f64`, pinned. On falicon, u = 0.185 over 576 samples, Spearman
+  0.980. In those samples the best 1024³ `f32` layout runs at 405 GFLOP/s
+  against 77 for 0.6.0's default (a preview; step 6 decides P).
+- Step 3: the pack, two softmax passes and a split at a depth (D59). Every
+  decision of the reference's table is now lowered, and `E7002` means an
+  ill-formed layout. A pack is two launches, a copy of operand 1 to an NN
+  panel, then the contraction on it; the softmax may take two passes, each
+  exponential computed once. A plan's split divides the loop at a depth over
+  its workers, whatever the work: `Kernel::parallel_at` follows the
+  reference's definition, the Cranelift kernel is compiled with that loop
+  ranged and the enclosing ones in full, and conditions 5 and 8 are checked
+  against the machine and the kernel. The default split is 0.6.0's.
+  Every point of four nests (1 491, the pack included) is bit-identical to the
+  default on both executors, and 1 618 split points natively; one worker and
+  many agree at depths 0–2 and at batch 1. The reference's example plan runs
+  the course attention with the default's output.
+- Step 2: one contraction builder for `dot` and `ein` (D58). The contraction
+  nest is recognized once for both, and lowered in the form (row-wise or
+  tiled), register tile, k-block, loop order and lanes its plan states; only
+  the pack, two softmax passes and thread splits are still refused. The
+  default is 0.6.0's kernel: every `f64` and `f32` `dot` text-identical, the
+  attention `ein`s less an exact multiplication by one. A `bf16` `dot` whose
+  width is not a multiple of eight is tiled `[1, 1]` and accumulates in
+  `f32`, 2.4·10⁻² → 2.7·10⁻³ from the exact product at 1024 terms (D56).
+  Every point of three nests, 1 142 in all, each its own kernel, is
+  bit-identical to the default in `f64`, `f32` and `bf16` on both executors
+  (`tests/layout.rs`). Lanes on an NT contraction need the pack, a condition
+  added to the reference. The conformance suite asserts its bands on the
+  examples in every realization and on the test programs in `f64` and `f32`,
+  reporting their `bf16` gaps. `stack_prefix_grad` had crossed the `bf16`
+  band on 6 input seeds of 20 with 0.6.0's kernels and passed at seed 0 by
+  luck; the user decided.
+- Step 1: `Layout`, `Plan` and `--plan` (D57). A realization plan
+  (`{ "realization", "profile", "layout" }`, language reference §6.6) is
+  read by `--plan @P.json` on `run`, `bench`, `train` and `dump`, exclusive
+  with `--realize`, which is now the plan with the default layout. The kernel
+  backend carries the plan and reads each nest's layout at its launch: the
+  lanes are lowered as stated, every other decision is accepted at the value
+  0.6.0's kernel has and refused otherwise, as is any thread split, and a
+  layout ill-formed at the nest's shapes (the reference's conditions 3, 4, 7
+  and 9) is refused too — all with the new `E7002`, never ignored. The layout
+  is part of the kernel cache's key. `dump --stage realize --plan` lists the
+  plan per nest; `bench --plan` adds a row for the plan's layout. `make
+  plan-check`: a default plan gives byte-identical `dump --stage kernel` on
+  ten entries, identical also to `v0.6.0`'s in `f64`, `f32` and `bf16`. The
+  backend's `lanes` field became its default layout's. Found on the way: the
+  `realize` chapter still said "named PSK-Realize until 0.6.0" and "`--stage
+  realize` is an alias of `--stage realize`", both from the rename; fixed.
+- Step 0: definitions and bookkeeping (D56). The language reference (draft
+  v0.2) gives the layout decisions their domains — contraction form,
+  register tile, k-block, loop order, lanes, thread split at a depth, pack,
+  softmax passes — with the exactness rule, the plan object, well-formedness
+  conditions 7 to 9, the parallel loop at any depth and the tile loops of
+  the kernel grammar. Checking that every default reproduces 0.6.0's kernel
+  found that it did not as the plan had it: an `ein` is the tile `(1, 1)`
+  with one lane, not `(1, 8)`; the row-wise `dot` is taken whenever J is
+  not a multiple of eight, and in `bf16` it keeps its partial sums in `bf16`
+  (seven times further from the exact product than the tiled form, at 1024
+  terms), which the realization does not declare; `embed`'s derivative and
+  `sum_to` do the same; and no kernel reads the realization's `accum`. The
+  reference, the plan's §3 and the manual's `native` chapter say so. Version
+  `0.7.0-dev`; spec questions 63–69; the X925 cores recorded as
+  `RA4_CORES`.
+
+Before the plan, on 2026-09-23:
+
+- **PSK-Sched is renamed PSK-Realize**, as the language reference renamed it
+  on 2026-09-23: crate `presk-realize`, `presk dump --stage realize`, `make
+  realize`, manual chapter `realize`, with `sched` kept as an alias of the
+  stage and of the target. The IR name and the CLI only: the realization
+  files keep "site" for the precision vocabulary, and the dated records
+  (plans, decisions, spec questions, past entries here) keep the old name.
+- **PyTorch re-measured on falicon** (D55): one training step of the course
+  GPT is 29.96 s in presk `f32` against 1.34 s in PyTorch 2.14 `float32`,
+  twenty threads and dropout on both sides, three repetitions — **22×**,
+  where the `experiments` chapter quoted 0.4.0's 94× from another machine.
+  Fourteen of the twenty-two is the contraction: a 1024³ `f32` product runs
+  at 710 GFLOP/s under PyTorch (its own OpenBLAS 0.3.34, oneDNN 3.12 over
+  Arm Compute Library 53.2) and at 49.6 under presk. Neither side moved for
+  a reason inside the compiler.
+- **The PyTorch export's `training` switch** (D54): every `uses Rand`
+  function takes `training=False` beside `generator=None`, both passed on
+  through every call to a `uses Rand` function; `dropout` drops under the
+  switch and is the expectation without it. `train.py` calls a keyed
+  objective with `None` for the key and `training=True`, so it drops as
+  `presk train` does, with masks PyTorch draws. `make experiment-gpt` runs
+  again (it had failed since 0.5.0 step 1), with the same steps, batches and
+  threads on both sides.
+- The stacked loop over a tuple accumulator is exported as `block((h, k),
+  mask)`; it splatted the pattern into two arguments.
+- `presk train` prints the median step time, the first step excluded, on
+  standard error, and `--json` carries `ms` per step and `step_ms`;
+  `train.py` prints the same, takes `--threads` (default: the machine's
+  cores) and prints its thread count.
+
 ## 0.6.0 — 2026-09-22
 
 Make it pay (`presk-specs/implementation/presk-plan-0.6.0.md`). Two versions

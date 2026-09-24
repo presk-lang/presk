@@ -8,6 +8,7 @@ pub mod exec;
 pub mod host;
 pub mod ir;
 pub mod lower;
+pub mod plan;
 
-pub use host::{InterpExec, KernelBackend, KernelExec};
-pub use ir::{BufKind, Dtype, Kernel};
+pub use host::{InterpExec, KernelBackend, KernelExec, Launch, LaunchOp};
+pub use ir::{BufKind, Dtype, Kernel, Threads};

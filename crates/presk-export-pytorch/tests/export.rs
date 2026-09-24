@@ -92,6 +92,8 @@ fn training_and_graph_files() {
         epochs: 10,
         checkpoint_every: Some(1000),
         checkpoint_dir: Some("ckpt/".into()),
+        key: false,
+        rand: false,
         dims: vec![("B".into(), 32), ("T".into(), 8)],
         comments: vec!["The `parallel` and `precision` clauses are reproduced as comments in train_minigpt.py.".into()],
     };

@@ -10,7 +10,7 @@ use presk_core::ir::{Lit, Rhs};
 use presk_core::{FuncId, PrimOp, Program, VarId};
 use presk_interp::eval::Dims;
 use presk_interp::key::{Key, normal, uniform01};
-use presk_rt::{Axis, Backend, Buf, Prepared, Realization, RtError, Tensor, Value, err};
+use presk_rt::{Axis, Backend, Buf, Layout, NestKind, Plan, Prepared, Realization, RtError, Tensor, Value, err};
 use presk_types::dim::DimExpr;
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{Shape, Ty};
@@ -18,7 +18,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
 use crate::exec::{output_buf, run_kernel};
-use crate::ir::{BufKind, Dtype, Kernel};
+use crate::ir::{BufKind, Dtype, Kernel, Threads};
 use crate::lower::{self, Lowered, Operand};
 
 type Result<T> = std::result::Result<T, RtError>;
@@ -29,6 +29,13 @@ type Result<T> = std::result::Result<T, RtError>;
 pub trait KernelExec {
     fn name(&self) -> &'static str;
     fn run(&mut self, idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()>;
+    /// The workers a split may use, `p_M` of the language reference, for an
+    /// executor that runs kernels on several; `None` for one that runs every
+    /// kernel on one worker whatever its split (the kernel interpreter), where
+    /// a plan's worker count is not checked (condition 5).
+    fn workers(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// The kernel-IR interpreter as an executor.
@@ -44,6 +51,42 @@ impl KernelExec for InterpExec {
     }
 }
 
+/// One launch of a nest as the planning tools replay it (0.7.0 step 5): what
+/// it computes, at which operands and types, and its input buffers as the
+/// kernel received them, so that it can be lowered again under any layout and
+/// timed alone (`presk autotune`).
+#[derive(Clone, Debug)]
+pub struct Launch {
+    /// The nest, `"<function>/%<let>"`.
+    pub nest: String,
+    pub what: LaunchOp,
+    pub operands: Vec<Operand>,
+    pub dtype: Dtype,
+    pub order: presk_rt::ReductionOrder,
+    /// The accumulation type the realization states for the nest.
+    pub accum: Dtype,
+    pub inputs: Vec<Buf>,
+}
+
+/// What a captured launch computes.
+#[derive(Clone, Debug)]
+pub enum LaunchOp {
+    Prim(PrimOp),
+    /// A fusion group's steps, and its result's axes.
+    Fused { steps: Vec<presk_realize::Step>, out: Vec<Axis> },
+}
+
+/// An input as a kernel of type `dtype` receives it: converted at the
+/// kernel's edge unless it is an index, exact, or integer weights.
+fn kernel_input(b: &Buf, dtype: Dtype, keep_quant: bool) -> Buf {
+    match b {
+        Buf::I64(_) | Buf::Exact(_) => b.clone(),
+        Buf::Quant(_) if keep_quant => b.clone(),
+        b if b.dtype() == dtype.name() => b.clone(),
+        b => Buf::of(dtype, &b.to_f64()),
+    }
+}
+
 pub struct KernelBackend<'p> {
     pub prog: &'p Program,
     pub elab: &'p ElabProgram,
@@ -55,12 +98,19 @@ pub struct KernelBackend<'p> {
     pub dtype: Dtype,
     /// `"<function>/%<let>"` — the fusion group a dtype is assigned to.
     site: String,
-    /// Whether vector kernels are emitted (0.6.0 step 1). One is scalar,
-    /// which is every kernel before this version; anything greater asks for
-    /// **each kernel's own natural width**, since a mixed realization has
-    /// kernels of several types. Lanes are independent output elements, so a
+    /// The realization plan (0.7.0 step 1): its layout is read per nest at
+    /// every launch ([`KernelBackend::layout_at`]). Set by
+    /// [`KernelBackend::set_plan`]; a backend without one runs the default
+    /// layout everywhere, which is what `--realize` means.
+    pub plan: Plan,
+    /// The layout of every nest the plan does not decide, over the
+    /// lowering's own defaults. Its one member in use is the lanes, which
+    /// were a field of their own until 0.7.0 (0.6.0 step 1): unstated, each
+    /// kernel takes **its own natural width** where its form has lanes, since
+    /// a mixed realization has kernels of several types; `Some(1)` is scalar,
+    /// every kernel before 0.6.0. Lanes are independent output elements, so a
     /// vector kernel is bit-identical to its scalar form.
-    pub lanes: usize,
+    pub default_layout: Layout,
     /// Kernels in order of first use.
     pub kernels: Vec<Kernel>,
     outs: Vec<(Vec<Axis>, BufKind, u64)>,
@@ -70,12 +120,15 @@ pub struct KernelBackend<'p> {
     pub launches: u64,
     /// Whether `dropout` drops (see the interpreter's field of the same name).
     pub training: bool,
-    /// The fusion plan of each function, computed once (`presk-sched`).
-    plans: HashMap<FuncId, presk_sched::Plan>,
+    /// The fusion groups of each function, computed once (`presk-realize`).
+    fusion: HashMap<FuncId, presk_realize::Plan>,
     /// Kernel launches fusion removed: each group of `n` steps launches once
     /// where `n` kernels would have run, per leaf of a parameter tree.
     pub fused: u64,
     pub exec: Box<dyn KernelExec>,
+    /// When set, the first launch of every nest at every shape is recorded
+    /// here (0.7.0 step 5): the planning tools' view of an entry.
+    pub capture: Option<Vec<Launch>>,
 }
 
 impl Backend for KernelBackend<'_> {
@@ -111,7 +164,36 @@ impl<'p> KernelBackend<'p> {
     /// A kernel backend whose kernels are run by `exec`.
     pub fn with_exec(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64, exec: Box<dyn KernelExec>) -> Self {
         let dtype = realize.default;
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), lanes: 1, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, plans: HashMap::new(), fused: 0, exec }
+        let plan = Plan::from_realization(realize.clone());
+        let default_layout = Layout { lanes: Some(1), ..Layout::default() };
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None }
+    }
+
+    /// Runs under `plan`: its realization, and its layout per nest. The plan
+    /// is checked against the nests when they are launched; check it against
+    /// the program first with [`crate::plan::check_plan`].
+    pub fn set_plan(&mut self, plan: Plan) {
+        self.realize = plan.realization.clone();
+        self.dtype = self.realize.default;
+        self.plan = plan;
+    }
+
+    /// The layout the plan states for a nest (empty: every decision at its
+    /// default).
+    pub fn layout_at(&self, nest: &str) -> Layout {
+        self.plan.layout_at(nest)
+    }
+
+    /// Lanes for the nests the plan does not decide: one is scalar; more asks
+    /// each kernel for its own natural width where its form has lanes.
+    pub fn set_default_lanes(&mut self, lanes: usize) {
+        self.default_layout.lanes = if lanes > 1 { None } else { Some(1) };
+    }
+
+    /// The layout the nest being executed is lowered with, as `kind`: the
+    /// plan's, checked (`E7002`), over the backend's default.
+    fn lowered_layout(&self, kind: &NestKind) -> Result<Layout> {
+        crate::plan::lowered(&self.layout_at(&self.site), &self.default_layout, kind).map_err(|m| RtError { code: "E7002", message: format!("the plan's layout of `{}`: {m}", self.site), span: None })
     }
 
     // ----- buffers and values ------------------------------------------------
@@ -153,12 +235,43 @@ impl<'p> KernelBackend<'p> {
         s.axes.iter().map(|a| Ok(Axis { name: a.name.clone(), len: self.dim(&a.len, dims)? as usize })).collect()
     }
 
-    /// Runs (or reuses) a kernel on `inputs`.
-    fn launch(&mut self, key: String, lowered: impl FnOnce() -> std::result::Result<Lowered, String>, inputs: &[&Buf]) -> Result<Value> {
+    /// Records the first launch of the nest being executed at these operand
+    /// shapes, when capturing (0.7.0 step 5).
+    fn record(&mut self, what: LaunchOp, operands: &[Operand], dtype: Dtype, accum: Dtype, inputs: &[Buf]) {
+        let site = self.site.clone();
+        let order = self.realize.order;
+        let Some(c) = self.capture.as_mut() else { return };
+        let same = |l: &Launch| l.nest == site && l.dtype == dtype && l.operands.len() == operands.len() && l.operands.iter().zip(operands).all(|(a, b)| a.axes == b.axes);
+        if !c.iter().any(same) {
+            c.push(Launch { nest: site, what, operands: operands.to_vec(), dtype, order, accum, inputs: inputs.to_vec() });
+        }
+    }
+
+    /// The thread split a nest's kernel carries (0.7.0 step 3). The plan's,
+    /// checked against the kernel — its loop at the stated depth must be
+    /// parallel with two iterations or more (condition 8) — and against the
+    /// executor's workers (condition 5); else the backend default's, where the
+    /// kernel admits it; else the executor's own default.
+    fn threads_for(&self, k: &Kernel) -> std::result::Result<Threads, String> {
+        let stated = self.layout_at(&self.site).split;
+        let (split, lenient) = match stated {
+            Some(s) => (Some(s), false),
+            None => (self.default_layout.split, true),
+        };
+        crate::plan::threads_of(split, k, self.exec.workers(), lenient).map_err(|m| format!("the plan's layout of `{}`: {m}", self.site))
+    }
+
+    /// Runs (or reuses) a kernel on `inputs`. `split`: the kernel is its
+    /// nest's, and carries the nest's thread split; the copy of a pack does
+    /// not, and takes the executor's default.
+    fn launch(&mut self, key: String, lowered: impl FnOnce() -> std::result::Result<Lowered, String>, inputs: &[&Buf], split: bool) -> Result<Value> {
         let idx = match self.cache.get(&key) {
             Some(i) => *i,
             None => {
-                let l = lowered().map_err(|m| RtError { code: "E7001", message: m, span: None })?;
+                let mut l = lowered().map_err(|m| RtError { code: "E7001", message: m, span: None })?;
+                if split {
+                    l.kernel.threads = self.threads_for(&l.kernel).map_err(|m| RtError { code: "E7002", message: m, span: None })?;
+                }
                 let i = self.kernels.len();
                 self.kernels.push(l.kernel);
                 self.outs.push((l.out_axes, l.out_kind, l.out_bound));
@@ -238,8 +351,8 @@ impl<'p> KernelBackend<'p> {
         }
         let mut closures: HashMap<VarId, (FuncId, Vec<Value>)> = HashMap::new();
         // Fusion groups: computed once per function, structural, so the same
-        // plan serves every shape and every realization (`presk-sched`).
-        let plan = self.plans.entry(f).or_insert_with(|| presk_sched::plan(func)).clone();
+        // plan serves every shape and every realization (`presk-realize`).
+        let plan = self.fusion.entry(f).or_insert_with(|| presk_realize::plan(func)).clone();
         let outer_site = std::mem::take(&mut self.site);
         let outer_dtype = self.dtype;
         for l in &func.body.lets {
@@ -286,7 +399,7 @@ impl<'p> KernelBackend<'p> {
     /// One launch for a whole fusion group. The result's axes are computed by
     /// replaying the steps' broadcasts, not read off the type, because a type
     /// inside a module function may carry an open prefix.
-    fn fused_group(&mut self, g: &presk_sched::Group, env: &HashMap<VarId, Value>) -> Result<Value> {
+    fn fused_group(&mut self, g: &presk_realize::Group, env: &HashMap<VarId, Value>) -> Result<Value> {
         let vals: Vec<Value> = g
             .inputs
             .iter()
@@ -298,7 +411,7 @@ impl<'p> KernelBackend<'p> {
     /// The group applied to one set of values. A parameter tree maps the whole
     /// group over its leaves — the optimizer's update is one chain over a tree,
     /// and without this it would launch every step again for every leaf.
-    fn fused_on(&mut self, g: &presk_sched::Group, vals: &[Value]) -> Result<Value> {
+    fn fused_on(&mut self, g: &presk_realize::Group, vals: &[Value]) -> Result<Value> {
         if let Some(template) = vals.iter().find(|v| matches!(v, Value::Record(_) | Value::Tuple(_))) {
             let template = template.clone();
             let mut per_input: Vec<Vec<Value>> = Vec::with_capacity(vals.len());
@@ -329,10 +442,10 @@ impl<'p> KernelBackend<'p> {
         let in_axes: Vec<Vec<Axis>> = ins.iter().map(|t| t.axes.clone()).collect();
         let mut shapes: Vec<Vec<Axis>> = Vec::with_capacity(g.steps.len());
         for s in &g.steps {
-            let of = |src: &presk_sched::Src| -> Vec<Axis> {
+            let of = |src: &presk_realize::Src| -> Vec<Axis> {
                 match src {
-                    presk_sched::Src::Input(k) => in_axes[*k].clone(),
-                    presk_sched::Src::Step(k) => shapes[*k].clone(),
+                    presk_realize::Src::Input(k) => in_axes[*k].clone(),
+                    presk_realize::Src::Step(k) => shapes[*k].clone(),
                 }
             };
             let axes = match s.args.as_slice() {
@@ -349,11 +462,16 @@ impl<'p> KernelBackend<'p> {
         let out = shapes.pop().expect("a group has at least one step");
         let operands: Vec<Operand> = in_axes.iter().map(|a| Operand { axes: a.clone(), kind: BufKind::Real }).collect();
         let dtype = self.dtype;
-        let key = format!("fused|{}|{dtype}|{}|{}", g.signature(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&out));
+        let layout = self.lowered_layout(&NestKind::Other)?;
+        if self.capture.is_some() {
+            let accum = self.realize.accum_at(&self.site);
+            self.record(LaunchOp::Fused { steps: g.steps.clone(), out: out.clone() }, &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, false)).collect::<Vec<_>>());
+        }
+        let key = format!("fused|{}|{dtype}|{}|{}|{}", g.signature(), layout.key(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&out));
         let bufs: Vec<&Buf> = ins.iter().map(|t| &t.data).collect();
         let steps = g.steps.clone();
         self.fused += g.steps.len() as u64 - 1;
-        self.launch(key, move || lower::fused(&steps, &operands, &out, dtype), &bufs)
+        self.launch(key, move || lower::fused(&steps, &operands, &out, dtype), &bufs, true)
     }
 
     fn rhs(&mut self, rhs: &Rhs, ty: &Ty, dims: &Dims, env: &HashMap<VarId, Value>, closures: &HashMap<VarId, (FuncId, Vec<Value>)>) -> Result<Value> {
@@ -535,8 +653,9 @@ impl<'p> KernelBackend<'p> {
                 let axes = self.axes_of(shape_of(t)?, dims)?;
                 let value = if matches!(op, PrimOp::Zeros { .. }) { 0.0 } else { 1.0 };
                 let dtype = self.dtype;
-                let key = format!("{}|{dtype}|{}", op.name(), lower::show(&axes));
-                self.launch(key, move || Ok(lower::fill(&op.name(), &axes, value, dtype)), &[])
+                let layout = self.lowered_layout(&NestKind::Other)?;
+                let key = format!("{}|{dtype}|{}|{}", op.name(), layout.key(), lower::show(&axes));
+                self.launch(key, move || Ok(lower::fill(&op.name(), &axes, value, dtype)), &[], true)
             }
             PrimOp::DropoutMask => {
                 let rate = match a(0)? {
@@ -615,7 +734,8 @@ impl<'p> KernelBackend<'p> {
             PrimOp::Positions { axis, len } => {
                 let n = self.dim(len, dims)? as usize;
                 let (axis, dtype) = (axis.clone(), self.dtype);
-                self.launch(format!("positions {axis} {n} {dtype}"), move || Ok(lower::positions(&axis, n, dtype)), &[])
+                let layout = self.lowered_layout(&NestKind::Other)?;
+                self.launch(format!("positions {axis} {n} {dtype} {}", layout.key()), move || Ok(lower::positions(&axis, n, dtype)), &[], true)
             }
             PrimOp::OneHot => {
                 let Value::Idx { bound, t } = a(0)? else {
@@ -624,13 +744,15 @@ impl<'p> KernelBackend<'p> {
                 let mut axes = t.axes.clone();
                 axes.push(Axis { name: None, len: *bound as usize });
                 let dtype = self.dtype;
-                let (key, ax) = (format!("one_hot {} {dtype}", lower::show(&axes)), axes.clone());
-                self.launch(key, move || Ok(lower::one_hot(&ax, dtype)), &[&t.data])
+                let layout = self.lowered_layout(&NestKind::Other)?;
+                let (key, ax) = (format!("one_hot {} {dtype} {}", lower::show(&axes), layout.key()), axes.clone());
+                self.launch(key, move || Ok(lower::one_hot(&ax, dtype)), &[&t.data], true)
             }
             PrimOp::CausalMask { axis, len } => {
                 let n = self.dim(len, dims)? as usize;
                 let (axis, dtype) = (axis.clone(), self.dtype);
-                self.launch(format!("causal_mask {axis} {n} {dtype}"), move || Ok(lower::causal_mask(&axis, n, dtype)), &[])
+                let layout = self.lowered_layout(&NestKind::Other)?;
+                self.launch(format!("causal_mask {axis} {n} {dtype} {}", layout.key()), move || Ok(lower::causal_mask(&axis, n, dtype)), &[], true)
             }
             // ----- elementwise on trees and hyperparameters -----
             PrimOp::Add | PrimOp::Sub | PrimOp::Mul | PrimOp::Div if args.len() == 2 => {
@@ -745,7 +867,16 @@ impl<'p> KernelBackend<'p> {
         // the cache key: two realizations that differ only in their order are
         // two different programs and must not share a compiled loop nest.
         let order = self.realize.order;
-        let lanes = if self.lanes > 1 { dtype.natural_lanes() } else { 1 };
+        // The nest's layout (0.7.0 step 1): the plan's, checked against this
+        // launch's kind and shapes, over the backend's default. It is part of
+        // the key, so two nests of one shape with two layouts never share a
+        // compiled kernel.
+        let kind = crate::plan::nest_kind(op, &operands, order, dtype, self.realize.accum_at(&self.site));
+        let layout = self.lowered_layout(&kind)?;
+        if self.capture.is_some() {
+            let accum = self.realize.accum_at(&self.site);
+            self.record(LaunchOp::Prim(op.clone()), &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, true)).collect::<Vec<_>>());
+        }
         // Integer weights: the lowering sees a real operand and emits real
         // loads, and the kernel's input is marked afterwards, so the loads
         // dequantise (D44). The marking is part of the kernel, so it is part
@@ -754,18 +885,44 @@ impl<'p> KernelBackend<'p> {
             Buf::Quant(q) => Some(BufKind::Quant { bits: q.bits, over: q.over }),
             _ => None,
         }).collect();
-        let key = format!("{op:?}|{dtype}|{}|{lanes}|{}|{:?}", order.name(), operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"), quant);
+        let key = format!("{op:?}|{dtype}|{}|{}|{}|{:?}", order.name(), layout.key(), operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"), quant);
         let bufs: Vec<&Buf> = ins.iter().map(|t| &t.data).collect();
+        // A pack (0.7.0 step 3): two launches for one nest, the copy of
+        // operand 1 to its panel, then the contraction reading the panel,
+        // which is NN (spec question 66).
+        if layout.pack == Some(true)
+            && let Some(c) = lower::Contraction::of(op, &operands, order)
+        {
+            let w = operands[1].clone();
+            let (cc, q1) = (c.clone(), quant[1]);
+            let panel = self.launch(format!("pack|{key}"), move || {
+                let mut l = lower::pack_panel(&cc, dtype, &w)?;
+                if let Some(kind) = q1 {
+                    l.kernel.inputs[0].kind = kind;
+                }
+                Ok(l)
+            }, &[bufs[1]], false)?;
+            let Value::Real(panel) = panel else { return err("E7001", "a pack gives a real tensor") };
+            let ops = vec![operands[0].clone(), Operand { axes: panel.axes.clone(), kind: BufKind::Real }];
+            let (packed, q0) = (c.packed(), quant[0]);
+            return self.launch(format!("packed|{key}"), move || {
+                let mut l = lower::emit_contraction(&packed, dtype, &ops, &layout)?;
+                if let Some(kind) = q0 {
+                    l.kernel.inputs[0].kind = kind;
+                }
+                Ok(l)
+            }, &[bufs[0], &panel.data], true);
+        }
         let op = op.clone();
         self.launch(key, move || {
-            let mut l = lower::lower_vec(&op, &operands, dtype, order, lanes).unwrap_or_else(|| Err(format!("`{}`: no kernel for these operands", op.name())))?;
+            let mut l = lower::lower_planned(&op, &operands, dtype, order, &layout).unwrap_or_else(|| Err(format!("`{}`: no kernel for these operands", op.name())))?;
             for (spec, q) in l.kernel.inputs.iter_mut().zip(&quant) {
                 if let Some(kind) = q {
                     spec.kind = *kind;
                 }
             }
             Ok(l)
-        }, &bufs)
+        }, &bufs, true)
     }
 }
 

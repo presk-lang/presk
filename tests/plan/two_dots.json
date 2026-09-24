@@ -1,0 +1,9 @@
+{
+  "realization": "f32",
+  "layout": {
+    "twice/%2": { "lanes": 4 },
+    "twice/%3": { "lanes": 1 },
+    "attend/%2": { "form": "tiled", "tile": [1, 1], "pack": false },
+    "attend/%3": { "passes": 3 }
+  }
+}

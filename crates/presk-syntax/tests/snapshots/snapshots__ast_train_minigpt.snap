@@ -785,7 +785,7 @@ Program {
                 Field {
                     name: Ident {
                         name: "precision",
-                        span: 2397..2406,
+                        span: 2399..2408,
                     },
                     ty: None,
                     value: Call {
@@ -794,42 +794,42 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "budget",
-                                        span: 2409..2415,
+                                        span: 2411..2417,
                                     },
                                 ],
-                                span: 2409..2415,
+                                span: 2411..2417,
                             },
                         },
                         args: [
                             Named {
                                 name: Ident {
                                     name: "rel_error",
-                                    span: 2416..2425,
+                                    span: 2418..2427,
                                 },
                                 value: Lit {
                                     lit: Float(
                                         "1e-3",
                                     ),
-                                    span: 2428..2432,
+                                    span: 2430..2434,
                                 },
                             },
                         ],
-                        span: 2409..2433,
+                        span: 2411..2435,
                     },
-                    span: 2397..2433,
+                    span: 2399..2435,
                 },
                 Checkpoint {
                     every: Lit {
                         lit: Nat(
                             "1000",
                         ),
-                        span: 2522..2526,
+                        span: 2524..2528,
                     },
                     to: "ckpt/",
-                    span: 2505..2543,
+                    span: 2507..2545,
                 },
             ],
-            span: 1718..2545,
+            span: 1718..2547,
         },
     ],
 }

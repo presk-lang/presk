@@ -1,0 +1,14 @@
+-- contractions.psk — the three contraction nests of attention and its softmax, at shapes every
+-- point of their layout space fits (0.7.0 step 2): a `dot` as `Linear` has it
+-- (I = 8, J = 48, K = 128), the scores `ein` (NT: K is operand 1's innermost
+-- axis) and the values `ein` (NN), at I = J = K = 32.
+fn linear(x : ℝ[2, 8, 128], w : ℝ[128, 48]) -> ℝ[2, 8, 48] = x · w
+
+fn scores(q : ℝ[batch: 2, heads: 2, seq: 32, hd: 32], k : ℝ[batch: 2, heads: 2, seq2: 32, hd: 32]) -> ℝ[batch: 2, heads: 2, seq: 32, seq2: 32] =
+  ein[batch, heads, seq, seq2](q * k)
+
+fn values(a : ℝ[batch: 2, heads: 2, seq: 32, seq2: 32], v : ℝ[batch: 2, heads: 2, seq2: 32, hd: 32]) -> ℝ[batch: 2, heads: 2, seq: 32, hd: 32] =
+  ein[batch, heads, seq, hd](a * v)
+
+fn normalize(s : ℝ[batch: 2, heads: 2, seq: 32, seq2: 32]) -> ℝ[batch: 2, heads: 2, seq: 32, seq2: 32] =
+  softmax(axis seq2, s)

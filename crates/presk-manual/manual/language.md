@@ -548,7 +548,8 @@ Outside a training run the mask is all ones, which is the expectation of the
 random function `dropout` denotes: `presk run`, `presk serve` and the export
 evaluate the model with every mask at its expectation — the usual inference
 rule, which is the model's mean only where its output is affine in each mask —
-and only `presk train` drops. An objective may
+and only `presk train` drops, and the exported `train.py`, with masks
+PyTorch draws (D54). An objective may
 take a per-step key between `θ` and the batch (`training` chapter).
 
 **A key inside `stack{L}`** needs one idiom, and it is worth stating because
@@ -804,7 +805,10 @@ constructor argument, propagated through the modules that use them
 (`MiniGPT(T)`); `fn apply` → `forward`; module-typed parameters stay Python
 parameters (an `nn.Module`); `params M` → a state dict, and `net.apply(θ, x)`
 → `torch.func.functional_call(net, θ, (x,))`; `grad(λ θ. e)(θ)` →
-`torch.func.grad(lambda θ: e)(θ)`; `uses Rand` → a `generator=None` keyword.
+`torch.func.grad(lambda θ: e)(θ)`; `uses Rand` → the keywords
+`generator=None` (what `sample` draws from) and `training=False` (the switch
+of `dropout`), both passed on to every `uses Rand` callee: with both left
+out, the function is its expectation.
 Symbolic dimensions of a function are bound from the arguments' shapes
 (`T = ids.shape[1]`) where a value is needed (`torch.arange(T)`, the causal
 mask, shape assertions).

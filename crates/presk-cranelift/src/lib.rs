@@ -14,7 +14,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use presk_core::Program;
-use presk_kernel::ir::{BinOp, BufKind, CmpOp, Dtype, Expr, Kernel, Stmt, UnOp};
+use presk_kernel::ir::{BinOp, BufKind, CmpOp, Dtype, Expr, Kernel, Stmt, Threads, UnOp};
 use presk_kernel::{KernelBackend, KernelExec};
 use presk_rt::{Buf, Realization, RtError};
 use presk_types::elab::ElabProgram;
@@ -31,7 +31,7 @@ type KernelFn = unsafe extern "C" fn(*const *mut u8, i64, i64);
 
 /// The buffer table, sent to a worker thread. Safe because the threads of one
 /// launch share read-only inputs and write disjoint elements of the output:
-/// that is what `Kernel::parallel_outer` establishes before we split.
+/// that is what `Kernel::parallel_at` establishes before we split.
 #[derive(Clone, Copy)]
 struct Ptrs(*const *mut u8);
 
@@ -45,9 +45,9 @@ impl Ptrs {
 // SAFETY: see `Ptrs`.
 unsafe impl Send for Ptrs {}
 
-/// Below this many weighted operations a kernel runs on one thread: spawning
-/// costs tens of microseconds, which only a big kernel earns back.
-const PARALLEL_MIN_WORK: f64 = 4.0e6;
+/// Below this many weighted operations a kernel runs on one thread by default
+/// (`presk_kernel::cost::PARALLEL_MIN_WORK`, which the cost model reads too).
+use presk_kernel::cost::PARALLEL_MIN_WORK;
 
 /// The JIT: compiles kernels on first use and runs the machine code.
 pub struct NativeExec {
@@ -200,11 +200,13 @@ impl NativeExec {
             };
             let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
             let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, loops, reals, ints, vecs, libm: refs };
-            // The outermost loop runs over the range the caller gives, so one
+            // The loop a split divides — the outermost by default, the one at
+            // the depth the plan states (0.7.0 step 3) — runs over the range
+            // the caller gives; the loops enclosing it run in full. One
             // compiled kernel serves the sequential call and every worker.
-            match (k.parallel_outer(), k.body.as_slice()) {
-                (Some(_), [Stmt::For { var, body, .. }]) => g.for_range(*var, lo, hi, body),
-                _ => g.stmts(&k.body),
+            match ranged(k) {
+                Some((depth, _)) => g.range_at(&k.body, depth, lo, hi),
+                None => g.stmts(&k.body),
             }
             g.b.ins().return_(&[]);
             g.b.finalize();
@@ -623,6 +625,23 @@ impl Gen<'_> {
     /// `for var in lo..hi { body }` with the bounds as values, so the caller
     /// can hand a worker its slice of the iteration space.
     fn for_range(&mut self, var: usize, lo: CV, hi: CV, body: &[Stmt]) {
+        self.loop_with(var, lo, hi, |g| g.stmts(body));
+    }
+
+    /// The nest down to the loop at `depth`, which runs over `lo..hi` only;
+    /// every loop enclosing it runs in full (`Kernel::parallel_at`).
+    fn range_at(&mut self, stmts: &[Stmt], depth: usize, lo: CV, hi: CV) {
+        let [Stmt::For { var, bound, body }] = stmts else { return self.stmts(stmts) };
+        if depth == 0 {
+            return self.for_range(*var, lo, hi, body);
+        }
+        let zero = self.b.ins().iconst(types::I64, 0);
+        let n = self.b.ins().iconst(types::I64, *bound as i64);
+        self.loop_with(*var, zero, n, |g| g.range_at(body, depth - 1, lo, hi));
+    }
+
+    /// `for var in lo..hi { body }`.
+    fn loop_with(&mut self, var: usize, lo: CV, hi: CV, body: impl FnOnce(&mut Self)) {
         let v = self.loops[var];
         self.b.def_var(v, lo);
         let header = self.b.create_block();
@@ -635,7 +654,7 @@ impl Gen<'_> {
         self.b.ins().brif(c, body_b, &[], exit, &[]);
         self.b.switch_to_block(body_b);
         self.b.seal_block(body_b);
-        self.stmts(body);
+        body(self);
         let i = self.b.use_var(v);
         let next = self.b.ins().iadd_imm(i, 1);
         self.b.def_var(v, next);
@@ -726,6 +745,10 @@ impl KernelExec for NativeExec {
         "native"
     }
 
+    fn workers(&self) -> Option<usize> {
+        Some(self.threads)
+    }
+
     fn run(&mut self, idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()> {
         if self.compiled.len() <= idx {
             self.compiled.resize(idx + 1, None);
@@ -752,24 +775,32 @@ impl KernelExec for NativeExec {
                 ptrs.push(q.scales.as_ptr() as *mut u8);
             }
         }
-        // Threads over the outermost axis, when the analysis says the writes are
-        // disjoint and the kernel is big enough to pay for spawning. Each output
-        // element is computed by the same inner loops in the same order, so the
-        // result is bit-identical to the sequential one.
-        let parallel = k.parallel_outer();
-        let work = presk_kernel::cost::kernel_cost(k).work;
-        let workers = match parallel {
-            Some(b) if self.threads > 1 && b >= 2 && work >= PARALLEL_MIN_WORK => self.threads.min(b),
-            _ => 1,
+        // Threads over a parallel loop: by default the outermost, over every
+        // worker, when the kernel is big enough to pay for spawning; or the
+        // loop at the depth the plan states, over its workers, whatever the
+        // work (0.7.0 step 3). Each output element is computed by the same
+        // inner loops in the same order, so the result is bit-identical to
+        // the sequential one.
+        let ranged = ranged(k);
+        let total = ranged.map_or(0, |(_, n)| n);
+        let workers = match k.threads {
+            Threads::Default => {
+                let work = presk_kernel::cost::kernel_cost(k).work;
+                match ranged {
+                    Some((_, n)) if self.threads > 1 && n >= 2 && work >= PARALLEL_MIN_WORK => self.threads.min(n),
+                    _ => 1,
+                }
+            }
+            Threads::One => 1,
+            Threads::At { workers, .. } => workers.min(total).max(1),
         };
         // SAFETY: the kernel's loop bounds are the buffers' dimensions (checked by the
         // lowering and exercised by the kernel interpreter); inputs are never written.
         if workers <= 1 {
-            let hi = parallel.unwrap_or(0) as i64;
-            unsafe { f(ptrs.as_ptr(), 0, hi) };
+            unsafe { f(ptrs.as_ptr(), 0, total as i64) };
             return Ok(());
         }
-        let total = parallel.unwrap_or(0) as i64;
+        let total = total as i64;
         let p = Ptrs(ptrs.as_ptr());
         self.threaded += 1;
         std::thread::scope(|s| {
@@ -780,7 +811,7 @@ impl KernelExec for NativeExec {
                     continue;
                 }
                 // SAFETY: the workers share read-only inputs and write disjoint
-                // slices of the output (`Kernel::parallel_outer`).
+                // slices of the output (`Kernel::parallel_at`).
                 s.spawn(move || unsafe { f(p.get(), lo, hi) });
             }
         });
@@ -788,10 +819,21 @@ impl KernelExec for NativeExec {
     }
 }
 
+/// The loop a kernel's split divides, `(depth, iterations)`: the one at the
+/// depth its plan states, or the outermost when it is parallel (0.6.0's
+/// analysis, the executor's default).
+fn ranged(k: &Kernel) -> Option<(usize, usize)> {
+    match k.threads {
+        Threads::At { depth, .. } => k.parallel_at(depth).map(|n| (depth, n)),
+        Threads::Default | Threads::One => k.parallel_outer().map(|n| (0, n)),
+    }
+}
+
 /// A kernel backend whose kernels are JIT-compiled by Cranelift.
 pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64) -> Result<KernelBackend<'p>> {
     let mut b = KernelBackend::with_exec(prog, elab, realize, seed, Box::new(NativeExec::new()?));
-    b.lanes = 2;
+    // Lanes unstated: each kernel takes its natural width (below).
+    b.default_layout.lanes = None;
     Ok(b)
 }
 
@@ -816,6 +858,6 @@ pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram,
     let mut exec = NativeExec::new()?;
     exec.threads = threads.max(1);
     let mut b = KernelBackend::with_exec(prog, elab, realize, seed, Box::new(exec));
-    b.lanes = 2;
+    b.default_layout.lanes = None;
     Ok(b)
 }

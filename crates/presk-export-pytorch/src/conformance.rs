@@ -41,6 +41,10 @@ pub struct TrainConformance {
     pub k: u64,
     pub ctor: String,
     pub objective: String,
+    /// The objective takes a per-step key: passed as `None`, the replay at the
+    /// expectation of `dropout` (the interpreter's keyed masks cannot be
+    /// reproduced either way, D54).
+    pub key: bool,
     pub rtol: f64,
     pub atol: f64,
 }
@@ -63,7 +67,7 @@ fn train_test(t: &TrainConformance, theta: &str) -> String {
         for group in opt.param_groups:
             group["lr"] = LR * schedule(t, total)
         opt.zero_grad()
-        {objective}(theta, batch).backward()
+        {call}.backward()
         if GRAD_CLIP is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         opt.step()
@@ -82,7 +86,7 @@ fn train_test(t: &TrainConformance, theta: &str) -> String {
         ctor = t.ctor,
         theta = theta,
         k = t.k,
-        objective = t.objective,
+        call = crate::train::objective_call(&t.objective, t.key, false),
     )
 }
 

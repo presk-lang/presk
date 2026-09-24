@@ -60,6 +60,21 @@ pub struct StepLog {
     pub loss: f64,
     pub lr: f64,
     pub grad_norm: f64,
+    /// Wall time of the step in milliseconds: the objective, its gradient,
+    /// the learning rate and the update; not the batch's assembly.
+    pub ms: f64,
+}
+
+/// The median step time, the first step excluded (it pays the native
+/// backend's compilation); `None` under two steps.
+pub fn median_step_ms(logs: &[StepLog]) -> Option<f64> {
+    let mut v: Vec<f64> = logs.iter().skip(1).map(|l| l.ms).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    Some(if n % 2 == 1 { v[n / 2] } else { 0.5 * (v[n / 2 - 1] + v[n / 2]) })
 }
 
 #[derive(Debug)]
@@ -235,12 +250,13 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
             obj_args.push(batch.clone());
             vjp_args.push(batch);
             vjp_args.push(one.clone());
+            let t0 = std::time::Instant::now();
             let loss = backend.call(&objective, obj_args)?;
             let g = gradient(backend, &vjp, vjp_args)?;
             let grad_norm = g.sum_squares_f64().sqrt();
             let lr = backend.call(&opt_lr, vec![Value::Nat(t), Value::Nat(total)])?;
             (theta, state) = update(backend, &opt_step, theta, state, g, t, total)?;
-            let log = StepLog { step: t, epoch, loss: loss.scalar_f64(), lr: lr.scalar_f64(), grad_norm };
+            let log = StepLog { step: t, epoch, loss: loss.scalar_f64(), lr: lr.scalar_f64(), grad_norm, ms: t0.elapsed().as_secs_f64() * 1e3 };
             on_step(&log);
             logs.push(log);
             if let (Some(dir), Some(k)) = (&ckpt_dir, every)

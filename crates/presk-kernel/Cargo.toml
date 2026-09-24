@@ -11,14 +11,16 @@ repository.workspace = true
 presk-syntax.workspace = true
 presk-types.workspace = true
 presk-core.workspace = true
-presk-sched.workspace = true
+presk-realize.workspace = true
 presk-interp.workspace = true
 presk-rt.workspace = true
 libm = "0.2"
 rand_chacha.workspace = true
 rand_core.workspace = true
 num-traits.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
 rug.workspace = true
+serde_json.workspace = true

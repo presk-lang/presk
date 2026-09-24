@@ -80,6 +80,7 @@ step 50  epoch 4  loss 0.377759  lr 5.000e-2  |g| 6.6034e-1
 step 100  epoch 7  loss 0.014019  lr 5.000e-2  |g| 1.8483e-1
 step 150  epoch 10  loss 0.000002  lr 5.000e-2  |g| 2.1463e-3
 step 200  epoch 13  loss 0.000000  lr 5.000e-2  |g| 4.7522e-4
+presk train: 0.1 ms a step, median of 199 (the first excluded)
 presk train: 200 steps of Reg, final loss 0.000000, weights in out/reg_ckpt/final.psk.d
 ```
 
@@ -97,6 +98,7 @@ step 5  epoch 1  loss 4.158873  lr 7.500e-7  |g| 5.4769e-1
 step 10  epoch 1  loss 4.158840  lr 1.500e-6  |g| 5.4270e-1
 step 15  epoch 1  loss 4.158777  lr 2.250e-6  |g| 5.1438e-1
 step 20  epoch 2  loss 4.158680  lr 3.000e-6  |g| 5.1596e-1
+presk train: 1402.0 ms a step, median of 19 (the first excluded)
 presk train: 20 steps of MiniGPT, final loss 4.158680, weights in out/ckpt/final.psk.d
 ```
 
@@ -127,14 +129,22 @@ run's seed, the model built with the run's dimensions, `torch.optim.AdamW`
 with the block's hyperparameters, the schedule as a multiplier set before
 every step, `clip_grad_norm_`, epochs or `--steps`, checkpoints with
 `torch.save` to the run's directory or `--ckpt`; `--dtype float64` for
-comparisons), and a copy of the data file. The same 20 steps take a fifth
-of a second where the interpreter takes half a minute:
+comparisons; `--threads N`, the machine's cores by default), and a copy of
+the data file. An objective that takes a per-step key is called with
+`None` for it and `training=True`, so `dropout` drops as under `presk
+train`, with masks PyTorch draws from its generator (seeded by `--seed`;
+D54). The script prints its thread count first and, after the log, the
+median step time with the first step excluded, as `presk train` does. The
+same 20 steps take a fifth of a second where the interpreter takes half a
+minute:
 
 ```text
+train.py: torch 2.14.0+cpu on cpu, 20 threads, float64
 step 5/20  epoch 1  loss 4.158875  lr 7.500e-07
 step 10/20  epoch 1  loss 4.158844  lr 1.500e-06
 step 15/20  epoch 1  loss 4.158791  lr 2.250e-06
 step 20/20  epoch 2  loss 4.158709  lr 3.000e-06
+train.py: 9.9 ms a step, median of 19 (the first excluded)
 train.py: 20 steps in 0.2 s, final loss 4.158709, weights in …/ckpt/final.pt
 ```
 
@@ -165,7 +175,8 @@ The loop derives it from the run's seed as the step's child key, so a run is
 reproducible and every step drops differently; `dropout` draws its mask from
 that key (`language` chapter). A training run is the only place where
 dropout drops: everywhere else its mask is all ones, the expectation of the
-random function. A `stack{L}` fold passes the same extra arguments to each of
+random function (the exported `train.py` drops too, with PyTorch's masks:
+D54). A `stack{L}` fold passes the same extra arguments to each of
 its iterations, so blocks handed the key that way would share it. Since 0.5.0
 step 1 the key rides in the fold's *accumulator* instead, which is already
 threaded from one block to the next: each block splits it, uses one half and

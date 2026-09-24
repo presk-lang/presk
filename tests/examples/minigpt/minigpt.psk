@@ -47,7 +47,7 @@ module SelfAttention {
     let o = ein[batch, heads, seq, hd](a * v)
     wo.apply(merge_heads(o))
     -- Note: no trace of FlashAttention here. The softmax+matmul fusion is a
-    -- scheduling strategy chosen by PSK-Sched (§8.2), not a hand-written kernel.
+    -- scheduling strategy chosen by PSK-Realize (§8.2), not a hand-written kernel.
 }
 
 -- ─────────────────────────────────────────────────────────────────────────────────

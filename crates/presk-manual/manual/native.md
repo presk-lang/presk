@@ -48,7 +48,9 @@ record answers both (D34):
   is a decision rather than a conversion.
 - **`accum`** is the type a contraction sums in. It defaults to the
   *arithmetic* type of the storage, so `bf16` storage accumulates in `f32`
-  unless something says otherwise.
+  unless something says otherwise. Only the error analysis reads it: the
+  kernels sum in the arithmetic type of their storage whatever the file
+  states (found in 0.7.0 step 0, D56).
 - **`order`** is `sequential`, `blocked(width)` or `interleaved(partials)`.
   The first two are bit-identical — register blocking keeps every addition in
   index order (D32) — and the third reassociates, which is a different
@@ -90,7 +92,8 @@ vectorized kernel before the curve — without vector lanes there is no regime
 in which arithmetic width alone buys time — and why 0.6.0 made the solver's
 objective predicted time (`precision` chapter, "Time, not traffic").
 
-Reductions and contractions accumulate in the accumulator type, indices are
+Reductions and contractions accumulate in the arithmetic type of their
+storage (the default accumulator type; see `accum` above), indices are
 `i64`, hyperparameters and `nat` values are converted at their injection.
 `gelu` is the exact `x·Φ(x)` through `erf`; `softmax` and `cross_entropy`
 subtract the row maximum (a value-preserving rewrite over ℝ). Where a site
@@ -126,8 +129,10 @@ realization with and without them (the `+lanes` rows). They do not always
 pay. On BERT-large at MLPerf's constants (step 8, `coverage` chapter), lanes
 make `int8` weights 1.9× faster at batch 1 and 1.5× at batch 20, and `f32`
 1.1× faster at batch 1 — but 15 % *slower* at batch 20, where scalar `f32`
-code wins. Lanes are chosen for the whole run, not by the cost model per
-kernel.
+code wins. By default lanes are chosen for the whole run; since 0.7.0 a
+realization plan states them per nest, one or the register's width, and
+`presk plan` chooses them with the other decisions of a nest's layout
+(`realize` chapter).
 
 **Statement H holds on both paths**, asserted as an equality: the emitted
 vector kernel is bit-identical to the emitted scalar one, and so is the
@@ -168,6 +173,20 @@ pursued (plan 0.6.0, revision of 2026-09-20): the factor it asks for is in
 the matrix coprocessor, which `docs/kernels-roadmap.md` puts after this
 version.
 
+**0.7.0 found most of the factor in the layout.** Lanes on the `[1, 8]` tile
+had little to add; lanes on a taller tile do. Measured over the whole layout
+space of the same product (1024³, `f32`, pinned to falicon's ten Cortex-X925
+cores, two runs; D62), the best point is the tile `[4, 16]` in four lanes,
+the block loops in the order `JI`, split over ten workers at depth 1: 4.67
+ms, **460 GFLOP/s**, against 84 GFLOP/s for 0.6.0's own point (the `[1, 8]`
+tile, the executor's split) in the same sweep. That is 5.49×, where
+statement P of 0.7.0 asked for 3 (`experiments` chapter §7), and within 1.6×
+of the 710 GFLOP/s PyTorch reaches through its BLAS on twenty cores. Four
+accumulator rows share each load of the right operand, and sixteen columns in
+four registers share each load of the left one: what the tile buys is fewer
+loads per multiply-add, which is also the one thing the layout cost model
+does not count (`optimization` chapter).
+
 ## PSK-Kernel v0: `--backend kernel`
 
 Every tensor primitive of PSK-Core, at the concrete shapes of its operands
@@ -181,7 +200,7 @@ primitives of parameter trees (`slice`, `stack`, `set_field`, …), the
 initializers and `sample` (on the host, with the interpreter's ChaCha keys,
 so native and reference runs draw the same numbers), and one kernel launch
 per tensor primitive — since 0.4.0, per fusion group, a chain of elementwise
-primitives sharing one loop nest (`scheduling` chapter). `presk dump --stage
+primitives sharing one loop nest (`realize` chapter). `presk dump --stage
 kernel` runs an entry and prints the kernels it launched:
 
 ```sh
@@ -227,11 +246,12 @@ evaluator in the kernel's machine type, every operation rounded to that
 type: it is the first native-arithmetic realization and the yardstick of
 the code generator to come, not a fast path yet.
 
-Not in v0: tiles, memory spaces other than one global space, collectives, a
+Not in v0: memory spaces other than one global space, collectives, a
 dependency graph between launches (they are sequential), the versioned
 binary `.pskk` (spec question 35). Fusion groups (0.4.0), a parallel
-outermost loop split across threads (0.4.0, below) and the vector form
-(0.6.0, above) have been added since.
+outermost loop split across threads (0.4.0, below), the vector form (0.6.0,
+above), and tile loops, a pack and a split at any depth (0.7.0, below) have
+been added since.
 
 ## Conformance
 
@@ -248,21 +268,28 @@ The tolerance is `|x − x̂| ≤ ε · (|x| + a)` with `ε = 2⁻⁴⁰, a = 2�
 Since 0.5.0 step 2 the suite is parameterized by a **realization** rather
 than a machine type, so a mixed or reassociated one is reported the same way;
 the bands above are those of uniform ones. Measured worst gaps of the
-examples (`f64` and `f32` on 2026-09-19, `bf16` on 2026-09-20):
+examples (`f64` and `f32` on 2026-09-19, `bf16` on 2026-09-23, after the
+odd-width `bf16` `dot` began accumulating in `f32`, 0.7.0 step 2):
 
 | Entry | f64 | f32 | bf16 |
 |---|---|---|---|
-| `mse` | 1.2e-16 | 6.4e-8 | 1.7e-3 |
-| `mse_grad` | 1.5e-14 | 2.0e-6 | 2.8e-2 |
+| `mse` | 1.2e-16 | 6.4e-8 | 2.4e-3 |
+| `mse_grad` | 1.5e-14 | 2.0e-6 | 1.2e-2 |
 | `LayerNorm{8}.apply` | 1.2e-15 | 2.4e-7 | 3.2e-2 |
 | `RMSNorm{8}.apply` | 2.2e-16 | 8.2e-8 | 6.1e-3 |
 | `MiniGPT.apply` (tiny) | 0 | 0 | 0 |
 | training `loss` (tiny MiniGPT) | 2.1e-16 | 1.1e-7 | 6.3e-4 |
 | `adamw.step` | 1.0e-14 | 1.8e-6 | 7.6e-3 |
-| `loss_grad` through a stacked module | 2.6e-14 | 5.3e-6 | 1.1e-2 |
+| `loss_grad` through a stacked module | 2.6e-14 | 5.3e-6 | 1.2e-2 |
 
 The `f64` and `f32` columns are those of 0.4.0, digit for digit: making the
-realization an object changed no arithmetic. The `bf16` column needs its
+realization an object changed no arithmetic, and neither did 0.7.0's layout
+space. The bands are asserted on the examples in all three types, and on the
+compiler's own test programs (`tests/data`, `tests/train`, the MLPerf
+transcription) in `f64` and `f32`; their `bf16` gaps are reported. On the
+gradient of `stack_prefix_grad`, a small result left over from larger terms
+cancelling crosses the `bf16` band on some inputs and not others, with 0.6.0's
+kernels as with 0.7.0's (D58). The `bf16` column needs its
 absolute floor `a` to mean anything — a result near a cancellation has
 unbounded *relative* error at any precision, which says nothing about the
 kernel, and that is why the bound rules of the precision analysis carry a
@@ -344,23 +371,131 @@ step 500  epoch 34  loss 3.385110  lr 7.500e-5  |g| 1.5861e0
 and then the tiny MiniGPT natively in `f64` and `f32` and the larger
 configuration for 100 steps.
 
-## Contractions: the blocked form
+## Contractions: one builder, a layout space
 
 A contraction is where the time is, and the loop nest a naive lowering gives
 is the wrong one: for each output element it walks a *column* of the right
 operand, one element per cache line. Since 0.4.0 `dot` and `matmul` are
-lowered in a **register-blocked** form instead. Eight columns of the result
-are held in scalar accumulators across the whole contraction; the inner loop
-loads one element of the left operand and a contiguous run of eight from the
-right, and stores nothing. A width that is not a multiple of eight takes a
-row-wise form, which sweeps a whole row of the result at a time and handles
-any width.
+lowered in a **register-blocked** form instead: eight columns of the result
+held in accumulators across the whole contraction, the inner loop loading one
+element of the left operand and a contiguous run of eight from the right. A
+width that is not a multiple of eight took a **row-wise** form, which sweeps a
+whole row of the result at a time and handles any width.
 
-Both are **exact**. Each output element still accumulates `k` in increasing
-order — what changes is where the partial sums live and which memory the loop
-touches, not the order of the additions. A test asserts that the blocked form
-and the row-wise one agree bit for bit in `f64` and `f32`, and the conformance
-gaps against the reference are unchanged to every digit of the table above.
+Since 0.7.0 step 2 both are points of one **layout space**, and one builder
+lowers every point, for a `dot` whose right operand has rank two and for an
+`ein` of attention's pattern alike (the language reference's *contraction
+nest*: the output is the outer axes, then `I`, then `J`, over one contracted
+axis `K`). A realization plan (`realize` chapter) chooses, per nest:
+
+- the **form**: row-wise, or tiled;
+- the **register tile** `[m_i, n_j]`: `m_i` rows by `n_j` columns of the
+  result held in accumulators, `[1, 1]` or `m_i` in 1, 2, 4 and `n_j` in 4,
+  8, 16;
+- the **k-block**: none, 32 or 128 — a loop over blocks of `K` and a
+  within-block loop inside it;
+- the **loop order** of the block loops, outermost first (`IJ`, `JI`, or with
+  a k-block a permutation of `IJK`);
+- the **lanes**: one, or the register's width across the tile's columns.
+
+The default is 0.6.0's kernel. A `dot` whose `J` is a multiple of eight is
+tiled `[1, 8]`, its text character for character what 0.6.0 printed. Any
+other `dot` is row-wise. An `ein` is the tile `[1, 1]`, one accumulator per
+output element, which is the naive nest 0.6.0 emitted less a multiplication by
+one it carried (exact, so no bit moved). One default changed, on purpose: a
+`bf16` `dot` whose `J` is not a multiple of eight is now tiled `[1, 1]` and no
+longer row-wise, because the row-wise form keeps its partial sums in the
+`bf16` output and so accumulated in `bf16` where the realization says `f32`
+(D56). On `x[4, 1024] · w[1024, 12]` its median distance to the exact product
+falls from 2.4·10⁻² to 2.7·10⁻³, the tiled form's. The derivative of
+`embed` and `sum_to` still keep their running sums in the output buffer, so
+on a `bf16` nest they accumulate in `bf16`: they are not contractions, and
+have no other form yet.
+
+Every point is **exact**. Every loop counts upward and a within-block loop
+runs inside its block loop, so each output element adds its terms in
+increasing `k` whatever the tile, the order or the lanes. What changes is
+where a running sum lives and which memory the loops touch. When the loop over
+the blocks of `K` encloses the one over `I` or `J`, the accumulators are
+stored at the end of a block and reloaded at the start of the next (`if kb {
+… }` in the kernel text). That is exact only where the storage type is the
+accumulation type, so a plan cannot state it for `bf16`, nor the row-wise
+form. Lanes run across the tile's columns and never across `k`, and need
+operand 1 to be contiguous along `J`. On an NT contraction such as
+attention's scores `ein`, whose operand 1 has `K` innermost, lanes need a
+**pack**: operand 1 copied, in its own type, to a panel with the axes (outer…,
+`K`, `J`), which the contraction then reads as NN. The copy is a kernel of its
+own, launched just before the contraction's (`pack` in `dump --stage
+kernel`); both launches are the nest's (since 0.7.0 step 3).
+
+With this plan in `pack.json`, the tutorial's scores `ein` is packed, tiled
+two rows by four columns in four lanes, and split at depth 1, its heads, over
+two workers:
+
+```json
+{ "realization": "f32",
+  "layout": { "scores/%2": { "tile": [2, 4], "lanes": 4, "pack": true,
+                             "split": { "depth": 1, "workers": 2 } } } }
+```
+
+```sh
+presk dump tutorial/03_attention.psk --stage kernel --entry scores --dim B=1 --dim T=4 --plan @pack.json
+```
+
+```text
+kernel pack (%0 : f32[batch: 1, heads: 2, seq: 4, hd: 4]) -> %1 : f32[batch: 1, heads: 2, hd: 4, seq: 4] {
+  for i0 in 0..1 {
+    for i1 in 0..2 {
+      for i2 in 0..4 {
+        for i3 in 0..4 {
+          %1[i0, i1, i2, i3] = %0[i0, i1, i3, i2]
+        }
+      }
+    }
+  }
+}
+kernel ein[batch, heads, seq, seq2] (%0 : f32[batch: 1, heads: 2, seq: 4, hd: 4], %1 : f32[batch: 1, heads: 2, hd: 4, seq: 4]) -> %2 : f32[batch: 1, heads: 2, seq: 4, seq2: 4] {
+  for i0 in 0..1 {
+    for i1 in 0..2 {
+      for i2 in 0..2 {
+        for i3 in 0..1 {
+          v0 = splat(0)
+          v1 = splat(0)
+          for i4 in 0..4 {
+            s0 = %0[i0, i1, ((i2 * 2) + 0), i4]
+            s1 = %0[i0, i1, ((i2 * 2) + 1), i4]
+            v2 = %1[i0, i1, i4, ((i3 * 4) + 0)]<v>
+            v0 = (v0 + (splat(s0) * v2)<v>)<v>
+            v1 = (v1 + (splat(s1) * v2)<v>)<v>
+          }
+          %2[i0, i1, ((i2 * 2) + 0), ((i3 * 4) + 0)] <v= v0
+          %2[i0, i1, ((i2 * 2) + 1), ((i3 * 4) + 0)] <v= v1
+        }
+      }
+    }
+  }
+}
+```
+
+The copy writes `k` with `hd` before `seq`. The contraction then holds its
+tile in two vector accumulators, and for each `i4`, the summed `hd`, loads
+two elements of `q` and one vector of four from the panel, which both rows
+share. The split is not in the text: a kernel carries it, and the Cranelift
+backend ranges loop `i1` over the workers with the loop above it in full. It
+is checked against the machine when the kernel runs natively, so `presk run
+… --backend native --plan @pack.json` needs `--threads 4`, where two workers
+are half the machine (condition 5); the kernel interpreter runs everything on
+one worker and is not held to it.
+
+A test lowers **every point** of four nests — a `dot` as `Linear` has it,
+attention's two `ein`s and its softmax — in `f64`, `f32` and `bf16`, 1 491
+points in all, the pack included, each to kernels of its own. It finds every
+output bit equal to the default's, on the kernel interpreter and natively. The
+softmax's points are its three passes and its two: the exponentials stored
+into the output while their sum is taken, then divided in place, each computed
+once (`f64` and `f32` only, since a `bf16` output would round them twice). A
+fifth of the points is also split at depths 0, 1 and 2 over two and four
+workers, natively, with the same result.
 
 A 1024³ matmul in `f32` on twelve cores:
 
@@ -369,13 +504,27 @@ A 1024³ matmul in `f32` on twelve cores:
 | row-wise | 3.7 GFLOP/s | 26.6 GFLOP/s |
 | blocked | 9.9 GFLOP/s | 47–56 GFLOP/s |
 
-The machine's scalar peak is about 84 GFLOP/s (twelve cores, one
+These are 0.4.0's measurements, on another machine. The machine's scalar peak was about 84 GFLOP/s (twelve cores, one
 fused multiply-add per cycle, two flops each), so the blocked form reaches
 roughly two thirds of what this compiler can address without vector
 instructions. The remaining factor of four was expected from those. 0.4.0
 did not emit them, for the reason given under threads; 0.6.0 does, exactly
 (the vector form, above), and they buy 1.1–1.25× rather than four, because
 the eight accumulators already gave the loop its parallelism.
+
+On falicon's ten large cores the layout space of 0.7.0 does better (D62):
+
+| Point, 1024³ `f32` | GFLOP/s |
+|---|---|
+| 0.6.0's: tile `[1, 8]`, four lanes, the executor's split | 84 |
+| the model's pick: tile `[1, 4]`, four lanes, order `JI`, split at depth 1 | 75 |
+| the best measured: tile `[4, 16]`, four lanes, order `JI`, split at depth 1 | 460 |
+
+The model's pick is the first, in the space's order, of 21 points it predicts
+equal, which measure between 8.1 and 28.6 ms: the pick is among the slowest
+of them. Every point of the space is bit-identical to the scalar sequential
+kernel. Packing both operands, as BLAS libraries do, is not in the space
+(`docs/kernels-roadmap.md`).
 
 ## Threads: `--threads N`
 
@@ -397,6 +546,34 @@ workers costs tens of microseconds, which a small kernel never earns back, so
 the elementwise kernels stay sequential and the contractions parallelize.
 `--threads N` sets the count on `run`, `train` and `bench`; the default is the
 machine's cores, and `--threads 1` turns the split off.
+
+**A split at a depth** (0.7.0 step 3). A realization plan may state a split
+per nest, `{ "depth": d, "workers": p }` (`realize` chapter): the loop at
+depth `d` of the nest's kernel is divided among `p` workers, each running the
+loops that enclose it in full and a disjoint range of its iterations,
+whatever the kernel's work — the four-million threshold is the default's
+alone. At batch one the outermost loop has one iteration and the default
+splits nothing; a split at depth 1 or 2 (the heads, a block loop of a
+contraction) still can. The loop must be *parallel* in the language
+reference's sense, checked once the kernel exists: the loops down to it form
+a perfect nest, and one position of the output is indexed by `c·v + t`,
+`0 ≤ t < c`, in every store to the output and every load from it, so the
+block loops of a tiled contraction qualify through their `jb·n_j + t`. A
+split on a loop that is not parallel (the loop over the blocks of `K`, a
+softmax's row) is refused (`E7002`, condition 8), and so is a worker count
+other than the machine's or half of it (condition 5, with `--threads` or
+`PRESK_THREADS` giving the machine's count). `"split": "none"` keeps a nest on
+one worker. The test that one worker and many agree bit for bit now also
+splits every kernel of the course GPT at depths 0, 1 and 2, at batch 4 and at
+batch 1.
+
+At batch one this is where most of the layout space's gain is. 0.6.0 ran the
+course GPT's two attention `ein`s at `B = 1` on one worker with the tile
+`(1, 1)`; the best point of each space, split over the heads or a block loop
+and tiled, is **47×** and **77×** faster in `f32` (D62). At batch 16, where
+the default already splits the batch, the factors are 9.2× and 16.5×. It is the
+fix `docs/kernels-roadmap.md` named after BERT-large, whose forward pass at
+batch one ran on one core of twenty.
 
 The corpus GPT on twelve cores, one training step, `f32`:
 

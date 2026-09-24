@@ -1,0 +1,7 @@
+-- two_dots.psk — two contractions of one shape in one function (0.7.0 step 1).
+-- Without a plan they share one compiled kernel; a plan that gives them two
+-- layouts must get two kernels, and the same bits from both.
+fn twice(x : ℝ[4, 16], w : ℝ[16, 16]) -> ℝ[4, 16] = (x · w) · w
+
+fn attend(q : ℝ[heads: 2, seq: 8, hd: 16], k : ℝ[heads: 2, seq2: 8, hd: 16]) -> ℝ[heads: 2, seq: 8, seq2: 8] =
+  softmax(axis seq2, ein[heads, seq, seq2](q * k))

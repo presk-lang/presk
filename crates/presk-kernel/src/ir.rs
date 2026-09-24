@@ -161,6 +161,22 @@ pub enum Stmt {
     If { cond: Expr, then: Vec<Stmt> },
 }
 
+/// How a kernel's iterations are divided among workers (0.7.0 step 3): what a
+/// kernel carries of its plan's thread split. A backend may run any of them on
+/// one worker, all being bit-identical.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Threads {
+    /// The executor's own choice: the outermost loop, when it is parallel
+    /// ([`Kernel::parallel_outer`]), over every worker, above a work threshold.
+    #[default]
+    Default,
+    /// One worker.
+    One,
+    /// The loop at `depth`, parallel in the sense of [`Kernel::parallel_at`],
+    /// divided among `workers`, whatever the work.
+    At { depth: usize, workers: usize },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kernel {
     /// `add`, `softmax axis seq2`, …: the primitive it realizes.
@@ -177,6 +193,9 @@ pub struct Kernel {
     pub nvec: usize,
     pub lanes: usize,
     pub body: Vec<Stmt>,
+    /// The thread split the kernel's plan states (0.7.0 step 3). Not part
+    /// of the textual form.
+    pub threads: Threads,
 }
 
 impl Kernel {
@@ -223,6 +242,123 @@ impl Kernel {
         }
         walk(body, *var, &mut stores, &mut ok);
         if ok && stores > 0 { Some(*bound) } else { None }
+    }
+}
+
+impl Kernel {
+    /// The bound of the loop at `depth` when dividing its iterations among
+    /// workers is exact (language reference, definition "Parallel loop"):
+    /// the loops down to it form a perfect nest, its variable `v` is never
+    /// assigned in its body, and there is one position of the output buffer
+    /// at which every store to that buffer, and every load from it, is
+    /// indexed by `c·v + t` for a constant `c` and a constant `t` whose lanes
+    /// all lie in `[0, c)`. Distinct iterations then touch disjoint elements
+    /// of the output, so each output element is computed by the same
+    /// statements in the same order whichever worker runs it. Depth 0 with
+    /// `c = 1, t = 0` is [`Kernel::parallel_outer`]'s case, which stays the
+    /// analysis of the executor's default split.
+    pub fn parallel_at(&self, depth: usize) -> Option<usize> {
+        let mut stmts = self.body.as_slice();
+        let mut d = 0;
+        loop {
+            let [Stmt::For { var, bound, body }] = stmts else { return None };
+            if d == depth {
+                return self.writes_disjoint(*var, body).then_some(*bound);
+            }
+            stmts = body;
+            d += 1;
+        }
+    }
+
+    fn writes_disjoint(&self, v: usize, body: &[Stmt]) -> bool {
+        let out = self.out_buf();
+        // Every access to the output: its index, and whether it spans the
+        // kernel's lanes along the last axis.
+        let mut accesses: Vec<(Vec<Expr>, bool)> = Vec::new();
+        let mut stores = 0usize;
+        let mut assigned = false;
+        fn exprs(e: &Expr, out: usize, acc: &mut Vec<(Vec<Expr>, bool)>) {
+            match e {
+                Expr::Load(b, ix) | Expr::LoadI(b, ix) => {
+                    if *b == out {
+                        acc.push((ix.clone(), false));
+                    }
+                    ix.iter().for_each(|x| exprs(x, out, acc));
+                }
+                Expr::VLoad(b, ix) => {
+                    if *b == out {
+                        acc.push((ix.clone(), true));
+                    }
+                    ix.iter().for_each(|x| exprs(x, out, acc));
+                }
+                Expr::Bin(_, a, b) | Expr::Cmp(_, a, b) | Expr::VBin(_, a, b) => {
+                    exprs(a, out, acc);
+                    exprs(b, out, acc);
+                }
+                Expr::Un(_, a) | Expr::ToF(a) | Expr::ToI(a) | Expr::VSplat(a) => exprs(a, out, acc),
+                Expr::Select(c, a, b) => {
+                    exprs(c, out, acc);
+                    exprs(a, out, acc);
+                    exprs(b, out, acc);
+                }
+                Expr::F(_) | Expr::I(_) | Expr::Iv(_) | Expr::Sv(_) | Expr::Si(_) | Expr::Vv(_) => {}
+            }
+        }
+        fn walk(stmts: &[Stmt], v: usize, out: usize, acc: &mut Vec<(Vec<Expr>, bool)>, stores: &mut usize, assigned: &mut bool) {
+            for s in stmts {
+                match s {
+                    Stmt::For { body, .. } => walk(body, v, out, acc, stores, assigned),
+                    Stmt::If { cond, then } => {
+                        exprs(cond, out, acc);
+                        walk(then, v, out, acc, stores, assigned);
+                    }
+                    Stmt::Store { buf, index, value } | Stmt::StoreI { buf, index, value } | Stmt::VStore { buf, index, value } => {
+                        if *buf == out {
+                            *stores += 1;
+                            acc.push((index.clone(), matches!(s, Stmt::VStore { .. })));
+                        }
+                        index.iter().for_each(|x| exprs(x, out, acc));
+                        exprs(value, out, acc);
+                    }
+                    Stmt::SetL { var, value } => {
+                        if *var == v {
+                            *assigned = true;
+                        }
+                        exprs(value, out, acc);
+                    }
+                    Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::VSet { value, .. } => exprs(value, out, acc),
+                }
+            }
+        }
+        walk(body, v, out, &mut accesses, &mut stores, &mut assigned);
+        if assigned || stores == 0 {
+            return false;
+        }
+        // `c·v + t` at a position: `(c, t)`, or nothing.
+        let affine = |e: &Expr| -> Option<(i64, i64)> {
+            match e {
+                Expr::Iv(x) if *x == v => Some((1, 0)),
+                Expr::Bin(BinOp::IMul, a, b) => match (a.as_ref(), b.as_ref()) {
+                    (Expr::Iv(x), Expr::I(c)) | (Expr::I(c), Expr::Iv(x)) if *x == v => Some((*c, 0)),
+                    _ => None,
+                },
+                Expr::Bin(BinOp::IAdd, a, b) => match (a.as_ref(), b.as_ref()) {
+                    (Expr::Bin(BinOp::IMul, p, q), Expr::I(t)) => match (p.as_ref(), q.as_ref()) {
+                        (Expr::Iv(x), Expr::I(c)) | (Expr::I(c), Expr::Iv(x)) if *x == v => Some((*c, *t)),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let rank = self.output.dims.len();
+        (0..rank).any(|p| {
+            accesses.iter().all(|(ix, vector)| {
+                let span = if *vector && p + 1 == rank { self.lanes as i64 } else { 1 };
+                matches!(ix.get(p).and_then(affine), Some((c, t)) if c >= 1 && t >= 0 && t + span <= c)
+            })
+        })
     }
 }
 

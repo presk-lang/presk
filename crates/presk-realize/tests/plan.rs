@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use presk_core::ir::Rhs;
 use presk_core::VarId;
-use presk_sched::{Src, plan};
+use presk_realize::{Src, plan};
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
 use presk_types::check;

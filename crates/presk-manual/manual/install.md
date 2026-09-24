@@ -47,6 +47,10 @@ make experiment                  # exact versus almost (manual chapter `experime
 make bench                       # every backend on the tiny MiniGPT (manual chapter `native`)
 make precision curve quant-table step-table j-step step-train foil bert
                                  # the experiments of 0.5.0 and 0.6.0 (chapters `precision`, `experiments`; minutes to hours)
+make plan-check                  # a plan stating the default layout gives the same kernels (0.7.0)
+make calibrate-ra4 ra4-small     # the layout cost model's calibration; the RA4 sweep's daily subset (a minute)
+make ra4 ra4-check ra4-20 ra4-day2
+                                 # the RA4 measurement of 0.7.0 (chapter `experiments` §7; a night)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
@@ -75,13 +79,13 @@ crates/presk-core            PSK-Core IR, lowering, regularity, effects, AD     
 crates/presk-interp          reference interpreter                                (step 7)
 crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
 crates/presk-data            .psk.d data files and the training pipeline           (0.2.0 step 1)
-crates/presk-rt              the runtime seam: values, the Backend trait, InterpBackend (0.3.0 step 1)
-crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program   (0.3.0 step 2)
+crates/presk-rt              the runtime seam: values, the Backend trait, InterpBackend, Layout and Plan (0.3.0 step 1, 0.7.0)
+crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program, the contraction builder, the layout cost model   (0.3.0 step 2, 0.7.0)
 crates/presk-cranelift       the Cranelift JIT over the kernels, --backend native          (0.3.0 step 3)
 crates/presk-train           the training loop over a Backend, presk train           (0.2.0 step 5)
 crates/presk-serve           the generation loop over a Backend, presk serve         (0.3.0 step 5)
 crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles    (0.3.0 steps 6–7)
-crates/presk-sched           PSK-Sched v0: fusion groups over PSK-Core bodies       (0.4.0 step 4)
+crates/presk-realize         PSK-Realize v0: fusion groups over PSK-Core bodies     (0.4.0 step 4)
 crates/presk-precision       envelope, error bounds, sensitivity, the solver         (0.5.0 steps 2–6, 0.6.0)
 crates/presk-cli             the `presk` binary
 crates/presk-manual          this manual
@@ -91,9 +95,10 @@ tests/diag                   one erroneous program per diagnostic, with snapshot
 tests/data                   a token stream for the .psk.d tests
 tests/train                  regressions trained by presk train
 tests/quant                  a program of odd widths for the int4 kernels
+tests/plan                   realization plans, and the entries make plan-check compares
 corpus/nlp                   the corpus of an NLP course (manual chapter `corpus`)
 coverage                     the MLPerf transcriptions (manual chapter `coverage`)
-experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert
+experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert, ra4*
 ```
 
 The example programs are refreshed from the specification repository with

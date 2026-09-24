@@ -1,0 +1,64 @@
+#!/bin/bash
+# The RA4 sweep of plan 0.7.0 (§3.6; step 5, D61): one day of measurement.
+# For every shape and every type, `presk autotune` runs the entry once to
+# capture its launches, then times every point of every nest's layout space
+# on the captured buffers and checks each output bit-identical to point 0's
+# (statement L) — natively, and on the kernel interpreter too at the shapes
+# INTERP names (1: all of them, 0: none);
+# `presk plan --cost` chooses over the same points from the layout cost
+# model, for the record of what the static choice costs. Both are pinned to
+# the RA4 cores with taskset. Given the directory of an earlier day,
+# `presk rank` then compares the model with both days.
+#
+#   experiments/ra4.sh DAY                   one day, into DAY/<shape>_<type>/
+#   experiments/ra4.sh DAY EARLIER OUT.md    ...then rank EARLIER against DAY
+#
+# Each DAY/<constants>_<shape>_<type>/ holds one <nest>.jsonl per nest (a
+# JSON line per point), sweep.json (the times, the machine, u), plan.json and
+# plan.txt (`presk plan --cost`); DAY/day.txt the date, the load and the
+# commit of each run into DAY. EXTRA is passed to `presk autotune` (a sample:
+# "--top 8 --random 32").
+# The defaults are the measurement of §3.4: SelfAttention.apply of the
+# course GPT at its constants (D = 384, H = 6), T = 256, B ∈ {1, 16}, f32
+# and f64, the whole space. Needs a quiet machine and a calibrated profile
+# (`make calibrate-ra4`).
+set -u -o pipefail
+cd "$(dirname "$0")/.."
+PRESK=${PRESK:-./target/release/presk}
+CORES=${RA4_CORES:-5-9,15-19}
+FILE=${FILE:-corpus/nlp/05_gpt.psk}
+ENTRY=${ENTRY:-SelfAttention.apply}
+CONSTS=${CONSTS:-}                       # e.g. "D=1024 H=16"
+SHAPES=${SHAPES:-B=1,T=256 B=16,T=256}   # one --dim set per word
+TYPES=${TYPES:-f32 f64}
+SPACE=${SPACE:-full}
+REPEAT=${REPEAT:-7}
+PROFILE=${PROFILE:-out/profile.json}
+INTERP=${INTERP:-1}                      # 1, 0, or the shapes to check on the interpreter, e.g. "B=1,T=256"
+NEST=${NEST:-}                           # one nest only, e.g. SelfAttention.apply/%13
+EXTRA=${EXTRA:-}
+DAY=${1:?usage: experiments/ra4.sh DAY [EARLIER OUT.md]}
+[ -f "$PROFILE" ] || { echo "missing $PROFILE: run make calibrate-ra4 first"; exit 1; }
+mkdir -p "$DAY"
+{ date -Is; uptime; echo "$ENTRY $CONSTS $SHAPES $TYPES, cores $CORES"; git rev-parse --short HEAD; } >> "$DAY/day.txt"
+common=(--entry "$ENTRY")
+for c in $CONSTS; do common+=(--const "$c"); done
+[ -n "$NEST" ] && common+=(--nest "$NEST")
+for shape in $SHAPES; do
+  interp=(); { [ "$INTERP" = 1 ] || [[ " $INTERP " == *" $shape "* ]]; } && interp=(--interp)
+  dims=(); for d in ${shape//,/ }; do dims+=(--dim "$d"); done
+  for t in $TYPES; do
+    dir=$DAY/$(echo "$CONSTS $shape" | tr -d '=' | tr ' ,' '__' | sed 's/^_//')_$t
+    mkdir -p "$dir"
+    echo "-- $ENTRY at $shape, $t, space $SPACE, pinned to $CORES${interp:+, checked on the interpreter}"
+    taskset -c "$CORES" "$PRESK" plan "$FILE" "${common[@]}" "${dims[@]}" --realize "$t" --profile "$PROFILE" \
+      --space "$SPACE" --cost --out "$dir/plan.json" > "$dir/plan.txt" || { tail -3 "$dir/plan.txt"; exit 1; }
+    grep '^-- wall' "$dir/plan.txt"
+    taskset -c "$CORES" "$PRESK" autotune "$FILE" "${common[@]}" "${dims[@]}" --realize "$t" --space "$SPACE" \
+      --repeat "$REPEAT" --profile "$PROFILE" "${interp[@]}" $EXTRA --out "$dir" | grep '^--' || exit 1
+  done
+done
+if [ $# -ge 3 ]; then
+  "$PRESK" rank "$2" "$DAY" --out "$3" --entry "$ENTRY" > /dev/null || exit 1
+  echo "-- $2 and $DAY ranked into $3"
+fi

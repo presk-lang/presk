@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use presk_core::{FuncId, Program};
-use presk_data::{Layout, Leaf, Reader};
+use presk_data::{Layout as DataLayout, Leaf, Reader};
 use presk_interp::eval::Dims;
 use presk_interp::key::Key;
 pub use presk_interp::value::Axis;
@@ -25,7 +25,9 @@ use presk_types::elab::ElabProgram;
 use presk_types::ty::Shape;
 use rug::Float;
 
+pub mod layout;
 pub mod quant;
+pub use layout::{Layout, NestKind, Plan};
 pub use quant::{AxisRef, QBuf, QTensor, Quant, QuantScheme};
 
 type IValue = presk_interp::Value<Float>;
@@ -702,7 +704,7 @@ pub fn run_with(backend: &mut dyn Backend, prog: &Program, elab: &ElabProgram, o
 // ----- parameter trees on disk -----------------------------------------------
 
 /// A parameter tree as a `.psk.d` sample: `f64` leaves, fields in order.
-pub fn params_to_data(v: &Value) -> Result<(Layout, presk_data::Value)> {
+pub fn params_to_data(v: &Value) -> Result<(DataLayout, presk_data::Value)> {
     match v {
         Value::Record(fs) => {
             let mut ls = Vec::new();
@@ -712,13 +714,13 @@ pub fn params_to_data(v: &Value) -> Result<(Layout, presk_data::Value)> {
                 ls.push((n.clone(), l));
                 vs.push((n.clone(), d));
             }
-            Ok((Layout::Record(ls), presk_data::Value::Record(vs)))
+            Ok((DataLayout::Record(ls), presk_data::Value::Record(vs)))
         }
         Value::Tuple(ts) => {
             let (ls, vs): (Vec<_>, Vec<_>) = ts.iter().map(params_to_data).collect::<Result<Vec<_>>>()?.into_iter().unzip();
-            Ok((Layout::Tuple(ls), presk_data::Value::Tuple(vs)))
+            Ok((DataLayout::Tuple(ls), presk_data::Value::Tuple(vs)))
         }
-        Value::Real(t) => Ok((Layout::Leaf(Leaf::Real { shape: t.axes.iter().map(|a| a.len).collect() }), presk_data::Value::Real(t.data.to_f64()))),
+        Value::Real(t) => Ok((DataLayout::Leaf(Leaf::Real { shape: t.axes.iter().map(|a| a.len).collect() }), presk_data::Value::Real(t.data.to_f64()))),
         other => err("E9005", format!("a parameter tree holds no {}", other.kind())),
     }
 }

@@ -6,7 +6,8 @@
 pub mod install {}
 
 /// A guided tour: write programs, run them, read the errors, export to
-/// PyTorch, test everything (`make tutorial` runs every command).
+/// PyTorch, train, give a budget, choose a layout, test everything (`make
+/// tutorial` runs every command).
 #[doc = include_str!("../manual/tutorial.md")]
 pub mod tutorial {}
 
@@ -25,7 +26,8 @@ pub mod language {}
 pub mod training {}
 
 /// Native execution: the `Backend` seam, PSK-Kernel v0 and its vector form,
-/// realizations, the Cranelift backend, threads, the conformance suite.
+/// realizations, the Cranelift backend, the layouts of a contraction, threads
+/// at a depth, the conformance suite.
 #[doc = include_str!("../manual/native.md")]
 pub mod native {}
 
@@ -46,17 +48,19 @@ pub mod coverage {}
 pub mod precision {}
 
 /// Experiments: shapes as types, the realization gap of training against the
-/// exact reference, the statements of 0.4.0 to 0.6.0 answered by measurement,
-/// and MLPerf's acceptance rule beside a budget.
+/// exact reference, the statements of 0.4.0 to 0.7.0 answered by measurement,
+/// MLPerf's acceptance rule beside a budget, and the first test of RA4.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
 
-/// Scheduling: fusion groups, what shares a loop nest, and what that buys.
-#[doc = include_str!("../manual/scheduling.md")]
-pub mod scheduling {}
+/// PSK-Realize: fusion groups, what shares a loop nest, and what that buys;
+/// realization plans, a layout per nest, and how a plan is chosen.
+#[doc = include_str!("../manual/realize.md")]
+pub mod realize {}
 
 /// Optimization: e-graph rewriting of PSK-Core (`--opt`, `presk dump --stage
-/// core-opt`), the rules, the oracle, what changes.
+/// core-opt`), the rules, the oracle, what changes; the calibrated cost
+/// models, and what the layout model cannot see.
 #[doc = include_str!("../manual/optimization.md")]
 pub mod optimization {}
 

@@ -7,7 +7,7 @@ target jetson_agx {
   device gpu0 : ampere_igpu(sms = 16, shared = 192KiB/sm)
 
   -- Unified memory: host and GPU share the address space ⇒ no explicit transfers.
-  -- PSK-Sched exploits it through the backend's CostModel (§8.5.2).
+  -- PSK-Realize exploits it through the backend's CostModel (§8.5.2).
   memory      : unified(64GiB, bw = 204GB/s)
   link        : nvlink_c2c
 

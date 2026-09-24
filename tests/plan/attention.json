@@ -1,0 +1,10 @@
+{
+  "realization": "f32",
+  "layout": {
+    "SelfAttention.apply/%13": { "form": "tiled", "tile": [4, 16],
+                                 "kblock": 32, "order": "JIK", "lanes": 4,
+                                 "split": { "depth": 1, "workers": 10 },
+                                 "pack": true },
+    "SelfAttention.apply/%20": { "passes": 2 }
+  }
+}

@@ -26,7 +26,14 @@
 #   make experiment       exact versus almost: the realization gap of float32/float64 training (manual, `experiments`)
 #   make experiment-gpt   the course GPT trained by presk and by PyTorch on the same data (manual, `experiments` §3)
 #   make coverage         presk check on the MLPerf transcriptions (manual, `coverage`)
-#   make sched            the fusion groups of the corpus GPT and the launches they remove
+#   make plan-check       a default plan lowers every example entry to the same kernels (0.7.0 step 1)
+#   make calibrate-ra4    the layout cost model's calibration on a GEMM, pinned to the RA4 cores (0.7.0 step 4)
+#   make ra4-small        the RA4 sweep's daily subset on the tutorial's attention, two days back to back, ranked (0.7.0 step 5)
+#   make ra4              the RA4 sweep, day one: the course GPT's attention, the GEMM, a BERT-shaped sample (about two hours; 0.7.0 step 6)
+#   make ra4-check        statement L apart: every point of day one on the kernel interpreter, sharded over every core (hours)
+#   make ra4-20           the secondary sweep on all twenty cores, with its own calibration (out/profile-20.json, out/ra4-20.md)
+#   make ra4-day2         day one's sweep again, ranked against it with the check into out/ra4.md
+#   make realize          the fusion groups of the corpus GPT and the launches they remove (was `make sched`)
 #   make bench            presk bench on the tiny MiniGPT (forward, loss, optimizer step)
 #   make sync-examples    re-copy tests/examples from presk-specs and show the diff
 #   make snap             review pending insta snapshots
@@ -37,13 +44,18 @@ PRESK_SPECS_DIR ?= ../presk-specs
 CARGO ?= cargo
 PRESK = $(CARGO) run -q -p presk --
 
+# The cores the RA4 sweep of 0.7.0 is pinned to (`taskset -c`): falicon's ten
+# Cortex-X925, CPU part 0xd85 in /proc/cpuinfo; 0-4 and 10-14 are the
+# Cortex-A725 (D56). Override on another machine.
+RA4_CORES ?= 5-9,15-19
+
 EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/layernorm/layernorm.psk \
            tests/examples/minigpt/minigpt.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -84,7 +96,7 @@ conformance: export-examples
 	    echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; \
 	done
 
-# The commands of the tutorial chapter, steps 0 to 16, in order
+# The commands of the tutorial chapter, steps 0 to 17, in order
 # (crates/presk-manual/manual/tutorial.md): every output the chapter quotes is
 # one of these commands'. The PyTorch conformance tests need `make venv`.
 tutorial: build
@@ -162,6 +174,24 @@ tutorial: build
 	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
 	    --seed 1 --ckpt out/tutorial_ckpt_seed1
 	$(PRESK) data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_seed1/final.psk.d
+	rm -rf out/tut_layout.json out/tut_tune
+	$(PRESK) bench experiments/gemm.psk --entry gemm --dim N=256 --realize f32 \
+	    --calibrate out/tut_layout.json --space calib --repeat 5
+	$(PRESK) bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
+	    --calibrate out/tut_layout.json --space calib --repeat 5
+	$(PRESK) plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+	    --profile out/tut_layout.json --out out/tut_plan.json
+	$(PRESK) run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
+	    --realize f32 > out/tut_attend.txt
+	$(PRESK) run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
+	    --plan @out/tut_plan.json > out/tut_attend_plan.txt
+	cmp out/tut_attend.txt out/tut_attend_plan.txt && echo "same output"
+	$(PRESK) autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+	    --space small --profile out/tut_layout.json --interp --out out/tut_tune/day1
+	$(PRESK) autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+	    --space small --profile out/tut_layout.json --out out/tut_tune/day2
+	$(PRESK) rank out/tut_tune/day1 out/tut_tune/day2 --entry attend --out out/tut_rank.md \
+	    | sed -n '/^## Statements/,/^| tile/p'
 
 train-examples: build
 	$(PRESK) train tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
@@ -187,15 +217,22 @@ coverage: build
 	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
 
 # The three experiments of the manual's `experiments` chapter (needs `make venv`).
-# The third trains the course GPT against PyTorch on the same model and data.
+# The third trains the course GPT against PyTorch on the same model and data:
+# the same steps, batches (the program's `training run`) and threads on both
+# sides, `f32` on both, dropout dropping on both with different masks (D54);
+# each side prints its median step time, the first step excluded. The presk
+# side runs the release binary, as the timed experiments do.
+GPT_STEPS ?= 6
+GPT_THREADS ?= $(shell nproc)
 experiment-gpt: build
+	$(CARGO) build --release -p presk
 	python3 corpus/nlp/data/prepare.py
 	$(PRESK) data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
 	$(PRESK) data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
 	$(PRESK) data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
 	$(PRESK) export corpus/nlp/05_gpt.psk --target pytorch --mode readable --train -o out/gpt_pt
-	(cd out/gpt_pt && ../../.venv/bin/python train.py --steps 20 --log-every 20)
-	$(PRESK) train corpus/nlp/05_gpt.psk --steps 2 --log-every 2 --backend native --realize f32 --ckpt out/gpt_course
+	(cd out/gpt_pt && ../../.venv/bin/python train.py --steps $(GPT_STEPS) --log-every 1 --threads $(GPT_THREADS))
+	./target/release/presk train corpus/nlp/05_gpt.psk --steps $(GPT_STEPS) --log-every 1 --backend native --realize f32 --threads $(GPT_THREADS) --ckpt out/gpt_course
 
 experiment: build
 	$(PRESK) export tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
@@ -377,11 +414,12 @@ calibrate: build
 	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8 --repeat 9 --opt --profile out/profile.json
 	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 9 --opt --profile out/profile.json
 
-# The fusion pass (manual chapter `scheduling`): what shares a loop nest on
+# The realization pass (manual chapter `realize`): what shares a loop nest on
 # the corpus GPT, and the launches it removes from the forward and from the
-# optimizer's chain.
-sched: build
-	$(PRESK) dump corpus/nlp/05_gpt.psk --stage sched --const D=64 --const H=2 --const L=2 | tail -12
+# optimizer's chain. `make sched` is kept as an alias of `make realize`.
+sched: realize
+realize: build
+	$(PRESK) dump corpus/nlp/05_gpt.psk --stage realize --const D=64 --const H=2 --const L=2 | tail -12
 	$(PRESK) dump corpus/nlp/05_gpt.psk --stage kernel --entry loss --const D=64 --const H=2 --const L=2 \
 	    --dim B=2 --dim T=32 --realize f32 | grep '^--'
 	$(PRESK) dump corpus/nlp/05_gpt.psk --stage kernel --entry adamw.step --const D=64 --const H=2 --const L=2 \
@@ -401,6 +439,81 @@ bench: build
 	$(PRESK) bench tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8
 	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8
 	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8
+
+# 0.7.0 step 4: the layout cost model's calibration. A GEMM at three sizes in
+# f32 and f64, timed under a spanning set of layouts (`bench --space calib`),
+# pinned to the RA4 cores; out/profile.json gains the machine description,
+# the fitted constants and the uncertainty u. Needs a quiet machine.
+CALIB_SIZES ?= 256 512 1024
+RA4_PROFILE ?= out/profile.json
+calibrate-ra4:
+	$(CARGO) build --release -p presk
+	@mkdir -p out
+	@for r in f32 f64; do for n in $(CALIB_SIZES); do \
+	  echo "-- GEMM N=$$n, $$r, pinned to $(RA4_CORES)"; \
+	  taskset -c $(RA4_CORES) ./target/release/presk bench experiments/gemm.psk --entry gemm --dim N=$$n \
+	    --realize $$r --calibrate $(RA4_PROFILE) --space calib --repeat 5 | grep '^--' || exit 1; \
+	done; done
+
+# 0.7.0 step 5: the RA4 sweep (experiments/ra4.sh, D61), pinned to the RA4
+# cores. `ra4-small` is the daily subset (`--space small`) on the tutorial's
+# attention at B = 1 and 16, T = 256, f32 and f64: day one checks statement L
+# natively and on the kernel interpreter, day two natively, then `presk rank`
+# writes out/ra4-small.md — about a minute.
+RA4_SMALL = FILE=tutorial/03_attention.psk ENTRY=attend SPACE=small
+ra4-small:
+	$(CARGO) build --release -p presk
+	@rm -rf out/ra4-small
+	@RA4_CORES=$(RA4_CORES) $(RA4_SMALL) INTERP=1 experiments/ra4.sh out/ra4-small/day1
+	@RA4_CORES=$(RA4_CORES) $(RA4_SMALL) INTERP=0 experiments/ra4.sh out/ra4-small/day2 out/ra4-small/day1 out/ra4-small.md
+
+# 0.7.0 step 6: the measurement (D62). A day is three sweeps into one
+# directory, pinned, timed, checked natively against point 0: the course
+# GPT's attention at the constants of plan §3.4 (B = 1 and 16, T = 256, f32
+# and f64, the whole space), the GEMM at 1024 in f32 (statement P), and the
+# BERT-large-shaped attention (D = 1024, H = 16, T = 384, B = 1) on the
+# model's eight best points per nest and thirty-two at random. `ra4-check`
+# runs every point of day one once more, untimed, on the kernel interpreter
+# too (statement L), in shards on every core, so it must not overlap a timed
+# sweep. `ra4-20` is the secondary sweep on all twenty cores, calibrated on
+# them. `ra4-day2` repeats day one and ranks the two, the check included.
+RA4_GEMM = FILE=experiments/gemm.psk ENTRY=gemm SHAPES=N=1024 TYPES=f32
+RA4_BERT = CONSTS="D=1024 H=16" SHAPES=B=1,T=384 TYPES=f32 EXTRA="--top 8 --random 32"
+RA4_JOBS ?= 20
+ra4 ra4-day2:
+	$(CARGO) build --release -p presk
+	@d=out/ra4/$(if $(filter ra4-day2,$@),day2,day1); \
+	RA4_CORES=$(RA4_CORES) INTERP=0 experiments/ra4.sh $$d && \
+	RA4_CORES=$(RA4_CORES) INTERP=0 $(RA4_GEMM) experiments/ra4.sh $$d && \
+	RA4_CORES=$(RA4_CORES) INTERP=0 $(RA4_BERT) experiments/ra4.sh $$d
+	@if [ $@ = ra4-day2 ]; then ./target/release/presk rank out/ra4/day1 out/ra4/day2 --out out/ra4.md \
+	  $$([ -d out/ra4/check ] && echo --check out/ra4/check) | tail -1; fi
+
+ra4-check:
+	$(CARGO) build --release -p presk
+	@{ SHAPES=B=16,T=256 SHARDS=40 experiments/ra4_check.sh out/ra4/check; \
+	   $(RA4_GEMM) SHARDS=40 experiments/ra4_check.sh out/ra4/check; \
+	   SHAPES=B=1,T=256 SHARDS=4 experiments/ra4_check.sh out/ra4/check; \
+	   $(RA4_BERT) SHARDS=2 experiments/ra4_check.sh out/ra4/check; } | xargs -d '\n' -n 1 -P $(RA4_JOBS) bash -c
+	@echo "-- statement L: every shard of out/ra4/check bit-identical to point 0, natively and on the kernel interpreter"
+
+ra4-20:
+	$(MAKE) calibrate-ra4 RA4_CORES=0-19 RA4_PROFILE=out/profile-20.json
+	@RA4_CORES=0-19 PROFILE=out/profile-20.json INTERP=0 experiments/ra4.sh out/ra4-20/day1
+	@./target/release/presk rank out/ra4-20/day1 out/ra4-20/day1 --out out/ra4-20.md | tail -1
+
+# 0.7.0 step 1: a plan with the default layout lowers every entry of
+# tests/plan/entries.txt to the kernels it has without one, byte for byte
+# (`dump --stage kernel`, f64). PLAN names another plan to compare.
+PLAN ?= tests/plan/default.json
+plan-check: build
+	@mkdir -p out
+	@while IFS='|' read -r file entry args; do \
+	  $(PRESK) dump --stage kernel "$$file" --entry "$$entry" $$args > out/plan-check.bare || exit 1; \
+	  $(PRESK) dump --stage kernel "$$file" --entry "$$entry" $$args --plan @$(PLAN) > out/plan-check.plan || exit 1; \
+	  if cmp -s out/plan-check.bare out/plan-check.plan; then echo "same kernels  $$entry ($$file)"; \
+	  else echo "DIFFERENT     $$entry ($$file)"; diff out/plan-check.bare out/plan-check.plan | head -20; exit 1; fi; \
+	done < tests/plan/entries.txt
 
 sync-examples:
 	rsync -a --delete --exclude PROVENANCE.md $(PRESK_SPECS_DIR)/examples/ tests/examples/

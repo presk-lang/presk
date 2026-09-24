@@ -1,0 +1,7 @@
+-- gemm.psk — a square product, the calibration set of the layout cost model
+-- (plan 0.7.0 §3.5: `presk bench --calibrate --space calib`, `make
+-- calibrate-ra4`) and statement P's subject. The attention nests the model is
+-- tested on are never in this set.
+dim N
+
+fn gemm(a : ℝ[N, N], b : ℝ[N, N]) -> ℝ[N, N] = a · b

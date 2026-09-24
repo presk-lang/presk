@@ -1,4 +1,8 @@
-//! PSK-Sched v0: **fusion groups** over PSK-Core bodies (0.4.0 plan, §3.4).
+//! PSK-Realize v0: **fusion groups** over PSK-Core bodies (0.4.0 plan, §3.4).
+//!
+//! The representation was named PSK-Sched until 0.6.0: "schedule" suggests an
+//! ordering in time, and what a plan at this level mostly fixes is arithmetic
+//! (language reference, chapter 6, 2026-09-23).
 //!
 //! One kernel per primitive makes every intermediate a round trip through
 //! memory. A group is a connected set of elementwise nodes of the same result

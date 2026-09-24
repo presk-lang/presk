@@ -76,7 +76,7 @@ costs slightly less than a product (it reads one operand), and negations
 stay where the program put them.
 
 Since 0.4.0 the backends fuse elementwise chains into one loop nest
-(`scheduling` chapter), which makes `Q` a property of a *group* rather than
+(`realize` chapter), which makes `Q` a property of a *group* rather than
 of a node. Extraction does not know that yet: it costs each node on its own
 and the partition is computed afterwards, so the model under-counts what
 fusion saves. Making the two one decision is question 49.
@@ -226,6 +226,137 @@ load and mean what they said. On the corpus GPT: `f64` π 6.36·10⁹ ops/s,
 `f32` 8.03·10⁹, `f32` in four lanes 1.59·10¹⁰, two and a half times the `f64`
 figure. The precision solver prices each site with its own type's constants
 (`precision` chapter, "Time, not traffic").
+
+## The layout cost model (0.7.0 step 4)
+
+The roofline above reads the shapes and the machine type, and no layout
+decision: two register tiles or two loop orders of one nest have the same `W`
+and `Q`, so it cannot rank the points of a nest's layout space (`realize`
+chapter). Version 0.7.0 tests whether a static model can, which is the
+research programme's hypothesis RA4. The model its plan specifies (§3.5)
+reads three more things of a kernel (`presk_kernel::cost::planned_cost`),
+all of **one worker's part** of it: the kernel with the loop its split
+divides cut to one worker's share.
+
+- **Traffic by level.** For each buffer, the footprint of its accesses inside
+  every loop, from the affine index expressions the lowering emits, is
+  compared with the capacity of each cache level. A buffer whose footprint
+  inside a loop fits is brought in once per iteration of the loops enclosing
+  it; otherwise the loop's body is looked at once per iteration. That gives
+  `Q_L2`, `Q_L3` and `Q_mem`, the bytes from L2, L3 and memory. A taller
+  register tile reads the right operand fewer times; a k-block reused inside a
+  cache reads it once per block.
+- **Threads.** A worker's work and private traffic are those of its share;
+  the shared levels, L3 and memory, see every worker's.
+- **Register pressure.** The real and vector variables live in the busiest
+  innermost loop, against the machine's vector registers. The excess is
+  charged as two level-1 accesses per iteration and per spilled register. In
+  four lanes a `[4, 16]` tile holds 24 registers of 32; without lanes, 84.
+
+`T̂ = λ + spawn·[p > 1] + max(W/π_g, Q_L2/β_L2, p·Q_L3/β_L3, p·Q_mem/β_mem)`,
+with `π` fitted per group `g`, a machine type, a lane width and a worker count
+(the cores are not equal, and one `π` per core would need a schedule).
+
+**The machine** (`presk_kernel::cost::Machine`) is read from the operating
+system for the first CPU the process may run on, so that a run pinned to some
+cores describes those cores. On falicon, pinned to the ten Cortex-X925, that
+is 64 KiB of L1d and 2 MiB of L2 per core and 8 MiB of L3 shared by five of
+the pinned cores. Unpinned, it would be `cpu0`, a Cortex-A725 with 512 KiB of
+L2. The worker count is `--threads`, `PRESK_THREADS` or the CPUs of the
+affinity mask. The description is written into the profile
+(`machine_desc`), which is where to edit it.
+
+**Calibration** (`presk bench --calibrate --space calib`, `make
+calibrate-ra4`) is out of sample by construction: a GEMM at 256, 512 and 1024,
+`f32` and `f64`, 96 layouts each (two tiles, every loop order with and without
+a k-block of 128, both lane widths, 1, 5 and 10 workers), pinned to the X925
+cores. The attention nests the model will be tested on are never in it. The
+constants are fitted by coordinate descent on a log grid, one at a time, on
+the squared relative error, and the median absolute relative residual is the
+model's uncertainty `u`. On falicon, 2026-09-23, 576 samples:
+
+| Constant | Fitted |
+|---|---|
+| `λ`, `spawn` | 0 µs, 182 µs |
+| `β_L2`, `β_L3`, `β_mem` | 4.4·10¹⁰, 1.8·10¹¹, 2.9·10¹¹ bytes/s |
+| `π`, `f32`, one lane / four lanes, 1 worker | 1.67·10¹⁰ / 4.40·10¹⁰ ops/s |
+| `π`, `f32`, four lanes, 5 / 10 workers | 3.91·10¹⁰ / 3.93·10¹⁰ ops/s per worker |
+| `π`, `f64`, one lane / two lanes, 1 worker | 1.76·10¹⁰ / 2.42·10¹⁰ ops/s |
+| `u` (median relative residual), Spearman | 0.185, 0.980 |
+
+A GEMM at these sizes is bound by its work and its L2 traffic, so `β_L3` and
+`β_mem` are barely identified by it (`β_mem` above `β_L3` is the sign): the
+calibration set constrains the terms the GEMM exercises. In the same samples,
+at 1024³ in `f32` the best layout (`[4, 16]`, k-block 128, order `KIJ`, four
+lanes, split at depth 1 over ten workers) runs at 405 GFLOP/s, and 0.6.0's
+default layout at 77. These are the calibration's own samples, not a test.
+Whether the model ranks the layouts of the attention nests it never saw is
+what 0.7.0 step 6 measured, below: it does not.
+
+**What `u` is for.** A prediction comes with the model's uncertainty, and two
+commands read it (question 69). `presk plan` picks the best prediction, a tie
+broken by the order of the space, and prints how many points it predicts
+within `1 + u` of that best: the points it cannot tell from its choice.
+`presk rank` counts a pair of points as *decided* when their predicted ratio
+lies outside `1 ± u`, and reports the accuracy on every pair the measurement
+distinguishes and on the decided ones apart. Whether a chooser should decide
+alone above the margin is the chooser's rule, not the model's.
+
+## What the layout model cannot see (0.7.0 step 6)
+
+Tested on the course GPT's attention, which the calibration never saw (D62,
+`docs/ra4-2026-09-24.md`, the `experiments` chapter's §7), the model fails
+the hypothesis. It orders 47.9 % and 43.9 % of the two `ein`s'
+distinguished close pairs right, at batch 16 in `f32`, where RA4 asks for
+more than 90 %, and its pick on the attention's three contractions is 2.18,
+2.87 and 3.01 times slower than the best point measured. The table per
+decision, over every nest and configuration of the measurement, says which
+terms work:
+
+| Decision | Right | Tied |
+|---|---|---|
+| lanes | 93.2 % | 6.8 % |
+| split | 96.7 % | 1.3 % |
+| passes | 100 % | 0 % |
+| tile | 27.7 % | 46.7 % |
+| order | 30.0 % | 61.8 % |
+| k-block | 0.6 % | 97.0 % |
+| pack | 57.8 % | 0 % |
+
+The first three are the decisions it has terms for: `π` per lane width, `π`
+and the spawn cost per worker count, and the work of a third pass. It cannot
+see the others, and the terms each point records say why. At batch 16 in `f32`
+every point of both `ein`s is predicted **work-bound**, so the traffic terms
+never bind. The work count gives a load no weight (`Expr::Load` weighs 0 in
+`presk_kernel::cost`, 0.3.0's roofline convention), and traffic is counted
+from L2, where every register tile of a form has the same footprint. The
+values `ein`'s tiles `[1, 4]`, `[1, 16]` and `[2, 8]` have the same work, the
+same traffic and the same prediction, 2.27 ms, and measure 7.34, 3.39 and 4.66
+ms. Where the predictions of two tiles do differ, it is by the edge work of
+four-row tiles, so the model prefers the smaller tile; it is wrong on 57–63 %
+of those pairs. With the traffic terms never binding, k-blocks and loop orders
+cost nothing at all, and the pack is charged its copy and credited nothing for
+the contiguous loads it buys.
+
+What a register tile saves is **loads from L1 into registers per
+multiply-add**, and no term counts them. The calibration had seen it too: its
+two tiles, `[1, 8]` and `[4, 16]`, share a group and have the same work, and
+they differ by a median of 1.26× — a quarter of the 288 pairs by more than
+1.85× — which is part of what `u` = 0.185 is. A term for those loads is the
+design `docs/kernels-roadmap.md` records for a later version, to be tested on
+a fresh sweep, since a model designed after seeing where this one failed
+would otherwise be fitted to its test.
+
+Two things hold. **The model is a good pruner**: on every contraction nest at
+the attention's shapes, the points it predicts within `1 + u` of its best
+hold the best measured point or one within 1.08× of it (at batch 16 in `f32`
+and on the GEMM, the best itself, among 36–201 candidates of 1 333–1 717
+points, 2.4–15 % of the space), so measuring its candidates alone finds the
+best at a fraction of the sweep's cost. And it is **cheap, but not cheap
+enough** for statement N: choosing statically costs 582–717 times less wall
+time than measuring every point at batch 16, and 75–89 times less at batch 1,
+where N asks for 10³, because a point's measurement is eight launches of a few
+milliseconds against about 0.2 ms to lower and cost it.
 
 ## Moving a scalar across a contraction
 

@@ -41,7 +41,7 @@ its differentiation and its arithmetic that no synthetic test does.
 
 Rung 5 is the one that hurt: a training step took 289 s when it was first
 written and takes 39.8 s now, and the losses never moved. Every number in the
-`scheduling`, `native` and `optimization` chapters was measured on it.
+`realize`, `native` and `optimization` chapters was measured on it.
 
 Since 0.5.0 step 1 it also carries the course's dropout, at the three sites
 the course has it: the attention weights, the attention output and the

@@ -35,7 +35,7 @@ declaration keyword.
 | `E4xxx` | effects | implemented |
 | `E5xxx` | lowering to PSK-Core | implemented |
 | `E6xxx` | automatic differentiation | implemented |
-| `E7xxx` | `presk run`, `train`, `serve`, `bench` (entry resolution, input synthesis, runtime — on every backend: the kernel and native backends report through `E7001` too) | implemented |
+| `E7xxx` | `presk run`, `train`, `serve`, `bench` (entry resolution, input synthesis, runtime — on every backend: the kernel and native backends report through `E7001` too; a realization plan's layout, `E7002`) | implemented |
 | `E8xxx` | PyTorch export | implemented |
 | `E9xxx` | `.psk.d` data files (`presk data`, the training pipeline) | implemented (0.2.0 step 1) |
 | `W0xxx` | warnings | implemented (W0001, W0002, W0003) |
@@ -114,6 +114,7 @@ report is a snapshot test; adding a code means adding such a file.
 | Code | Message | Cause |
 |---|---|---|
 | `E7001` | (message) | `presk run`: unknown entry or module, wrong number of module arguments, an unbound dimension (`give --dim T=N`), a `--dim` value that violates a file bound (`dim T <= 1024`), an unknown `--dim` name, a value that cannot be synthesized (a module-typed or function-typed parameter), or a runtime error of the interpreter (an index out of range, a shape the primitives cannot align), labelled with the source of the failing binding; on `--backend kernel\|native`, a shape with an open prefix that cannot be materialized, a dimension that does not evaluate to a natural number, or a kernel the lowering does not support; a realization whose `quant` map names a path that is not a parameter, an axis the parameter does not have (or a name two of its axes share), a width other than 8 or 4 bits, an entry whose first argument is not a parameter tree, or `presk train` with a quantised realization (0.6.0 step 5a) |
+| `E7002` | the plan's layout of `NEST`: … | a realization plan (`--plan @FILE`, `realize` chapter; 0.7.0 step 1) that names a nest the program does not have (no such function or binding, a binding inside a fusion group, or one that is not a primitive), or states a decision the nest cannot have (a tile on a nest that is not a `dot` or an `ein`, passes on one that is not a `softmax`) — both reported before anything runs; or, when the nest is launched, a layout that is ill-formed at its shapes and types (the reference's conditions 3, 4, 7 and 9, named in the message) or, for a thread split, against its kernel and the machine: a loop at that depth that is not parallel or has one iteration (condition 8), a worker count other than the machine's or half of it on the native backend (condition 5) |
 
 ## Export codes
 

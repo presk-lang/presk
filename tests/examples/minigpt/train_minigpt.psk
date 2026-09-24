@@ -38,7 +38,7 @@ training run {
   -- all-gather) and PROVES that the distributed program denotes the same function (§6).
   parallel  = data_parallel(replicas = auto) ⊗ tensor_parallel(axis model)
 
-  -- The budget is an error CONSTRAINT, not a dtype. PSK-Sched chooses representations
+  -- The budget is an error CONSTRAINT, not a dtype. PSK-Realize chooses representations
   -- (BF16 activations, FP32 accumulations…) under it, discharged by measurement (§6.1, §8.3).
   precision = budget(rel_error = 1e-3)
 

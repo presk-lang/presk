@@ -3,7 +3,7 @@
 //!
 //! Every other crate of this workspace works on the *denotation*: a Presk
 //! program is a function over exact reals, and `presk-core`, `presk-opt` and
-//! `presk-sched` transform it under identities that hold over ℝ. This crate
+//! `presk-realize` transform it under identities that hold over ℝ. This crate
 //! works on the other side of that line. It answers a different question:
 //! given a program and a declared error budget, which machine types and which
 //! reduction orders should the backends use, and how far from the denotation
