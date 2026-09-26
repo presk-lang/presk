@@ -6,8 +6,10 @@ What the tool can show about the approach, with numbers, and what it cannot.
 any output directory of `presk export … --conformance-entry train:K`. §3 is
 0.4.0's decisive experiment against PyTorch (`make experiment-gpt`), §4 the
 statements of 0.5.0, §5 MLPerf's acceptance rule set beside a budget on one
-model (`make foil`), §6 the statements of 0.6.0, and §7 those of 0.7.0, the
-first test of the research programme's hypothesis RA4 (`make ra4`). Each
+model (`make foil`), §6 the statements of 0.6.0, §7 those of 0.7.0, the
+first test of the research programme's hypothesis RA4 (`make ra4`), and §8
+those of 0.8.0, its second, with a model frozen before two fresh sweeps
+(`make ra4-f2`, `make ra4-f1`). Each
 version named its statements before it began, with what would count as
 failure, and each section reports them as measured.
 
@@ -484,7 +486,7 @@ every register tile of a form has the same footprint. So the values `ein`'s
 tiles `[1, 4]`, `[1, 16]` and `[2, 8]` are all predicted 2.27 ms and measure
 7.34, 3.39 and 4.66 ms. What a register tile saves is loads from L1 into
 registers per multiply-add, and no term counts them (`optimization` chapter,
-"What the layout model cannot see"). That is the first risk the plan named,
+"What 0.7.0's layout model could not see"). That is the first risk the plan named,
 at the one level the model does not have.
 
 **N fails, and grows with the kernel.** The static side is `presk plan`'s:
@@ -544,23 +546,189 @@ and it narrows the search to a few per cent of the space that holds the best
 point. Whether a load term makes it rank is not something these measurements
 can answer, since a model designed after seeing where this one failed would
 be fitted to its test; the term is recorded in `docs/kernels-roadmap.md`, for
-a later version and a fresh sweep. 0.7.0 closes on these results.
+a later version and a fresh sweep. 0.7.0 closes on these results, and 0.8.0
+took them up (§8).
+
+## 8. Ranking, re-tested: the statements of 0.8.0
+
+0.7.0's model failed RA4 for a named reason: it weighed no load from the
+first-level cache into registers, and under a maximum its traffic terms
+never bound, so it tied register tiles, loop orders and k-blocks (§7).
+0.8.0 changed the whole model (`optimization` chapter): a term for one
+worker's register loads and stores, `N_ld/ρ_g`; a p-norm of the five terms
+in place of the maximum, its exponent fitted (`q` = 1.06); a calibration
+widened to five tiles, sizes to 2048 and two thin products; and two rules
+of the planned cost, footprints in whole cache lines and one operation of
+work per loop iteration. It was designed on 0.7.0's measurements alone,
+which became the **development set** and decide nothing, and **frozen**
+at the tag `ra4-model-0.8.0` on 2026-09-25 before any new measurement.
+`presk rank --frozen` refuses a day measured on a commit that does not
+descend from it. Then two fresh sweeps tested it. Six statements were fixed
+before the version began (`presk-specs/implementation/presk-plan-0.8.0.md`
+§3.6): L, M, N and O are 0.7.0's, with the same thresholds; Q is new; D
+reports the development figures. Three hold and two fail.
+
+| # | Statement | Asked | Measured | |
+|---|---|---|---|---|
+| L | every point of both fresh sweeps **bit-identical** to the scalar sequential kernel, natively and on the kernel interpreter | every bit | 9 286 of 9 286 points of F1's day one and 16 368 of 16 368 of F2's checked on the interpreter; no output differing on any day or shard | holds |
+| M | on each attention `ein` of F1a, F1b and F2 at `B = 16`, `f32`, the frozen model orders the distinguished close pairs right | > 90 % | F2 **92.7 %** and **91.7 %**; F1a **87.4 %** and **88.5 %**; F1b **85.4 %** and **88.8 %** | fails |
+| N | choosing statically costs less wall time than the exhaustive sweep, each fresh configuration, each day | ≥ 10³× | F1a 1 013–1 016×, F1b 2 880–2 933×, F2 at `B = 16` 2 168–2 734×, F2 at `B = 1` **218–252×** | fails |
+| O | the model's pick within reach of the best measured point, every contraction nest of the configurations M names | ≤ 1.25× | at most **1.05** | holds |
+| Q | measuring only the points predicted within `1 + u` of the model's best finds a point within reach of the best, at a fraction of the sweep's time, every contraction nest of every fresh configuration | ≤ 1.05×, ≤ 10 % | 18 nests: the best candidate within **1.03×**, at most **1.8 %** of the sweep | holds |
+| D | the same, on the development set under the frozen model | reported | M 89.3 % and 89.6 %; O 1.07, 1.00, 1.01; Q on 12 of 13 nests | — |
+
+**How it was measured** (D72–D74; the reports are
+`docs/ra4-f2-2026-09-25.md`, `docs/ra4-f1a-2026-09-25.md` and
+`docs/ra4-f1b-2026-09-25.md`, written by `presk rank`).
+- **F2**, 0.7.0's shapes on the other cores: the course GPT's
+  `SelfAttention.apply` at `D = 384`, `H = 6`, `T = 256`, `B` = 1 and 16,
+  `f32` and `f64`, every point of every space, 16 324 points a day, pinned
+  to the ten Cortex-A725 cores. Those cores have a quarter of the X925's L2
+  and their own calibration, made in the frozen form and space after the
+  freeze: `u` = 0.168, where the X925's is 0.132. It tests whether the model
+  carries over to another microarchitecture.
+- **F1**, new shapes on the ten X925 cores, priced by the frozen profile
+  itself: BERT-large's attention (F1a: `D = 1024`, `H = 16`, `T = 384`,
+  `B = 1`), which 0.7.0 only sampled, and a head dimension of 128, which the
+  development set never had (F1b: `D = 1024`, `H = 8`, `T = 512`, `B = 2`),
+  both in `f32`, every point, 9 264 points a day. It tests whether the model
+  carries over to other shapes.
+- **Twice each**, on 2026-09-25: F2 from 12:07 and from 16:45, F1 from 20:02
+  and from 22:35, the other cores idle. The plan asked for two dates, and
+  the user decided on one, hours apart (D72): a date is only a proxy for
+  independent conditions, and a run at midnight would have been little more
+  independent. The days' sweep times agree within 1.3 %.
+- **Before each**, a dry run of the longest nest sized the day (1 h 41 min
+  estimated for F2, 1 h 45 min measured; 52 min and 48 min for F1), so both
+  were swept whole and no M rests on a sample.
+- **Statement L's check** ran apart on the kernel interpreter: 88 shards for
+  F2 (1 h 58 min) and 100 for F1 (1 h 44 min), on every core.
+- **Every day, check and calibration is archived** read-only with its
+  checksums, since none can be taken again, and ranked in step 7 from
+  copies checked against those checksums.
+
+**L holds.** No point of either sweep, 25 588 a day and 0.6.0's beside
+them, computed a different bit from the scalar sequential kernel, natively
+or on the kernel interpreter, on the A725 cores as on the X925.
+
+**M fails: the model carried over to another core, not to new shapes.** On
+F2 it ranks 92.7 % and 91.7 % of the two `ein`s' distinguished pairs right,
+above RA4's 90 % and above its own development figure (89.3 % and 89.6 %),
+where 0.7.0's model ranked 47.9 % and 43.9 % of the same shapes' pairs. On
+F1 it ranks 85.4–88.8 %, 0.8–3.9 points below the development figure. More
+than 90 % would have taken 200 and 134 more right pairs at F1a, 1 064 and
+183 at F1b. By decision, over every nest:
+
+| Decision | F1 | F2 | development set | 0.7.0's model (§7) |
+|---|---|---|---|---|
+| register tile | 90.7 % | 92.4 % | 89.1 % | 27.7 % |
+| thread split | 99.1 % | 98.1 % | 97.7 % | 96.7 % |
+| lanes | 100 % | 98.7 % | 100 % | 93.2 % |
+| loop order | 60.6 % | 72.6 % | 67.0 % | 30.0 % |
+| k-block | 64.3 % | 53.4 % | 65.9 % | 0.6 % |
+| pack | 47.9 % | 62.9 % | 57.8 % | 57.8 % |
+| every pair | 87.6 % of 76 830 | 90.4 % of 134 022 | 88.5 % of 137 307 | 50.8 % |
+
+Ties are gone: 0.1 % of the pairs, where 0.7.0's model tied 34 %. The
+pairs the model decides, predicted apart by more than `u`, are 99.2 % right
+on F1 and 98.8 % on F2. **What M is decided by** is how the model orders
+the pairs it predicts within `1 + u` of each other: 97–98 % of the misses on
+F1, and 99 % on F2, are such pairs. It orders 69–73 % of them right on F1
+and 78–81 % on F2, and they are 39–46 % of F1's distinguished pairs. They
+are tiles (about 10 % wrong, on the largest counts), loop orders (47–71 %
+right in M's nests), the pack and k-blocks, whose pairs almost all lie
+within `u`.
+
+**One decided failure, which names a term.** At F1b's scores `ein` the model
+decides 121 loop-order pairs and gets 67 wrong. All 67 are one-row tiles,
+`[1, 8]` and `[1, 16]`, packed, in four lanes; every decided order pair of
+a two- or four-row tile is right. The order with `I` outside `J` reads the
+whole packed operand once a row of the output, where the other keeps a
+panel of it. The model predicts it 15–23 % slower, for its L2 term, and it
+measures 1–16 % faster. With `q` = 1.06 the p-norm is nearly a sum, which
+adds the L2 time to the load time, and a one-row kernel does not pay it on
+top of its loads. The packed operand of one head is 256 KiB at F1b and
+96 KiB at F1a, against 64 KiB of L1. At 0.7.0's shapes it is 64 KiB, and on
+F2 and the development set every decided order pair at M's configuration is
+right.
+
+**N fails at batch one on the A725 cores**, as the plan foresaw. The static
+side is now a capture of the entry's shapes, which runs no kernel (D65),
+and the costing of every point: 0.45–0.85 s on the X925's configurations,
+0.96–1.55 s on the A725's at `B = 16`. At `B = 1` on the A725 a sweep takes 143–170 s and
+the static side 0.57–0.78 s, of which the capture is 0.03–0.05 s: costing
+3 305 points at 0.16–0.22 ms each is the rest. Clearing 10³ there would take
+costing four to five times faster. At F1a, `B = 1` on the X925, the ratio
+clears 10³ by 1–2 %. With the capture that runs the entry, as 0.7.0 counted
+it, the ratios would be 161–173× on F2 at `B = 1`.
+
+**O holds.** The model's pick, `presk plan`'s, is within 1.00–1.03× of the
+best point measured on F1a's three contractions, 1.00–1.05× on F1b's and
+1.00–1.01× on F2's at `B = 16` in `f32`, where 0.7.0's was 2.18–3.01× off.
+Elsewhere the worst top-1 regret on a contraction nest is 1.11, on F2's
+values `ein` in `f64`. The space pays on the new shapes as on the old: the
+best point beats 0.6.0's kernel by 27–132× on F1's three contractions, and
+by 3.2–13.7× on F2's at `B = 16` in `f32`.
+
+**Q holds.** Q is not RA4's claim. It tests the chooser 0.7.0's data
+suggested: prune statically, then measure the candidates, the points
+predicted within `1 + u` of the model's best. Its cost is question 72's:
+the whole configuration's static side, charged to each nest, plus the
+candidates' measured time, over the nest's exhaustive sweep, on each day
+(D74).
+
+| configuration | candidates | best candidate / best | cost (question 72) | candidates' share of the timed launches |
+|---|---|---|---|---|
+| F1a, `B = 1`, `T = 384` | 12–18 | 1.00 | 0.3–0.6 % | 0.10–0.16 % |
+| F1b, `B = 2`, `T = 512` | 11–13 | 1.00 | 0.1–0.2 % | 0.05–0.06 % |
+| F2, `B = 1`, `f32` | 5–15 | 1.00 | 1.2–1.5 % | 0.05–0.16 % |
+| F2, `B = 1`, `f64` | 13–19 | 1.00–1.01 | 1.5–1.8 % | 0.21–0.31 % |
+| F2, `B = 16`, `f32` | 13–19 | 1.00 | 0.2 % | 0.10–0.12 % |
+| F2, `B = 16`, `f64` | 19–28 | 1.00–1.03 | 0.4–0.6 % | 0.20–0.44 % |
+
+Where the sweep is short, the static side is most of the cost: the dearest
+nest, the scores `ein` at `B = 1` in `f64` on the A725, spends 0.77 s
+choosing and 0.15 s measuring its candidates, against 50.4 s swept.
+
+**D, the development figures, decided nothing.** They foresaw F1's M within
+four points and understated F2's. They showed Q's one miss, the scores
+`ein` at `B = 1` in `f32` at 1.08×, which the fresh sweeps do not repeat.
+The development report under the frozen profile is
+`docs/ra4-dev-model-0.8.0.md`, which `make ra4-dev-frozen` regenerates byte
+for byte.
+
+**What the six together say.** The load term and the combination did what
+0.7.0's failure asked of them: the model now reads register tiles, ties
+almost nothing, and is right on nearly every pair it decides, on a
+machine it was not designed on. RA4's 90 % is met on the other cores and
+missed on new shapes, by the pairs the model predicts within its own
+uncertainty. Its pick is within 1.05× of the best, and measuring its
+candidates finds the best at under 2 % of a sweep's cost. The static choice
+is cheap enough at batch 16, and costing a point is what keeps it from 10³ at
+batch one. What the failures point to (the L2 term beside the loads of a
+one-row tile, the order of pairs within `u`, the cost of costing a point) is
+recorded in `docs/kernels-roadmap.md`, for a model to be frozen and tested
+again on a sweep it was not designed on.
 
 ## What these experiments do not show
 
 - **Speed against a mature stack.** §3's comparison, redone on falicon on
-  23 September 2026, is 22× a training step, 14 of it the contraction. 0.7.0
-  did not redo it: its best GEMM point is within 1.6× of PyTorch's product
-  (§7), but that point is found by measuring, not chosen by the model, and a
-  training step's largest contractions, the derivatives of `dot`, are not
-  in the layout space yet (`realize` chapter).
+  23 September 2026, is 22× a training step, 14 of it the contraction.
+  0.7.0 and 0.8.0 did not redo it: the best GEMM point is within 1.6× of
+  PyTorch's product (§7), and 0.8.0's model picks a point within 1.05× of
+  the best on attention's contractions (§8), but a training step's largest
+  contractions, the derivatives of `dot`, are not in the layout space yet
+  (`realize` chapter).
 - **A static choice as good as measuring.** RA4, the programme's first
-  thesis, was tested once, by 0.7.0 on the attention of one model on one
-  machine, and fails as stated (§7): the model ranks lanes and threads and
-  cannot see a register tile. The failure has a named cause, so it says what
-  this model lacks more than what no static model can do; a model with a load
-  term, tested on a sweep it was not designed on, is what would say more. The comparison with the MDH and ATF autotuners, owed now that a space
-  exists to share, has not been made.
+  thesis, was tested twice on the attention of one model family, on one
+  machine's two kinds of core. 0.7.0's model failed it for a named cause
+  (§7). 0.8.0's, frozen before its test, ranks more than 90 % of the
+  attention `ein`s' pairs on the other cores and 85–89 % on new shapes, so
+  RA4 still fails as stated. Its misses are pairs it predicts within its
+  own uncertainty, and its pick and its candidates are within a few per
+  cent of the best (§8). Kernels other than attention's and a GEMM,
+  machines other than falicon, and the comparison with the MDH and ATF
+  autotuners on the same space have not been tried.
 - **A budget discharged by a bound.** Every budget here is discharged by
   measurement, on the envelope's inputs (D41, D51); the conditioned bound is
   still ten orders of magnitude above the gap on the trained corpus GPT in
@@ -583,5 +751,8 @@ precision into a measurement; a declared budget that buys time — against
 layouts in which exactness costs nothing and the best points are several
 times faster than the defaults. That a **static** cost model can choose among
 them as well as measuring does, which is what would make the discipline buy
-speed without autotuning, is the part still to show: the first test of it
-failed, for a reason it names.
+speed without autotuning, is the part still to show. The first test failed
+for a reason it named; the second, on a model frozen before it, came within
+a few points of the hypothesis's threshold and met it on one of its two
+sweeps, and a chooser that prunes by the model and measures the rest found
+a point within 1.03× of the best everywhere, at under 2 % of the cost.

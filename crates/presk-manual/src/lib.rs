@@ -48,8 +48,8 @@ pub mod coverage {}
 pub mod precision {}
 
 /// Experiments: shapes as types, the realization gap of training against the
-/// exact reference, the statements of 0.4.0 to 0.7.0 answered by measurement,
-/// MLPerf's acceptance rule beside a budget, and the first test of RA4.
+/// exact reference, the statements of 0.4.0 to 0.8.0 answered by measurement,
+/// MLPerf's acceptance rule beside a budget, and the two tests of RA4.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
 
@@ -60,7 +60,7 @@ pub mod realize {}
 
 /// Optimization: e-graph rewriting of PSK-Core (`--opt`, `presk dump --stage
 /// core-opt`), the rules, the oracle, what changes; the calibrated cost
-/// models, and what the layout model cannot see.
+/// models, the layout model's load term, and what its fresh test found.
 #[doc = include_str!("../manual/optimization.md")]
 pub mod optimization {}
 

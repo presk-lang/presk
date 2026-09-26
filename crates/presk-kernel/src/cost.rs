@@ -95,6 +95,34 @@ pub fn kernel_cost(k: &Kernel) -> KernelCost {
     KernelCost { work: stmts_ops(&k.body, k.lanes as f64), bytes }
 }
 
+/// The register loads and stores a kernel executes (plan 0.8.0 §3.1, step
+/// 2): every `Load`, `LoadI`, `VLoad`, `Store`, `StoreI` and `VStore`, once
+/// whatever its lanes, times the trip counts of the loops enclosing it. A
+/// broadcast of a loaded scalar is part of its load, and a load inside an
+/// index (a gather's) is a load. A branch is counted as taken, as work is.
+pub fn kernel_loads(k: &Kernel) -> f64 {
+    fn expr(e: &Expr) -> f64 {
+        match e {
+            Expr::Load(_, ix) | Expr::LoadI(_, ix) | Expr::VLoad(_, ix) => 1.0 + ix.iter().map(expr).sum::<f64>(),
+            Expr::F(_) | Expr::I(_) | Expr::Iv(_) | Expr::Sv(_) | Expr::Si(_) | Expr::Vv(_) => 0.0,
+            Expr::VSplat(a) | Expr::Un(_, a) | Expr::ToF(a) | Expr::ToI(a) => expr(a),
+            Expr::VBin(_, a, b) | Expr::Bin(_, a, b) | Expr::Cmp(_, a, b) => expr(a) + expr(b),
+            Expr::Select(c, a, b) => expr(c) + expr(a) + expr(b),
+        }
+    }
+    fn stmts(ss: &[Stmt]) -> f64 {
+        ss.iter()
+            .map(|s| match s {
+                Stmt::For { bound, body, .. } => *bound as f64 * stmts(body),
+                Stmt::Set { value, .. } | Stmt::SetI { value, .. } | Stmt::SetL { value, .. } | Stmt::VSet { value, .. } => expr(value),
+                Stmt::Store { index, value, .. } | Stmt::StoreI { index, value, .. } | Stmt::VStore { index, value, .. } => 1.0 + expr(value) + index.iter().map(expr).sum::<f64>(),
+                Stmt::If { cond, then } => expr(cond) + stmts(then),
+            })
+            .sum()
+    }
+    stmts(&k.body)
+}
+
 /// Below this many weighted operations the executor's default split keeps a
 /// kernel on one worker: spawning costs tens of microseconds, which only a
 /// big kernel earns back. A split a plan states is not held to it.
@@ -123,6 +151,14 @@ pub struct Machine {
     pub vector_bytes: usize,
     /// Where the sizes were read (`cpu5`), or `defaults`.
     pub source: String,
+    /// The level-1 data cache's line, in bytes (0.8.0 step 4); zero in a
+    /// description recorded before, which [`CostRules::lines`] cannot price.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl Machine {
@@ -138,7 +174,7 @@ impl Machine {
             .unwrap_or(allowed.len().max(1))
             .max(1);
         let vector_registers = if cfg!(target_arch = "x86_64") { 16 } else { 32 };
-        let mut m = Machine { workers, l1: 32 << 10, l2: 1 << 20, l3: 8 << 20, l3_sharing: workers, vector_registers, vector_bytes: 16, source: "defaults".into() };
+        let mut m = Machine { workers, l1: 32 << 10, l2: 1 << 20, l3: 8 << 20, l3_sharing: workers, vector_registers, vector_bytes: 16, source: "defaults".into(), line: 64 };
         let Some(cpu) = allowed.first().copied() else { return m };
         let dir = format!("/sys/devices/system/cpu/cpu{cpu}/cache");
         let Ok(entries) = std::fs::read_dir(&dir) else { return m };
@@ -151,7 +187,12 @@ impl Machine {
             let (level, kind, size) = (read(&p, "level"), read(&p, "type"), parse_size(&read(&p, "size")));
             let Some(size) = size else { continue };
             match (level.as_str(), kind.as_str()) {
-                ("1", "Data") => m.l1 = size,
+                ("1", "Data") => {
+                    m.l1 = size;
+                    if let Ok(line) = read(&p, "coherency_line_size").parse::<usize>() {
+                        m.line = line;
+                    }
+                }
                 ("2", "Data" | "Unified") => m.l2 = size,
                 ("3", "Data" | "Unified") => {
                     m.l3 = size;
@@ -163,6 +204,15 @@ impl Machine {
         }
         m.source = format!("cpu{cpu}");
         m
+    }
+
+    /// The level-1 data cache's line of `cpu` (`cpu5`, a description's
+    /// [`source`](Machine::source)), as the operating system reports it: for
+    /// a description recorded before the line size was (0.8.0 step 4).
+    pub fn line_of(cpu: &str) -> Option<usize> {
+        let dir = std::fs::read_dir(format!("/sys/devices/system/cpu/{cpu}/cache")).ok()?;
+        let read = |p: &std::path::Path, f: &str| std::fs::read_to_string(p.join(f)).map(|t| t.trim().to_string()).unwrap_or_default();
+        dir.flatten().map(|e| e.path()).find(|p| read(p, "level") == "1" && read(p, "type") == "Data").and_then(|p| read(&p, "coherency_line_size").parse().ok())
     }
 
     /// The level-3 cache one of `p` workers may count on.
@@ -212,10 +262,13 @@ fn allowed_cpus() -> Vec<usize> {
 /// and traffic of **one worker's** part of it, its traffic split by the cache
 /// level it comes from, and the register pressure of its busiest innermost
 /// loop. Two tilings of one nest have the same `work` and differ in
-/// `traffic`; that is the difference 0.6.0's [`KernelCost`] could not see.
+/// `traffic` and, since 0.8.0 step 2, in `loads`: the register loads and
+/// stores a register tile saves.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlannedCost {
-    /// One worker's weighted operations, spilled registers included.
+    /// One worker's weighted operations, a load weighing nothing. Until
+    /// 0.8.0 step 2 it included `spill`, and a profile written before still
+    /// holds samples whose `work` does, with `spill` zero.
     pub work: f64,
     /// 0.6.0's figure: every input once, the output once.
     pub bytes: f64,
@@ -225,17 +278,79 @@ pub struct PlannedCost {
     /// many of them exceed the machine's vector registers.
     pub regs: usize,
     pub spilled: usize,
+    /// One worker's register loads and stores ([`kernel_loads`]; plan 0.8.0
+    /// §3.1). Zero in a sample recorded before 0.8.0 step 2.
+    #[serde(default)]
+    pub loads: f64,
+    /// The two accesses per spilled register per iteration of the busiest
+    /// loop: charged as work by a model without a load term, as 0.7.0's
+    /// was, and as loads by one with it.
+    #[serde(default)]
+    pub spill: f64,
     /// The split the cost is of: the workers, and the depth of the loop.
     pub workers: usize,
     pub depth: usize,
 }
 
-/// The planned cost of a kernel on a machine. The split is the kernel's own
-/// ([`Threads`]); the executor's default is modelled as the executor decides
-/// it — the outermost parallel loop over every worker, above
-/// [`PARALLEL_MIN_WORK`]. A worker's part is the kernel with the loop at the
-/// split's depth cut to a worker's share of its iterations.
+/// The rules of the planned cost a profile may name beyond 0.7.0's (plan
+/// 0.8.0 step 4, 4c), each off by default: a profile that names none prices
+/// every kernel as before, bit for bit, as a profile without `ρ` does (D66).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostRules {
+    /// Footprints in whole cache lines of the machine's line size.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lines: bool,
+    /// A loop's body resident when the sum of its buffers' footprints fits,
+    /// not each buffer apart.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shared: bool,
+    /// Every loop iteration one operation of work.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub overhead: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl CostRules {
+    pub fn is_none(&self) -> bool {
+        *self == CostRules::default()
+    }
+
+    /// `none`, or the rules by name, comma-separated: `lines`, `shared`,
+    /// `overhead`.
+    pub fn parse(s: &str) -> std::result::Result<CostRules, String> {
+        let mut r = CostRules::default();
+        for name in s.split(',').map(str::trim).filter(|n| !n.is_empty() && *n != "none") {
+            match name {
+                "lines" => r.lines = true,
+                "shared" => r.shared = true,
+                "overhead" => r.overhead = true,
+                other => return Err(format!("--rules {other}: `none`, or among `lines`, `shared`, `overhead`")),
+            }
+        }
+        Ok(r)
+    }
+
+    /// The rules by name, `none` when there is none.
+    pub fn name(&self) -> String {
+        let names: Vec<&str> = [(self.lines, "lines"), (self.shared, "shared"), (self.overhead, "overhead")].into_iter().filter(|(on, _)| *on).map(|(_, n)| n).collect();
+        if names.is_empty() { "none".into() } else { names.join(",") }
+    }
+}
+
+/// The planned cost of a kernel on a machine, under 0.7.0's rules. The split
+/// is the kernel's own ([`Threads`]); the executor's default is modelled as
+/// the executor decides it — the outermost parallel loop over every worker,
+/// above [`PARALLEL_MIN_WORK`]. A worker's part is the kernel with the loop
+/// at the split's depth cut to a worker's share of its iterations.
 pub fn planned_cost(k: &Kernel, m: &Machine) -> PlannedCost {
+    planned_cost_under(k, m, &CostRules::default())
+}
+
+/// [`planned_cost`] under the rules a profile names.
+pub fn planned_cost_under(k: &Kernel, m: &Machine, rules: &CostRules) -> PlannedCost {
     let (depth, p) = match k.threads {
         Threads::At { depth, workers } => (depth, k.parallel_at(depth).map_or(1, |n| workers.min(n).max(1))),
         Threads::One => (0, 1),
@@ -245,13 +360,29 @@ pub fn planned_cost(k: &Kernel, m: &Machine) -> PlannedCost {
         },
     };
     let worker = if p > 1 { share(k, depth, p) } else { k.clone() };
-    let traffic = [traffic(&worker, m.l1), traffic(&worker, m.l2), traffic(&worker, m.l3_per_worker(p))];
+    let traffic = traffic_under(&worker, [m.l1, m.l2, m.l3_per_worker(p)], rules, m.line);
     let (regs, iterations) = pressure(&worker.body, 1.0);
     let spilled = regs.saturating_sub(m.vector_registers);
     // Two level-1 accesses per iteration of the busiest loop and per spilled
-    // register, counted as operations.
+    // register.
     let spill = 2.0 * spilled as f64 * iterations;
-    PlannedCost { work: kernel_cost(&worker).work + spill, bytes: kernel_cost(k).bytes, traffic, regs, spilled, workers: p, depth }
+    let work = kernel_cost(&worker).work;
+    let work = if rules.overhead { work + loop_iterations(&worker.body) } else { work };
+    PlannedCost { work, bytes: kernel_cost(k).bytes, traffic, regs, spilled, loads: kernel_loads(&worker), spill, workers: p, depth }
+}
+
+/// The iterations of every loop of `stmts`, each counted once however deep
+/// ([`CostRules::overhead`]): its increment, compare and branch weigh one
+/// operation. A branch is counted as taken, as work is.
+fn loop_iterations(stmts: &[Stmt]) -> f64 {
+    stmts
+        .iter()
+        .map(|s| match s {
+            Stmt::For { bound, body, .. } => *bound as f64 * (1.0 + loop_iterations(body)),
+            Stmt::If { then, .. } => loop_iterations(then),
+            _ => 0.0,
+        })
+        .sum()
 }
 
 /// The kernel with the loop at `depth` cut to one of `p` workers' share.
@@ -439,8 +570,11 @@ fn loops(stmts: &[Stmt], bounds: &mut HashMap<usize, usize>, defs: &mut HashMap<
 /// The bytes of buffer `buf` that `stmts` touch while the loops enclosing
 /// them stay fixed: per axis, the span of the index over the loops inside
 /// `stmts`, the union over every access, capped by the axis; the whole axis
-/// for an index that is not affine.
-fn footprint(k: &Kernel, stmts: &[Stmt], buf: usize, defs: &HashMap<usize, Expr>) -> f64 {
+/// for an index that is not affine. With `line` ([`CostRules::lines`]), in
+/// whole lines of that many bytes: along the contiguous axis, the span
+/// rounded up to the line, so that an access whose loops do not walk that
+/// axis brings a line per element.
+fn footprint(k: &Kernel, stmts: &[Stmt], buf: usize, defs: &HashMap<usize, Expr>, line: Option<f64>) -> f64 {
     let spec = if buf == k.out_buf() { &k.output } else { &k.inputs[buf] };
     let mut acc = Vec::new();
     accesses(stmts, buf, k.lanes, &mut acc);
@@ -450,7 +584,7 @@ fn footprint(k: &Kernel, stmts: &[Stmt], buf: usize, defs: &HashMap<usize, Expr>
     let mut inside = HashMap::new();
     loops(stmts, &mut inside, &mut HashMap::new());
     let rank = spec.dims.len();
-    let mut elems = 1.0;
+    let (mut elems, mut contiguous) = (1.0, 1.0);
     for a in 0..rank {
         let (mut lo, mut hi, mut whole) = (i64::MAX, i64::MIN, false);
         for (ix, span) in &acc {
@@ -474,9 +608,16 @@ fn footprint(k: &Kernel, stmts: &[Stmt], buf: usize, defs: &HashMap<usize, Expr>
             hi = hi.max(h);
         }
         let extent = if whole { spec.dims[a] } else { ((hi - lo + 1).max(1) as usize).min(spec.dims[a].max(1)) };
-        elems *= extent as f64;
+        match line {
+            Some(_) if a + 1 == rank => contiguous = extent as f64,
+            _ => elems *= extent as f64,
+        }
     }
-    elems * elem_bytes(spec.kind, k.dtype)
+    let bytes = elem_bytes(spec.kind, k.dtype);
+    match line {
+        None => elems * bytes,
+        Some(l) => elems * ((contiguous * bytes / l).ceil() * l),
+    }
 }
 
 /// The bytes a kernel brings into a cache of `capacity` bytes, every buffer
@@ -484,30 +625,90 @@ fn footprint(k: &Kernel, stmts: &[Stmt], buf: usize, defs: &HashMap<usize, Expr>
 /// fits is brought in once per iteration of the loops enclosing it, and
 /// otherwise the loop's body is looked at once per iteration of the loop.
 pub fn traffic(k: &Kernel, capacity: usize) -> f64 {
+    traffic_at(k, [capacity])[0]
+}
+
+/// [`traffic`] into caches of each of `capacities`. A footprint does not
+/// depend on the capacity, so each capacity's walk reads the footprints the
+/// others computed (0.8.0 step 1): the same terms, added in the same order,
+/// as that many calls of `traffic`.
+pub fn traffic_at<const N: usize>(k: &Kernel, capacities: [usize; N]) -> [f64; N] {
+    traffic_under(k, capacities, &CostRules::default(), 0)
+}
+
+/// [`traffic_at`] under the rules a profile names (plan 0.8.0 step 4, 4c),
+/// 0.7.0's walk when it names none. [`CostRules::lines`] counts every
+/// footprint in lines of `line` bytes. [`CostRules::shared`] holds a list of
+/// statements, or a loop, resident when the footprints of every buffer in
+/// it, summed, fit, where 0.7.0 asks it of each buffer apart. Under either,
+/// a loop that does not fit while one of its iterations does brings what
+/// consecutive iterations share once — the lines they share along the
+/// contiguous axis, a buffer the loop does not move — since the one
+/// iteration between two uses leaves it resident: the loop brings the
+/// lesser of its footprint and its iterations' footprints summed.
+pub fn traffic_under<const N: usize>(k: &Kernel, capacities: [usize; N], rules: &CostRules, line: usize) -> [f64; N] {
+    // `presk refit --recost` records the line size of a description written
+    // before 0.8.0 step 4 when it costs under `lines`.
+    assert!(!rules.lines || line > 0, "the rule `lines` needs the machine's line size, and the description has none");
     let mut defs = HashMap::new();
     loops(&k.body, &mut HashMap::new(), &mut defs);
-    let cap = capacity as f64;
-    fn walk(k: &Kernel, stmts: &[Stmt], buf: usize, times: f64, cap: f64, defs: &HashMap<usize, Expr>) -> f64 {
-        let fp = footprint(k, stmts, buf, defs);
-        if fp == 0.0 {
+    let mut w = Walk { k, defs, line: rules.lines.then_some(line as f64), shared: rules.shared, reuse: rules.lines || rules.shared, memo: HashMap::new() };
+    capacities.map(|c| {
+        let per_buf: Vec<f64> = (0..=k.inputs.len()).map(|b| w.walk(&k.body, b, 1.0, c as f64)).collect();
+        per_buf.into_iter().sum()
+    })
+}
+
+/// The walk of [`traffic_under`] over one kernel, its footprints memoized by
+/// the statements (where they start in the kernel, how many) and the buffer.
+struct Walk<'a> {
+    k: &'a Kernel,
+    defs: HashMap<usize, Expr>,
+    line: Option<f64>,
+    shared: bool,
+    reuse: bool,
+    memo: HashMap<(usize, usize, usize), f64>,
+}
+
+impl<'a> Walk<'a> {
+    fn fp(&mut self, stmts: &'a [Stmt], buf: usize) -> f64 {
+        let (k, defs, line) = (self.k, &self.defs, self.line);
+        *self.memo.entry((stmts.as_ptr() as usize, stmts.len(), buf)).or_insert_with(|| footprint(k, stmts, buf, defs, line))
+    }
+
+    /// What must fit for `stmts` to be resident, `f` being `buf`'s footprint
+    /// in them: `f`, or every buffer's summed under [`CostRules::shared`].
+    fn held(&mut self, stmts: &'a [Stmt], f: f64) -> f64 {
+        if self.shared { (0..=self.k.inputs.len()).map(|b| self.fp(stmts, b)).sum() } else { f }
+    }
+
+    fn walk(&mut self, stmts: &'a [Stmt], buf: usize, times: f64, cap: f64) -> f64 {
+        let f = self.fp(stmts, buf);
+        if f == 0.0 {
             return 0.0;
         }
-        if fp <= cap {
-            return times * fp;
+        if self.held(stmts, f) <= cap {
+            return times * f;
         }
-        stmts
-            .iter()
-            .map(|s| match s {
+        let mut terms = Vec::with_capacity(stmts.len());
+        for s in stmts {
+            terms.push(match s {
                 Stmt::For { bound, body, .. } => {
-                    let whole = footprint(k, std::slice::from_ref(s), buf, defs);
-                    if whole <= cap { times * whole } else { walk(k, body, buf, times * *bound as f64, cap, defs) }
+                    let one = std::slice::from_ref(s);
+                    let whole = self.fp(one, buf);
+                    if self.held(one, whole) <= cap {
+                        times * whole
+                    } else {
+                        let each = self.fp(body, buf);
+                        if self.reuse && self.held(body, each) <= cap { times * whole.min(*bound as f64 * each) } else { self.walk(body, buf, times * *bound as f64, cap) }
+                    }
                 }
-                Stmt::If { then, .. } => walk(k, then, buf, times, cap, defs),
-                other => times * footprint(k, std::slice::from_ref(other), buf, defs),
-            })
-            .sum()
+                Stmt::If { then, .. } => self.walk(then, buf, times, cap),
+                other => times * self.fp(std::slice::from_ref(other), buf),
+            });
+        }
+        terms.into_iter().sum()
     }
-    (0..=k.inputs.len()).map(|b| walk(k, &k.body, b, 1.0, cap, &defs)).sum()
 }
 
 /// One timed launch: the kernel's index in the backend and the seconds it took.
@@ -590,7 +791,7 @@ mod tests {
     }
 
     fn falicon() -> Machine {
-        Machine { workers: 10, l1: 64 << 10, l2: 2 << 20, l3: 8 << 20, l3_sharing: 5, vector_registers: 32, vector_bytes: 16, source: "test".into() }
+        Machine { workers: 10, l1: 64 << 10, l2: 2 << 20, l3: 8 << 20, l3_sharing: 5, vector_registers: 32, vector_bytes: 16, source: "test".into(), line: 64 }
     }
 
     #[test]
@@ -610,7 +811,14 @@ mod tests {
         assert_eq!((tall.regs, tall.spilled, plain.spilled), (24, 0, 0));
         let scalar = planned_cost(&gemm(512, Layout { tile: Some((4, 16)), lanes: Some(1), ..Layout::default() }), &m);
         assert_eq!((scalar.regs, scalar.spilled), (84, 52));
-        assert!(scalar.work > tall.work, "spills are charged as work");
+        // Since 0.8.0 step 2 the spill is recorded apart from the work, which
+        // a model without the load term adds back (D66). Per k the scalar
+        // tile loads 4 + 16 values and the one in four lanes 4 + 16/4; each
+        // of the (512/4)·(512/16) blocks then stores 64 values or 16 vectors.
+        assert_eq!((scalar.work, tall.spill), (tall.work, 0.0));
+        assert!(scalar.spill > 0.0);
+        let blocks = (512.0 / 4.0) * (512.0 / 16.0);
+        assert_eq!((scalar.loads, tall.loads), (blocks * (512.0 * 20.0 + 64.0), blocks * (512.0 * 8.0 + 16.0)));
     }
 
     #[test]
@@ -636,6 +844,63 @@ mod tests {
         assert_eq!(four.work * 4.0, one.work, "each worker a quarter of the rows");
     }
 
+    /// A row-major `add` of two `f32[rows, cols]`, the rows outermost.
+    fn add(rows: usize, cols: usize) -> Kernel {
+        let spec = BufSpec { dims: vec![rows, cols], kind: BufKind::Real, names: vec![None, None] };
+        let load = |b: usize| Expr::Load(b, vec![Expr::Iv(0), Expr::Iv(1)]);
+        let store = Stmt::Store { buf: 2, index: vec![Expr::Iv(0), Expr::Iv(1)], value: Expr::Bin(BinOp::Add, Box::new(load(0)), Box::new(load(1))) };
+        let body = vec![Stmt::For { var: 0, bound: rows, body: vec![Stmt::For { var: 1, bound: cols, body: vec![store] }] }];
+        Kernel { name: "add".into(), dtype: Dtype::F32, inputs: vec![spec.clone(), spec.clone()], output: spec, nloops: 2, nreal: 0, nint: 0, nvec: 0, lanes: 1, threads: Threads::One, body }
+    }
+
+    /// Plan 0.8.0 step 4 (4c): each rule a profile may name moves the term
+    /// it is about, and a profile naming none prices as 0.7.0's rules do.
+    #[test]
+    fn each_rule_of_the_planned_cost_moves_its_term_and_none_moves_anything() {
+        let m = falicon();
+        let none = CostRules::default();
+        let [lines, shared, overhead] = ["lines", "shared", "overhead"].map(|r| CostRules::parse(r).unwrap());
+        assert_eq!((CostRules::parse("overhead,lines").unwrap().name(), none.name()), ("lines,overhead".to_string(), "none".to_string()));
+        assert!(CostRules::parse("none").unwrap().is_none() && CostRules::parse("lanes").is_err());
+        // No rule: 0.7.0's cost, whatever the line size (zero in a machine
+        // described before 0.8.0 step 4).
+        for k in [gemm(256, Layout::default()), gemm(512, Layout { tile: Some((4, 16)), ..Layout::default() }), add(64, 1024)] {
+            assert_eq!(planned_cost_under(&k, &Machine { line: 0, ..m.clone() }, &none), planned_cost(&k, &m), "{}", k.name);
+        }
+        // The loop overhead: an operation per iteration of each loop, 64 of
+        // the rows and 64 · 1024 of the columns, and nothing else.
+        let a = add(64, 1024);
+        let (plain, over) = (planned_cost(&a, &m), planned_cost_under(&a, &m, &overhead));
+        assert_eq!((over.work, over.traffic, over.loads), (plain.work + 64.0 * 1025.0, plain.traffic, plain.loads));
+        // A stream along the contiguous axis brings its bytes once in lines
+        // and with its buffers counted together: its rows are whole lines,
+        // and consecutive elements share one, even where a row does not fit.
+        for r in [&lines, &shared] {
+            assert_eq!(traffic_under(&a, [1 << 10, 64 << 10], r, 64), traffic_at(&a, [1 << 10, 64 << 10]), "{}", r.name());
+        }
+        // An IJ product of side 2048 with a [1, 4] tile walks the right
+        // operand's 2048 rows under each tile, 16 bytes of a line in each:
+        // 128 KiB of lines, more than L1, so that the next tile, which reads
+        // the next 16 bytes of the same lines, brings them again. In lines
+        // each (i, tile, k) brings 64 bytes of it where the elements counted
+        // 16. The left operand and the output are whole rows either way. A
+        // [1, 16] tile reads whole lines, and the rule does not move it.
+        let ij = |nj: usize| gemm(2048, Layout { tile: Some((1, nj)), kblock: Some(KBlock::None), order: Some(vec![BlockLoop::I, BlockLoop::J]), ..Layout::default() });
+        let (narrow, wide) = (ij(4), ij(16));
+        let (el, ln) = (planned_cost(&narrow, &m), planned_cost_under(&narrow, &m, &lines));
+        assert_eq!(ln.traffic[0] - el.traffic[0], 2048.0 * 512.0 * 2048.0 * 48.0, "{:?} against {:?}", ln.traffic, el.traffic);
+        assert_eq!(planned_cost_under(&wide, &m, &lines), planned_cost(&wide, &m));
+        // Buffers together: a JI product of side 1024 with a [4, 16] tile
+        // walks a strip of the right operand, 1024 rows of 64 bytes, under
+        // each tile of rows. Alone it fits L1 and is read once per strip;
+        // with the left operand's rows and the output's tile beside it, it
+        // does not, and is read again under every tile of rows.
+        let ji = gemm(1024, Layout { tile: Some((4, 16)), kblock: Some(KBlock::None), order: Some(vec![BlockLoop::J, BlockLoop::I]), ..Layout::default() });
+        let (apart, together) = (planned_cost(&ji, &m), planned_cost_under(&ji, &m, &shared));
+        assert!(together.traffic[0] > 4.0 * apart.traffic[0], "{:?} against {:?}", together.traffic, apart.traffic);
+        assert_eq!((together.work, together.loads), (apart.work, apart.loads));
+    }
+
     #[test]
     fn sysfs_sizes_and_cpu_lists_are_read() {
         assert_eq!(parse_size("64K"), Some(64 << 10));
@@ -644,7 +909,7 @@ mod tests {
         assert_eq!(parse_cpu_list("5-9,15-19"), vec![5, 6, 7, 8, 9, 15, 16, 17, 18, 19]);
         assert_eq!(parse_cpu_list("0"), vec![0]);
         let m = Machine::detect();
-        assert!(m.workers >= 1 && m.l1 > 0 && m.l2 >= m.l1 && m.l3_sharing >= 1, "{m:?}");
+        assert!(m.workers >= 1 && m.l1 > 0 && m.l2 >= m.l1 && m.l3_sharing >= 1 && m.line >= 16, "{m:?}");
     }
 
     #[test]

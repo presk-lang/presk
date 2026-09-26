@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.7.0 prints (timings vary from one run and one machine
+shown is what version 0.8.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -47,7 +47,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.7.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch export)
+Presk compiler (0.8.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch export)
 
 Usage: presk <COMMAND>
 
@@ -60,7 +60,9 @@ Commands:
   serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
   plan       Choose a realization plan statically: every nest's layout space costed by the profile's layout model
   autotune   Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits
-  rank       Rank accuracy of the layout cost model on two days of measurement, and the statements of plan 0.7.0
+  reprice    Price the points of a recorded day again under another profile, their times copied: nothing is measured
+  rank       Rank accuracy of the layout cost model on two days of measurement, the statements of plan 0.7.0, and plan 0.8.0's Q
+  refit      Fit a profile's layout cost model again on its samples, in another form: nothing is measured
   bench      Time an entry on every backend (the reference at --bits, the kernel interpreter, native f64, f32 and bf16)
   calibrate  Measure the magnitude envelope of an entry, or one training step under each realization (--step)
   solve      Solve for a realization under a declared error budget
@@ -1258,6 +1260,8 @@ not reach yet.
 | `make plan-check` | a plan stating the default layout lowers every example entry to the same kernels, byte for byte |
 | `make calibrate-ra4`, `make ra4-small` | the layout cost model calibrated on a GEMM, pinned; the RA4 sweep's daily subset on this chapter's attention, two runs ranked (step 17) |
 | `make ra4`, `make ra4-check`, `make ra4-20`, `make ra4-day2` | the RA4 measurement of 0.7.0: the course GPT's attention, the GEMM and a BERT-shaped sample, every point checked on the kernel interpreter, the 20-core sweep, the second run and the report (`experiments` chapter §7; a night) |
+| `make ra4-dev`, `make ra4-dev-frozen`, `make ra4-ablation` | 0.8.0's development set: 0.7.0's measurements priced again under a profile, nothing measured; the frozen model's report on it, byte for byte; every form of the model on it (`cli` chapter, `presk reprice`; minutes) |
+| `make calibrate-ra4-small`, `make ra4-f2*`, `make ra4-f1*` | 0.8.0's fresh sweeps, each a dry run, two days, a check of every point on the kernel interpreter and a report: the A725 cores calibrated and 0.7.0's shapes swept on them (F2), new shapes on the X925 cores (F1) (`experiments` chapter §8; hours each) |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
@@ -1536,30 +1540,52 @@ presk bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
 
 ```text
 -- gemm/%2 on cpu0 (f32): L1d 64 KiB, L2 512 KiB, L3 8192 KiB shared by 10, 20 workers, 32 vector registers
+-- costed under the rules lines,overhead
 layout                                                           group               measured µs predicted µs
 …
--- 96 layouts timed (0 ill-formed at these shapes), 96 samples kept from out/tut_layout.json, 5 calls each
--- fit: λ = 29.46 µs, spawn = 344.32 µs, β_L2 = 4.860e10, β_L3 = 1.391e11, β_mem = 1.721e11 bytes/s
---      π[f32+lanes1+w1] = 1.681e10 ops/s
---      π[f32+lanes1+w10] = 5.545e9 ops/s
---      π[f32+lanes1+w20] = 5.927e9 ops/s
---      π[f32+lanes4+w1] = 4.465e10 ops/s
---      π[f32+lanes4+w10] = 1.504e10 ops/s
---      π[f32+lanes4+w20] = 1.303e10 ops/s
--- uncertainty u = 0.169 (median relative residual over 192 samples), Spearman 0.962
+-- 300 layouts timed (0 ill-formed at these shapes), 300 samples kept from out/tut_layout.json, 5 calls each
+-- fit (p-norm, q = 1.00, load term, rules lines,overhead): λ = 14.22 µs, spawn = 192.39 µs, β_L2 = 7.670e11, β_L3 = 6.201e11, β_mem = 6.325e23 bytes/s
+--      π[f32+lanes1+w1] = 1.310e10 ops/s
+--      π[f32+lanes1+w10] = 6.257e9 ops/s
+--      π[f32+lanes1+w20] = 6.116e9 ops/s
+--      π[f32+lanes4+w1] = 1.565e11 ops/s
+--      π[f32+lanes4+w10] = 2.114e24 ops/s
+--      π[f32+lanes4+w20] = 1.545e24 ops/s
+--      ρ[f32+lanes1+w1] = 6.637e10 loads/s
+--      ρ[f32+lanes1+w10] = 7.677e9 loads/s
+--      ρ[f32+lanes1+w20] = 7.929e9 loads/s
+--      ρ[f32+lanes4+w1] = 5.612e9 loads/s
+--      ρ[f32+lanes4+w10] = 1.419e9 loads/s
+--      ρ[f32+lanes4+w20] = 1.205e9 loads/s
+-- uncertainty u = 0.094 (median relative residual over 600 samples), Spearman 0.985
 -- profile written to out/tut_layout.json
 ```
 
-Each command times the product under 96 layouts — two tiles; the orders
-`IJ` and `JI`, and every order of `IJK` with a block of 128; one lane or four;
-one worker, half the machine or all of it — and the second keeps the first's
-samples before fitting again. The first line is the machine as the model reads it, for the
+Each command times the product under 300 layouts — five register tiles,
+`[1, 4]` to `[4, 16]`; the orders `IJ` and `JI`, every order of `IJK` with a
+block of 128, and two with a block of 32; one lane or four; one worker, half
+the machine or all of it — and the second keeps the first's samples before
+fitting again. The first line is the machine as the model reads it, for the
 first CPU the process may run on: nothing is pinned here, so that is `cpu0`,
 on this machine one of the ten small cores, with a quarter of the L2 of the
-ten large ones. `π` is fitted per type, lane width and worker count, and `u`
-is the model's own uncertainty, the median relative error of the fit: 17 %.
-`make calibrate-ra4` does this properly, at three sizes in two types, pinned
-to like cores with `taskset`.
+ten large ones.
+
+The model is 0.8.0's (`optimization` chapter). It reads five terms of one
+worker's share of a kernel: its work over a rate `π`, its register loads
+and stores over a rate `ρ`, and the bytes it brings from L2, L3 and memory
+over three bandwidths `β`. They combine in a p-norm whose exponent `q` is
+fitted, here 1.00, the sum. `π` and `ρ` are fitted per group: a type, a
+lane width and a worker count. That is the form 0.8.0 froze before testing
+it, and `--space calib`'s default: the p-norm, footprints counted in whole
+cache lines (`-- costed under the rules lines,overhead`), and one operation
+of work per loop iteration; `--combine` and `--rules` choose another. `u` is the
+model's own uncertainty, the median relative error of the fit: 9 %. Three
+constants came out near 10²⁴, `β_mem` and `π` in four lanes on ten and
+twenty workers: the fit is better without those terms than with any rate,
+so it makes them vanish. At these sizes no sample shows the time memory
+takes, and in four lanes on many workers the work never shows apart from
+the loads. `make calibrate-ra4` does this properly, at four sizes and two
+thin products in two types, pinned to like cores with `taskset`.
 
 Now choose a layout for every nest of the entry, statically:
 
@@ -1570,26 +1596,30 @@ presk plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --rea
 
 ```text
 nest                         operands                        space     predicted          undecided  layout
-scores/%2                    [16, 2, 256, 4] [16, 2, 256, 4]   413 points      440.05 µs   54 within 1 + u  tiled, tile [1, 4], kblock none, order IJ, lanes 4, split none, pack
-scores/%5                    []                           1 points       29.46 µs    1 within 1 + u  lanes 1, split none
-scores/%6                    [16, 2, 256, 256] []         7 points      374.65 µs    1 within 1 + u  lanes 1, split none
-attend/%5                    [16, 2, 256, 256] [256, 256]     7 points      498.23 µs    5 within 1 + u  lanes 1, split (2, 10)
-attend/%6                    [16, 2, 256, 256]           14 points      589.41 µs    2 within 1 + u  lanes 1, split (2, 20), passes 2
-attend/%7                    [16, 2, 256, 256] [16, 2, 256, 4]   577 points      405.20 µs   99 within 1 + u  tiled, tile [1, 4], kblock none, order IJ, lanes 4, split none, no pack
--- 6 nests, 1019 points costed in 0.100 s, the entry captured in 0.056 s; u = 0.169
--- wall time 0.158 s
+scores/%2                    [16, 2, 256, 4] [16, 2, 256, 4]   413 points      323.13 µs    9 within 1 + u  tiled, tile [4, 16], kblock none, order IJ, lanes 4, split (0, 20), pack
+scores/%5                    []                           1 points       14.22 µs    1 within 1 + u  lanes 1, split none
+scores/%6                    [16, 2, 256, 256] []         7 points      310.40 µs    2 within 1 + u  lanes 1, split (2, 20)
+attend/%5                    [16, 2, 256, 256] [256, 256]     7 points      310.84 µs    2 within 1 + u  lanes 1, split (2, 20)
+attend/%6                    [16, 2, 256, 256]           14 points      577.11 µs    1 within 1 + u  lanes 1, split (2, 20), passes 2
+attend/%7                    [16, 2, 256, 256] [16, 2, 256, 4]   577 points      358.96 µs   38 within 1 + u  tiled, tile [4, 4], kblock none, order IJ, lanes 4, split (0, 20), no pack
+-- 6 nests, 1019 points costed in 0.043 s, the entry captured in 0.039 s; u = 0.094
+-- wall time 0.083 s
 -- plan written to out/tut_plan.json
 ```
 
-The entry runs once natively, to capture each nest's launch and its inputs;
-then every nest is lowered under every point of its space, thread splits
+The entry's launches are captured from its shapes: the host program runs on
+zero inputs and records each nest's launch without running a kernel. Then
+every nest is lowered under every point of its space, thread splits
 included, and each point is costed. Nothing is compiled or timed: 1 019
-points in a tenth of a second. The nests are named as `presk dump --stage
-core` names their bindings: `scores/%2` and `attend/%7` are the two `ein`s,
-`attend/%6` the softmax, which takes two passes instead of three. The
-`undecided` column counts the points the model predicts within `1 + u` of its
-best: on the two `ein`s, 54 and 99 points it cannot tell from its choice. The
-plan is a JSON file (`realize` chapter), and `--plan` runs it:
+points in a twenty-fifth of a second. The nests are named as `presk dump
+--stage core` names their bindings: `scores/%2` and `attend/%7` are the two
+`ein`s, `attend/%6` the softmax, which takes two passes instead of three.
+The model picks the largest register tiles the nests allow, `[4, 16]` with
+the pack on the scores and `[4, 4]` on the values, whose `J` is `hd = 4`,
+split over all twenty workers. The `undecided` column counts the points the
+model predicts within `1 + u` of its best: on the two `ein`s, 9 and 38
+points it cannot tell from its choice. The plan is a JSON file (`realize`
+chapter), and `--plan` runs it:
 
 ```sh
 presk run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
@@ -1625,7 +1655,7 @@ scores/%6                    [16, 2, 256, 256] []         3 of     3 points  out
 attend/%5                    [16, 2, 256, 256] [256, 256]     3 of     3 points  out/tut_tune/day1/attend__5.jsonl
 attend/%6                    [16, 2, 256, 256]            6 of     6 points  out/tut_tune/day1/attend__6.jsonl
 attend/%7                    [16, 2, 256, 256] [16, 2, 256, 4]     4 of     4 points  out/tut_tune/day1/attend__7.jsonl
--- 93 points of 6 nests measured in 2.1 s, costed in 0.016 s; every output bit-identical to point 0, natively and on the kernel interpreter: yes
+-- 93 points of 6 nests measured in 2.1 s, costed in 0.009 s; every output bit-identical to point 0, natively and on the kernel interpreter: yes
 ```
 
 `--space small` is a daily subset of each space. Every point is compiled and
@@ -1641,26 +1671,36 @@ presk rank out/tut_tune/day1 out/tut_tune/day2 --entry attend --out out/tut_rank
 ```
 
 ```text
-## Statements (plan 0.7.0 §3.7)
+## Statements (plan 0.7.0 §3.7; Q, plan 0.8.0 §3.6)
 
 | | statement | measured | verdict |
 |---|---|---|---|
 | L | every point bit-identical to point 0, natively and on the kernel interpreter | 99 of 99 points of day 1 checked on the interpreter; 0 outputs differing, natively or on the interpreter, in any sweep | **holds** |
-| M | more than 90 % of the distinguished close pairs ranked right, each `ein` of `attend` at B=16,T=256, f32 | `attend/%7` 100.0 % of 3; `scores/%2` 65.4 % of 136 | inconclusive: fewer than 10³ distinguished pairs |
-| N | choosing statically at least 10³× cheaper than the exhaustive sweep of the same points, `attend` | B=16,T=256 f32 32×; B=16,T=256 f32 28× | **fails** |
-| O | the model's pick within 1.25× of the best measured, every contraction nest of `attend` at B=16,T=256, f32 | `attend/%7` 1.00; `scores/%2` 2.33 | **fails** |
+| M | more than 90 % of the distinguished close pairs ranked right, each `ein` of `attend` at B=16,T=256, f32 | `attend/%7` 66.7 % of 3; `scores/%2` 92.4 % of 158 | inconclusive: fewer than 10³ distinguished pairs |
+| N | choosing statically at least 10³× cheaper than the exhaustive sweep of the same points, `attend` | B=16,T=256 f32 76× (31× with the entry run); B=16,T=256 f32 71× (32× with the entry run) | **fails** |
+| O | the model's pick within 1.25× of the best measured, every contraction nest of `attend` at B=16,T=256, f32 | `attend/%7` 1.00; `scores/%2` 1.15 | **holds** |
 | P | the best point of the GEMM space at least 3× the 0.6.0 default, `gemm` at N=1024, f32 | — | not measured |
+| Q | measuring only the points predicted within 1 + u of the model's best finds one within 1.05× of the best measured, at no more than 10 % of the exhaustive sweep's time (question 72: the static side and the candidates' measured time), every contraction nest of every configuration swept whole | 2 contraction nests: the best candidate within 1.11× of the best measured at worst (`scores/%2` B=16,T=256 f32); the static side and the candidates' measured time at most 32.3 % of the nest's exhaustive sweep (`attend/%7` B=16,T=256 f32); their share of its timed launches at most 6.20 % (`attend/%7` B=16,T=256 f32, D71's count) | **fails** |
+
+## Statement Q, per contraction nest
+
+*Candidates*: the points predicted within 1 + u of the model's best. *Regret*: the best candidate over the best point measured, the mean of the two days' medians. *Cost* (question 72): statement N's static side, the whole configuration's, charged to each nest, and the candidates' measured time, over the exhaustive sweep of the nest's points. A point's measured time is its launches, the warm-up and the timed ones, at its median, and its time outside them (compiling it, comparing its bits), which a sweep records only as a whole: the sweep's time less its points' launches, over its points, 0.6.0's included (the dry run's estimate, D72). *Kernel share* (D71's count): the candidates' timed launches over the nest's. Each day apart, day one first.
+
+| nest | config | type | points | candidates | regret | cost | static, candidates, exhaustive (s) | kernel share | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| `attend/%7` | B=16,T=256 | f32 | 4 | 1 | 1.00 | 32.3 % / 32.2 % | 0.03, 0.01, 0.1 / 0.03, 0.01, 0.1 | 6.20 % / 6.00 % | **fails** |
+| `scores/%2` | B=16,T=256 | f32 | 76 | 4 | 1.11 | 4.8 % / 4.7 % | 0.03, 0.04, 1.4 / 0.03, 0.03, 1.2 | 1.80 % / 1.78 % | **fails** |
 
 ## Per decision class
 
 | class | close pairs | distinguished | right | right, decided | undecided | tied |
 |---|---|---|---|---|---|---|
-| lanes | 24 | 21 | 100.0 % | 100.0 % | 14.3 % | 0.0 % |
-| order | 36 | 3 | 0.0 % | — | 100.0 % | 100.0 % |
-| pack | 24 | 7 | 0.0 % | — | 100.0 % | 0.0 % |
+| lanes | 24 | 20 | 100.0 % | 100.0 % | 0.0 % | 0.0 % |
+| order | 36 | 5 | 0.0 % | — | 100.0 % | 0.0 % |
+| pack | 24 | 5 | 0.0 % | — | 100.0 % | 0.0 % |
 | passes | 3 | 3 | 100.0 % | 100.0 % | 0.0 % | 0.0 % |
-| split | 90 | 69 | 88.4 % | 96.7 % | 13.0 % | 0.0 % |
-| tile | 112 | 51 | 39.2 % | 64.3 % | 45.1 % | 41.2 % |
+| split | 90 | 79 | 96.2 % | 96.2 % | 0.0 % | 0.0 % |
+| tile | 112 | 63 | 98.4 % | 97.2 % | 42.9 % | 0.0 % |
 ```
 
 The report's unit is a **close pair**: two points of a nest that differ in one
@@ -1668,30 +1708,40 @@ decision. A pair is *distinguished* when its two median times differ by more
 than twice the larger median absolute deviation, on both days, with the same
 sign; the model orders it *right* when its predictions order it as the
 measurement does, and a pair it predicts equal is *tied*, which is not right.
-The per-class table is where to read it. The model is right on lanes, softmax
-passes and thread splits, which its terms read (a rate per lane width, a rate
-per worker count, the cost of starting workers). It is right on fewer than
-half the tiles, and on no loop order and no pack: it predicts the orders
-equal, and it charges the pack its copy without crediting the loads it
-makes contiguous. Of the five statements the version was judged on, `L`
-holds, every point exact on both executors; `M` asks for more than 90 % of at
-least a thousand pairs and is inconclusive at this size; `N` fails because
-a point takes milliseconds to time, so measuring them all costs only thirty
-times more than costing them; `O` fails because the model's pick among the
-scores' points is 2.33 times slower than the best one measured; and `P` is about a
-matrix product this sweep does not include.
+The per-class table is where to read it. The model is right on lanes,
+softmax passes and thread splits, which its terms read (a rate per lane
+width, a rate per worker count, the cost of starting workers), and on 98 %
+of the register tiles, which its load term reads: 0.7.0's model, with no
+such term, ordered 39 % of them here and tied 41 %. It orders none of the
+five loop orders and five packs the measurement distinguishes, all pairs it
+predicts within `1 + u` of each other.
+
+The statements are 0.7.0's five and 0.8.0's `Q`. `L` holds, every point
+exact on both executors. `M` asks for more than 90 % of at least a thousand
+pairs and is inconclusive at this size. `N` fails because a point takes
+milliseconds to time, so measuring them all costs only seventy times more
+than costing them. `O` holds: the model's pick among the scores' points is
+1.15 times slower than the best one measured, within 1.25. `P` is about a
+matrix product this sweep does not include. `Q` asks whether measuring only
+the model's candidates, the points within `1 + u` of its best, finds a
+point within 1.05× of the best at a tenth of the sweep's cost. It fails
+twice here: the scores' four candidates miss the best by 1.11×, and the
+values `ein` has four points in all, so choosing statically and measuring
+its one candidate costs a third of sweeping it. The table after the statements gives each
+nest's candidates, regret and cost.
 
 These sizes test the tools, not the hypothesis: at `hd = 4` the scores sum
-four terms. The measurement that decides RA4 is `make ra4`, on the course
-GPT's attention at `D = 384` and `T = 256`, every point of every space,
-pinned to the ten large cores and measured twice. It gives the same picture at
-scale (the `experiments` chapter's §7): lanes and splits 93–97 % right; tiles,
-orders and k-blocks right on 28 %, 30 % and 1 % of their pairs, most of the
-rest tied, because the model counts no load from the first-level cache into
-registers, which is what a register tile saves. `M`, `N` and `O`
-fail there, and `L` and `P` hold. For numbers you mean to keep, pin the
-process to like cores, as `make ra4-small` does: the machine description, the
-worker count and the noise all depend on it.
+four terms. The measurements that decide RA4 are on the course GPT's
+attention, every point of every space, pinned and measured twice (the
+`experiments` chapter's §7 and §8). 0.7.0's model failed there, since it
+counted no load from the first-level cache into registers. 0.8.0's model
+was designed on those measurements, frozen, then tested on two fresh sweeps.
+It ranks 92.7 % and 91.7 % of the two `ein`s' pairs right on the small
+cores at 0.7.0's shapes, but 85.4–88.8 % at BERT-large's attention and at a
+head of 128 on the large cores, so `M` fails. `O` and `Q` hold there, and
+`N` fails at batch one. For numbers you mean to keep, pin the process to
+like cores, as `make ra4-small` does: the machine description, the worker
+count and the noise all depend on it.
 
 ## Where to go next
 
@@ -1699,7 +1749,7 @@ worker count and the noise all depend on it.
   (`make experiment`): a silent broadcasting bug of plain PyTorch that the
   types rule out, the gap of float32 and float64 training to the exact
   reference with presk's own realizations next to PyTorch's, and the
-  falsifiable statements of 0.4.0 to 0.7.0, each answered by
+  falsifiable statements of 0.4.0 to 0.8.0, each answered by
   measurement.
 - The `precision` chapter for everything behind steps 15 and 16: the
   envelope, the bound and the condition number, sensitivities, the solver,
@@ -1710,7 +1760,7 @@ worker count and the noise all depend on it.
   Cranelift backend with their conformance suites, and every layout of a
   contraction; the `realize` chapter for fusion groups and the plan file of
   step 17; the `optimization` chapter for the rules, the oracle, the
-  calibrated roofline and the layout cost model, with what it cannot see; the
+  calibrated roofline and the layout cost model, what its fresh test found; the
   `serve` chapter for `inference serve` and `presk serve`.
 - The `cli` chapter for every flag, the `language` chapter for the
   constructs accepted and how they are typed, `diagnostics` for the codes.

@@ -489,6 +489,47 @@ impl Layout {
         }
         parts.join(",")
     }
+
+    /// Reads a layout back from its [`key`](Layout::key), as a calibration
+    /// sample records it (0.8.0 step 4, `presk refit --recost`), each value
+    /// checked against its domain as [`from_json`](Layout::from_json) checks
+    /// it.
+    pub fn from_key(key: &str) -> Result<Layout, String> {
+        // A split's value holds a comma, `(0, 5)`: a part without `=`
+        // continues the one before.
+        let mut parts: Vec<String> = Vec::new();
+        for p in key.split(',').filter(|p| !p.is_empty()) {
+            match parts.last_mut() {
+                Some(last) if !p.contains('=') => {
+                    last.push(',');
+                    last.push_str(p);
+                }
+                _ => parts.push(p.to_string()),
+            }
+        }
+        let mut m = Map::new();
+        for p in &parts {
+            let bad = || format!("`{p}` in the layout key `{key}`");
+            let Some((name, value)) = p.split_once('=') else { return Err(bad()) };
+            let n = |s: &str| s.trim().parse::<u64>().map_err(|_| bad());
+            let v = match (name, value) {
+                ("form" | "order", _) | ("kblock" | "split", "none") => Json::String(value.into()),
+                ("tile", _) => {
+                    let (mi, nj) = value.split_once('x').ok_or_else(bad)?;
+                    Json::from(vec![n(mi)?, n(nj)?])
+                }
+                ("kblock" | "lanes" | "passes", _) => Json::from(n(value)?),
+                ("split", _) => {
+                    let (d, w) = value.strip_prefix('(').and_then(|v| v.strip_suffix(')')).and_then(|v| v.split_once(',')).ok_or_else(bad)?;
+                    serde_json::json!({ "depth": n(d)?, "workers": n(w)? })
+                }
+                ("pack", "yes" | "no") => Json::Bool(value == "yes"),
+                _ => return Err(bad()),
+            };
+            m.insert(name.to_string(), v);
+        }
+        Layout::from_json(&Json::Object(m))
+    }
 }
 
 /// `tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split (1, 10), pack`,
@@ -673,6 +714,12 @@ mod tests {
         assert_eq!(l.to_string(), "tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split (1, 10), pack, passes 2");
         assert_eq!(Layout::default().key(), "");
         assert_eq!(Layout::default().to_string(), "default");
+        // A key reads back as the layout it is of.
+        assert_eq!(Layout::from_key(&l.key()).unwrap(), l);
+        assert_eq!(Layout::from_key("").unwrap(), Layout::default());
+        let calib = "form=tiled,tile=1x4,kblock=none,order=IJ,lanes=1,split=none";
+        assert_eq!(Layout::from_key(calib).unwrap().key(), calib);
+        assert!(Layout::from_key("tile=3x4").is_err() && Layout::from_key("split=(1 10)").is_err() && Layout::from_key("pack=maybe").is_err());
     }
 
     #[test]

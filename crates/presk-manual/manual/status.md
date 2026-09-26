@@ -466,7 +466,7 @@ quantisation.
 | 3 | The machine profile fitted per dtype | done (2026-09-20); vector `f32` π is **2.5×** the `f64` π |
 | 4 | Time as the solver's objective (conversion costs **not** in the model) | done (2026-09-20); **J fails at 1.06×**, but the sign turned from 0.96× |
 | 5 | `int8` and `int4` as realizations with per-channel scales (D44): 5a the `quant` map, scales, packing, the dequantised path and `presk quantize`; 5b the integer kernels; 5c `int4` kernels; 5d the solver's menu and statement K | 5a done (2026-09-21): the gap splits into representation and arithmetic; `int8` 2.5·10⁻⁶ relative, `int4` 1.1·10⁻⁴ on a barely trained GPT. 5b done (2026-09-21): `int8` kernels on both executors, **bit-identical** to the dequantised path; 4.4× on a 16 MB contraction, 1.10× on the GPT at `D = 256`; `presk bench` no longer times the conversion of its inputs (D46). 5c done (2026-09-21): `int4` kernels, bit-identical as well, odd starts included; 5.2× on the 16 MB contraction, level with `int8`. 5d done (2026-09-21): `presk solve --quant`, the gap table, **statement K holds** (`int8` 3.2·10⁻⁶ against 10⁻²); a checkpoint of other dimensions is refused (D48) |
-| 6 | The condition number, and the answer about the deterministic bound | done (2026-09-21): `Σ|xᵢwᵢ|`, `√Σ(xᵢwᵢ)²` and normwise factors recorded per sum; four rules (`presk check --precision --model`, `--measure`). Median bound/gap on small entries 1.8·10³ → **18**; on the trained corpus GPT 10³³ → **10¹⁰** in `f32`: **the condition number does not rescue the bound**. The root-sum-square estimate is within 3.7–10× on uniform realizations, 2.4·10³× on a mixed one. Recommended: question 56 (c), 58 yes to propose, not to discharge (D51) |
+| 6 | The condition number, and the answer about the deterministic bound | done (2026-09-21): `Σ\|xᵢwᵢ\|`, `√Σ(xᵢwᵢ)²` and normwise factors recorded per sum; four rules (`presk check --precision --model`, `--measure`). Median bound/gap on small entries 1.8·10³ → **18**; on the trained corpus GPT 10³³ → **10¹⁰** in `f32`: **the condition number does not rescue the bound**. The root-sum-square estimate is within 3.7–10× on uniform realizations, 2.4·10³× on a mixed one. Recommended: question 56 (c), 58 yes to propose, not to discharge (D51) |
 | 7 | The quality axis of the ε curve; J at course scale | done (2026-09-21): **the quality axis is flat** within 1.2·10⁻³ against a seed spread of 0.13; **J fails at 1.13×** (all-`f32` 1.87×) because the solved realization covers only the loss's sites (question 60); D48's re-measurements done |
 | 7b | A budget on the training step (§3.7), and J again | done (2026-09-21): `presk calibrate --step` and `presk solve --step`; the budget binds **one step's update** against the exact step (question 60 answered: the update, not the gradient — AdamW multiplies an `f32` gradient error by 340); the solver chooses per function, measured alone; a **storage floor** `u·‖θ‖/‖θ′ − θ‖` no realization can go below (question 61). The recipe is 2.9·10⁻² from the exact step, all-`f32` 2.2·10⁻⁴. **J′ holds at 1.99×** at course scale, the solved step inside its 10⁻³ budget by measurement (D52) |
 | 8 | The MLPerf comparison, with numbers | done (2026-09-22): the foil rests on what holds, each result stated as what it is (D53). **Both rules on one model** (`make foil`): MLPerf's accuracy rule admits all eight realizations of the corpus GPT on its held-out tenth, at 99.9 % as at 99 % (seven predictions of 118 016 at most), where a budget separates them over twelve orders of magnitude from two windows and attributes every quantised gap to the weights; a check takes 0.1 s, a pass over the held-out set 4 s, the exact reference 7.5 s once. **BERT-large runs** at MLPerf's constants, on its initialization (`make bert`): the exact reference of one SQuAD-shaped feature in 1 h 57 min; on its logits `int8` weights are 5.7·10⁻² from it (outside 10⁻²) and 2.2× faster than `f32` at batch 1 and at batch 20 — the first type narrower than `f32` to buy time on a model; at batch 1 a pass runs on one core; a dataset pass would take 9.3 h in `int8` and 20.8 h in `f32` per realization. The exact interpreter shares tuples and records (four blocks 40 → 13.5 GB, byte-identical). K restated: 1.46·10⁻⁴ on held-out windows. New entries `squad` (`coverage/bert.psk`) and `accuracy` (`05_gpt.psk`); question 62 |
@@ -789,3 +789,155 @@ about a static model does not hold as stated: the model is right on what it
 reads and blind to what it does not, and it is a good pruner rather than a
 chooser. The next version knows which term to add, and that it must be tested
 on a sweep it was not designed on.
+
+## Version 0.8.0
+
+RA4 re-tested, plan `presk-specs/implementation/presk-plan-0.8.0.md`, built
+from 2026-09-24 to 2026-09-26.
+0.7.0's static model could not see a register tile, a loop order or a
+k-block: a load weighed nothing, and its traffic terms never bound under a
+maximum. 0.8.0 changes the whole model — a load term, a combination of the
+terms other than the maximum, a calibration that identifies the traffic
+constants — designed on 0.7.0's measurements alone, which are its
+development set and decide nothing. The model was then frozen in a tagged
+commit, `ra4-model-0.8.0`, before any new measurement, and tested on two
+fresh sweeps: new shapes on the ten X925 cores, and 0.7.0's shapes on the
+ten A725 cores. The GPU and the matrix unit come later; the version does not
+promise to close the 22× against PyTorch.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | 0.7.0's raw measurements, profiles and reports archived read-only outside the repository with a checksum list, the development set (`presk rank` regenerates both reports from it byte for byte); the roadmap's request for "a footprint analysis that starts at L1" corrected, since the model counts the bytes from L2 into L1 as `Q_L2` and the maximum is what hides them; version `0.8.0-dev`, spec questions 71–72, the A725 cores recorded as `RA4_CORES_SMALL` (D63) | done (2026-09-24) |
+| 1 | `presk reprice`: a recorded day priced again under another profile, every point lowered again from its layout, its times and other fields copied as written; `make ra4-dev` re-prices 0.7.0's measurements with 0.7.0's profiles and gives back all 52 142 lines and both reports byte for byte (step 0's check). The static side 2.1–4.1× cheaper, every prediction unchanged: a layout lowered once for all its splits, the traffic's footprints shared between the cache levels (D64), and the launches captured from the entry's shapes, on zero inputs without running a kernel, which statement N's static side now is, the entry-run ratio printed beside it (D65, decided before any fresh measurement); 1.51 → 0.54 s at batch 16 in `f32`, 1.76 → 0.45 s at BERT-large's attention. `presk rank --frozen TAG`, and `-dirty` days | done (2026-09-24) |
+| 2 | The load term: one worker's register loads and stores (`kernel_loads`), the spill moved from work to loads, `(N_ld + S)/ρ_g` in the maximum with `ρ` fitted per group, once for the machine, or not at all (`bench --calibrate --space calib --load-term`); a profile without `ρ` predicts as 0.7.0's did, to the last bit; the count checked on the six tiles of plan §1, a pack and a spilling `[4, 16]`, `ρ` recovered within 10 % from a synthetic fit; on the development set the count's Spearman with the measured times is 0.953 where 0.7.0's prediction reached 0.437 (D66) | done (2026-09-24) |
+| 3 | The combination (`--combine max\|sum\|pnorm`, the p-norm's `q` searched on its own, each form recovered from synthetic samples), `presk refit` and `--compare`, the calibration space of plan §3.3 (300 layouts a shape, the GEMM at 256–2048 and two thin products, `experiments/matmul.psk`); measured on the X925 cores: 3 536 samples, the load term takes `u` from 0.226 to 0.133, the three combinations fit alike and the p-norm settles at `q` = 1; not met: `β_mem` above `β_L3` (the thin products are not memory-bound here), one-lane `ρ` unidentified, and 3 h 13 min where an hour was asked, most of it an input conversion now removed (D67); decided by the user: the thin products kept and `β_mem` recorded as not identifiable here (a 2-row product is not memory-bound either), the one-worker layouts left out at 2048 | done (2026-09-24) |
+| 4 | Development on 0.7.0's measurements, and the freeze (three weeks at most). Done so far: plan §3.3 amended on the user's decisions; `bench --min-workers`, the one-worker layouts left out at 2048, and a calibration that starts from an empty profile; the definitive calibration on the X925 cores, 3 336 samples in 44.9 min, `u` 0.142 with the load term (0.241 without), the three combinations alike, `β_mem` above `β_L3` as expected, archived read-only (D68); the ablation on the development set (`make ra4-ablation`): statement M's nests go from 47.9 % and 43.9 % right under 0.7.0's model to 84.6 % and 84.4 % under a load rate per group and the p-norm, the form chosen, with O at 1.07, 1.00 and 1.01 (D69); the calibration re-costed from its layouts, its times kept (`presk refit --recost`), which gives the definitive calibration back byte for byte; three rules of the planned cost tried on it and on the development set, cache lines and loop overhead kept (M's nests 89.3 % and 89.6 %), buffers sharing a level not (D70); the nine forms again under those rules, the chosen form still leading; the frozen model's profile archived read-only, its development report in `docs/ra4-dev-model-0.8.0.md`, checked by `make ra4-dev-frozen`, statement D (D71); the tag `ra4-model-0.8.0` on the commit that holds all of it, from which the freeze holds | done (2026-09-25) |
+| 5 | F2: 0.7.0's shapes on the A725 cores, two days. Done so far: the targets, `make calibrate-ra4-small` (the frozen form and space, a profile of the A725's own), `ra4-f2-dry`, `ra4-f2`, `ra4-f2-check`, `ra4-f2-day2` and `ra4-f2-rank` (`presk rank --frozen`); checks before a fresh day, which refuse an uncommitted tree, a commit not descending from the tag, day two on day one's calendar date and a running `presk`; a dry run that sizes a day from one nest's sweep and the model's predictions, 5 % short on 0.7.0's day one (D72); `presk rank` leaves M inconclusive on a configuration swept on a sample (§3.5); all of it tried on a tiny configuration. The A725 calibrated in the frozen form (u 0.168, the X925's 0.132), archived read-only; F2 measured twice, on one date by the user's decision, every point bit-identical natively and on the kernel interpreter, archived read-only; ranked by `presk rank --frozen`: M's nests 92.7 % and 91.7 %, O at most 1.01, N 2 168–2 734× at B = 16 but 218–252× at B = 1 (D72; the statements are decided in step 7) | done (2026-09-25) |
+| 6 | F1: new shapes on the X925 cores, two days. The targets `ra4-f1-dry`, `ra4-f1`, `ra4-f1-check`, `ra4-f1-day2` and `ra4-f1-rank`, priced by the frozen model's profile itself; two configurations in one day, BERT-large's attention (F1a) and a head of 128 (F1b), in `f32` over the whole space; a dry run per configuration and a day that keeps a configuration whole while it fits in 8 hours; two ranks of the same days, M and O at F1a into `out/ra4-f1a.md` and at F1b into `out/ra4-f1b.md`; all of it tried on a tiny configuration (D73). The dry run estimated 52 min a day, both configurations whole; F1 measured twice on one date, 48 min a day, every point bit-identical natively and on the kernel interpreter, archived read-only; ranked by `presk rank --frozen`: M's nests 87.4 % and 88.5 % at F1a, 85.4 % and 88.8 % at F1b, below 90 %, the misses within u; O at most 1.05; N 1 013–1 016× at F1a, 2 880–2 933× at F1b (D73; the statements are decided in step 7) | done (2026-09-25) |
+| 7 | The statements, on the archived days under the frozen model. `presk rank` decides Q: the candidates within `1 + u` of the model's best, their best within 1.05× of the best measured, and their cost counted as question 72 asks, the static side and the candidates' measured time over the nest's exhaustive sweep, D71's share of the kernel time beside it (`--statement-q` for 0.7.0's days); the reports `docs/ra4-f2-2026-09-25.md`, `docs/ra4-f1a-2026-09-25.md` and `docs/ra4-f1b-2026-09-25.md`. **L holds**: every point of both sweeps bit-identical, natively and on the kernel interpreter. **M fails**: 92.7 % and 91.7 % on F2, but 87.4 % and 88.5 % at F1a, 85.4 % and 88.8 % at F1b; 97–98 % of the misses lie within u, and the one decided failure is the orders of one-row tiles at F1b's scores `ein`, where the L2 term is added to the loads and the machine does not pay it. **N fails**: 218–252× on F2 at B = 1, where costing the points is most of the static side; 1 013× and more everywhere else. **O holds**: at most 1.05. **Q holds**: on all 18 contraction nests the candidates hold a point within 1.03× of the best, at most 1.8 % of the sweep. D, reported: M 89.3 % and 89.6 %, Q on 12 of 13 nests. The freeze ends (D74) | done (2026-09-26) |
+| 8 | Documentation, version `0.8.0`, tag | done (2026-09-26): the manual brought to 0.8.0 as implemented — `optimization` with the A725's calibration and what the fresh sweeps found, `cli` checked against `presk --help` and each command's help (the plan's pick under both models, the calibration example in the frozen form, the commands that ranked the fresh sweeps), `experiments` §8 with the statements of 0.8.0 and their verdicts, `realize` and `native` with the frozen model's pick, this chapter closed; the frozen model's form made the default of `bench --calibrate --space calib` and `presk refit` (D75); tutorial step 17 re-run under those defaults, its quoted outputs refreshed, and its `presk --help` quote, stale since 0.7.0; what D74 recorded for after 0.8.0 in `docs/kernels-roadmap.md`, beside D71's; CHANGELOG 0.8.0; spec questions 71–72 copied to `presk-specs`; version `0.8.0`. Tag `v0.8.0` by the user |
+
+### What 0.8.0 was judged on
+
+Five statements, on measurements the frozen model never saw. Every point of
+both fresh sweeps is **bit-identical** to the scalar sequential unsplit
+kernel, natively and on the kernel interpreter (L). On each attention `ein`
+of BERT-large's attention (`D = 1024`, `H = 16`, `T = 384`, `B = 1`), of a
+head dimension of 128 (`D = 1024`, `H = 8`, `T = 512`, `B = 2`) and of the
+course GPT's attention at batch 16 on the A725 cores, all in `f32`, the model
+ranks correctly more than 90 % of the close pairs the measurement
+distinguishes, ties counted as not right (M, the thesis). Choosing statically
+costs at least 10³ times less wall time than the exhaustive sweep, on every
+fresh configuration and day (N). The model's pick is within 1.25× of the
+best measured point on every contraction nest of those configurations (O).
+And measuring only the points the model predicts within `1 + u` of its best
+finds a point within 1.05× of the best measured, at no more than 10 % of the
+sweep's time (Q, not RA4's claim: the hybrid chooser 0.7.0's data suggested).
+The same metrics on the development set are reported beside them and decide
+nothing (D). 0.7.0's statement P is retired: it was about the space, which
+0.8.0 does not change. Step 7 decided them (D74; `docs/ra4-f2-2026-09-25.md`,
+`docs/ra4-f1a-2026-09-25.md`, `docs/ra4-f1b-2026-09-25.md`): L, O and Q
+hold; M and N fail.
+
+**The answers** (`experiments` chapter §8). **L holds**: every point of both
+fresh sweeps, 25 588 a day, bit-identical to the scalar sequential kernel,
+natively and on the kernel interpreter. **M fails**: on the A725 cores, at
+0.7.0's shapes, the two attention `ein`s rank 92.7 % and 91.7 % of their
+distinguished close pairs right; at BERT-large's attention on the X925
+cores, 87.4 % and 88.5 %; at a head of 128, 85.4 % and 88.8 %. The model
+carried over to another core and not to new shapes. Ties fell from 34 % to
+0.1 %, and the pairs it decides are about 99 % right: 97–99 % of the misses are
+pairs it predicts within `1 + u`. The one decided failure is the loop order
+of one-row tiles at the head of 128, where the p-norm adds the L2 term to
+the loads and the machine does not pay it. **N fails**: 1 013–2 933 times
+cheaper than the sweep everywhere but at batch one on the A725 cores,
+218–252 times, where costing 3 305 points is most of the static side.
+**O holds**: the model's pick is within 1.05× of the best point on every
+contraction nest M names. **Q holds**: on all eighteen contraction nests,
+measuring only the model's candidates finds a point within 1.03× of the
+best, at most 1.8 % of the sweep's time. **D**, reported: 89.3 % and 89.6 %
+on the development set, which foresaw F1 within four points.
+
+### Verification of 0.8.0
+
+Run on falicon (aarch64, twenty cores) on 2026-09-26, with the binary of
+this step. Step 8 measures nothing new and changes nothing the freeze
+covered.
+
+- `make test` (153 tests pass), `make check-examples` (only `W0001`) and
+  `cargo doc -p presk-manual` (no warning).
+- `make plan-check`: a plan stating the default layout gives the same
+  kernels, byte for byte, on the ten entries of `tests/plan/entries.txt`.
+- `make ra4-dev`: 0.7.0's days re-priced under 0.7.0's profiles give back
+  all 52 142 lines and both of 0.7.0's reports, byte for byte. `make
+  ra4-dev-frozen`: the development set under the frozen profile gives back
+  `docs/ra4-dev-model-0.8.0.md`, byte for byte.
+- `make tutorial`: every command of steps 0 to 17 passes, three times,
+  with PyTorch 2.14 in a `.venv` made with `pip`. Every quoted output was
+  compared with the first run. They agree but for timings and what depends
+  on them, and for `presk --help`, which now lists `reprice` and `refit`,
+  and step 17, run again with the layout model calibrated in the frozen
+  form. The first two runs named that form by flags. The third ran under the
+  new defaults (D75), with no flag, and calibrated in the same form. All
+  three gave step 17 the same tiles, packs and splits and the same verdicts;
+  the second chose the other loop order on both `ein`s, a choice within
+  `u`.
+- D75's check: the definitive calibration, re-costed under `lines,overhead`
+  and refitted with the new defaults, gives the frozen profile back byte for
+  byte, and so does the frozen profile re-costed under its own rules.
+- `make conformance`: eleven PyTorch tests in ten exports pass.
+- The measurements themselves, `make calibrate-ra4` (step 4, D68), `make
+  calibrate-ra4-small`, the dry runs, days and checks of F2 and F1 (steps 5
+  and 6, D72, D73), and their ranking (step 7, D74), were not run again.
+- Plan §5's `make ra4-small`, priced by the frozen profile (`PROFILE=` the
+  archived one): the tutorial's attention at `B` = 1 and 16 in `f32` and
+  `f64`, two runs, 332 points of day one checked on the interpreter, every
+  one bit-identical, in 50 s. O holds at 1.07; M is inconclusive below 10³
+  pairs (92.1 % of 165 on the scores); N and Q fail at this size, where
+  choosing costs more than sweeping a four-point nest.
+
+## What 0.8.0 has, and what it does not
+
+**Has.** A layout cost model that reads a register tile: one worker's
+register loads and stores against a rate per group, beside its work and its
+traffic from each cache level, combined by a p-norm whose exponent is
+fitted, with footprints in whole cache lines and the loops' own overhead in
+the work (`presk bench --calibrate --space calib`, `--load-term`,
+`--combine`, `--rules`). A calibration on a GEMM widened to five tiles,
+sizes to 2048 and two thin products, run as one measurement per machine
+(`make calibrate-ra4`, `make calibrate-ra4-small`). Tools that judge a
+model without measuring: `presk reprice` prices a recorded day again under
+another profile, `presk refit` fits a profile in another form or costs its
+samples again under other rules, and `make ra4-dev`, `ra4-dev-frozen` and
+`ra4-ablation` put a candidate against 0.7.0's measurements in minutes. A
+static side that runs no kernel: `presk plan` captures the entry's launches
+from its shapes. A discipline for testing a model: development data apart,
+a freeze recorded by a tag, `presk rank --frozen`, fresh sweeps refused on
+an uncommitted tree or a commit that does not descend from the tag, every
+day and check archived read-only with checksums. `presk rank` deciding the
+hybrid chooser's statement Q. And the second test of RA4, on two sweeps the
+model never saw, with its answer.
+
+**Does not have.** A static model that ranks more than 90 % of the close
+pairs on shapes it was not designed on: it orders 85–89 % there, and the
+pairs it misses are those it predicts within its own uncertainty. A term for
+how an iteration's loads fall across cache lines, which is what the pack
+buys; a combination of the L2 and load terms that fits a one-row tile; a
+static side cheap enough for 10³ at batch one on the small cores; and an
+identified memory bandwidth, which no GEMM this compiler emits reaches on
+falicon (`docs/kernels-roadmap.md`). A chooser that measures the model's
+candidates as a command: `presk autotune --top N` measures a fixed number,
+and statement Q was computed by `presk rank` on exhaustive sweeps. Packing
+both operands, the matrix coprocessor and the GPU, memory placement, a plan
+for a training step, a solver over types and layouts at once, and the
+comparison with MDH and ATF, as in 0.7.0.
+
+**The shape of the result.** 0.7.0 measured the thesis and failed it for a
+named cause. 0.8.0 added what the cause named, froze the model, and measured
+again on data it had never seen. The static model now ranks what 0.7.0's
+tied, carries over to another core above RA4's threshold, and falls a few
+points short of it on new shapes; its pick is within 5 % of the best point,
+and pruning by it and measuring the rest finds a point within 3 % of the
+best at under 2 % of a sweep's cost. What RA4 asks, a static model that
+decides alone above 90 %, is not shown; what the data support is a
+static model as the pruner of a short measurement.

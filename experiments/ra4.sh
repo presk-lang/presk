@@ -40,7 +40,10 @@ EXTRA=${EXTRA:-}
 DAY=${1:?usage: experiments/ra4.sh DAY [EARLIER OUT.md]}
 [ -f "$PROFILE" ] || { echo "missing $PROFILE: run make calibrate-ra4 first"; exit 1; }
 mkdir -p "$DAY"
-{ date -Is; uptime; echo "$ENTRY $CONSTS $SHAPES $TYPES, cores $CORES"; git rev-parse --short HEAD; } >> "$DAY/day.txt"
+# The commit, marked -dirty when the working tree differs from it: `presk
+# rank --frozen` refuses such a day (plan 0.8.0 §3.4).
+{ date -Is; uptime; echo "$ENTRY $CONSTS $SHAPES $TYPES, cores $CORES"
+  echo "$(git rev-parse --short HEAD)$([ -z "$(git status --porcelain)" ] || echo -dirty)"; } >> "$DAY/day.txt"
 common=(--entry "$ENTRY")
 for c in $CONSTS; do common+=(--const "$c"); done
 [ -n "$NEST" ] && common+=(--nest "$NEST")

@@ -517,13 +517,19 @@ On falicon's ten large cores the layout space of 0.7.0 does better (D62):
 | Point, 1024³ `f32` | GFLOP/s |
 |---|---|
 | 0.6.0's: tile `[1, 8]`, four lanes, the executor's split | 84 |
-| the model's pick: tile `[1, 4]`, four lanes, order `JI`, split at depth 1 | 75 |
+| 0.7.0's model's pick: tile `[1, 4]`, four lanes, order `JI`, split at depth 1 | 75 |
+| 0.8.0's frozen model's pick: tile `[4, 16]`, k-block 128, four lanes, order `KJI`, split at depth 2 | 445 |
 | the best measured: tile `[4, 16]`, four lanes, order `JI`, split at depth 1 | 460 |
 
-The model's pick is the first, in the space's order, of 21 points it predicts
-equal, which measure between 8.1 and 28.6 ms: the pick is among the slowest
-of them. Every point of the space is bit-identical to the scalar sequential
-kernel. Packing both operands, as BLAS libraries do, is not in the space
+0.7.0's pick is the first, in the space's order, of 21 points its model
+predicts equal, which measure between 8.1 and 28.6 ms: the pick is among
+the slowest of them. 0.8.0's model, which counts register loads (the
+`optimization` chapter), picks a point 1.03 times slower than the best. That
+row prices 0.7.0's measurement again under the frozen model (`make
+ra4-dev-frozen`), and the model was designed on those measurements and
+calibrated on a GEMM, so it is not a test; the fresh sweeps are
+(`experiments` chapter §8). Every point of the space is bit-identical to the
+scalar sequential kernel. Packing both operands, as BLAS libraries do, is not in the space
 (`docs/kernels-roadmap.md`).
 
 ## Threads: `--threads N`

@@ -122,8 +122,11 @@ tile (D62), which is the design below.
 
 > Recorded 2026-09-24, when 0.7.0 closed on D62's results. The user decided
 > that the term goes to a version after 0.7.0, and that 0.7.0's statements
-> stand as measured. Not a plan and not code: to be planned when a version
-> takes it on.
+> stand as measured. Not a plan and not code. Version 0.8.0 took it on
+> (`presk-specs/implementation/presk-plan-0.8.0.md`, D63), with the second
+> fix below. Its step 0 corrected what this note said about where the
+> model's traffic starts (D63). What 0.8.0 built and found, and what it
+> left for later, is the next section.
 
 **What fails, and why.** The layout cost model of 0.7.0
 (`presk_kernel::cost::planned_cost`, fitted by
@@ -134,20 +137,23 @@ T̂ = λ + spawn·[p > 1] + max(W/π_g, Q_L2/β_L2, p·Q_L3/β_L3, p·Q_mem/β_m
 ```
 
 with `W` one worker's weighted operations and `Q_c` its traffic from each
-cache level. Two conventions make it blind to the register tile. A load
-weighs nothing in `W` (`Expr::Load`, `LoadI` and `VLoad` weigh 0, as index
-arithmetic does: 0.3.0's roofline convention), and traffic is counted from L2,
-where every tile of a form has the same footprint. So at the attention's
-shapes every point is predicted work-bound, and the points of a form that
-differ only in their tile, order or k-block get the same prediction. RA4's
+cache level: `Q_L2` the bytes brought into L1 from L2 (`traffic(worker,
+m.l1)`), `Q_L3` into L2, `Q_mem` into a worker's share of L3, from the
+footprints of the affine accesses. Two conventions make it blind to the
+register tile. A load weighs nothing in `W` (`Expr::Load`, `LoadI` and `VLoad`
+weigh 0, as index arithmetic does: 0.3.0's roofline convention), and nothing
+counts the loads from L1 into registers, which is what a register tile
+saves. So at the attention's shapes every point is predicted work-bound, and
+the points of a form that differ only in their tile, order or k-block get the
+same prediction, whatever their traffic. RA4's
 statement M failed on exactly those decisions: tiles 27.7 % right and 46.7 %
 tied, orders 30.0 % and 61.8 %, k-blocks 0.6 % and 97.0 %, where lanes and
 splits are 93–97 % right.
 
 **The evidence for a load term.** On the values `ein` at `B = 16` in `f32`
 (the course GPT's attention, day one and day two of the measurement, `out/ra4`,
-not committed), thirty points with four lanes and the split at depth 2 over
-ten workers are all predicted 2.27 ms. Grouped by tile, with the loads the
+not committed, archived in 0.8.0 step 0: D63), thirty points with four lanes
+and the split at depth 2 over ten workers are all predicted 2.27 ms. Grouped by tile, with the loads the
 micro-kernel issues per vector multiply-add — each `k` loads `m_i` elements
 of operand 0 (broadcast) and `n_j/ℓ` vectors of operand 1, for `m_i·n_j/ℓ`
 vector multiply-adds — they measure (mean of the two days' medians, five
@@ -188,18 +194,26 @@ and `[4, 16]`, which the calibration space can take at the same cost by
 dropping some orders. The pack is not helped by it: its close pairs are at
 one lane, since lanes on an NT nest need the pack, and there the pack changes
 where the loads read, not how many there are. What it buys at one lane is
-contiguous loads, which is the L1 question below; with lanes, the load count
-does credit it, by the lane width.
+contiguous loads, which the traffic terms do not see either, since a
+footprint counts elements, not cache lines; with lanes, the load count does
+credit it, by the lane width.
 
 **What it will not fix alone.** Loop orders and k-blocks change which operand
-stays in L1 and L2, and their traffic terms never bind under the `max`
-because the work term is always larger at these shapes; with a load term
-the in-core term grows and would still dominate. Two changes are candidates, to be
-judged on the calibration first: a footprint analysis that starts at L1
-(the bytes from L2 into L1, `Q_L1`, which is what an order changes), and a
-combination that lets a non-binding term separate two points the binding one
-ties — a sum of the in-core and the memory terms, or a smooth maximum whose
-exponent is fitted. Index arithmetic, also weighed 0, is the third suspect;
+stays in L1 and L2, and the model already counts what they change: the bytes
+from L2 into L1 are `Q_L2`, each buffer counted apart. On the values `ein` at
+`B = 16` in `f32`, every one of the 133 sets of points that differ only in
+their order and k-block has more than one `Q_L2` among its points, and so do
+187 of the scores `ein`'s 203. But all 1 717 and 1 515 points are predicted
+work-bound, and the `max` hides every term but the largest; with a load term
+the in-core term grows and would still dominate. What hides the orders is the
+combination, not a missing level. The change is a combination that lets a
+non-binding term separate two points the binding one ties — a sum of the
+in-core and the memory terms, or a smooth maximum whose exponent is fitted —
+with a calibration that identifies the traffic constants, which 0.7.0's
+barely did (D60). (Until 0.8.0 step 0 this paragraph also asked for "a
+footprint analysis that starts at L1 (the bytes from L2 into L1, `Q_L1`)":
+those bytes are `Q_L2`, counted since 0.7.0 step 4; D63.) Index arithmetic,
+also weighed 0, is the third suspect;
 the kernel text computes every address from the loop variables, and whether
 Cranelift strength-reduces them is a question for the emitted code, not the
 model.
@@ -208,7 +222,8 @@ model.
 where 0.7.0's model failed, so ranking 0.7.0's measurements again would be a
 fit, not a test. The measurements can still serve during development: each
 point's kernel is lowered again from its layout key, and its times are in
-`out/ra4*`. The test is a **fresh sweep** the design never saw, decided by the
+`out/ra4*`, archived with 0.7.0's profiles in `~/presk-data/ra4-0.7.0` on
+falicon (D63). The test is a **fresh sweep** the design never saw, decided by the
 same rule (`presk rank`, questions 65 and 70): other shapes — BERT-large's
 attention, sampled in 0.7.0 and never swept whole, or a model of another
 width — or another machine. falicon has
@@ -225,3 +240,73 @@ measures the model's `N` best points — is the hybrid those numbers support, an
 which asks the model to decide alone. A version that adds the load term should
 report both: the rank accuracy RA4 asks for, and the pruned search's cost and
 regret.
+
+## What 0.8.0 built of this design, and what it left (2026-09-26)
+
+Version 0.8.0 (D63–D74) built the design above, froze it at the tag
+`ra4-model-0.8.0` before measuring anything new, and tested it on two fresh
+sweeps: 0.7.0's shapes on the ten A725 cores (F2), and BERT-large's
+attention and a head of 128 on the ten X925 cores (F1).
+- **The model frozen**: one worker's register loads and stores against a
+  rate per group, `N_ld/ρ_g` (D66); the five terms combined by a p-norm
+  whose exponent is fitted, `q` = 1.06, nearly a sum (D67, D69); two rules
+  of the planned cost, footprints in whole cache lines and one operation of
+  work per loop iteration (D70); calibrated on a GEMM widened to five tiles,
+  sizes to 2048 and two thin products (D68), `u` = 0.132 (D71).
+- **What it gave** (D74): statement M, more than 90 % of the attention
+  `ein`s' distinguished close pairs right, holds on F2 (92.7 % and 91.7 %)
+  and fails on F1 (85.4–88.8 %). Ties fell from 34 % to 0.1 %, and the
+  pairs the model decides are about 99 % right. The pick is within 1.05× of
+  the best on every contraction nest M names (O), and the candidates within
+  `1 + u` hold a point within 1.03× of the best at under 2 % of the sweep's
+  cost (Q). The static choice is 218–252 times cheaper than the sweep at
+  batch one on the A725 cores, short of 10³ (N).
+- **What `β_mem` is**: not identified on either kind of core. No GEMM this
+  compiler emits is bound by memory on falicon, not even a two-row product
+  (D67), so a large, loosely fitted constant keeps the memory term
+  small.
+
+**Recorded for after 0.8.0.** Each is a change to the model, so each needs
+a model frozen again and a sweep it was not designed on, as 0.8.0 did.
+
+1. **The distinct lines an iteration's loads touch** (D70, D71), which would
+   see the pack. No rule of 0.8.0 does: the body kernel costs the same with
+   the pack and without it, so the model predicts the pack slower in every
+   pair, and it wins in 44 % of them on the development set, by 5 % in the
+   median, all with tiles of 4 to 16 columns. At each step of `k` such a
+   tile reads one value from each of its rows of the unpacked operand, where
+   the packed panel holds them in one line. That is how an iteration's
+   loads fall, not what stays in cache, so neither `lines` nor `shared`
+   sees it. The pack is 48–63 % right on the fresh sweeps.
+2. **Why the maximum forms rank k-blocks better than the p-norm** (D71):
+   73–75 % against 66 % on the development set under the rules kept, though
+   they lose on every other count. On the fresh sweeps the p-norm ranks
+   k-blocks 53–64 % right, almost all within `u`.
+3. **How the L2 term combines with the load term at one-row tiles** (D74).
+   The one class of pairs the frozen model decides and gets wrong: at F1b's
+   scores `ein` (`hd` = 128), 67 of 121 decided loop-order pairs, all
+   one-row tiles (`[1, 8]`, `[1, 16]`), packed, in four lanes. The order with
+   `I` outside `J` reads the whole packed operand once a row of the output;
+   the model predicts it 15–23 % slower for its L2 term, and it measures
+   1–16 % faster. Near `q` = 1 the p-norm adds the L2 time to the load time,
+   and a one-row kernel does not pay it on top of its loads. It shows only
+   where the packed operand of one head exceeds L1: 256 KiB at F1b, 96 KiB
+   at F1a (8 of 30 decided order pairs wrong there), against 64 KiB of L1;
+   at 0.7.0's shapes it is 64 KiB, and every decided order pair is right.
+   The question is the combination per pair of terms, not the terms: which
+   resources a core overlaps, and whether that depends on the tile.
+4. **The order of the pairs within `u`**, which decides M (D74). 97–99 % of
+   the misses on both sweeps are pairs the model predicts within `1 + u` of
+   each other; it orders 69–73 % of those right on F1 and 78–81 % on F2, and
+   they are 39–46 % of F1's distinguished pairs. Reaching 90 % on F1 would
+   have taken 134 to 1 064 more right pairs a nest, among tiles (about 10 %
+   wrong, on the largest counts), loop orders, the pack and k-blocks. A
+   smaller `u` is not the aim: what separates close points is what the
+   model does not count (items 1–3).
+5. **The costing of a point**, most of N's static side at batch one (D74).
+   At `B = 1` on the A725 cores a sweep takes 143–170 s and the static side
+   0.57–0.78 s, of which the capture of shapes is 0.03–0.05 s; costing 3 305
+   points, 0.16–0.22 ms each, is the rest. Clearing 10³ needs costing four
+   to five times faster, for instance by sharing the walk between points
+   that differ in one decision, or the footprints across points as 0.8.0
+   step 1 shared them across cache levels (D64).

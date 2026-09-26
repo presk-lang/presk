@@ -5,7 +5,7 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.7.0**: the front-end (`presk check`); an arbitrary-precision
+**Version 0.8.0**: the front-end (`presk check`); an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), the oracle
 every other executor is measured against; a native backend — PSK-Kernel v0
 compiled by Cranelift, with fusion groups, threads, blocked contractions and
@@ -20,9 +20,11 @@ measurement against the exact denotation, on an entry or on a training step
 (`presk calibrate`, `presk solve`, `presk quantize`); a layout space per loop
 nest — register tiles, k-blocks, loop orders, lanes, packs, thread splits at
 any depth, every point bit-identical — with a realization plan that states a
-layout per nest (`--plan`), a cost model that reads it, and the tools that
-test whether that model chooses as well as measuring (`presk plan`, `presk
-autotune`, `presk rank`); and a PyTorch export of models, training and
+layout per nest (`--plan`), a cost model that reads it — its work, its
+register loads and its traffic from each cache level, calibrated per machine
+— and the tools that test whether that model chooses as well as measuring
+(`presk plan`, `presk autotune`, `presk rank`, `presk reprice`, `presk
+refit`); and a PyTorch export of models, training and
 serving with conformance tests (`presk export`). A
 corpus of real models (`corpus/nlp/`, the ladder of an NLP course on the
 French civil code) and transcriptions of the MLPerf architectures
@@ -31,9 +33,13 @@ optimization is *exact* — one step of a course-scale GPT went from 289 s to
 39.8 s in 0.4.0 without changing a number — and every narrowing is measured: a
 training step solved under a 10⁻³ budget on its update runs 1.99× faster than
 all-`f64`, inside the budget. The best layout of a 1024³ `f32` product runs at
-460 GFLOP/s, 5.5× 0.6.0's kernel; the static cost model does not find it, and
-the first test of the research programme's hypothesis RA4 fails for a reason
-it names (the manual's `experiments` chapter, §7). See `CHANGELOG.md` and the
+460 GFLOP/s, 5.5× 0.6.0's kernel. The research programme's hypothesis RA4,
+that a static cost model ranks more than 90 % of such variants as
+measurement does, failed its first test for a reason it named (0.7.0); a
+model with the missing term, frozen before a second test on two fresh
+sweeps, ranks 91.7–92.7 % on another core and 85–89 % on new shapes, picks
+within 1.05× of the best, and prunes a search to under 2 % of its cost
+(0.8.0; the manual's `experiments` chapter, §7 and §8). See `CHANGELOG.md` and the
 user manual (`make doc`); its tutorial chapter (programs in `tutorial/`,
 commands in `make tutorial`) is the place to start.
 
@@ -58,6 +64,9 @@ make bert                                    # BERT-large inference at MLPerf's 
 make plan-check                              # a plan stating the default layout gives the same kernels
 make calibrate-ra4 && make ra4-small         # the layout cost model's calibration, pinned; the RA4 sweep's daily subset
 make ra4 ra4-check ra4-20 ra4-day2           # the RA4 measurement of 0.7.0 (a night; manual chapter experiments §7)
+make ra4-dev ra4-dev-frozen ra4-ablation     # 0.8.0's development set: 0.7.0's days priced again under a profile (minutes)
+make calibrate-ra4-small ra4-f2 ra4-f2-check ra4-f2-day2 ra4-f1 ra4-f1-check ra4-f1-day2
+                                             # 0.8.0's fresh sweeps (hours each; manual chapter experiments §8)
 make doc                                     # the user manual (rustdoc)
 ```
 
@@ -76,12 +85,16 @@ presk serve FILE.psk --prompt "t1 t2 ..." [--weights FILE.psk.d] [--tokens N] [-
 presk export FILE.psk --target pytorch --mode readable|graph -o DIR [--shapes=check] [--stack=loop|unroll] [--train] [--serve]
     [--conformance-entry ENTRY|adamw.step|train:K ...] [--dim NAME=N]... [--const NAME=N]... [--seed S] [--opt [--profile FILE.json]]
 presk bench FILE.psk --entry ENTRY [--dim NAME=N]... [--const NAME=N]... [--bits 64] [--repeat 5] [--seed S] [--threads N]
-    [--realize R | --plan @P.json] [--native-only] [--opt [--profile FILE.json]] [--calibrate FILE.json [--space calib]]
+    [--realize R | --plan @P.json] [--native-only] [--opt [--profile FILE.json]] [--calibrate FILE.json [--space calib
+    [--load-term group|machine|none] [--combine max|sum|pnorm] [--rules none|lines,shared,overhead] [--min-workers N]]]
 presk plan FILE.psk --entry ENTRY --profile P.json [--dim NAME=N]... [--const NAME=N]... [--realize R] [--nest NEST]
     [--space full|small] [--cost] [--seed S] [--out PLAN.json]
 presk autotune FILE.psk --entry ENTRY --out DIR [--dim NAME=N]... [--const NAME=N]... [--realize R] [--space full|small]
     [--repeat 7] [--profile P.json] [--nest NEST] [--interp] [--top N --random N] [--seed S] [--shard K/N]
-presk rank DAY1 DAY2 --out FILE.md [--check DIR] [--entry E] [--at CONFIG] [--type T] [--gemm E] [--gemm-at CONFIG]
+presk reprice FILE.psk --entry ENTRY --day DAY --profile P.json --out DIR [--seed S]
+presk rank DAY1 DAY2 --out FILE.md [--check DIR] [--frozen TAG] [--entry E] [--at CONFIG] [--type T] [--gemm E] [--gemm-at CONFIG]
+    [--statement-q]
+presk refit P.json [--load-term L] [--combine C] [--out Q.json] [--compare] [--recost FILE.psk [--entry E] [--rules R]]
 presk calibrate --precision FILE.psk --entry ENTRY [--dim NAME=N]... [--const NAME=N]... [--data FILE.psk.d] [--samples N] [--from K]
     [--weights ckpt/final.psk.d] [--bits 256] [--seed S] [--out ENV.json] [--compare OTHER.json]
 presk calibrate --step FILE.psk --weights ckpt/final.psk.d [--warmup 10] [--steps N] [--data FILE.psk.d] [--samples 2] [--from 0]

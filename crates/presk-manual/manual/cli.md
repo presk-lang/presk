@@ -12,7 +12,9 @@ Commands:
   serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
   plan       Choose a realization plan statically: every nest's layout space costed by the profile's layout model
   autotune   Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits
-  rank       Rank accuracy of the layout cost model on two days of measurement, and the statements of plan 0.7.0
+  reprice    Price the points of a recorded day again under another profile, their times copied: nothing is measured
+  rank       Rank accuracy of the layout cost model on two days of measurement, the statements of plan 0.7.0, and plan 0.8.0's Q
+  refit      Fit a profile's layout cost model again on its samples, in another form: nothing is measured
   bench      Time an entry on every backend (the reference at --bits, the kernel interpreter, native f64, f32 and bf16)
   calibrate  Measure the magnitude envelope of an entry, or one training step under each realization (--step)
   solve      Solve for a realization under a declared error budget
@@ -448,25 +450,111 @@ presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 -
 
 `--calibrate FILE.json --space calib` (0.7.0 step 4) calibrates the **layout
 cost model** instead (`optimization` chapter, "The layout cost model"). The
-entry must have one contraction, a GEMM (`experiments/gemm.psk`, `--dim
-N=…`). It is timed natively under 96 layouts that span the model's terms:
-the register tiles `[1, 8]` and `[4, 16]`; no k-block in the orders `IJ` and
-`JI`, and a k-block of 128 in every order of `IJK`; one lane and the type's
-width; one worker, half the machine's and all of them. Each kernel's
-planned cost (one worker's work, its traffic from L2, L3 and memory, its
-register pressure) is computed on the machine's description, read from the
-operating system for the first CPU the process may run on. The model is
-fitted on every sample the file holds, this run's and earlier ones, so
-several sizes and types add up. The table has one line per layout (group,
-measured and predicted microseconds), then the constants, the uncertainty
-`u` and Spearman. The file keeps its roofline, and a roofline calibration
+entry must have one contraction: a GEMM (`experiments/gemm.psk`, `--dim
+N=…`), or a product of any shape (`experiments/matmul.psk`, `--dim I=… --dim
+K=… --dim J=…`). Since 0.8.0 step 3 (plan 0.8.0 §3.3) it is timed natively
+under 300 layouts that span the model's terms:
+- five register tiles, `[1, 4]`, `[1, 8]`, `[2, 8]`, `[2, 16]` and
+  `[4, 16]` (0.7.0 had the second and the last);
+- no k-block in the orders `IJ` and `JI`, a k-block of 128 in every order of
+  `IJK`, and of 32 in `IJK` and `KIJ`;
+- one lane and the type's width;
+- one worker, half the machine's and all of them; `--min-workers N` (0.8.0
+  step 4) leaves out the layouts stated on fewer than `N`.
+
+A layout a shape cannot take (a loop of one iteration split) is skipped and
+counted. Each kernel's
+planned cost is computed on the machine's description, read from the
+operating system for the first CPU the process may run on: one worker's
+work, its register loads and stores, its traffic from L2, L3 and memory,
+and its register pressure. The model is fitted on every sample the file
+holds, this run's and earlier ones, so several sizes and types add up. The
+exception is samples recorded before 0.8.0 step 2, which have no load count
+and are dropped, with a message. `--load-term` (0.8.0 step 2) says whether
+the model has the load term and how its rate `ρ` is fitted: `group`, the
+default, one per group as `π`; `machine`, one for every group; `none`, 0.7.0's
+model without it. `--combine` (0.8.0 step 3) says how the terms combine:
+`max`, 0.7.0's form; `sum`, the in-core term plus the memory term; or
+`pnorm`, the default, whose exponent `q` is fitted too. `--rules` (0.8.0 step
+4, D70) names the rules of the planned cost the samples are costed under:
+`none`, or among `lines`, `shared` and `overhead` (`optimization` chapter).
+Without it a calibration costs under the rules of the profile's samples,
+and a new profile under `lines,overhead`; it refuses rules other than those
+of samples it would keep. The defaults are the frozen model's form (D71),
+since 0.8.0 step 8 (D75); 0.7.0's is `--load-term none --combine max
+--rules none`. The table has one line per layout (group, measured and
+predicted microseconds), then the constants (`ρ` per group when the model
+has it), the uncertainty `u` and Spearman. The file keeps its roofline, and a roofline calibration
 keeps the layout model. A layout ill-formed at the size (a k-block that does
-not divide `N`) is skipped and counted. `make calibrate-ra4` runs it at 256,
-512 and 1024 in `f32` and `f64`, pinned to the cores of `RA4_CORES`.
+not divide `N`) is skipped and counted. `make calibrate-ra4` runs it pinned
+to the cores of `RA4_CORES`, in `f32` and `f64`, on the GEMM at 256, 512,
+1024 and 2048 (`CALIB_SIZES`) and on the thin products `16 × 4096 × 4096` and
+`4096 × 4096 × 16` (`CALIB_THIN`), meant to be bound by the traffic from
+memory (on falicon they are not, D67). At 2048 (`CALIB_NO_ONE_WORKER`) it
+passes `--min-workers 2`: the one-worker layouts took three quarters of that
+size's time. Then it prints `presk refit --compare` and how long the
+measurement took. The form fitted into the profile is `RA4_LOAD_TERM`,
+`RA4_COMBINE` and `RA4_RULES`, by default the frozen model's since 0.8.0
+step 4: `group`, `pnorm`, and `lines,overhead` (D70–D71). A calibration is
+one run: an existing `RA4_PROFILE` is first
+moved to `*-prev.json`, so that none of its samples stays in the fit.
 
 ```sh
 taskset -c 5-9,15-19 presk bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
      --calibrate out/profile.json --space calib --repeat 5
+```
+
+## `presk refit P.json [--load-term L] [--combine C] [--out Q.json] [--compare] [--recost FILE.psk [--entry E] [--rules R]]`
+
+Fits a profile's layout cost model again on the samples it holds, in another
+form, **without measuring anything** (0.8.0 step 3). Every form of plan
+0.8.0 §3.2 is fitted on the same calibration, and step 4's ablation re-prices
+the development set under each. `--load-term` and `--combine` are those of
+`presk bench --calibrate --space calib`, with the same defaults, the frozen
+model's form. The refitted profile goes to `--out`,
+or back into `P.json`, whose roofline, machine description and samples are
+kept. Samples recorded before 0.8.0 step 2 have no load count and are left
+out, with a message.
+
+`--compare` fits nine forms instead and writes nothing: the three load terms
+(`none`, `group`, `machine`) under each combination (`max`, `sum`, `pnorm`).
+It prints one line per form: `u`, Spearman, `λ`, the spawn cost, the three
+`β`, the p-norm's `q`, and how long the fit took. A p-norm's `q` is searched
+from 1 to 100, two grids of ten fits run on as many threads, each fitting the
+rates again, since a coordinate at a time cannot follow the trade-off between
+`q` and every rate.
+
+`--recost FILE.psk` (0.8.0 step 4) costs every sample again before the fit,
+its time kept, so that a rule of the planned cost is tried on a calibration
+without measuring it again:
+
+- Each sample's layout is read back from its key and lowered at the product
+  its signature names, on the entry `--entry` of the program (`matmul` by
+  default, dimensions `I`, `K` and `J`; `experiments/matmul.psk`). The
+  entry is captured once per product, its shapes only.
+- The kernel is costed on the profile's own machine description, not the
+  machine the command runs on, under `--rules`: `none`, or among `lines`,
+  `shared` and `overhead`, comma-separated (`optimization` chapter), and by
+  default the rules the profile's samples were costed under. `--rules` needs
+  `--recost`.
+- The kernel lowered must have the sample's signature and group, or the
+  command fails.
+
+It prints how many costs came back identical and which terms moved. The
+fit records the rules, and every prediction made from the profile is then
+costed under them (`presk plan`, `autotune`, `reprice`). A description
+recorded before 0.8.0 step 4 has no line size: under `lines` it is read
+from the operating system for the CPU the description names, and the
+refitted profile records it. The definitive calibration comes back byte for
+byte under its own rules, `none`; re-costed under `lines,overhead` and
+refitted with the defaults, it gives the frozen model's profile byte for
+byte (0.8.0 step 8, D75).
+
+```sh
+presk refit out/profile.json --compare
+presk refit out/profile.json --load-term group --combine sum --out out/profile-sum.json
+presk refit ~/presk-data/ra4-0.8.0-calibration/out/profile.json --recost experiments/matmul.psk \
+     --rules lines,overhead --out out/profile-rules.json
 ```
 
 ## `presk plan FILE.psk --entry ENTRY --profile P.json …`
@@ -479,11 +567,13 @@ presk plan FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …] [--realize R
 Chooses a layout for every nest of an entry **statically**, from the layout
 cost model of a calibrated profile (`presk bench --calibrate P.json --space
 calib`; `optimization` chapter), and writes a realization plan that `presk
-run --plan @PLAN.json` reads (0.7.0 step 5). The entry is run once natively,
-under its default layout, on inputs synthesized from `--seed` as `presk run`
-synthesizes them, to capture each nest's first launch at every shape — its
-operands, its types, its input buffers; each captured nest is then
-lowered under every layout of its space (the reference's `L_r(nest)`, times
+run --plan @PLAN.json` reads (0.7.0 step 5). The entry's launches are
+captured from its **shapes** (0.8.0 step 1, D65). The host program runs
+under the default layout on zero inputs: tensors are zeros of their axes,
+and parameter trees are built by their initializers, with no kernel
+compiled or run and nothing computed in exact arithmetic. It records each
+nest's first launch at every shape, with its operands and types. Each
+captured nest is then lowered under every layout of its space (the reference's `L_r(nest)`, times
 every thread split the machine allows, each checked against the kernel as
 condition 8 asks) and costed. No kernel is compiled or timed. The table has
 one line per nest: its operands, the size of its space, the best prediction,
@@ -494,18 +584,26 @@ give the time spent costing and the wall time. `--space small` narrows every
 space to the daily subset of `presk autotune`. The plan names the profile it
 was chosen against (question 64: a plan is not portable). Each nest gets the
 best prediction, a tie broken by the order of the space, at the first shape
-it is launched at. On the course GPT's attention at batch 16 that pick is
-2.2–3.0 times slower than the best point measured, because the model cannot
-see a register tile (`optimization` chapter, "What the layout model cannot
-see"): the plan is the model's choice, not the best one.
+it is launched at. The plan is the model's choice, not the best one
+measured. Under 0.7.0's model that pick was 2.2–3.0 times slower than the
+best point on the course GPT's attention at batch 16, because the model
+could not see a register tile (D62). Under 0.8.0's frozen model it is within
+1.05× of the best on every contraction nest statement O names, on both
+fresh sweeps (D74; `optimization` chapter, "What the fresh sweeps
+found").
 
 ```sh
 presk plan corpus/nlp/05_gpt.psk --entry SelfAttention.apply --dim B=16 --dim T=256 --realize f32 \
      --profile out/profile.json --out out/attn_plan.json
 ```
 
-At these shapes the entry has twelve nests and 4 857 points, costed in about a
-second on falicon.
+At these shapes the entry has twelve nests and 4 857 points, costed in
+0.36 s in `f32` on falicon's X925 cores after a capture of 0.18 s. In 0.7.0
+it was 0.94 s after a capture of 0.57 s that ran the entry. Since 0.8.0
+step 1 a layout is lowered once for all its thread splits, which change
+only the kernel's `threads`, and the traffic into the three cache levels
+is computed in one walk that shares the footprints. Every prediction is
+the one 0.7.0 made (`make ra4-dev`, D64).
 
 ## `presk autotune FILE.psk --entry ENTRY --out DIR …`
 
@@ -515,8 +613,11 @@ presk autotune FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …] [--reali
                [--top N --random N] [--seed S] [--shard K/N] --out DIR
 ```
 
-The exhaustive side of the RA4 test (plan 0.7.0 §3.6). Captures the entry's
-launches as `presk plan` does, then, nest by nest and point by point, lowers
+The exhaustive side of the RA4 test (plan 0.7.0 §3.6). Runs the entry once
+natively, under its default layout, on inputs synthesized from `--seed` as
+`presk run` synthesizes them, to capture each nest's first launch at every
+shape with its input buffers, the values a point is timed on. Then, nest by
+nest and point by point, it lowers
 the nest under the layout, compiles it natively, launches it once to warm up
 and `--repeat` times more **on the captured buffers**, not through the entry,
 and records the median time and the median absolute deviation (MAD). Point 0
@@ -554,20 +655,86 @@ constants then the dims, `B=16,T=256` —, `nest`, `op`, the primitive, `ein`,
 `dot`, `softmax`, … or `fused`, `shape`, `dtype`, `layout`, `key`,
 `baseline`, `timed`, the `seconds` of every timed launch, `median`, `mad`,
 `predicted`, `identical`, `interp_checked`, and per kernel — a pack's copy
-first — the model's `group`, its inputs `cost`, the `terms` of its
-prediction, `λ`, spawn and the four bounds, and the `bound` that set it), and
+first — the model's `group`, its inputs `cost` (since 0.8.0 step 2 with
+`loads` and `spill`), the `terms` of its prediction, `λ`, spawn, the work,
+the loads when the model has the term, and the three traffic bounds, and the
+`bound` that set it), and
 `sweep.json` (the entry, the configuration, the dims, the space, the sample
 and the shard if any, the number of points and of baselines, the time spent
 measuring, costing, capturing and checking
 on the interpreter, the wall time, the machine description, `u`, and
-`not_identical`). Pin the process to a set of like cores (`taskset -c`):
+`not_identical`). Since 0.8.0 step 1 it also records
+`static_capture_seconds`: how long `presk plan`'s capture of shapes takes on
+the same entry, timed after the wall time and not part of it. That capture
+and the costing are statement N's static side (D65). Pin the process to a set of like cores (`taskset -c`):
 the machine description is read for the first CPU it may run on.
+
+## `presk reprice FILE.psk --entry ENTRY --day DAY --profile P.json --out DIR`
+
+```text
+presk reprice FILE.psk --entry ENTRY --day DAY --profile P.json --out DIR [--seed S]
+```
+
+Prices the points of a recorded day again under another profile, **without
+measuring anything** (0.8.0 step 1): a candidate model is judged on
+measurements already taken in the time it takes to cost them. For each sweep
+of `ENTRY` under `DAY` — a directory holding the `sweep.json` of a `presk
+autotune`; the day's sweeps of other entries are left — the entry's shapes
+are captured once, as `presk plan` captures them, at the constants, dims and
+realization the sweep records, and every
+recorded point is lowered again from its `layout`, against the worker count
+the sweep ran with (the `machine` of `sweep.json`), and costed under the
+profile's layout model, on the profile's machine description when it has one
+and the sweep's otherwise. Its line is written to the same place under `DIR`
+with `predicted` and the per-kernel records (`cost`, `group`, `terms`,
+`bound`) replaced; every other field — the `seconds`, the `median`, the
+`mad`, `identical` — is copied as written, character for character.
+`sweep.json` is copied with `u` replaced by the profile's and a `repriced`
+record added (the profile, its `u`, the points, the time the capture and the
+costing took), and the day's `day.txt` as it is; `presk plan`'s files are not
+copied. A point whose nest the entry does not launch, or whose layout no
+longer lowers, stops the command, and so does a `DIR` that is `DAY` itself.
+`presk rank` then ranks the re-priced days as it ranks measured ones.
+
+Under the profile a day was priced with, every line comes back as it was.
+`make ra4-dev` relies on it for 0.8.0's **development set**: 0.7.0's
+measurements, archived read-only in `~/presk-data/ra4-0.7.0` (the
+Makefile's `RA4_DEV`, D63), re-priced under `RA4_DEV_PROFILE` and
+`RA4_DEV_PROFILE_20` (0.7.0's own by default) into `out/ra4-dev/out/…` and
+ranked from `out/ra4-dev`, so that each report quotes its days as 0.7.0's
+did: `out/ra4-dev/ra4.md` and `ra4-20.md`, in about half a minute. Under
+0.7.0's profiles it also checks that each of the 52 142 re-priced lines is
+the archived one and each report the one `docs/` holds, byte for byte, and
+fails otherwise. An empty `RA4_DEV_PROFILE_20` leaves the twenty-core day
+out, and the check covers the ten-core days alone (0.8.0 step 4, D68):
+`make ra4-dev RA4_DEV_PROFILE=P RA4_DEV_PROFILE_20=`. Under the frozen
+model's profile (`RA4_FROZEN`, archived read-only in
+`~/presk-data/ra4-model-0.8.0`, D71) it checks that the report is
+`docs/ra4-dev-model-0.8.0.md`, byte for byte: the check a defect fixed after
+the freeze must pass (plan 0.8.0 §3.4). `make ra4-dev-frozen` runs it.
+
+`make ra4-ablation` (0.8.0 step 4) prices the ten-core days under every form
+of the model, three load terms under three combinations. Each form is
+refitted by `presk refit` on the definitive calibration (`RA4_CALIBRATION`,
+archived read-only, D68). 0.7.0's own profile is priced beside them. It
+writes `out/ra4-ablation/ablation.md`, which tabulates statement M's nests,
+O, the per-class table and the hybrid chooser of statement Q, in about
+3½ minutes. `FORMS` restricts it, for example `FORMS=group-pnorm`. D69
+records the result. A form `L-C+R` names rules of the planned cost too
+(0.8.0 step 4, 4c): the calibration is re-costed under them first (`presk
+refit --recost experiments/matmul.psk --rules R`), for example
+`FORMS="group-pnorm group-pnorm+lines group-pnorm+lines,overhead"`.
+
+```sh
+presk reprice corpus/nlp/05_gpt.psk --entry SelfAttention.apply --day ~/presk-data/ra4-0.7.0/out/ra4/day1 \
+     --profile out/profile.json --out out/dev/day1
+```
 
 ## `presk rank DAY1 DAY2 --out FILE.md`
 
 ```text
-presk rank DAY1 DAY2 --out FILE.md [--check DIR] [--entry E] [--at CONFIG] [--type T]
-           [--gemm E] [--gemm-at CONFIG]
+presk rank DAY1 DAY2 --out FILE.md [--check DIR] [--frozen TAG] [--entry E] [--at CONFIG] [--type T]
+           [--gemm E] [--gemm-at CONFIG] [--statement-q]
 ```
 
 Compares the layout cost model with two days of `presk autotune`, by the
@@ -587,7 +754,8 @@ the mean of the two days' medians over the whole space, the top-1 regret
 `presk plan`'s, a tie broken by the space's order) and the top-k
 regret (the best measured among the `k` points within `1 + u` of the
 model's best), and the best point against 0.6.0's. The **statements** of
-plan 0.7.0 §3.7 follow, each measured and decided by the tool, not by hand:
+plan 0.7.0 §3.7 follow, then plan 0.8.0's Q, each measured and decided by
+the tool, not by hand:
 
 - **L** holds when every point of day one was checked on the interpreter,
   in the days or in the check run apart that `--check` reads, and no output
@@ -595,23 +763,55 @@ plan 0.7.0 §3.7 follow, each measured and decided by the tool, not by hand:
 - **M** holds when each `ein` of `--entry` at `--at` in `--type`
   (`SelfAttention.apply`, `B=16,T=256`, `f32`) orders more than 90 % of at
   least 10³ distinguished pairs right. With fewer pairs it is inconclusive
-  (plan §7).
+  (plan §7). So it is when that configuration was swept on a sample (plan
+  0.8.0 §3.5, D72), whatever its pairs say. M's and O's cells are then
+  marked `(sample)`, since O's best point is the sample's.
 - **N** holds when every configuration of that entry swept whole is chosen
-  statically at least 10³× faster than it was swept, on each day.
+  statically at least 10³× faster than it was swept, on each day. The static
+  side is the capture of shapes plus the costing, when the sweep records it
+  (0.8.0 step 1, D65). The ratio with the capture that runs the entry, which
+  0.7.0 measured, is printed beside it.
 - **O** holds when the model's pick is within 1.25× of the best measured on
   every contraction nest (`ein` or `dot`) at `--at`.
 - **P** holds when the best point of `--gemm` at `--gemm-at` (`gemm`,
   `N=1024`) is at least 3× faster than 0.6.0's point.
+- **Q**, plan 0.8.0's (§3.6), holds when on every contraction nest of every
+  configuration swept whole, measuring only the *candidates*, the points
+  predicted within `1 + u` of the model's best, finds a point within 1.05×
+  of the best measured (the top-k regret), at no more than 10 % of the
+  nest's exhaustive sweep on each day. The cost is question 72's: statement
+  N's static side, the whole configuration's, charged to each nest, plus the
+  candidates' measured time (0.8.0 step 7, D74). A point's measured time is
+  its launches, the warm-up and the timed ones, at its median, plus its time
+  outside them, compiling it and comparing its bits. A sweep records that
+  time only as a whole, so it is estimated as the sweep's time less its
+  points' launches, divided by its points, as `experiments/ra4_dry.py`
+  estimates it (D72). Beside it is D71's count: the candidates' share of the
+  nest's timed launches. A table per contraction nest follows the
+  statements. Q is decided on days that record the capture of shapes (0.8.0
+  step 1, D65). For earlier days, 0.7.0's, it is decided only with
+  `--statement-q`, which costs their static side with the capture that runs
+  the entry, and their reports are otherwise 0.7.0's.
 
 Then come the counts per decision class (`tile`, `kblock`, `order`,
 `lanes`, `split`, `pack`, `passes`, `form`), per nest and class, and the
 **decision cost** per sweep: the exhaustive sweep's time (all of `presk
 autotune` but the interpreter's check) against the static choice's (the
 capture and the costing of the same points, which is what `presk plan`
-does), a sampled sweep marked. A day's directory may hold one sweep or one
+does), a sampled sweep marked. With a sweep recorded since 0.8.0 step 1 the
+capture is of shapes, and two more columns give the static side and the
+ratio with the capture that runs the entry. A sweep recorded before is costed
+with that capture, and its table is 0.7.0's. A day's directory may hold one sweep or one
 per configuration in subdirectories, as `experiments/ra4.sh` writes them.
 Given one directory twice, `presk rank` applies the rule to one sweep and
 says so. The report is also printed.
+
+`--frozen TAG` is plan 0.8.0's freeze (§3.4): before reading anything it
+refuses, with exit code 1, a day whose `day.txt` names a commit that does
+not descend from `TAG` in the repository `presk rank` runs in, or a commit
+marked `-dirty` (`experiments/ra4.sh` marks one when the working tree
+differed from it), or no commit. Every run into a day adds its commit to
+`day.txt`, and every one is checked.
 
 `make ra4-small` runs the whole test at the daily size: `experiments/ra4.sh`
 sweeps the tutorial's attention (`tutorial/03_attention.psk`, entry
@@ -641,6 +841,107 @@ quiet machine:
 taskset -c 5-9,15-19 presk autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 \
      --space small --profile out/profile.json --interp --out out/ra4-small/day1
 presk rank out/ra4-small/day1 out/ra4-small/day2 --out out/ra4-small.md
+```
+
+0.8.0's fresh sweep **F2** (plan 0.8.0 §3.5, step 5, D72) measures 0.7.0's
+shapes again on the ten A725 cores (`RA4_CORES_SMALL`, `0-4,10-14`), under
+the model frozen at the tag `ra4-model-0.8.0`. It uses these targets, in
+this order, on a quiet machine, with nothing running on the X925 cores
+either, since they share the L3:
+
+- `make calibrate-ra4-small` is `make calibrate-ra4` pinned to the A725
+  cores, with the same space, the same exception at 2048 and the frozen
+  form and rules. It writes a profile of its own, `RA4_PROFILE_SMALL`
+  (`out/profile-a725.json`), and refuses to be pointed at `out/profile.json`.
+- `make ra4-f2-dry` sizes a day before the first night:
+  `experiments/ra4_dry.sh`.
+  1. It prices every configuration with `presk plan --cost`.
+  2. It sweeps the nest the model predicts longest, pinned and timed as a
+     night times it.
+  3. It scales every point's prediction by that nest's measured time over
+     its predicted, adds its time a point outside the kernels, and writes the
+     estimate to `out/ra4-f2/dry/dry.md`. A configuration too slow to sweep
+     whole is swept on a sample, and its M is reported inconclusive.
+- `make ra4-f2` is day one: the course GPT's attention at `D` = 384, `H` =
+  6, `T` = 256, `B` = 1 and 16, `f32` and `f64`, the whole space, priced by
+  the A725 profile, into `out/ra4-f2/day1`.
+- `make ra4-f2-check` is statement L on the kernel interpreter, sharded over
+  every core like `ra4-check`, never beside a timed run.
+- `make ra4-f2-day2` is day two, on another calendar day unless
+  `RA4_SAME_DATE=1` (below), into `out/ra4-f2/day2`. It ends with `make ra4-f2-rank`: `presk rank --frozen
+  ra4-model-0.8.0` of the two days, with the check, into `out/ra4-f2.md`.
+
+Before measuring, `experiments/ra4_fresh.sh` refuses a day that would not
+count. It refuses a day directory that exists, since a day is one run. It
+refuses a working tree that differs from its commit, and a commit that does
+not descend from the tag, which `presk rank --frozen` would refuse after the
+night. And it refuses day two on the calendar date day one started on,
+unless `RA4_SAME_DATE=1` accepts it: F2's day two ran on day one's date, by
+the user's decision (D72).
+Every target refuses to start beside another `presk` process.
+`RA4_TRIAL=1` tries the targets on a tiny configuration, with other
+`RA4_F2_DIR`, `RA4_PROFILE_SMALL`, `RA4_F2_RUN` and `RA4_F2_SHAPES`. In a
+trial, none of these checks applies but the first, and the ranking is made
+without `--frozen`.
+
+```sh
+make ra4-f2-day2 RA4_TRIAL=1 RA4_F2_DIR=out/ra4-f2-trial RA4_PROFILE_SMALL=out/ra4-f2-trial/profile-a725.json \
+     RA4_F2_SHAPES="B=1,T=256:2 B=16,T=256:8" RA4_F2_RUN='FILE=tutorial/03_attention.psk ENTRY=attend TYPES="f32 f64" SPACE=small'
+```
+
+The fresh sweep **F1** (plan 0.8.0 §3.5, step 6, D73) measures new shapes
+on the ten X925 cores (`RA4_CORES`). It is priced by the frozen model's
+profile itself: `RA4_F1_PROFILE`, by default the archived
+`~/presk-data/ra4-model-0.8.0/profile.json`, since the X925 is not
+calibrated again. It sweeps the course GPT's attention in `f32`, over the
+whole space, at two configurations, both in one day. Each is written
+`constants:shape`:
+
+- `RA4_F1A` is F1a, BERT-large's attention: `D=1024,H=16:B=1,T=384`.
+- `RA4_F1B` is F1b, a head of 128: `D=1024,H=8:B=2,T=512`.
+
+The targets are F2's, in the same order:
+
+- `make ra4-f1-dry` runs `experiments/ra4_dry.sh` once per configuration,
+  each timing its own longest-predicted nest, into `out/ra4-f1/dry/f1a` and
+  `f1b`. `ra4_dry.py day` then adds the two into a day in
+  `out/ra4-f1/dry/dry.md`. A configuration is swept whole while the day fits
+  in `RA4_F1_BUDGET` hours (8), the quickest first. The others are marked to
+  be swept on a sample.
+- `make ra4-f1` and `make ra4-f1-day2` are the two days, into
+  `out/ra4-f1/day1` and `day2`, with the checks before a fresh day
+  (`RA4_SAME_DATE=1` accepts day two on day one's date).
+- `make ra4-f1-check` is statement L, with 80 shards of F1b
+  (`RA4_F1B_SHARDS`) and then 20 of F1a (`RA4_F1A_SHARDS`), over every core.
+- `make ra4-f1-rank`, which ends day two, ranks the two days twice with
+  `presk rank --frozen`. `presk rank` decides M and O at one configuration
+  (`--at`), so the first report is at F1a, in `out/ra4-f1a.md`, and the
+  second at F1b, in `out/ra4-f1b.md`. L and N are the same in both.
+
+A configuration too slow to sweep whole is swept on a sample:
+`RA4_F1A_SAMPLE` or `RA4_F1B_SAMPLE`, passed to `presk autotune`
+(`--top 8 --random 32`, say). It is set by a commit before day one, so that
+both days and the check take the same points, and `presk rank` leaves that
+configuration's M inconclusive. A trial on a tiny configuration:
+
+```sh
+make ra4-f1-day2 RA4_TRIAL=1 RA4_F1_DIR=out/ra4-f1-trial RA4_F1A=D=32,H=2:B=1,T=16 RA4_F1B=D=32,H=4:B=2,T=16 \
+     RA4_F1_RUN='FILE=corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=small'
+```
+
+Both sweeps were measured on 2026-09-25, each day's two runs on one date,
+and archived read-only in `~/presk-data/ra4-f2-0.8.0` and
+`~/presk-data/ra4-f1-0.8.0` (D72, D73). 0.8.0 step 7 ranked them from the
+presk tree, over copies of the archived days checked against their
+`SHA256SUMS`, with every statement (D74; `experiments` chapter §8):
+
+```sh
+presk rank out/ra4-f2/day1 out/ra4-f2/day2 --frozen ra4-model-0.8.0 --check out/ra4-f2/check \
+     --out docs/ra4-f2-2026-09-25.md
+presk rank out/ra4-f1/day1 out/ra4-f1/day2 --frozen ra4-model-0.8.0 --check out/ra4-f1/check \
+     --at D=1024,H=16,B=1,T=384 --out docs/ra4-f1a-2026-09-25.md
+presk rank out/ra4-f1/day1 out/ra4-f1/day2 --frozen ra4-model-0.8.0 --check out/ra4-f1/check \
+     --at D=1024,H=8,B=2,T=512 --out docs/ra4-f1b-2026-09-25.md
 ```
 
 ## `presk data chars | encode | pack | lm-windows | info | diff | export`

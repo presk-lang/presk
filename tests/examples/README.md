@@ -1,7 +1,7 @@
 # Presk — Examples
 
 Presk source code illustrating the constructs of the [specification](../report/chapters/02-spec.tex)
-(Chapter 3 of the [report](../report/main.pdf); a reference §N.M below and in the programs
+(Chapter 3 of the [report](../report/presk-report.pdf); a reference §N.M below and in the programs
 is section N.M of the specification, printed 3.N.M in the report).
 Each example lives in **its own directory**, with a local `README.md` that explains
 what it shows and gives the `presk` commands that go with it.

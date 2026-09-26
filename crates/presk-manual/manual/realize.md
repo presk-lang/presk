@@ -207,26 +207,32 @@ presk run tests/plan/two_dots.psk --entry twice --backend native --plan @tests/p
 ## Choosing a plan
 
 A plan can be written by hand, or chosen by the compiler (0.7.0 step 5; `cli`
-chapter). `presk plan` chooses **statically**: it runs the entry once to
-capture each nest's first launch, lowers every nest under every point of its
+chapter). `presk plan` chooses **statically**. It captures each nest's
+first launch from the entry's shapes, on zero inputs, without running a
+kernel (since 0.8.0 step 1). It lowers every nest under every point of its
 space, the thread splits included, and costs each point with the layout cost
 model of a calibrated profile (`optimization` chapter), without compiling or
-timing anything; it writes the plan of the best predictions. `presk autotune`
+timing anything. It writes the plan of the best predictions. `presk autotune`
 is the other side of the comparison: it compiles and times every point on the
 captured inputs, checking each bit for bit against the scalar sequential
 kernel. `presk rank` compares the two. Tutorial step 17 runs the three on the
 tutorial's attention.
 
-That comparison is the research programme's hypothesis RA4, and 0.7.0
-measured it on the course GPT's attention (`experiments` chapter §7): **the
-static choice is not good enough**. The model orders the lanes, the thread
-splits and the softmax passes, and it cannot see a register tile, a loop
-order or a k-block, because it counts no load from the first-level cache into
-registers. Its pick on the attention's contractions at batch 16 is 2.2–3.0
-times slower than the best point measured. What does hold is the space: the
-best point measured beats 0.6.0's kernel by 9.2× and 16.5× on the attention's
-two `ein`s at batch 16, and the model's candidates within its uncertainty
-held the best point, or one within 1.08× of it. `presk plan` gives each nest
+That comparison is the research programme's hypothesis RA4. 0.7.0 measured
+it on the course GPT's attention (`experiments` chapter §7): its model
+ordered the lanes, the thread splits and the softmax passes, and could not
+see a register tile, a loop order or a k-block, because it counted no load
+from the first-level cache into registers. Its pick on the attention's
+contractions at batch 16 was 2.2–3.0 times slower than the best point
+measured. 0.8.0's model, with that term and frozen before its test (§8),
+picks a point within 1.05× of the best on every contraction nest of two
+fresh sweeps. It ranks more than 90 % of the attention `ein`s' close pairs
+right on the small cores, but 85–89 % at new shapes, short of RA4's
+threshold. The space pays either way: its best point beats 0.6.0's kernel
+by 9.2× and 16.5× on the attention's two `ein`s at batch 16, and by 27–132×
+on the contractions of BERT-large's attention and of a head of 128. The
+model's candidates within its uncertainty hold a point within 1.03× of the
+best, so measuring them alone is a chooser too (statement Q). `presk plan` gives each nest
 one layout, chosen at the first shape the nest is launched at; a nest
 launched at several shapes keeps it at the others, where it is checked again.
 

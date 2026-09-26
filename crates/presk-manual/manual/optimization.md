@@ -249,13 +249,25 @@ divides cut to one worker's share.
 - **Threads.** A worker's work and private traffic are those of its share;
   the shared levels, L3 and memory, see every worker's.
 - **Register pressure.** The real and vector variables live in the busiest
-  innermost loop, against the machine's vector registers. The excess is
-  charged as two level-1 accesses per iteration and per spilled register. In
+  innermost loop, against the machine's vector registers. The excess costs
+  two level-1 accesses per iteration and per spilled register, `S`: charged
+  as work in 0.7.0's model, as loads in a model with the load term. In
   four lanes a `[4, 16]` tile holds 24 registers of 32; without lanes, 84.
+- **Register loads** (0.8.0 step 2). `N_ld` counts every load and store the
+  worker's kernel executes (`presk_kernel::cost::kernel_loads`), once
+  whatever its lanes, times the trip counts of its loops; a broadcast of a
+  loaded scalar is part of its load. It is what a register tile changes: a
+  tile `[m, n]` in `ℓ` lanes loads, per `k`, `m` scalars and `n/ℓ` vectors
+  for `m·n/ℓ` vector multiply-adds.
 
-`T̂ = λ + spawn·[p > 1] + max(W/π_g, Q_L2/β_L2, p·Q_L3/β_L3, p·Q_mem/β_mem)`,
-with `π` fitted per group `g`, a machine type, a lane width and a worker count
-(the cores are not equal, and one `π` per core would need a schedule).
+`T̂ = λ + spawn·[p > 1] + C(W/π_g, (N_ld + S)/ρ_g, Q_L2/β_L2, p·Q_L3/β_L3, p·Q_mem/β_mem)`,
+with `π` and `ρ` fitted per group `g`, a machine type, a lane width and a
+worker count (the cores are not equal, and one rate per core would need a
+schedule). `C` is the maximum, 0.7.0's; since 0.8.0 step 3 it may instead be
+the sum of the in-core and the memory terms, `max(work, loads) + max(l2, l3,
+mem)`, or a p-norm `(Σ tᵢ^q)^(1/q)` whose `q` is fitted (the next sections).
+A profile without `ρ` is 0.7.0's model: no load term, and `(W + S)/π_g` for
+the work, which gives 0.7.0's predictions to the last bit.
 
 **The machine** (`presk_kernel::cost::Machine`) is read from the operating
 system for the first CPU the process may run on, so that a run pinned to some
@@ -263,14 +275,17 @@ cores describes those cores. On falicon, pinned to the ten Cortex-X925, that
 is 64 KiB of L1d and 2 MiB of L2 per core and 8 MiB of L3 shared by five of
 the pinned cores. Unpinned, it would be `cpu0`, a Cortex-A725 with 512 KiB of
 L2. The worker count is `--threads`, `PRESK_THREADS` or the CPUs of the
-affinity mask. The description is written into the profile
-(`machine_desc`), which is where to edit it.
+affinity mask. Since 0.8.0 step 4 it also holds the level-1 data cache's
+line, 64 bytes on falicon (`line`; absent from a description written
+before). The description is written into the profile (`machine_desc`),
+which is where to edit it.
 
 **Calibration** (`presk bench --calibrate --space calib`, `make
-calibrate-ra4`) is out of sample by construction: a GEMM at 256, 512 and 1024,
+calibrate-ra4`; widened in 0.8.0 step 3, below) is out of sample by
+construction. In 0.7.0 it was a GEMM at 256, 512 and 1024,
 `f32` and `f64`, 96 layouts each (two tiles, every loop order with and without
 a k-block of 128, both lane widths, 1, 5 and 10 workers), pinned to the X925
-cores. The attention nests the model will be tested on are never in it. The
+cores. The attention nests the model is tested on are never in it. The
 constants are fitted by coordinate descent on a log grid, one at a time, on
 the squared relative error, and the median absolute relative residual is the
 model's uncertainty `u`. On falicon, 2026-09-23, 576 samples:
@@ -291,7 +306,7 @@ at 1024³ in `f32` the best layout (`[4, 16]`, k-block 128, order `KIJ`, four
 lanes, split at depth 1 over ten workers) runs at 405 GFLOP/s, and 0.6.0's
 default layout at 77. These are the calibration's own samples, not a test.
 Whether the model ranks the layouts of the attention nests it never saw is
-what 0.7.0 step 6 measured, below: it does not.
+what 0.7.0 step 6 measured, below: it did not.
 
 **What `u` is for.** A prediction comes with the model's uncertainty, and two
 commands read it (question 69). `presk plan` picks the best prediction, a tie
@@ -302,11 +317,11 @@ lies outside `1 ± u`, and reports the accuracy on every pair the measurement
 distinguishes and on the decided ones apart. Whether a chooser should decide
 alone above the margin is the chooser's rule, not the model's.
 
-## What the layout model cannot see (0.7.0 step 6)
+## What 0.7.0's layout model could not see (0.7.0 step 6)
 
 Tested on the course GPT's attention, which the calibration never saw (D62,
-`docs/ra4-2026-09-24.md`, the `experiments` chapter's §7), the model fails
-the hypothesis. It orders 47.9 % and 43.9 % of the two `ein`s'
+`docs/ra4-2026-09-24.md`, the `experiments` chapter's §7), 0.7.0's model
+failed the hypothesis. It orders 47.9 % and 43.9 % of the two `ein`s'
 distinguished close pairs right, at batch 16 in `f32`, where RA4 asks for
 more than 90 %, and its pick on the attention's three contractions is 2.18,
 2.87 and 3.01 times slower than the best point measured. The table per
@@ -328,8 +343,10 @@ and the spawn cost per worker count, and the work of a third pass. It cannot
 see the others, and the terms each point records say why. At batch 16 in `f32`
 every point of both `ein`s is predicted **work-bound**, so the traffic terms
 never bind. The work count gives a load no weight (`Expr::Load` weighs 0 in
-`presk_kernel::cost`, 0.3.0's roofline convention), and traffic is counted
-from L2, where every register tile of a form has the same footprint. The
+`presk_kernel::cost`, 0.3.0's roofline convention), and nothing counts the
+loads from L1 into registers, which is what a register tile changes. The
+traffic terms do count the bytes from L2 into L1, which differ between loop
+orders and k-blocks, but under the maximum they never bind. The
 values `ein`'s tiles `[1, 4]`, `[1, 16]` and `[2, 8]` have the same work, the
 same traffic and the same prediction, 2.27 ms, and measure 7.34, 3.39 and 4.66
 ms. Where the predictions of two tiles do differ, it is by the edge work of
@@ -343,9 +360,9 @@ multiply-add**, and no term counts them. The calibration had seen it too: its
 two tiles, `[1, 8]` and `[4, 16]`, share a group and have the same work, and
 they differ by a median of 1.26× — a quarter of the 288 pairs by more than
 1.85× — which is part of what `u` = 0.185 is. A term for those loads is the
-design `docs/kernels-roadmap.md` records for a later version, to be tested on
-a fresh sweep, since a model designed after seeing where this one failed
-would otherwise be fitted to its test.
+design `docs/kernels-roadmap.md` recorded for a later version. 0.8.0 added
+it (next section) and tested it on fresh sweeps, since a model designed
+after seeing where this one failed would otherwise be fitted to its test.
 
 Two things hold. **The model is a good pruner**: on every contraction nest at
 the attention's shapes, the points it predicts within `1 + u` of its best
@@ -357,6 +374,232 @@ enough** for statement N: choosing statically costs 582–717 times less wall
 time than measuring every point at batch 16, and 75–89 times less at batch 1,
 where N asks for 10³, because a point's measurement is eight launches of a few
 milliseconds against about 0.2 ms to lower and cost it.
+
+## The load term (0.8.0 step 2)
+
+Version 0.8.0 re-tests RA4 with the model changed, designed on 0.7.0's
+measurements, which are its development set, and frozen before two fresh
+sweeps decide (`experiments` chapter; `presk-specs/implementation/presk-plan-0.8.0.md`).
+Step 2 adds the load term above:
+
+- `N_ld/ρ_g` joins the maximum. `ρ` is fitted per group with the other
+  constants (`presk bench --calibrate P.json --space calib --load-term
+  group`, the default), once for the machine (`--load-term machine`), when
+  the calibration cannot tell the groups' rates apart, or not at all (`none`,
+  0.7.0's model).
+- Every point `presk autotune` and `presk reprice` record carries `loads`
+  and `spill` in its planned cost, and a `loads` term when the model has
+  one.
+- A calibration into an existing profile drops that profile's samples from
+  before this step, which have no load count and hold their spilled
+  registers inside their work.
+
+0.7.0's calibration had two register tiles, too few to identify `ρ`. Step 3
+widens it, and chooses how the terms combine: the maximum, a sum of the
+in-core and memory terms, or a fitted p-norm.
+
+On the development set the count reads the tiles as designed. The values
+`ein` at batch 16 in `f32`, four lanes, split at depth 2 over ten workers,
+has 90 points. Spearman between one worker's `N_ld` and the measured time is
+0.953, where 0.7.0's prediction reaches 0.437. Among the thirty that model
+predicted equal, 2.27 ms, it is 0.943. Those are the measurements the term
+was designed on, so they show that it is built as designed, not that it
+ranks: the fresh sweeps are the test.
+
+## The combination and the wider calibration (0.8.0 step 3)
+
+**How the terms combine** (`--combine`):
+- The maximum, 0.7.0's form, assumes a core that overlaps everything, so
+  that only the slowest resource counts.
+- The sum of the in-core and memory terms assumes a core that does not
+  overlap its arithmetic with its misses.
+- The p-norm lies between them, from `q = 1`, the sum of all five terms, to
+  the maximum as `q` grows.
+
+Each is fitted on the same samples (`presk refit --compare`). A p-norm's `q`
+is searched on its own, the rates fitted again at every `q` tried, because
+it trades off against all of them at once.
+
+**The calibration** (`make calibrate-ra4`) now times 300 layouts per shape
+and type:
+- five register tiles, `[1, 4]` to `[4, 16]`;
+- ten loop orders and k-blocks;
+- both lane widths;
+- one, five and ten workers.
+
+The shapes are the GEMM at 256 to 2048 and two thin products, `16 × 4096 ×
+4096` and `4096 × 4096 × 16`. On falicon's X925 cores it gave 3 536 samples:
+
+| load term | max | sum | p-norm |
+|---|---|---|---|
+| none (0.7.0's) | u 0.226 | 0.226 | 0.224 (q = 1.00) |
+| per group | **0.133** | 0.137 | 0.136 (q = 1.00) |
+| one for the machine | 0.149 | 0.163 | 0.167 (q = 1.00) |
+
+The load term is what improves the fit. The three combinations fit the
+calibration about equally, and the p-norm settles at the sum. The form is
+chosen on the development set (step 4). Two things this calibration does not
+do:
+
+- **It does not identify `ρ` at one lane.** There the work term binds on
+  every sample, though the scalar tiles differ by up to 1.75×: under the
+  maximum they tie, and a sum or a p-norm would see them.
+- **It does not identify the memory constant.** `β_mem` comes out above
+  `β_L3`, which cannot be. The thin products meant to be bound by memory
+  are not on this machine: ten cores multiply sixteen rows faster than
+  memory feeds them. A product of two rows is not bound by memory either:
+  it reads memory at 6–8 GB/s on one worker and 32–38 GB/s on ten, of
+  about 273. The kernels are bound by their loads and loop overhead long
+  before memory, so no product identifies `β_mem` here. The thin products
+  are kept, and `β_mem` is recorded as not identifiable on this machine
+  (D67, the user's decision).
+
+It took 3 h 13 min. About a third was the kernels' own time; the rest was
+converting the exact inputs at every call, now done once. At 2048 the
+one-worker layouts took three quarters of the kernels' time, and since 0.8.0
+step 4 they are left out there (`--min-workers 2`, the user's decision, D67):
+one worker is calibrated at 256 to 1024 and on the thin products.
+
+**The definitive calibration** (0.8.0 step 4, D68), the space as amended and
+a profile started empty, took 44.9 min on falicon's X925 cores, 1 329 s of
+it in the timed kernels, and gave 3 336 samples. With the load term per
+group, `u` is 0.142 under the maximum, 0.141 under the sum and 0.143 under
+the p-norm (`q` = 1.06); without it, 0.241. Timed again, the same layouts
+differ from step 3's by a median of 2.3 %. It is archived read-only beside
+the development set, and every form step 4 compares is a `presk refit` of
+it.
+
+**The form chosen** (0.8.0 step 4, D69) on the development set, 0.7.0's
+ten-core days priced under each form (`make ra4-ablation`): a load rate per
+group under the p-norm. On the two attention `ein`s at batch 16 in `f32`,
+0.7.0's model ranked 47.9 % and 43.9 % of the distinguished close pairs
+right. The load term alone reaches 55.2 % and 60.3 %, and the p-norm with
+it 84.6 % and 84.4 %, with ties down from about 40 % to 3 %. Near `q` = 1
+the p-norm adds the work and the loads, which is what tells the scalar
+tiles apart; the two-term sum does not. These are development figures,
+and the fresh sweeps decided (the last section).
+
+**Rules of the planned cost** (0.8.0 step 4, 4c). Three rules refine what
+the model reads of a kernel, each named by a profile (`rules` in its layout
+model) and off by default, so that a profile naming none prices every
+kernel as before, bit for bit:
+
+- `lines`: a footprint counts whole cache lines of the machine's line size.
+  Along the contiguous axis its span is rounded up to the line, so that an
+  access whose loops do not walk that axis brings a line per element.
+- `shared`: a loop is resident when the footprints of all its buffers,
+  summed, fit the cache, where 0.7.0 asks it of each buffer apart.
+- `overhead`: each loop iteration weighs one operation of work, its
+  increment, compare and branch.
+
+Under `lines` or `shared`, a loop that does not fit while one of its
+iterations does brings once what consecutive iterations share: the lines
+they share along the contiguous axis, or a buffer the loop does not move.
+Without that, the first rule would charge a line per element to every
+stream, and the second would evict the output's tile at every step of `k`.
+A rule is tried on the definitive calibration without measuring it again:
+`presk refit --recost` costs every sample again under it, its time kept
+(`cli` chapter).
+
+**The rules kept** (0.8.0 step 4, D70). Each was tried on the definitive
+calibration, re-costed, and refitted in the chosen form, then on the
+development set. A rule had to lower the calibration's `u` and not lower M
+on either attention `ein`.
+
+| rules | `u` | scores `ein` | values `ein` |
+|---|---|---|---|
+| none | 0.143 | 84.6 % | 84.4 % |
+| `lines` | 0.141 | 84.8 % | 84.5 % |
+| `shared` | 0.143 (up) | 85.0 % | 87.9 % |
+| `overhead` | 0.134 | 88.8 % | 89.2 % |
+| `lines,overhead` | 0.132 | 89.3 % | 89.6 % |
+
+`overhead` tells tiles and k-blocks apart: tiles go from 83 % to 89 % right,
+k-blocks from 49 % to 66 %. `lines` adds little on these nests, whose rows
+are whole lines. `shared` fails in every combination and worsens the pick
+on both `ein`s. The user kept `lines` and `overhead`. No rule sees the pack:
+its body costs the same with and without it, and what it gains is how each
+iteration's loads fall, one line against one per row of the tile.
+
+**The frozen model** (0.8.0 step 4, D71): a load rate per group under the
+p-norm (`q` = 1.06), the rules `lines` and `overhead`, the calibration of
+D68 re-costed under them (`u` = 0.132). Under those rules the nine forms
+were fitted again, and this one still leads. Its profile is archived
+read-only in `~/presk-data/ra4-model-0.8.0`, and fresh sweep F1 is priced by
+it. On the development set it ranks 89.3 % and 89.6 % of the two attention
+`ein`s' distinguished pairs right, with O at 1.07, 1.00 and 1.01. These are
+development figures, statement D of 0.8.0, which decides nothing. `make
+calibrate-ra4` calibrates in this form and under these rules by default,
+and so does `make calibrate-ra4-small` on the A725 cores; since 0.8.0 step 8
+they are also the defaults of `presk bench --calibrate --space calib` and
+`presk refit` (D75).
+
+## What the fresh sweeps found (0.8.0 steps 5–7)
+
+The frozen model was tested on measurements taken after the freeze (D72–D74,
+`experiments` chapter §8): **F1**, new shapes on the ten X925 cores,
+priced by the frozen profile itself (BERT-large's attention, F1a, and a
+head of 128, F1b); and **F2**, 0.7.0's shapes on the ten A725 cores, priced
+by a calibration of those cores in the frozen form and space.
+
+**The A725's calibration** (`make calibrate-ra4-small`, D72): 3 336
+samples in 101 minutes, `u` = 0.168 where the X925's is 0.132, and `q` =
+1.00, a plain sum. The frozen form fits best there too of the nine. The
+constants that are identified are what a smaller core predicts: `π` at one
+lane 5.3–6.3 Gop/s a worker, against 12.2–12.9 on the X925, and `ρ` 7.1–10.6
+G loads/s at one lane, which the X925's calibration could not identify
+(49–80, unphysical). Not identified there: `π` in four lanes in `f32` on
+five and ten workers, where loads make most of every sample's time, and
+`β_mem`, as on the X925.
+
+**What the model ranks.** Over every nest of each sweep, by decision:
+
+| Decision | F1 (X925) | F2 (A725) | development set |
+|---|---|---|---|
+| tile | 90.7 % | 92.4 % | 89.1 % |
+| split | 99.1 % | 98.1 % | 97.7 % |
+| lanes | 100 % | 98.7 % | 100 % |
+| order | 60.6 % | 72.6 % | 67.0 % |
+| k-block | 64.3 % | 53.4 % | 65.9 % |
+| pack | 47.9 % | 62.9 % | 57.8 % |
+| every pair | 87.6 % of 76 830 | 90.4 % of 134 022 | 88.5 % of 137 307 |
+
+Almost no pair is tied, and the pairs the model decides, predicted apart by
+more than `u`, are 99.2 % right on F1 and 98.8 % on F2. On statement M's
+nests, the two attention `ein`s, F2 ranks 92.7 % and 91.7 % of the
+distinguished pairs right, above the 90 % RA4 asks. F1 ranks 87.4 % and
+88.5 % at F1a and 85.4 % and 88.8 % at F1b, below it: the model carried
+over to another core and fell short on new shapes. The development figure,
+89.3 % and 89.6 %, foresaw F1 within four points.
+
+**Where it is wrong.** 97–98 % of the misses on F1, and 99 % on F2, are
+pairs the model predicts within `1 + u` of each other: M is decided by how
+it orders what it predicts to be close. Within `u` it is right on 69–73 % of
+the pairs on F1 and 78–81 % on F2, and those pairs are 39–46 % of F1's. The
+misses are tiles (about 10 % wrong, on the largest counts), loop orders, the
+pack and k-blocks, whose pairs almost all lie within `u`. One class of
+decided pairs fails: the loop orders of one-row tiles at F1b's scores
+`ein`, 67 wrong of 121. The order that reads the packed operand once a row
+of the output (`I` outside `J`) is predicted 15–23 % slower, for its L2
+term, and measures 1–16 % faster. Under a p-norm with `q` = 1.06, nearly a
+sum, the L2 time is added to the load time, and a one-row kernel does not
+pay it on top of its loads. The packed operand of one head is 256 KiB at F1b
+and 96 KiB at F1a, against 64 KiB of L1; at F2's shapes it is 64 KiB, and
+every decided order pair there is right.
+
+**What holds.** The pick: within 1.05× of the best point on every
+contraction nest M names (statement O). And the hybrid chooser 0.7.0's data
+suggested, statement Q: the candidates within `1 + u` of the model's best,
+5 to 28 points of a nest, hold a point within 1.03× of the best measured on
+all eighteen contraction nests of both sweeps, at most 1.8 % of the
+exhaustive sweep's time, the static side included. The static choice itself
+is 1 013–2 933 times cheaper than sweeping, but only 218–252 times at batch
+one on the A725 (statement N): there costing 3 305 points, 0.16–0.22 ms each,
+is most of the static side.
+
+What the failures point to is recorded in `docs/kernels-roadmap.md`: how the
+L2 term should combine with the load term where the packed operand exceeds
+L1, how the model orders pairs within `u`, and the cost of costing a point.
 
 ## Moving a scalar across a contraction
 

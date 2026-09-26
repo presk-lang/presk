@@ -1,0 +1,11 @@
+-- matmul.psk — a product of any shape: the thin products of the layout cost
+-- model's calibration (plan 0.8.0 §3.3, `make calibrate-ra4`), `16 × 4096 ×
+-- 4096` and `4096 × 4096 × 16`, bound by the traffic from memory, so that the
+-- traffic constants are identified. A sibling of gemm.psk, whose file-level
+-- `N` would bind this function too. The attention nests the model is tested
+-- on are never in this set.
+dim I
+dim K
+dim J
+
+fn matmul(a : ℝ[I, K], b : ℝ[K, J]) -> ℝ[I, J] = a · b

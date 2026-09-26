@@ -360,7 +360,25 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         seed: u64,
     },
-    /// Rank accuracy of the layout cost model on two days of measurement, and the statements of plan 0.7.0.
+    /// Price the points of a recorded day again under another profile, their times copied: nothing is measured.
+    Reprice {
+        file: PathBuf,
+        /// The entry whose sweeps to re-price; the day's other sweeps are left.
+        #[arg(long)]
+        entry: String,
+        /// The day `presk autotune` wrote: one sweep, or one per configuration in subdirectories.
+        #[arg(long, value_name = "DIR")]
+        day: PathBuf,
+        /// The profile whose layout cost model prices the points.
+        #[arg(long, value_name = "FILE.json")]
+        profile: PathBuf,
+        /// Where the re-priced day goes, laid out as the day is.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+    },
+    /// Rank accuracy of the layout cost model on two days of measurement, the statements of plan 0.7.0, and plan 0.8.0's Q.
     Rank {
         day1: PathBuf,
         /// The second day; the first again for one sweep.
@@ -370,6 +388,9 @@ enum Command {
         /// A check of statement L run apart (`autotune --repeat 0 --interp --shard`).
         #[arg(long, value_name = "DIR")]
         check: Option<PathBuf>,
+        /// Refuse a day whose `day.txt` names a commit that does not descend from this tag, or a modified working tree (plan 0.8.0's freeze; run in the repository).
+        #[arg(long, value_name = "TAG")]
+        frozen: Option<String>,
         /// The entry statements M, N and O are about.
         #[arg(long, default_value = "SelfAttention.apply")]
         entry: String,
@@ -384,6 +405,34 @@ enum Command {
         gemm: String,
         #[arg(long, default_value = "N=1024")]
         gemm_at: String,
+        /// Decide plan 0.8.0's statement Q on days recorded before the capture of shapes too (0.7.0's); days that record it always do.
+        #[arg(long)]
+        statement_q: bool,
+    },
+    /// Fit a profile's layout cost model again on its samples, in another form: nothing is measured.
+    Refit {
+        profile: PathBuf,
+        /// The load term: `group`, `machine` or `none` (0.7.0's model).
+        #[arg(long, value_name = "TERM", default_value = "group")]
+        load_term: String,
+        /// How the terms combine: `max`, `sum` or `pnorm`, 0.8.0's frozen form.
+        #[arg(long, value_name = "FORM", default_value = "pnorm")]
+        combine: String,
+        /// Where the refitted profile goes; the profile itself when omitted.
+        #[arg(long, value_name = "FILE.json")]
+        out: Option<PathBuf>,
+        /// Fit every form under every load term on the same samples and print their constants and u; write nothing.
+        #[arg(long)]
+        compare: bool,
+        /// Cost every sample again first, its time kept: its layout lowered at its product on this program (experiments/matmul.psk) and costed on the profile's machine description.
+        #[arg(long, value_name = "FILE.psk")]
+        recost: Option<PathBuf>,
+        /// The product entry of --recost's program, with dimensions I, K and J.
+        #[arg(long, default_value = "matmul")]
+        entry: String,
+        /// The rules of the planned cost --recost costs under: `none`, or among `lines`, `shared`, `overhead`, comma-separated. By default, the profile's own.
+        #[arg(long, value_name = "RULES", requires = "recost")]
+        rules: Option<String>,
     },
     /// Time an entry on every backend (the reference at --bits, the kernel interpreter, native f64, f32 and bf16).
     Bench {
@@ -420,6 +469,24 @@ enum Command {
         /// the profile (0.7.0 step 4); without it, the roofline of every kernel.
         #[arg(long, value_name = "calib", requires = "calibrate")]
         space: Option<String>,
+        /// With --space calib: the layout cost model's load term (plan 0.8.0 §3.1), its rate fitted
+        /// per group as π (`group`), once for the machine (`machine`), or absent, 0.7.0's model (`none`).
+        #[arg(long, value_name = "TERM", default_value = "group")]
+        load_term: String,
+        /// With --space calib: how the model's terms combine (plan 0.8.0 §3.2): `max`, `sum` of the
+        /// in-core and memory terms, or `pnorm` with its exponent fitted, 0.8.0's frozen form.
+        #[arg(long, value_name = "FORM", default_value = "pnorm")]
+        combine: String,
+        /// With --space calib: leave out the layouts stated on fewer workers than this. `make
+        /// calibrate-ra4` passes 2 at N = 2048, whose one-worker layouts took three quarters of its
+        /// time (0.8.0 step 4, D67).
+        #[arg(long, value_name = "N", default_value_t = 1)]
+        min_workers: usize,
+        /// With --space calib: the rules of the planned cost the samples are costed under (0.8.0
+        /// step 4, D70): `none`, or among `lines`, `shared`, `overhead`. By default, the rules of the
+        /// profile's samples, and for a new profile the frozen model's, `lines,overhead`.
+        #[arg(long, value_name = "RULES")]
+        rules: Option<String>,
         /// The realization to calibrate (kernels are timed in this machine type).
         #[arg(long, default_value = "f64")]
         realize: String,
@@ -924,16 +991,32 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Rank { day1, day2, out, check, entry, at, dtype, gemm, gemm_at } => ra4::rank(&day1, &day2, &out, &ra4::RankOpts { check, entry, at, dtype, gemm, gemm_at }),
-        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, space, realize, plan, threads, native_only } => {
+        Command::Reprice { file, entry, day, profile, out, seed } => ra4::reprice(&file, &entry, &day, &profile, &out, seed),
+        Command::Rank { day1, day2, out, check, frozen, entry, at, dtype, gemm, gemm_at, statement_q } => ra4::rank(&day1, &day2, &out, &ra4::RankOpts { check, frozen, entry, at, dtype, gemm, gemm_at, statement_q }),
+        Command::Refit { profile, load_term, combine, out, compare, recost, entry, rules } => match (presk_opt::profile::LoadTerm::parse(&load_term), presk_opt::profile::Combine::parse(&combine), rules.as_deref().map(presk_kernel::cost::CostRules::parse).transpose()) {
+            (Ok(l), Ok(c), Ok(r)) => refit(&profile, l, c, out.as_deref(), compare, recost.as_deref().map(|f| (f, entry.as_str(), r))),
+            (Err(m), _, _) | (_, Err(m), _) | (_, _, Err(m)) => {
+                eprintln!("presk refit: {m}");
+                ExitCode::from(2)
+            }
+        },
+        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only } => {
             set_threads(threads);
+            let rules = rules.as_deref().map(presk_kernel::cost::CostRules::parse).transpose();
+            let model = match (presk_opt::profile::LoadTerm::parse(&load_term), presk_opt::profile::Combine::parse(&combine), rules) {
+                (Ok(l), Ok(c), Ok(r)) => (l, c, min_workers, r),
+                (Err(m), _, _) | (_, Err(m), _) | (_, _, Err(m)) => {
+                    eprintln!("presk bench: {m}");
+                    return ExitCode::from(2);
+                }
+            };
             let calibrate = match (calibrate.as_deref(), space.as_deref()) {
-                (Some(p), Some("calib")) => Some((p, true)),
+                (Some(p), Some("calib")) => Some((p, Some(model))),
                 (Some(_), Some(other)) => {
                     eprintln!("presk bench: --space {other}: the one space is `calib`");
                     return ExitCode::from(2);
                 }
-                (Some(p), None) => Some((p, false)),
+                (Some(p), None) => Some((p, None)),
                 (None, _) => None,
             };
             bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate, &parse_plan(plan.as_deref(), &realize), plan.is_some(), native_only)
@@ -1746,7 +1829,11 @@ fn entry_args(core: &presk_core::Program, prog: &elab::ElabProgram, opts: &presk
 
 /// `presk bench`: one entry timed on every backend.
 #[allow(clippy::too_many_arguments)]
-fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, repeat: usize, seed: u64, opt: Opt, calibrate: Option<(&Path, bool)>, plan: &presk_rt::Plan, planned: bool, native_only: bool) -> ExitCode {
+/// `calibrate`: the profile to write, and for the layout cost model
+/// (`--space calib`) its load term, its combination and the fewest workers
+/// a layout of the space is stated on.
+#[allow(clippy::type_complexity)]
+fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, repeat: usize, seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, plan: &presk_rt::Plan, planned: bool, native_only: bool) -> ExitCode {
     let realize = &plan.realization;
     let dims = match parse_dims(dims) {
         Ok(d) => d,
@@ -1777,8 +1864,8 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     };
     let args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
     if let Some((path, layouts)) = calibrate {
-        if layouts {
-            return calibrate_layouts(&core, &prog, func, &fdims, &args, plan, repeat.max(3), seed, path);
+        if let Some(model) = layouts {
+            return calibrate_layouts(&core, &prog, func, &fdims, &args, plan, repeat.max(3), seed, path, model);
         }
         return calibrate_profile(&core, &prog, func, &fdims, &args, plan, repeat.max(3), seed, path);
     }
@@ -1870,6 +1957,130 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         println!("{name:<18} {med:>12.3} {best:>12.3} {:>8.1}x", base / med);
     }
     ExitCode::SUCCESS
+}
+
+/// A layout cost model's constants, as `presk bench --calibrate --space
+/// calib` and `presk refit` print them.
+fn print_layout_fit(f: &presk_opt::profile::LayoutFit) {
+    let rules = if f.rules.is_none() { String::new() } else { format!(", rules {}", f.rules.name()) };
+    println!("-- fit ({}, {}{rules}): λ = {:.2} µs, spawn = {:.2} µs, β_L2 = {:.3e}, β_L3 = {:.3e}, β_mem = {:.3e} bytes/s", f.combine.name(), if f.rho.is_empty() { "no load term" } else { "load term" }, f.lambda * 1e6, f.spawn * 1e6, f.beta_l2, f.beta_l3, f.beta_mem);
+    for (g, pi) in &f.pi {
+        println!("--      π[{g}] = {pi:.3e} ops/s");
+    }
+    for (g, rho) in &f.rho {
+        println!("--      ρ[{g}] = {rho:.3e} loads/s");
+    }
+    println!("-- uncertainty u = {:.3} (median relative residual over {} samples), Spearman {:.3}", f.u, f.samples.len(), f.spearman);
+}
+
+/// `presk refit` (plan 0.8.0 step 3): the layout cost model fitted again on
+/// the samples a profile holds, under another load term or combination, so
+/// that every form is fitted on the same calibration. Samples recorded
+/// before 0.8.0 step 2 have no load count and are left out, as a
+/// calibration leaves them out.
+///
+/// With `recost` (0.8.0 step 4, 4b), every sample is costed again first —
+/// its layout lowered at its product on the program given, costed on the
+/// profile's machine description under the rules given — its time kept, so
+/// that a rule of the planned cost is tried on the definitive calibration
+/// without measuring it again. The fit then records those rules.
+#[allow(clippy::type_complexity)]
+fn refit(path: &Path, load: presk_opt::profile::LoadTerm, combine: presk_opt::profile::Combine, out: Option<&Path>, compare: bool, recost: Option<(&Path, &str, Option<presk_kernel::cost::CostRules>)>) -> ExitCode {
+    use presk_opt::profile::{Combine, LoadTerm, fit_layout};
+    let mut profile = match presk_opt::Profile::load(path) {
+        Ok(p) => p,
+        Err(m) => {
+            eprintln!("presk refit: {m}");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(layout) = profile.layout.take() else {
+        eprintln!("presk refit: {} has no layout cost model: calibrate it with `presk bench --calibrate {} --space calib`", path.display(), path.display());
+        return ExitCode::from(2);
+    };
+    let mut samples = layout.samples;
+    let mut rules = layout.rules;
+    if let Some((file, entry, r)) = recost {
+        // Under the rules given, or the profile's own.
+        let r = r.unwrap_or(rules);
+        let Some(mut machine) = profile.machine_desc.clone() else {
+            eprintln!("presk refit --recost: {} has no machine description to cost on", path.display());
+            return ExitCode::from(2);
+        };
+        if r.lines && machine.line == 0 {
+            // A description recorded before 0.8.0 step 4 has no line size.
+            let Some(line) = presk_kernel::cost::Machine::line_of(&machine.source) else {
+                eprintln!("presk refit --recost: {}'s machine description has no line size, and the operating system gives none for {}", path.display(), machine.source);
+                return ExitCode::from(2);
+            };
+            println!("-- {}'s machine description has no line size: {line} bytes, as the operating system gives {}'s", path.display(), machine.source);
+            machine.line = line;
+        }
+        let t0 = std::time::Instant::now();
+        let fresh = match ra4::recost(&samples, file, entry, &machine, &r) {
+            Ok(f) => f,
+            Err(m) => {
+                eprintln!("presk refit --recost: {m}");
+                return ExitCode::from(2);
+            }
+        };
+        let moved = |f: &dyn Fn(&presk_kernel::cost::PlannedCost) -> Vec<f64>| samples.iter().zip(&fresh).filter(|(a, b)| f(&a.cost) != f(&b.cost)).count();
+        let same = samples.iter().zip(&fresh).filter(|(a, b)| a.cost == b.cost).count();
+        println!(
+            "-- {} samples re-costed under the rules {} in {:.1} s, times kept: {same} costs identical, {} not (work {}, traffic {}, loads {}, spill {})",
+            fresh.len(),
+            r.name(),
+            t0.elapsed().as_secs_f64(),
+            fresh.len() - same,
+            moved(&|c| vec![c.work]),
+            moved(&|c| c.traffic.to_vec()),
+            moved(&|c| vec![c.loads]),
+            moved(&|c| vec![c.spill, c.regs as f64, c.spilled as f64]),
+        );
+        (samples, rules) = (fresh, r);
+        profile.machine_desc = Some(machine);
+    }
+    let before = samples.len();
+    samples.retain(|s| s.cost.loads > 0.0);
+    if samples.len() < before {
+        eprintln!("presk refit: {} samples recorded before 0.8.0 step 2 left out: they have no load count", before - samples.len());
+    }
+    if samples.is_empty() {
+        eprintln!("presk refit: {} has no sample to fit", path.display());
+        return ExitCode::from(2);
+    }
+    if compare {
+        println!("{:<8} {:<16} {:>6} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10} {:>8}", "load", "combination", "u", "Spearman", "λ µs", "spawn µs", "β_L2", "β_L3", "β_mem", "fit s");
+        for load in [LoadTerm::None, LoadTerm::Group, LoadTerm::Machine] {
+            for combine in [Combine::Max, Combine::Sum, Combine::Pnorm(1.0)] {
+                let t0 = std::time::Instant::now();
+                let f = fit_layout(samples.clone(), load, combine);
+                let name = match load {
+                    LoadTerm::None => "none",
+                    LoadTerm::Group => "group",
+                    LoadTerm::Machine => "machine",
+                };
+                println!("{:<8} {:<16} {:>6.3} {:>8.3} {:>8.2} {:>10.2} {:>10.3e} {:>10.3e} {:>10.3e} {:>8.1}", name, f.combine.name(), f.u, f.spearman, f.lambda * 1e6, f.spawn * 1e6, f.beta_l2, f.beta_l3, f.beta_mem, t0.elapsed().as_secs_f64());
+            }
+        }
+        println!("-- {} samples of {}; nothing written", samples.len(), path.display());
+        return ExitCode::SUCCESS;
+    }
+    let mut fitted = fit_layout(samples, load, combine);
+    fitted.rules = rules;
+    print_layout_fit(&fitted);
+    profile.layout = Some(fitted);
+    let to = out.unwrap_or(path);
+    match profile.save(to) {
+        Ok(()) => {
+            println!("-- profile written to {}", to.display());
+            ExitCode::SUCCESS
+        }
+        Err(m) => {
+            eprintln!("presk refit: {m}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// `presk bench --calibrate`: time every kernel of the entry natively, fit
@@ -2000,11 +2211,16 @@ fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func:
 /// sample the profile holds, this run's and earlier ones (other sizes, other
 /// types). The fit's median relative residual is the model's uncertainty `u`.
 #[allow(clippy::too_many_arguments)]
-fn calibrate_layouts(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], plan: &presk_rt::Plan, repeat: usize, seed: u64, path: &Path) -> ExitCode {
+fn calibrate_layouts(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], plan: &presk_rt::Plan, repeat: usize, seed: u64, path: &Path, (load, combine, min_workers, rules): (presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)) -> ExitCode {
     use presk_rt::layout::{BlockLoop, Form, KBlock, Split};
     let machine = presk_kernel::cost::Machine::detect();
     let realize = &plan.realization;
     let dtype = realize.default;
+    // The inputs rounded to the machine type once, as the backend would round
+    // them at every call, outside the kernels it times: at 2048 that was
+    // most of a calibration's wall time (0.8.0 step 3, D67).
+    let args: Vec<presk_rt::Value> = args.iter().map(|v| v.realize(dtype)).collect();
+    let args = args.as_slice();
     let f = core.func(func);
     let nests: Vec<String> = f
         .body
@@ -2021,6 +2237,13 @@ fn calibrate_layouts(core: &presk_core::Program, prog: &elab::ElabProgram, func:
     let mut workers = vec![1, pm / 2, pm];
     workers.retain(|w| *w >= 1);
     workers.dedup();
+    // `--min-workers`: at 2048 the one-worker layouts are left out, three
+    // quarters of that size's time (0.8.0 step 4, D67).
+    workers.retain(|w| *w >= min_workers);
+    if workers.is_empty() {
+        eprintln!("presk bench --space calib: --min-workers {min_workers} leaves no layout on {pm} workers");
+        return ExitCode::from(2);
+    }
     let mut lanes = vec![1, dtype.natural_lanes()];
     lanes.dedup();
     let orders3: [[BlockLoop; 3]; 6] = [
@@ -2031,13 +2254,36 @@ fn calibrate_layouts(core: &presk_core::Program, prog: &elab::ElabProgram, func:
         [BlockLoop::K, BlockLoop::I, BlockLoop::J],
         [BlockLoop::K, BlockLoop::J, BlockLoop::I],
     ];
+    // Plan 0.8.0 §3.3: no k-block in the orders IJ and JI, a k-block of 128
+    // in every order of IJK, and of 32 in IJK and KIJ.
     let mut blocks: Vec<(KBlock, Vec<BlockLoop>)> = vec![(KBlock::None, vec![BlockLoop::I, BlockLoop::J]), (KBlock::None, vec![BlockLoop::J, BlockLoop::I])];
     blocks.extend(orders3.iter().map(|o| (KBlock::Width(128), o.to_vec())));
+    blocks.extend([&orders3[0], &orders3[4]].iter().map(|o| (KBlock::Width(32), o.to_vec())));
     println!("-- {} on {} ({}): L1d {} KiB, L2 {} KiB, L3 {} KiB shared by {}, {} workers, {} vector registers", nest, machine.source, realize.label(), machine.l1 >> 10, machine.l2 >> 10, machine.l3 >> 10, machine.l3_sharing, pm, machine.vector_registers);
+    if min_workers > 1 {
+        println!("-- layouts on {} workers only (--min-workers {min_workers})", workers.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", "));
+    }
+    // The rules of the planned cost (0.8.0 step 4, D70): those given, or
+    // those the profile's samples were costed under, which a run that keeps
+    // them must share.
+    let kept = presk_opt::Profile::load(path).ok().and_then(|p| p.layout).filter(|l| !l.samples.is_empty()).map(|l| l.rules);
+    let rules = match (rules, kept) {
+        (Some(r), Some(k)) if r != k => {
+            eprintln!("presk bench --space calib: {}'s samples were costed under the rules {}, not {}: re-cost them first (`presk refit --recost`), or calibrate into a new profile", path.display(), k.name(), r.name());
+            return ExitCode::from(2);
+        }
+        // A new profile is costed under the frozen model's rules (D71).
+        (r, k) => r.or(k).unwrap_or(presk_kernel::cost::CostRules { lines: true, overhead: true, ..Default::default() }),
+    };
+    if !rules.is_none() {
+        println!("-- costed under the rules {}", rules.name());
+    }
     let mut fresh: Vec<presk_opt::profile::PlannedSample> = Vec::new();
     let mut roofline: Vec<presk_opt::profile::Sample> = Vec::new();
     let mut skipped = 0usize;
-    for tile in [(1usize, 8usize), (4, 16)] {
+    // Five register tiles, so that the load rate is told apart from π: their
+    // loads per multiply-add span 2 to 0.3125 in four lanes (plan 0.8.0 §3.3).
+    for tile in [(1usize, 4usize), (1, 8), (2, 8), (2, 16), (4, 16)] {
         for (kblock, order) in &blocks {
             for l in &lanes {
                 for w in &workers {
@@ -2069,7 +2315,7 @@ fn calibrate_layouts(core: &presk_core::Program, prog: &elab::ElabProgram, func:
                     }
                     let medians = presk_kernel::cost::median_per_kernel(&samples.borrow(), b.kernels.len());
                     let Some((k, seconds)) = b.kernels.iter().zip(medians).find(|(k, _)| k.name == "dot" || k.name.starts_with("ein[")).and_then(|(k, t)| t.map(|t| (k.clone(), t))) else { continue };
-                    let cost = presk_kernel::cost::planned_cost(&k, &machine);
+                    let cost = presk_kernel::cost::planned_cost_under(&k, &machine, &rules);
                     let signature = k.to_string().lines().next().unwrap_or("").trim_end_matches(" {").to_string();
                     let kc = presk_kernel::cost::kernel_cost(&k);
                     roofline.push(presk_opt::profile::Sample { signature: signature.clone(), name: k.name.clone(), work: kc.work, bytes: kc.bytes, seconds });
@@ -2098,20 +2344,25 @@ fn calibrate_layouts(core: &presk_core::Program, prog: &elab::ElabProgram, func:
     };
     let mut all: Vec<presk_opt::profile::PlannedSample> = profile.layout.take().map(|l| l.samples).unwrap_or_default();
     all.retain(|o| !fresh.iter().any(|n| n.signature == o.signature && n.layout == o.layout));
+    // A contraction always loads: a sample without a load count was recorded
+    // before 0.8.0 step 2, its spilled registers inside its work, and does
+    // not mix with the others.
+    let before = all.len();
+    all.retain(|o| o.cost.loads > 0.0);
+    if all.len() < before {
+        eprintln!("presk bench: {} samples of {} recorded before 0.8.0 step 2 dropped: they have no load count", before - all.len(), path.display());
+    }
     let kept = all.len();
     all.extend(fresh.iter().cloned());
-    let fitted = presk_opt::profile::fit_layout(all);
+    let mut fitted = presk_opt::profile::fit_layout(all, load, combine);
+    fitted.rules = rules;
     println!("{:<64} {:<18} {:>12} {:>12}", "layout", "group", "measured µs", "predicted µs");
     for s in &fresh {
         let predicted = fitted.predict(&s.cost, &s.group).unwrap_or(f64::NAN);
         println!("{:<64} {:<18} {:>12.1} {:>12.1}", s.layout, s.group, s.seconds * 1e6, predicted * 1e6);
     }
     println!("-- {} layouts timed ({skipped} ill-formed at these shapes), {kept} samples kept from {}, {} calls each", fresh.len(), path.display(), repeat);
-    println!("-- fit: λ = {:.2} µs, spawn = {:.2} µs, β_L2 = {:.3e}, β_L3 = {:.3e}, β_mem = {:.3e} bytes/s", fitted.lambda * 1e6, fitted.spawn * 1e6, fitted.beta_l2, fitted.beta_l3, fitted.beta_mem);
-    for (g, pi) in &fitted.pi {
-        println!("--      π[{g}] = {pi:.3e} ops/s");
-    }
-    println!("-- uncertainty u = {:.3} (median relative residual over {} samples), Spearman {:.3}", fitted.u, fitted.samples.len(), fitted.spearman);
+    print_layout_fit(&fitted);
     profile.machine_desc = Some(machine);
     profile.layout = Some(fitted);
     match profile.save(path) {

@@ -27,12 +27,24 @@
 #   make experiment-gpt   the course GPT trained by presk and by PyTorch on the same data (manual, `experiments` §3)
 #   make coverage         presk check on the MLPerf transcriptions (manual, `coverage`)
 #   make plan-check       a default plan lowers every example entry to the same kernels (0.7.0 step 1)
-#   make calibrate-ra4    the layout cost model's calibration on a GEMM, pinned to the RA4 cores (0.7.0 step 4)
+#   make calibrate-ra4    the layout cost model's calibration on a GEMM and two thin products, pinned to the RA4 cores (0.7.0 step 4, 0.8.0 steps 3–4)
 #   make ra4-small        the RA4 sweep's daily subset on the tutorial's attention, two days back to back, ranked (0.7.0 step 5)
 #   make ra4              the RA4 sweep, day one: the course GPT's attention, the GEMM, a BERT-shaped sample (about two hours; 0.7.0 step 6)
 #   make ra4-check        statement L apart: every point of day one on the kernel interpreter, sharded over every core (hours)
 #   make ra4-20           the secondary sweep on all twenty cores, with its own calibration (out/profile-20.json, out/ra4-20.md)
 #   make ra4-day2         day one's sweep again, ranked against it with the check into out/ra4.md
+#   make ra4-dev          0.8.0's development set: 0.7.0's days re-priced under a profile and ranked, nothing measured (0.8.0 step 1)
+#   make ra4-dev-frozen   the development set under the frozen model's profile, its report checked byte for byte (0.8.0 step 4)
+#   make ra4-ablation     the development set priced under every form of the model, fitted on the definitive calibration (0.8.0 step 4)
+#   make calibrate-ra4-small  calibrate-ra4 on the ten A725 cores, into out/profile-a725.json (0.8.0 step 5)
+#   make ra4-f2-dry       F2's dry run: one nest's sweep timed on the A725 cores, a day sized from it (0.8.0 step 5)
+#   make ra4-f2           F2, day one: 0.7.0's shapes on the A725 cores, from a committed tree descending from the freeze's tag
+#   make ra4-f2-check     statement L on F2 apart, on the kernel interpreter, sharded over every core (hours)
+#   make ra4-f2-day2      F2, day two, on another calendar day (RA4_SAME_DATE=1: on day one's), then ra4-f2-rank: presk rank --frozen into out/ra4-f2.md
+#   make ra4-f1-dry       F1's dry run: each configuration's longest nest timed on the X925 cores, a day sized from them (0.8.0 step 6)
+#   make ra4-f1           F1, day one: new shapes (F1a, F1b) on the X925 cores, priced by the frozen profile, from a committed tree descending from the tag
+#   make ra4-f1-check     statement L on F1 apart, on the kernel interpreter, sharded over every core (hours)
+#   make ra4-f1-day2      F1, day two (RA4_SAME_DATE=1: on day one's date), then ra4-f1-rank: presk rank --frozen twice, into out/ra4-f1a.md and out/ra4-f1b.md
 #   make realize          the fusion groups of the corpus GPT and the launches they remove (was `make sched`)
 #   make bench            presk bench on the tiny MiniGPT (forward, loss, optimizer step)
 #   make sync-examples    re-copy tests/examples from presk-specs and show the diff
@@ -48,6 +60,9 @@ PRESK = $(CARGO) run -q -p presk --
 # Cortex-X925, CPU part 0xd85 in /proc/cpuinfo; 0-4 and 10-14 are the
 # Cortex-A725 (D56). Override on another machine.
 RA4_CORES ?= 5-9,15-19
+# The ten Cortex-A725 (CPU part 0xd87), the cores of 0.8.0's fresh sweep F2,
+# which gets its own calibration (plan 0.8.0 §3.5, D63).
+RA4_CORES_SMALL ?= 0-4,10-14
 
 EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/layernorm/layernorm.psk \
@@ -55,7 +70,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -440,20 +455,50 @@ bench: build
 	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8
 	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8
 
-# 0.7.0 step 4: the layout cost model's calibration. A GEMM at three sizes in
-# f32 and f64, timed under a spanning set of layouts (`bench --space calib`),
-# pinned to the RA4 cores; out/profile.json gains the machine description,
-# the fitted constants and the uncertainty u. Needs a quiet machine.
-CALIB_SIZES ?= 256 512 1024
+# 0.7.0 step 4, widened in 0.8.0 step 3 (plan 0.8.0 §3.3, D67): the layout
+# cost model's calibration. A GEMM at four sizes and two thin products, bound
+# by the traffic from memory, in f32 and f64, each timed under a spanning set
+# of layouts (`bench --space calib`: five register tiles, the loop orders with
+# and without a k-block, both lane widths, one worker, half and all), pinned
+# to the RA4 cores. The profile gains the machine description, the samples,
+# costed under the rules RA4_RULES names, and the model fitted in the form
+# RA4_LOAD_TERM and RA4_COMBINE say, by default the frozen model's (0.8.0
+# step 4, D70–D71): a load rate per group, the p-norm, cache lines and loop
+# overhead; then
+# `presk refit --compare` prints every form fitted on the same samples. Needs a
+# quiet machine; prints how long the measurement took. At the sizes of
+# CALIB_NO_ONE_WORKER the one-worker layouts are left out (`--min-workers 2`):
+# at 2048 they were three quarters of the time (0.8.0 step 4, D67). A
+# calibration is one run: an existing profile is moved to *-prev.json first,
+# so that none of its samples stays in the fit.
+CALIB_SIZES ?= 256 512 1024 2048
+CALIB_NO_ONE_WORKER ?= 2048
+CALIB_THIN ?= I=16,K=4096,J=4096 I=4096,K=4096,J=16
 RA4_PROFILE ?= out/profile.json
+RA4_LOAD_TERM ?= group
+RA4_COMBINE ?= pnorm
+RA4_RULES ?= lines,overhead
+CALIB_MODEL = --load-term $(RA4_LOAD_TERM) --combine $(RA4_COMBINE) --rules $(RA4_RULES)
 calibrate-ra4:
 	$(CARGO) build --release -p presk
 	@mkdir -p out
-	@for r in f32 f64; do for n in $(CALIB_SIZES); do \
-	  echo "-- GEMM N=$$n, $$r, pinned to $(RA4_CORES)"; \
-	  taskset -c $(RA4_CORES) ./target/release/presk bench experiments/gemm.psk --entry gemm --dim N=$$n \
-	    --realize $$r --calibrate $(RA4_PROFILE) --space calib --repeat 5 | grep '^--' || exit 1; \
-	done; done
+	@if [ -f $(RA4_PROFILE) ]; then mv $(RA4_PROFILE) $(RA4_PROFILE:.json=-prev.json); echo "-- $(RA4_PROFILE) moved to $(RA4_PROFILE:.json=-prev.json)"; fi
+	@start=$$(date +%s); \
+	for r in f32 f64; do \
+	  for n in $(CALIB_SIZES); do \
+	    w=1; for m in $(CALIB_NO_ONE_WORKER); do [ $$m = $$n ] && w=2; done; \
+	    echo "-- GEMM N=$$n, $$r, pinned to $(RA4_CORES)"; \
+	    taskset -c $(RA4_CORES) ./target/release/presk bench experiments/gemm.psk --entry gemm --dim N=$$n \
+	      --realize $$r --calibrate $(RA4_PROFILE) --space calib $(CALIB_MODEL) --min-workers $$w --repeat 5 | grep '^--' || exit 1; \
+	  done; \
+	  for s in $(CALIB_THIN); do \
+	    echo "-- product $$s, $$r, pinned to $(RA4_CORES)"; \
+	    taskset -c $(RA4_CORES) ./target/release/presk bench experiments/matmul.psk --entry matmul $$(echo $$s | tr ',' ' ' | sed 's/[^ ]*/--dim &/g') \
+	      --realize $$r --calibrate $(RA4_PROFILE) --space calib $(CALIB_MODEL) --repeat 5 | grep '^--' || exit 1; \
+	  done; \
+	done; \
+	echo "-- the calibration measured in $$(( $$(date +%s) - start )) s"
+	@./target/release/presk refit $(RA4_PROFILE) --compare
 
 # 0.7.0 step 5: the RA4 sweep (experiments/ra4.sh, D61), pinned to the RA4
 # cores. `ra4-small` is the daily subset (`--space small`) on the tutorial's
@@ -501,6 +546,167 @@ ra4-20:
 	$(MAKE) calibrate-ra4 RA4_CORES=0-19 RA4_PROFILE=out/profile-20.json
 	@RA4_CORES=0-19 PROFILE=out/profile-20.json INTERP=0 experiments/ra4.sh out/ra4-20/day1
 	@./target/release/presk rank out/ra4-20/day1 out/ra4-20/day1 --out out/ra4-20.md | tail -1
+
+# 0.8.0 step 1: the development set (plan 0.8.0 §3.4, D63, D64). 0.7.0's
+# measurements, archived read-only in RA4_DEV, re-priced under a profile by
+# `presk reprice` (every recorded point lowered again and costed, its times
+# copied) and ranked into out/ra4-dev/ra4.md and ra4-20.md — about a minute,
+# nothing measured. Under the default profiles, 0.7.0's, every re-priced line
+# must be the archived one and each report the one in docs/, byte for byte.
+# An empty RA4_DEV_PROFILE_20 leaves the twenty-core day out, as 0.8.0's
+# development does (D68): `make ra4-dev RA4_DEV_PROFILE=P RA4_DEV_PROFILE_20=`.
+RA4_DEV ?= $(HOME)/presk-data/ra4-0.7.0
+RA4_DEV_PROFILE ?= $(RA4_DEV)/out/profile.json
+RA4_DEV_PROFILE_20 ?= $(RA4_DEV)/out/profile-20.json
+ra4-dev:
+	$(CARGO) build --release -p presk
+	@RA4_DEV=$(RA4_DEV) PROFILE=$(RA4_DEV_PROFILE) PROFILE_20=$(RA4_DEV_PROFILE_20) FROZEN=$(RA4_FROZEN) experiments/ra4_dev.sh out/ra4-dev
+
+# 0.8.0 step 4 (D71): the frozen model's profile, the definitive calibration
+# re-costed under the rules kept and refitted in the chosen form, archived
+# read-only. Under it the development set's report must be
+# docs/ra4-dev-model-0.8.0.md, byte for byte: the check a defect fixed after
+# the freeze must pass (plan 0.8.0 §3.4).
+RA4_FROZEN ?= $(HOME)/presk-data/ra4-model-0.8.0/profile.json
+ra4-dev-frozen:
+	$(MAKE) ra4-dev RA4_DEV_PROFILE=$(RA4_FROZEN) RA4_DEV_PROFILE_20=
+
+# 0.8.0 step 4: the ablation of plan §3.4 (experiments/ra4_ablation.sh). The
+# development set's ten-core days priced under every form of the model, each
+# refitted on the definitive calibration (RA4_CALIBRATION, archived, D68),
+# beside 0.7.0's own model, into out/ra4-ablation/ablation.md — a few
+# minutes, nothing measured. FORMS restricts the forms; a form L-C+R names
+# rules of the planned cost, under which the calibration is re-costed first
+# (4c): FORMS="group-pnorm group-pnorm+lines,overhead".
+RA4_CALIBRATION ?= $(HOME)/presk-data/ra4-0.8.0-calibration/out/profile.json
+ra4-ablation:
+	$(CARGO) build --release -p presk
+	@RA4_DEV=$(RA4_DEV) CALIBRATION=$(RA4_CALIBRATION) experiments/ra4_ablation.sh out/ra4-ablation
+
+# 0.8.0 step 5: F2, the fresh sweep of 0.7.0's shapes on the ten A725 cores
+# (plan 0.8.0 §3.5, D72), priced by their own calibration in the frozen form.
+# `calibrate-ra4-small` is `calibrate-ra4` pinned to RA4_CORES_SMALL, into
+# RA4_PROFILE_SMALL, never out/profile.json. `ra4-f2-dry` times the sweep
+# of the nest the model predicts longest and sizes a day from it
+# (experiments/ra4_dry.sh) into RA4_F2_DIR/dry. `ra4-f2` and `ra4-f2-day2`
+# are the two days, on two calendar dates, from a committed tree descending
+# from RA4_TAG (experiments/ra4_fresh.sh checks both before measuring);
+# `ra4-f2-check` is statement L on the kernel interpreter, sharded over every
+# core, never beside a timed run; day two ends with `ra4-f2-rank`: `presk
+# rank --frozen RA4_TAG` into RA4_F2_DIR.md, the check included. The
+# configuration is RA4_F2_RUN at the shapes of RA4_F2_SHAPES, each with the
+# check's shard count. RA4_TRIAL=1 tries the targets on a tiny configuration
+# (other RA4_F2_DIR, RA4_PROFILE_SMALL, RA4_F2_RUN, RA4_F2_SHAPES): no tree,
+# tag or calendar check, and a rank without --frozen. Each target refuses to
+# start beside another presk process.
+RA4_PROFILE_SMALL ?= out/profile-a725.json
+RA4_F2_DIR ?= out/ra4-f2
+RA4_F2_RUN ?= FILE=corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES="f32 f64" SPACE=full
+RA4_F2_SHAPES ?= B=1,T=256:4 B=16,T=256:40
+RA4_TAG ?= ra4-model-0.8.0
+RA4_TRIAL ?=
+# RA4_SAME_DATE=1 accepts day two on day one's calendar date (the user's
+# decision for F2 and F1, 2026-09-25, D72).
+RA4_SAME_DATE ?=
+RA4_F2 = RA4_CORES=$(RA4_CORES_SMALL) PROFILE=$(RA4_PROFILE_SMALL) $(RA4_F2_RUN) \
+  SHAPES="$(foreach s,$(RA4_F2_SHAPES),$(firstword $(subst :, ,$(s))))"
+QUIET = if pgrep -x presk > /dev/null; then echo "-- a presk process is running: a timed run needs a quiet machine"; pgrep -ax presk; exit 1; fi
+calibrate-ra4-small:
+	@[ "$(abspath $(RA4_PROFILE_SMALL))" != "$(abspath $(RA4_PROFILE))" ] || { echo "-- RA4_PROFILE_SMALL is $(RA4_PROFILE): the A725 cores get a profile of their own"; exit 1; }
+	@$(QUIET)
+	$(MAKE) calibrate-ra4 RA4_CORES=$(RA4_CORES_SMALL) RA4_PROFILE=$(RA4_PROFILE_SMALL)
+
+ra4-f2-dry:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@$(RA4_F2) experiments/ra4_dry.sh $(RA4_F2_DIR)/dry
+
+ra4-f2 ra4-f2-day2:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@d=$(RA4_F2_DIR)/$(if $(filter ra4-f2-day2,$@),day2,day1); \
+	TAG=$(RA4_TAG) TRIAL=$(RA4_TRIAL) SAME_DATE=$(RA4_SAME_DATE) experiments/ra4_fresh.sh $$d $(if $(filter ra4-f2-day2,$@),$(RA4_F2_DIR)/day1) && \
+	$(RA4_F2) INTERP=0 experiments/ra4.sh $$d
+	@if [ $@ = ra4-f2-day2 ]; then $(MAKE) --no-print-directory ra4-f2-rank; fi
+
+ra4-f2-rank:
+	@./target/release/presk rank $(RA4_F2_DIR)/day1 $(RA4_F2_DIR)/day2 --out $(RA4_F2_DIR).md \
+	  $(if $(RA4_TRIAL),,--frozen $(RA4_TAG)) $$([ -d $(RA4_F2_DIR)/check ] && echo --check $(RA4_F2_DIR)/check) | tail -1
+
+ra4-f2-check:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@[ ! -e $(RA4_F2_DIR)/check ] || { echo "-- $(RA4_F2_DIR)/check exists: move it aside first"; exit 1; }
+	@{ $(foreach s,$(RA4_F2_SHAPES),SHAPES=$(firstword $(subst :, ,$(s))) SHARDS=$(lastword $(subst :, ,$(s))) \
+	   PROFILE=$(RA4_PROFILE_SMALL) $(RA4_F2_RUN) experiments/ra4_check.sh $(RA4_F2_DIR)/check;) } | xargs -d '\n' -n 1 -P $(RA4_JOBS) bash -c
+	@echo "-- statement L: every shard of $(RA4_F2_DIR)/check bit-identical to point 0, natively and on the kernel interpreter"
+
+# 0.8.0 step 6: F1, the fresh sweep of new shapes on the ten X925 cores
+# (plan 0.8.0 §3.5, D73), priced by the frozen model's profile itself,
+# RA4_FROZEN (D68: no calibration after the freeze). Two configurations of
+# RA4_F1_RUN, each `constants:shape`, go into one day: RA4_F1A, BERT-large's
+# attention, and RA4_F1B, a head of 128. `ra4-f1-dry` runs
+# experiments/ra4_dry.sh once per configuration, each timing its own longest
+# nest, into RA4_F1_DIR/dry/f1a and f1b, then sizes the day into
+# RA4_F1_DIR/dry/dry.md (`ra4_dry.py day`): a configuration that does not
+# fit in RA4_F1_BUDGET hours a day is swept on a sample, RA4_F1A_SAMPLE or
+# RA4_F1B_SAMPLE (ra4.sh's EXTRA, e.g. "--top 8 --random 32"), set by a
+# commit before day one so that both days and the check take the same
+# points, and its M is inconclusive. `ra4-f1`, `ra4-f1-day2` and
+# `ra4-f1-check` are F2's; the check runs RA4_F1B_SHARDS shards of F1b, then
+# RA4_F1A_SHARDS of F1a. `presk rank` decides M and O at one configuration a
+# run, so `ra4-f1-rank` ranks the two days twice, the check included, into
+# RA4_F1_DIR`a`.md (M and O at F1a) and RA4_F1_DIR`b`.md (at F1b); L and N
+# are the same in both. RA4_TRIAL=1 as for F2, with other RA4_F1_DIR,
+# RA4_F1_RUN, RA4_F1A and RA4_F1B.
+RA4_F1_DIR ?= out/ra4-f1
+RA4_F1_PROFILE ?= $(RA4_FROZEN)
+RA4_F1_RUN ?= FILE=corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=full
+RA4_F1A ?= D=1024,H=16:B=1,T=384
+RA4_F1B ?= D=1024,H=8:B=2,T=512
+RA4_F1A_SAMPLE ?=
+RA4_F1B_SAMPLE ?=
+RA4_F1A_SHARDS ?= 20
+RA4_F1B_SHARDS ?= 80
+RA4_F1_BUDGET ?= 8
+comma := ,
+# A configuration's constants (as words), its shape, its `presk rank --at`
+# (the sweep's config: constants then dimensions), and its letter.
+f1_consts = $(subst $(comma), ,$(word 1,$(subst :, ,$(RA4_F1$(1)))))
+f1_shape = $(word 2,$(subst :, ,$(RA4_F1$(1))))
+f1_at = $(subst :,$(comma),$(RA4_F1$(1)))
+f1_lc = $(subst A,a,$(subst B,b,$(1)))
+RA4_F1 = RA4_CORES=$(RA4_CORES) PROFILE=$(RA4_F1_PROFILE) $(RA4_F1_RUN) CONSTS="$(call f1_consts,$(1))" SHAPES=$(call f1_shape,$(1))
+
+ra4-f1-dry:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@rm -rf $(RA4_F1_DIR)/dry
+	@$(foreach c,A B,$(call RA4_F1,$(c)) experiments/ra4_dry.sh $(RA4_F1_DIR)/dry/f1$(call f1_lc,$(c)) || exit 1;)
+	@python3 experiments/ra4_dry.py day 7 $(RA4_F1_BUDGET) $(RA4_F1_DIR)/dry/f1a $(RA4_F1_DIR)/dry/f1b > $(RA4_F1_DIR)/dry/dry.md
+	@cat $(RA4_F1_DIR)/dry/dry.md
+
+ra4-f1 ra4-f1-day2:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@d=$(RA4_F1_DIR)/$(if $(filter ra4-f1-day2,$@),day2,day1); \
+	TAG=$(RA4_TAG) TRIAL=$(RA4_TRIAL) SAME_DATE=$(RA4_SAME_DATE) experiments/ra4_fresh.sh $$d $(if $(filter ra4-f1-day2,$@),$(RA4_F1_DIR)/day1) && \
+	$(foreach c,A B,$(call RA4_F1,$(c)) EXTRA="$(RA4_F1$(c)_SAMPLE)" INTERP=0 experiments/ra4.sh $$d && )true
+	@if [ $@ = ra4-f1-day2 ]; then $(MAKE) --no-print-directory ra4-f1-rank; fi
+
+ra4-f1-rank:
+	@$(foreach c,A B,./target/release/presk rank $(RA4_F1_DIR)/day1 $(RA4_F1_DIR)/day2 --out $(RA4_F1_DIR)$(call f1_lc,$(c)).md --at $(call f1_at,$(c)) \
+	  $(if $(RA4_TRIAL),,--frozen $(RA4_TAG)) $$([ -d $(RA4_F1_DIR)/check ] && echo --check $(RA4_F1_DIR)/check) > /dev/null || exit 1; \
+	  echo "-- the two days ranked into $(RA4_F1_DIR)$(call f1_lc,$(c)).md, M and O at $(call f1_at,$(c))"; \
+	  grep '^| [LMNOQ] |' $(RA4_F1_DIR)$(call f1_lc,$(c)).md;)
+
+ra4-f1-check:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@[ ! -e $(RA4_F1_DIR)/check ] || { echo "-- $(RA4_F1_DIR)/check exists: move it aside first"; exit 1; }
+	@{ $(foreach c,B A,$(call RA4_F1,$(c)) EXTRA="$(RA4_F1$(c)_SAMPLE)" SHARDS=$(RA4_F1$(c)_SHARDS) \
+	   experiments/ra4_check.sh $(RA4_F1_DIR)/check;) } | xargs -d '\n' -n 1 -P $(RA4_JOBS) bash -c
+	@echo "-- statement L: every shard of $(RA4_F1_DIR)/check bit-identical to point 0, natively and on the kernel interpreter"
 
 # 0.7.0 step 1: a plan with the default layout lowers every entry of
 # tests/plan/entries.txt to the kernels it has without one, byte for byte

@@ -54,7 +54,120 @@ pub type PreparedRun = (FuncId, Dims, Inputs);
 /// Resolve `--entry`, bind the dimensions and synthesize the inputs (the
 /// reference's job, whatever backend then runs the entry).
 pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<PreparedRun> {
-    let (func, mut dims, module_dims) = resolve_entry(prog, elab, &opts.entry)?;
+    let (func, dims, prefix) = bind_run(prog, elab, opts)?;
+    let f = prog.func(func);
+    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
+    let master = Key::from_seed(opts.seed);
+    let keys = master.split(f.params.len());
+    let mut inputs = Vec::new();
+    for (i, p) in f.params.iter().enumerate() {
+        let default = param_default(prog, elab, func, &p.name);
+        let mut v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
+        if matches!(f.origin, Origin::Optimizer { .. }) {
+            v = optimizer_input(&p.name, v);
+        }
+        inputs.push((p.name.clone(), v));
+    }
+    Ok((func, dims, inputs))
+}
+
+/// An input described by its shape, not drawn (0.8.0 step 1): what
+/// [`synthesize`] would make, for a backend that captures an entry's launches
+/// without computing anything and builds the inputs itself.
+#[derive(Clone, Debug)]
+pub enum Shaped {
+    /// A real tensor of these axes.
+    Real(Vec<crate::value::Axis>),
+    /// Indices below `bound`, of these axes.
+    Idx { bound: u64, axes: Vec<crate::value::Axis> },
+    /// A scalar or a key, as [`prepare_run`] synthesizes it.
+    Value(Value<Float>),
+    Tuple(Vec<Shaped>),
+    /// A module's parameters: what its initializer `init` returns at `dims`
+    /// from `key`.
+    Params { init: FuncId, dims: Dims, key: Key },
+}
+
+/// An entry resolved and its inputs described by their shapes.
+pub type ShapedRun = (FuncId, Dims, Vec<(String, Shaped)>);
+
+/// [`prepare_run`] with every input described by its shape (0.8.0 step 1):
+/// the same entry, dimensions and keys, and the scalars it would synthesize,
+/// but no tensor drawn and no initializer run.
+pub fn prepare_shapes(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<ShapedRun> {
+    let (func, dims, prefix) = bind_run(prog, elab, opts)?;
+    let f = prog.func(func);
+    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
+    let keys = Key::from_seed(opts.seed).split(f.params.len());
+    let mut inputs = Vec::new();
+    for (i, p) in f.params.iter().enumerate() {
+        let default = param_default(prog, elab, func, &p.name);
+        let mut s = shaped(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot describe `{}`: {}", p.name, e.message), span: e.span })?;
+        if matches!(f.origin, Origin::Optimizer { .. })
+            && let Shaped::Value(v) = s
+        {
+            s = Shaped::Value(optimizer_input(&p.name, v));
+        }
+        inputs.push((p.name.clone(), s));
+    }
+    Ok((func, dims, inputs))
+}
+
+fn shaped(interp: &mut Interp<Float>, ty: &Ty, dims: &Dims, key: &Key, default: Option<&ast::Expr>, prefix: &[crate::value::Axis]) -> Result<Shaped> {
+    match ty {
+        Ty::Real(s) => Ok(Shaped::Real(interp.axes_of_with(s, dims, prefix)?)),
+        Ty::Idx { bound, shape } => Ok(Shaped::Idx { bound: interp.dim(bound, dims)?, axes: interp.axes_of_with(shape, dims, prefix)? }),
+        Ty::Tuple(ts) => {
+            let keys = key.split(ts.len());
+            Ok(Shaped::Tuple(ts.iter().zip(&keys).map(|(t, k)| shaped(interp, t, dims, k, None, prefix)).collect::<Result<_>>()?))
+        }
+        Ty::Params(r) => {
+            let (init, dims) = initializer(interp, r, dims)?;
+            Ok(Shaped::Params { init, dims, key: key.clone() })
+        }
+        other => Ok(Shaped::Value(synthesize(interp, other, dims, key, default, prefix)?)),
+    }
+}
+
+/// A module instance's initializer and the dimensions it runs at: the
+/// instance's arguments, and the initializer's other dimensions (its file's
+/// `dim`s) bound by name from the entry's dimensions, since another file's
+/// `B` and `T` are distinct variables with the same name.
+fn initializer(interp: &Interp<Float>, r: &presk_types::ty::ModRef, dims: &Dims) -> Result<(FuncId, Dims)> {
+    let (def, args) = match r {
+        presk_types::ty::ModRef::Inst { def, args } => (*def, args.clone()),
+        _ => return err("cannot synthesize the parameters of a stacked or composed module directly"),
+    };
+    let init = interp.prog.find(&format!("{}.init", interp.elab.module(def).name)).ok_or_else(|| RunError { message: "no initializer".into(), span: None })?;
+    let mut idims = dims.clone();
+    for (v, e) in interp.elab.module(def).typarams.iter().zip(&args) {
+        idims.insert(*v, interp.dim(e, dims)?);
+    }
+    for d in &interp.prog.func(init).dims {
+        if !idims.contains_key(d) {
+            let name = interp.elab.dim_name(*d);
+            if let Some((_, n)) = dims.iter().find(|(v, _)| interp.elab.dim_name(**v) == name) {
+                idims.insert(*d, *n);
+            }
+        }
+    }
+    Ok((init, idims))
+}
+
+/// The default a source function's signature gives parameter `name`, if any.
+pub fn param_default(prog: &Program, elab: &ElabProgram, func: FuncId, name: &str) -> Option<ast::Expr> {
+    match prog.func(func).origin {
+        Origin::Source(id) => elab.function(id).params.iter().find(|q| q.name == name).and_then(|q| q.default.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve `--entry` and bind its dimensions (0.8.0 step 1: what
+/// [`prepare_run`] does before synthesizing, for a caller that builds the
+/// inputs itself): the function, its dimensions, and the axes `--dim` gives
+/// the open prefix `...` of its parameters.
+pub fn bind_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<(FuncId, Dims, Vec<crate::value::Axis>)> {
+    let (func, mut dims, _module_dims) = resolve_entry(prog, elab, &opts.entry)?;
     let f = prog.func(func);
     // Dimensions from --dim, by name among the function's dimensions. Names
     // that are not dimensions of the function become, in order, the axes of
@@ -95,24 +208,7 @@ pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Res
             }
         }
     }
-    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
-    let master = Key::from_seed(opts.seed);
-    let keys = master.split(f.params.len());
-    let mut inputs = Vec::new();
-    let sig = match f.origin {
-        Origin::Source(id) => Some(elab.function(id)),
-        _ => None,
-    };
-    for (i, p) in f.params.iter().enumerate() {
-        let default = sig.and_then(|s| s.params.iter().find(|q| q.name == p.name)).and_then(|q| q.default.clone());
-        let mut v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
-        if matches!(f.origin, Origin::Optimizer { .. }) {
-            v = optimizer_input(&p.name, v);
-        }
-        inputs.push((p.name.clone(), v));
-    }
-    let _ = module_dims;
-    Ok((func, dims, inputs))
+    Ok((func, dims, prefix))
 }
 
 /// Inputs of an optimizer entry (`adamw.step`) made meaningful: the second
@@ -217,26 +313,7 @@ fn synthesize(interp: &mut Interp<Float>, ty: &Ty, dims: &Dims, key: &Key, defau
         }
         Ty::Params(r) => {
             // The module's initializer, with the instance's dimensions.
-            let (def, args) = match r {
-                presk_types::ty::ModRef::Inst { def, args } => (*def, args.clone()),
-                _ => return err("cannot synthesize the parameters of a stacked or composed module directly"),
-            };
-            let init = interp.prog.find(&format!("{}.init", interp.elab.module(def).name)).ok_or_else(|| RunError { message: "no initializer".into(), span: None })?;
-            // The instance's arguments; the initializer's other dimensions (its
-            // file's `dim`s) are bound by name from the entry's dimensions, since
-            // another file's `B` and `T` are distinct variables with the same name.
-            let mut idims = dims.clone();
-            for (v, e) in interp.elab.module(def).typarams.iter().zip(&args) {
-                idims.insert(*v, interp.dim(e, dims)?);
-            }
-            for d in &interp.prog.func(init).dims {
-                if !idims.contains_key(d) {
-                    let name = interp.elab.dim_name(*d);
-                    if let Some((_, n)) = dims.iter().find(|(v, _)| interp.elab.dim_name(**v) == name) {
-                        idims.insert(*d, *n);
-                    }
-                }
-            }
+            let (init, idims) = initializer(interp, r, dims)?;
             interp.call(init, idims, vec![Value::Key(key.clone())])
         }
         Ty::Module(_) | Ty::Fn { .. } | Ty::Infer(_) => err(format!("cannot synthesize a value of type `{}`", ty.display(&interp.elab.names()))),

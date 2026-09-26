@@ -179,3 +179,41 @@ fn a_plan_this_version_cannot_apply_is_refused() {
     let e = run(&core, &prog, "attend", &[], Some(&p), &p.realization).unwrap_err();
     assert!(e.message.contains("condition 7"), "{}", e.message);
 }
+
+/// Plan 0.8.0 step 2: the load count reads the micro-kernel. On the values
+/// `ein` (NN, I = J = K = 32, 2 × 2 heads) with four lanes, the six tiles of
+/// plan 0.8.0 §1 issue, per `k`, `m` broadcast scalars and `n/4` vector loads
+/// for `m·n/4` vector multiply-adds, then store their `m·n/4` vectors: the
+/// loads per vector multiply-add are 2, 1.5, 1.5, 1.25, 1 and 0.75. A pack is
+/// a copy, one load and one store per element, and the packed NT `ein` is the
+/// NN micro-kernel. A `[4, 16]` tile at one lane keeps 84 values in its inner
+/// loop, 52 over the machine's 32 registers, whose accesses are the spill.
+#[test]
+fn the_load_count_reads_the_micro_kernel() {
+    use presk_kernel::cost::{Machine, kernel_loads, planned_cost};
+    let (prog, core) = prepare("tests/plan/contractions.psk", &[]);
+    let f32r = Realization::parse("f32").unwrap();
+    let kernels = |entry: &str, layout: &str| {
+        let p = plan(&format!(r#"{{ "realization": "f32", "layout": {{ "{entry}/%2": {layout} }} }}"#));
+        run(&core, &prog, entry, &[], Some(&p), &f32r).unwrap().1
+    };
+    let (heads, e) = (4.0, 32.0);
+    for ((m, n), per_fma) in [((1, 4), 2.0), ((1, 8), 1.5), ((2, 4), 1.5), ((1, 16), 1.25), ((2, 8), 1.0), ((2, 16), 0.75)] {
+        let ks = kernels("values", &format!(r#"{{ "tile": [{m}, {n}], "lanes": 4, "kblock": "none", "order": "IJ" }}"#));
+        let (m, n) = (m as f64, n as f64);
+        let blocks = heads * (e / m) * (e / n);
+        assert_eq!((m + n / 4.0) / (m * n / 4.0), per_fma);
+        assert_eq!(kernel_loads(&ks[0]), blocks * (e * (m + n / 4.0) + m * n / 4.0), "tile [{m}, {n}]");
+    }
+    let ks = kernels("scores", r#"{ "tile": [1, 8], "lanes": 4, "kblock": "none", "order": "IJ", "pack": true }"#);
+    assert_eq!((ks.len(), ks[0].name.as_str()), (2, "pack"));
+    assert_eq!(kernel_loads(&ks[0]), 2.0 * heads * e * e);
+    assert_eq!(kernel_loads(&ks[1]), heads * e * (e / 8.0) * (e * (1.0 + 2.0) + 2.0));
+    let ks = kernels("values", r#"{ "tile": [4, 16], "lanes": 1, "kblock": "none", "order": "IJ" }"#);
+    let machine = Machine { workers: 1, l1: 64 << 10, l2: 2 << 20, l3: 8 << 20, l3_sharing: 1, vector_registers: 32, vector_bytes: 16, source: "test".into(), line: 64 };
+    let c = planned_cost(&ks[0], &machine);
+    let blocks = heads * (e / 4.0) * (e / 16.0);
+    assert_eq!(c.loads, blocks * (e * (4.0 + 16.0) + 64.0));
+    assert_eq!((c.regs, c.spilled), (84, 52));
+    assert_eq!(c.spill, 2.0 * 52.0 * blocks * e);
+}

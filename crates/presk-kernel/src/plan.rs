@@ -113,6 +113,27 @@ pub fn lower_launch(l: &Launch, layout: &Layout, workers: Option<usize>) -> Resu
     Ok(kernels)
 }
 
+/// The kernels of a captured launch under one layout and each of `splits`
+/// (0.8.0 step 1): element `i` is what [`lower_launch`] gives for the layout
+/// with `splits[i]`. No lowering reads the split, and the layout's checks do
+/// not either: it only sets the main kernel's `threads`. So the layout is
+/// lowered once, and each split is that lowering with its threads set and
+/// checked as `lower_launch` checks them (conditions 5 and 8).
+pub fn lower_launch_splits(l: &Launch, layout: &Layout, splits: &[Split], workers: Option<usize>) -> Vec<Result<Vec<Kernel>, String>> {
+    let once = lower_launch(l, &Layout { split: Some(Split::None), ..layout.clone() }, workers);
+    splits.iter().map(|s| once.as_ref().map_err(|e| e.clone()).and_then(|ks| split_as(ks, *s, workers))).collect()
+}
+
+/// The kernels of a launch lowered with no split, given `split` as
+/// [`lower_launch`] gives it: set on the main kernel, checked against it and
+/// against `workers`.
+pub fn split_as(kernels: &[Kernel], split: Split, workers: Option<usize>) -> Result<Vec<Kernel>, String> {
+    let mut kernels = kernels.to_vec();
+    let main = kernels.len() - 1;
+    kernels[main].threads = threads_of(Some(split), &kernels[main], workers, false)?;
+    Ok(kernels)
+}
+
 /// Checks a plan against the program it is run on, before anything runs:
 /// every nest it names exists and is a nest (condition 1: the root of a
 /// fusion group, or a primitive of its own), and states only decisions its

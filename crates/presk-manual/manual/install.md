@@ -51,6 +51,11 @@ make plan-check                  # a plan stating the default layout gives the s
 make calibrate-ra4 ra4-small     # the layout cost model's calibration; the RA4 sweep's daily subset (a minute)
 make ra4 ra4-check ra4-20 ra4-day2
                                  # the RA4 measurement of 0.7.0 (chapter `experiments` §7; a night)
+make ra4-dev ra4-dev-frozen ra4-ablation
+                                 # 0.8.0's development set: 0.7.0's days priced again, nothing measured (minutes)
+make calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-check ra4-f2-day2
+make ra4-f1-dry ra4-f1 ra4-f1-check ra4-f1-day2
+                                 # 0.8.0's fresh sweeps F2 and F1 (chapter `experiments` §8; hours each)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
@@ -80,11 +85,11 @@ crates/presk-interp          reference interpreter                              
 crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
 crates/presk-data            .psk.d data files and the training pipeline           (0.2.0 step 1)
 crates/presk-rt              the runtime seam: values, the Backend trait, InterpBackend, Layout and Plan (0.3.0 step 1, 0.7.0)
-crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program, the contraction builder, the layout cost model   (0.3.0 step 2, 0.7.0)
+crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program, the contraction builder, the layout cost model   (0.3.0 step 2, 0.7.0, 0.8.0)
 crates/presk-cranelift       the Cranelift JIT over the kernels, --backend native          (0.3.0 step 3)
 crates/presk-train           the training loop over a Backend, presk train           (0.2.0 step 5)
 crates/presk-serve           the generation loop over a Backend, presk serve         (0.3.0 step 5)
-crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles    (0.3.0 steps 6–7)
+crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles, the layout model's fit    (0.3.0 steps 6–7, 0.7.0, 0.8.0)
 crates/presk-realize         PSK-Realize v0: fusion groups over PSK-Core bodies     (0.4.0 step 4)
 crates/presk-precision       envelope, error bounds, sensitivity, the solver         (0.5.0 steps 2–6, 0.6.0)
 crates/presk-cli             the `presk` binary

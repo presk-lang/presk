@@ -9,7 +9,8 @@ repository.workspace = true
 
 [dependencies]
 clap.workspace = true
-serde_json.workspace = true
+# raw_value: `presk reprice` copies a recorded point's fields verbatim (0.8.0 step 1)
+serde_json = { workspace = true, features = ["raw_value"] }
 presk-syntax.workspace = true
 presk-types.workspace = true
 presk-core.workspace = true
