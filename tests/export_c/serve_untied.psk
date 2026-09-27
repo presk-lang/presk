@@ -1,0 +1,16 @@
+-- serve_untied.psk: a generation function whose model's parameters do not fix
+-- the context's length, so that `presk serve` passes it the whole context,
+-- one token longer at every step. A C program has one shape: `presk export
+-- --target c --serve` refuses it (E8009, plan 0.9.0 step 6).
+const V : nat = 16
+module Bigram {
+  param w : ℝ[V, V]
+  fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
+}
+fn next(θ : params Bigram, ctx : idx[V][batch: B, seq: T]) -> idx[V][batch: B] uses Rand =
+  let logits = Bigram.apply(θ, ctx)
+  sample(logits[seq: -1])
+inference serve {
+  model   = Bigram
+  weights = "ckpt/final"
+}

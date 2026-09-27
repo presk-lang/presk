@@ -1,0 +1,26 @@
+[package]
+name = "presk-export-c"
+description = "The C export: PSK-Kernel kernels printed as C functions (plan 0.9.0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-kernel.workspace = true
+
+[dev-dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-rt.workspace = true
+presk-cranelift.workspace = true
+presk-data.workspace = true
+insta.workspace = true
+rug.workspace = true
+libc = "0.2"
+libm = "0.2"
+rand_chacha.workspace = true
+rand_core.workspace = true

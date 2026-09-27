@@ -1,5 +1,327 @@
 # Changelog
 
+## 0.9.0 — 2026-09-27
+
+A C export (`presk-specs/implementation/presk-plan-0.9.0.md`), in the style
+of llama2.c and StrasGPT: one C program per exported entry, which runs
+without the compiler and computes the bits the native backend computes. The
+kernels come from PSK-Kernel, where the fusion, the realization and the
+layout plan are already applied, printed one C function each. The host comes
+from a recording of the native backend's own run at the entry's dimensions,
+with one C function per Presk function and the layer fold as a loop. Any
+entry the native backend runs can be exported, gradients, one optimizer
+step and a generation function with `presk serve`'s loop included, under a
+plan, on OpenMP threads, with integer weights; the training loop cannot.
+Bit identity rests on building without floating-point contraction and on
+shipping musl's transcendental functions, which the native backend calls
+through the `libm` crate. A SCoP mode writes each nest at point zero, for
+polyhedral tools. Judged on five statements: bit identity with `presk run
+--backend native` (C1), the exact reference's band (C2), compilation
+without warnings on GCC and Clang and a cross-compilation to x86-64 (C3),
+the wall time reported (C4), and `presk serve`'s tokens (C5). The GPU and
+the matrix unit come after it.
+
+**What it shows.** An entry can leave the compiler without leaving its
+numbers behind. Every exported entry of the test set, in `f64`, `f32` and
+`bf16`, under the default layout, a mixed realization and `presk plan`'s
+plans, through both hosts, with OpenMP and without, on one thread and on
+every thread, computes the native backend's outputs bit for bit, and so do
+the course GPT at its constants with its trained checkpoint, 42 programs
+with integer weights and every nest in the SCoP form (C1). The outputs are
+therefore outside the exact reference's band exactly where the native
+backend's are, on elements that cancel (C2, question 75). The C compiles
+without a warning on GCC with and without OpenMP, on Clang, and for x86-64
+(C3), and the exported generation loop prints `presk serve`'s tokens byte
+for byte, greedy and sampled (C5). The course GPT's forward pass at `B =
+16` takes 290 ms in C against 1 094 ms natively on ten threads, 1 700
+against 3 132 ms on one (C4, reported). Getting there took three facts the
+plan did not have: current musl is not the `libm` crate (musl 1.1.22 is),
+`-std=c11` alone stops GCC from contracting, and the native backend's own
+`sample` called the platform's `exp` (D78, D77, D83).
+
+- Step 9: documentation, tutorial step 18, version 0.9.0 (D86). The manual
+  brought to 0.9.0 as implemented: a chapter of its own for the export,
+  `export_c`, made from the `native` chapter's section, which had grown a
+  paragraph per step, and reorganized (how a program is made, its
+  structure, threads, sampling, integer weights, the exactness rules, what
+  is checked, portability, the band, speed, the SCoP mode, and what the
+  export does not do); `experiments` §9, the statements of 0.9.0 and their
+  verdicts; `cli` and `diagnostics` checked against `presk --help`, `presk
+  export --help` and the codes the code emits; `status` closed; `index`,
+  `install`, the manual crate's chapter list and the README. Tutorial step
+  18, "A C program": the tutorial's attention exported at step 3's
+  dimensions, built, checked against the native backend and the exact
+  reference and run by hand, then under step 17's plan, on OpenMP threads
+  and on one, and in the SCoP mode; `make tutorial` covers steps 0 to 18
+  and needs a C compiler. The export's summary line says "1 function
+  besides the entry's", where it said "1 functions", and `presk --help`
+  names the C export. Questions 73–75 copied to `presk-specs` as
+  `presk-spec-questions-0.9.0.md`. Version `0.9.0`.
+- Step 8: the SCoP mode (D85). `presk export --target c --mode scop --entry
+  E` writes each nest of the entry at point zero (its default layout on one
+  lane and one worker, no pack, 0.6.0's kernel), captured from the entry's
+  shapes as `presk plan` captures the nests RA4 ranks, one C function per
+  nest, shape and type, each in a file of its own between `#pragma scop` and
+  `#pragma endscop`: arrays of literal dimensions with one index per axis,
+  as PolyBench/C writes its kernels; every loop to a literal bound, no range,
+  no OpenMP; a branch on a computed value that only assigns scalars (a
+  softmax's running maximum, an argmax) printed as a selection of each
+  value; the transcendental functions declared `const` in the file, and
+  `presk_rt.h`'s inline conversions `const` (`PRESK_CONST`); the pragmas'
+  `-Wunknown-pragmas` warning ignored around the function, so that each file
+  builds without a warning on GCC and Clang. A driver (`scop`) times each
+  nest on inputs it draws (`splitmix64`, indices below the axes they index)
+  and checks each against the native backend's outputs on the same inputs
+  (`conformance/native.bin`, `make check`); `make polly POLLY=CLANG` gives
+  Polly's view of each nest; `nests.json` and the README list the nests,
+  their loops and whether each is static control. `--plan`, `--threads`,
+  `--straight-line`, `--serve`, `--weights`, `--no-exact` and a quantized
+  realization are refused. A nest is a static-control part when no loop
+  variable is assigned and every access is affine in the loop variables: on
+  the test set 366 of the 383 nests of each type, the others being gathers
+  and scatters (an embedding, its gradient, a cross-entropy's label). The
+  front end is Polly, from LLVM 23.1.2's release (`make llvm`, into `.llvm`,
+  its checksum pinned, without root), which links it into its clang: at its
+  early position, whole functions allowed as SCoPs, no rescheduling, the
+  analysis only, it takes each of the 1 098 static-control nests of the
+  three types as one SCoP of the kernel's loops and none of the 51 others
+  (all of them once allowed non-affine accesses); the course GPT's 28 nests
+  alike (`make c-conformance`). None of the plan's front ends was on the
+  machine: Polly was chosen over GCC's Graphite, whose verdict follows GCC's
+  passes rather than the nests, and pet, which would have to be built
+  against Clang's libraries. Every primitive at point zero in the SCoP form
+  (123 kernels) and every nest of the test set in the three types are
+  bit-identical to the native backend; built in GCC's GNU mode, or with a
+  softmax's maximum made a minimum, they are not. The native backend's
+  kernels and outputs are `main`'s (66 comparisons); `make test` takes 3 to
+  7 s more.
+- Step 7: integer weights (D84). `presk export --target c` exports a
+  realization that quantizes weights (`int8`, `int4`, `absmax` or `pow2`).
+  No checkpoint holds integers: the native backend quantizes the weights
+  each time it loads them, so the C program reads their reals and quantizes
+  them as it reads them (`presk_quantize` in the runtime, a transcription of
+  `QTensor::quantize`), bit-identical to presk-rt on 4 027 392 weights of
+  both widths and schemes, ties at `n + ½`, zero channels, subnormals, huge
+  values and NaNs among them. The conformance weights are the parameters as
+  read, where they were saved after quantization as `f32(q·s)`, whose
+  re-quantized scales need not be the same. A leaf of integer weights is a
+  `presk_q8` or `presk_q4`, its integers and scales, as llama2.c's
+  `QuantizedTensor`; a kernel takes the integers and, after its output,
+  their scales, and loads `(float)q * s[c]`; the recorder follows the host's
+  conversions at a kernel's edge (a norm's `γ` read by its fusion group) and
+  its slices, integers where `QBuf::slice_leading` keeps them, `f64` copies
+  where it gives up (an `int4` layer of odd length), which the structured
+  host dequantizes before each call of the fold's body. `E8007` narrowed to
+  integer weights in the result, under a reshape, or sampled
+  (`tests/diag/export_c_quant.psk`). presk-rt's `pow2` scale, which looped
+  for ever on a channel whose largest weight is below about 10⁻³⁰⁶, now
+  starts its loops at 1, its scales otherwise unchanged. Step 1's check on
+  integer inputs (2 880 primitive runs, the four nests' layouts); C1 on 42
+  programs through the binary (`odd.psk` in both widths and schemes,
+  MiniGPT's forward pass, `next_token`, gradient and optimizer step with
+  every matrix quantized, at
+  `D = 9`, `H = 3` in `int4`, with its biases and norms quantized, under a
+  plan with splits), C5 under `--serve`, and the trained checkpoints in
+  `make c-conformance`; a scale one channel off, the two nibbles of a byte
+  swapped and the scale kept in `f64` when quantizing each change the
+  outputs. The native backend's kernels and outputs are `main`'s (66
+  comparisons); `make test` takes 11 s more.
+- Step 6: randomness and generation (D83). `sample` takes no key: it draws
+  from the backend's stream, seeded by the run's seed, so the plan's key
+  functions were not needed and keys stay dropped. The recorder records it
+  as a host operation (`E8005` retired), and the runtime gains the stream,
+  `presk_rng` (Bernstein's ChaCha20 read as `rand_chacha`'s `ChaCha20Rng`,
+  seeded by `rand_core`'s `seed_from_u64`), and `presk_sample`; checked
+  against the crates on 10⁶ draws over 10³ seeds and against the native
+  `sample` on 12 028 rows in the three types. The stream is the program's
+  state: a function that draws takes it after the arena, `main` seeds it
+  with `-s SEED` (the export's seed by default). The native `sample` now
+  calls the `libm` crate's `exp`, the kernels' own, where it called the
+  platform's (glibc): the C program depends on no C library, and 540
+  generations of 32 sampled tokens are unchanged. An entry's `f64` argument
+  (a temperature, an `eps`) is a `double` of its `_in` struct, set at run
+  time, where it was fixed at export. `presk export --target c --serve`
+  exports the generation function of the file's `inference serve` at one
+  sequence and the window `--dim T=N`, with its greedy copy (every `sample`
+  an `argmax`) recorded on the same backend and sharing its functions, and
+  `generate.c`, `presk serve`'s loop, whose output, `--json` included, is
+  `presk serve --backend native`'s byte for byte (C5); a model whose
+  parameters do not fix the context's length is refused (`E8009`). C1 on
+  `next_token` (`make test`, and with the trained checkpoint in `make
+  c-conformance`); C5 in the three types through both hosts, greedy and
+  sampled at three temperatures and four seeds, on the example with its
+  zeros drawn (`make test`) and on the trained checkpoint (`make
+  c-conformance`); C3 on `generate.c`. A draw skipped, the stream seeded
+  again at each step and the window one token behind each change the
+  tokens. The native backend's kernels and outputs are `main`'s (66
+  comparisons); `make test` takes 3 s more.
+- `presk plan` fixed after step 5's review (D82). A nest launched at
+  several shapes gets the layout the model prices at every one whose
+  predicted time, each shape's weighed by its launches (the capture now
+  counts them), is least; the first shape decided, and the MLP's plan stated
+  a tile its second shape refused. A type the profile was not calibrated in
+  is refused when no nest can be priced (exit code 2, nothing written),
+  where an empty plan was written, and its nests are named when some can.
+  On the test set only the MLP's plans change.
+- Step 5: plans, threads and portability (D81). `presk export --target c`
+  takes `--plan @P.json`, checked as `presk run` checks it, and records the
+  native run under it, and `--threads N`, the native executor's workers;
+  `E8002` is no longer emitted. A launch the native backend divides among
+  threads, a plan's split or a kernel above the executor's threshold, is one
+  OpenMP region whose threads each call the kernel on the native backend's
+  piece. A `num_threads` clause overrides `OMP_NUM_THREADS`, so the team is
+  capped at `omp_get_max_threads()`: the variable lowers it, and
+  `OMP_NUM_THREADS=1` gives one thread. Without OpenMP each region is one
+  call, and the `Makefile` builds with `-fopenmp` only when a launch is
+  divided. The split is part of the launch and of the canonical form, since
+  a kernel's text lacks its workers. `main.c` takes `-r R` and prints the
+  median and best of `R` calls; `presk bench` gains `--plan-only` and
+  `--weights`. C1 on every program built with OpenMP and without and, when a
+  launch is divided, on one thread: under a plan stating splits and at a size
+  the native backend divides by its own rule (`make test`); every kernel of
+  five recordings divided at each legal depth in turn, 40 programs (`make
+  test`); the test set under `presk plan`'s plans in the three types and the
+  course GPT at `B = 16`, `T = 256` under its plans, 201 of 228 launches
+  among ten threads (`make c-conformance`). A gap between pieces changes the
+  outputs; an overlap computes the same bits twice, and a check of the
+  pieces in the tests catches it. C3: no warning on GCC with and without
+  OpenMP, on Clang 21.1 (linked, run, the native bits) and for x86-64
+  (linked), both through zig 0.16.0 from PyPI (`make zig`, `.venv-zig`). C4
+  (`make c-speed`): at `B = 16`, every thread, native 1 094 ms and C 290 ms;
+  one thread, 3 132 and 1 700 ms. Found in `presk plan`: the plan it writes
+  for the MLP is refused by `presk run` (a layout chosen at one shape of a
+  nest does not divide another), and in `bf16` it states no layout. `make
+  test` takes 11 s more.
+- Step 4: the host, structured (D80). The recorder keeps the structure
+  beside its list of operations: each call with its function, dimensions,
+  parameters' source names, arguments and result, each fold with its
+  iterations and its scan's stack, every operation in one body; each buffer
+  carries its `let`'s source name. The export puts each call in a canonical
+  form (arguments by position, buffers by first definition, kernels by their
+  text, callees by their forms, constants folded into the operations that
+  read them) and writes one C function per distinct form, named after the
+  Presk function and, when it has several, its dimensions
+  (`presk_Linear_apply_In16_Out64`). A result is written into buffers the
+  caller allocates, and each function releases what it allocated when it
+  returns, so nothing is moved. A fold is a loop over the runs of its
+  iterations that are equal up to offsets affine in the index: the forward
+  stack, the scan (its stack written slot by slot) and the backward fold
+  (its body taking the index), the stacked parameters sliced as `w + l *
+  chunk`, the accumulator alternating between two buffers. An iteration that
+  differs from the next runs apart, as its own function, the first block
+  under a mixed realization. The course GPT's `GPT.apply` is a loop over its
+  six blocks. Buffers are named after the source. The arena is sized at the
+  program's peak, which the tests read back from the running program: the
+  course GPT at `T = 256` takes 117, 59 and 29 MB in `f64`, `f32` and
+  `bf16`, where releasing nothing took 352, 176 and 88 MB. Runtime scalars
+  are `double` parameters. The straight-line host stays as the oracle,
+  `--straight-line`: the 68 programs of `make test` and the course GPT's 9
+  are exported both ways, bit-identical to the native backend and to each
+  other. New mutations of the structure are each caught: a slice off by a
+  layer, a loop bound off by one, a release before a buffer's last use. A
+  test program returns a fold's value, `tests/export_c/fold_value.psk`. The
+  native backend's kernels and outputs are unchanged, byte for byte.
+- Step 3: the host, straight-line (D79). `presk export FILE --target c
+  --entry E [--dim] [--const] [--realize] [--weights] [--seed] [--no-exact]
+  -o DIR` writes the entry as a C program: `model.c`, one straight-line
+  function performing every operation of the native backend's host in
+  order, every buffer in one arena; `kernels.c`; `main.c`, which reads the
+  weights and inputs and writes the outputs as `.psk.d` files; the runtime;
+  a Makefile with the flags bit identity rests on; a README; and
+  `conformance/`, the inputs, the native backend's and the exact
+  reference's outputs, and a script that builds, runs and compares with
+  `cmp`. The host is recorded by `presk-kernel`'s new recorder, a symbolic
+  mirror of the kernel backend's host: its values carry no identity, so
+  each tensor is followed as a view of a buffer at an offset through calls,
+  `let`s, tuples, records, closures, the `stack` fold and each primitive's
+  launches, and every launch is the backend's own. It records the native
+  run itself, switched on for the entry's call only. Scalar arguments are
+  fixed at export as `presk run` synthesizes them, keys dropped; a
+  checkpoint's header is what the C reader expects byte for byte. New codes
+  `E8003`–`E8008` (unbound dimensions, an initializer, `sample`, a key, integer
+  weights, a scalar result); `E8002` now refuses `--plan` and `--threads`
+  until step 5. `presk-cli` depends on `presk-export-c`. C1 holds on the
+  test set but `next_token` in `f64`, `f32` and `bf16`, on the synthesized
+  parameters and with their zeros drawn (MiniGPT's logits are zero
+  otherwise), and under a mixed realization: 68 programs, 4.8 s in `make
+  test`; and on the course GPT at its constants, with the course's trained
+  checkpoint at `T = 256` (`make c-conformance`). C2 is reported: the
+  elements outside the band are the native backend's, question 75's
+  cancellations, now seen in forward passes too. Dropping a live launch,
+  swapping two launches' buffers and rounding a `bf16` input once are each
+  caught. The native backend's kernels and outputs are unchanged, byte for
+  byte, on the eleven entries of `make plan-check` in the three types.
+  On review: the kernel conformance suite also runs the examples with their
+  zeros drawn, asserting the band where it holds and reporting
+  `MiniGPT.apply`'s cancelling logits in `f32` and `bf16`; question 75 gains
+  the forward-pass case and the finding that two conforming executors leave
+  the band on different elements; the work a gradient discards is recorded
+  in the kernels roadmap for a step of its own.
+- Step 2: the runtime and the transcendental functions (D78). `presk-export-c`
+  gains the C every exported program holds beside its own. `c/presk_libm.c`
+  is `exp`, `log`, `tanh`, `sin`, `cos`, `erf` and their `f` forms with the
+  helpers they call, from musl 1.1.22: the `libm` crate the native backend
+  calls ports musl as it was before 1.1.23, which replaced `exp`, `expf`,
+  `log` and `logf` with ARM's routines, and current musl's four differ from
+  the crate on 8–10 % of inputs. The files are renamed `presk_…`, their
+  helpers made static and their constants moved into the functions that read
+  them; no operation changes. Each function is bit-identical to the crate on
+  10⁶ inputs, special values, subnormals, branch thresholds and the range
+  reductions' boundaries included, in 0.4 s of `make test`; an `#[ignore]`d
+  test runs each `f32` function on every `f32`, bit-identical, in 46 s.
+  `c/presk_rt.c` converts a buffer between machine types as the native
+  backend does (to `bf16` through `f32`, two roundings), reads and writes
+  `.psk.d` files from the type as text and its leaves as the export states
+  them, with `presk-data`'s error codes, and holds the arena. Files written
+  by `presk-data` are read in C bit for bit, and files written in C are
+  `presk-data`'s byte for byte. Step 1's check runs with `presk_libm.c` in
+  place of the stand-ins, bit-identical; built in GCC's GNU mode without
+  `-ffp-contract=off`, 14 of its 246 primitive runs move, as the contraction
+  rule says they must. `presk-data` becomes a dev-dependency of the crate.
+  `--target c` is still refused, and the native backend's code is unchanged.
+- Step 1: the kernel printer (D77). A new crate, `presk-export-c`, prints a
+  PSK-Kernel kernel as one C function, its textual form as the comment above
+  it: literal loop bounds, offsets multiplied out, lanes as loops over a
+  local array, `bf16` as `uint16_t` rounded as `presk_rt` rounds, a split's
+  `[lo, hi)` on the loop at its depth, and `presk_exp`, … declared for step
+  2. Integer weights are refused until step 7. The check runs the C inside
+  the kernel backend: an executor over the compiled C, loaded with `dlopen`
+  (the `libc` crate, a dev-dependency already in the lock), compiled with
+  `-std=c11 -O2 -ffp-contract=off -Wall -Wextra -Werror`. The C is
+  bit-identical to the native backend on the conformance suite's 41
+  primitives in the three types, scalar and with lanes, on the 1 491
+  layouts and 1 618 thread splits of the four nests of attention, and on
+  hand-written kernels. Every range is cut three ways, and no two pieces
+  write the same element. The transcendentals are compared too, through
+  the `libm` crate's functions standing in for step 2's. `make test` gains
+  11 s and now needs a C compiler, which `rug` already did. Two facts of
+  the plan corrected: GCC ignores `#pragma STDC FP_CONTRACT OFF` and warns
+  about it, so the pragma is for Clang only; and `-std=c11` alone already
+  stops GCC from contracting, so the contraction test of step 2 must build
+  in a GNU mode. `--target c` is still refused.
+- Step 0: bookkeeping (D76). The user's five decisions of 2026-09-26: the C
+  export as 0.9.0, before the GPU; the crate `presk-export-c` behind `presk
+  export --target c`; any entry the native backend runs, not the training
+  loop; bit identity with the native backend, musl's functions shipped; the
+  host by recording. Steps 7 (integer weights) and 8 (the SCoP mode) kept.
+  `presk export --target c` is parsed, the program checked, then refused
+  with `E8002` and exit code 2 before anything is written, tested by
+  running the binary. The plan checked against the code and amended in two
+  places: the course GPT uses `Rand` for dropout only, whose masks are all
+  ones outside a training run, so it is exported from step 3 and not
+  refused until step 6; and MiniGPT's `loss` is a forward pass, not a
+  gradient. The test set gains a gradient through attention, `loss_grad` of
+  `tests/plan/minigpt_grad.psk`, an eleventh entry of `make plan-check`: the
+  gradient of MiniGPT's loss with the output head drawn, since the
+  example's zero head leaves every other gradient zero. The native
+  backend's own gradient crosses the element-wise band on 34–121 of its
+  8 768 elements where terms cancel, so C2 is judged against the native
+  backend's gap. The Cranelift crate's documentation and the `native` chapter
+  said its `libm` was the kernel interpreter's; that holds for `erf` only.
+  Version `0.9.0-dev`; spec questions 73–74 from the plan, and 75, how
+  conformance judges an output that cancels. Nothing else is implemented, and
+  the native backend's code is unchanged.
+
 ## 0.8.0 — 2026-09-26
 
 RA4 re-tested (`presk-specs/implementation/presk-plan-0.8.0.md`). 0.7.0's

@@ -6,8 +6,8 @@
 pub mod install {}
 
 /// A guided tour: write programs, run them, read the errors, export to
-/// PyTorch, train, give a budget, choose a layout, test everything (`make
-/// tutorial` runs every command).
+/// PyTorch, train, give a budget, choose a layout, export to C, test
+/// everything (`make tutorial` runs every command).
 #[doc = include_str!("../manual/tutorial.md")]
 pub mod tutorial {}
 
@@ -31,6 +31,13 @@ pub mod training {}
 #[doc = include_str!("../manual/native.md")]
 pub mod native {}
 
+/// The C export: an entry as a C program computing the native backend's bits
+/// (`presk export --target c`), how it is made, its exactness rules, its
+/// threads, sampling and integer weights, what is checked, and the SCoP mode
+/// for polyhedral tools.
+#[doc = include_str!("../manual/export_c.md")]
+pub mod export_c {}
+
 /// The corpus: models from an NLP course, used as a forcing function.
 #[doc = include_str!("../manual/corpus.md")]
 pub mod corpus {}
@@ -48,8 +55,9 @@ pub mod coverage {}
 pub mod precision {}
 
 /// Experiments: shapes as types, the realization gap of training against the
-/// exact reference, the statements of 0.4.0 to 0.8.0 answered by measurement,
-/// MLPerf's acceptance rule beside a budget, and the two tests of RA4.
+/// exact reference, the statements of 0.4.0 to 0.9.0 answered by measurement,
+/// MLPerf's acceptance rule beside a budget, the two tests of RA4, and the C
+/// export's statements.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
 

@@ -23,6 +23,7 @@ presk-realize.workspace = true
 presk-cranelift.workspace = true
 presk-serve.workspace = true
 presk-export-pytorch.workspace = true
+presk-export-c.workspace = true
 presk-opt.workspace = true
 presk-precision.workspace = true
 

@@ -140,12 +140,117 @@ fn examples_conform() {
         ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
         ("tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
     ];
+    // On these parameters MiniGPT's head is zero, and so are the logits of
+    // `MiniGPT.apply`: `examples_with_their_zeros_drawn` checks it on others.
     let mut report = String::new();
     for (rel, consts, entry, dims) in cases {
         let g64 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F64));
         let g32 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F32));
         let gbf = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::Bf16));
         report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}  bf16 {gbf:.1e}\n"));
+    }
+    eprintln!("{report}");
+}
+
+/// Every value an initializer sets to exactly zero in the first argument, a
+/// module's parameters, drawn instead from a fixed sequence: biases, shifts
+/// and MiniGPT's head (`init = zeros`), on which its logits are zero.
+fn draw_zeros(args: &mut [Value]) {
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut draw = |v: &Value| match v {
+        Value::Real(t) => {
+            let mut t = t.clone();
+            if let presk_rt::Buf::Exact(d) = &mut t.data {
+                for x in d.iter_mut().filter(|x| x.is_zero()) {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    *x = Float::with_val(256, ((state >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.2);
+                }
+            }
+            Value::Real(t)
+        }
+        other => other.clone(),
+    };
+    args[0] = args[0].map_leaves(&mut draw);
+}
+
+/// Elements of `got` outside the band of the exact `reference`, and all
+/// its elements; an index that differs is outside.
+fn outside(reference: &IValue, got: &Value, eps: f64, a: f64) -> (usize, usize) {
+    match (reference, got) {
+        (IValue::Real(t), Value::Real(g)) => {
+            let gd = g.data.to_f64();
+            let n = t.data.iter().zip(&gd).filter(|(x, y)| {
+                let x = x.to_f64();
+                !((x - **y).abs() <= eps * (x.abs() + a) || (x.is_infinite() && x == **y))
+            });
+            (n.count(), gd.len())
+        }
+        (IValue::Idx { t, .. }, Value::Idx { t: g, .. }) => {
+            let gd = g.data.to_f64();
+            (t.data.iter().zip(&gd).filter(|(x, y)| **x as f64 != **y).count(), gd.len())
+        }
+        (IValue::Tuple(xs), Value::Tuple(ys)) => xs.iter().zip(ys).map(|(x, y)| outside(x, y, eps, a)).fold((0, 0), |p, q| (p.0 + q.0, p.1 + q.1)),
+        (IValue::Record(xs), Value::Record(ys)) => xs.iter().zip(ys).map(|((_, x), (_, y))| outside(x, y, eps, a)).fold((0, 0), |p, q| (p.0 + q.0, p.1 + q.1)),
+        _ => (0, 0),
+    }
+}
+
+/// The examples again, with the values their initializers set to zero drawn
+/// (plan 0.9.0 step 3, D79). On the synthesized parameters MiniGPT's head is
+/// `init = zeros`, so `MiniGPT.apply`'s logits are all zero and `loss` is
+/// log V, and `examples_conform` passes there on trivial outputs. Drawn,
+/// the band holds on every example in `f64`, and on every one but
+/// `MiniGPT.apply` in `f32` and `bf16`: a few of its logits, 6·10⁻⁴ to
+/// 3·10⁻³ against a median of 0.17, are sums that cancel, and leave the band
+/// by a factor up to four. Those are reported, not asserted (spec question
+/// 75): the native backend leaves it on other logits than this executor,
+/// their `exp` differing in the last bits, so no element-by-element rule
+/// between the two would hold either.
+#[test]
+fn examples_with_their_zeros_drawn() {
+    // (file, constants, entry, dimensions, whether its outputs cancel)
+    type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], bool);
+    let cases: &[Case] = &[
+        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], false),
+        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], false),
+        ("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], false),
+        ("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], false),
+        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], true),
+        ("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], false),
+        ("tests/examples/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)], false),
+        ("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], false),
+    ];
+    let mut report = String::new();
+    for (rel, consts, entry, dims, cancels) in cases {
+        let (prog, core) = prepare(rel, consts);
+        let opts = RunOptions { entry: (*entry).into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
+        let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+        let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
+        draw_zeros(&mut args);
+        let mut exact = presk_rt::InterpBackend::new(&core, &prog, 256, 0);
+        let f64r = Realization::uniform(Dtype::F64);
+        let p = presk_rt::Backend::prepare(&mut exact, func, &fdims, &f64r).unwrap();
+        let reference = presk_rt::Backend::call(&mut exact, &p, args.clone()).unwrap().to_interp(256);
+        report.push_str(&format!("{entry:22}"));
+        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+            let r = Realization::uniform(d);
+            let (eps, a) = tol(&r);
+            let mut b = KernelBackend::new(&core, &prog, &r, 0);
+            let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
+            let got = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
+            let mut w = (0.0, String::new());
+            worst(&reference, &got, a, entry, &mut w);
+            let (n, total) = outside(&reference, &got, eps, a);
+            report.push_str(&format!("  {d} {n}/{total} worst {:.1e}", w.0 / eps));
+            if d == Dtype::F64 || !cancels {
+                assert!(w.0 <= eps, "{rel} {entry} ({d}), zeros drawn: gap {:.3e} > {eps:.3e} at {}", w.0, w.1);
+            }
+            let reals: Vec<u64> = bits_of(&got);
+            assert!(reals.is_empty() || reals.iter().any(|b| f64::from_bits(*b) != 0.0), "{rel} {entry} ({d}): every output is zero");
+        }
+        report.push('\n');
     }
     eprintln!("{report}");
 }

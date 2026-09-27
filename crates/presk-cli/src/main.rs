@@ -16,6 +16,7 @@ use presk_types::check as typing;
 use presk_types::check::TypedProgram;
 use presk_types::elab::{self, Options};
 
+mod export_c;
 mod ra4;
 mod step;
 
@@ -26,7 +27,7 @@ mod step;
     about = concat!(
         "Presk compiler (",
         env!("CARGO_PKG_VERSION"),
-        ": front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch export)"
+        ": front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)"
     )
 )]
 struct Cli {
@@ -129,20 +130,23 @@ enum Command {
         #[arg(long, value_name = "ckpt/final.psk.d")]
         weights: Option<PathBuf>,
     },
-    /// Export a program to another framework.
+    /// Export a program to another framework (PyTorch), or an entry as a C program.
     Export {
         file: PathBuf,
         #[arg(long, value_enum)]
         target: ExportTarget,
-        #[arg(long, value_enum, default_value_t = ExportMode::Readable)]
-        mode: ExportMode,
+        /// PyTorch: `readable` (the default) or `graph`. C: `scop`, each nest of the entry at
+        /// point zero between `#pragma scop` and `#pragma endscop`, with a driver.
+        #[arg(long, value_enum)]
+        mode: Option<ExportMode>,
         #[arg(short, long, value_name = "DIR")]
         out: PathBuf,
         /// Insert executable shape assertions.
         #[arg(long = "shapes", value_name = "check")]
         shapes: Option<String>,
-        #[arg(long = "stack", value_enum, default_value_t = StackMode::Loop)]
-        stack: StackMode,
+        /// PyTorch: `loop` (the default) or `unroll`.
+        #[arg(long = "stack", value_enum)]
+        stack: Option<StackMode>,
         /// Also generate test_conformance.py for this entry (needs --dim/--const as for `run`);
         /// `train:K` replays K training steps of the interpreter.
         #[arg(long, value_name = "ENTRY")]
@@ -151,6 +155,7 @@ enum Command {
         #[arg(long)]
         train: bool,
         /// Also write serve.py and pskd.py: the file's `inference serve` as a PyTorch generation loop.
+        /// C: the generation function and its greedy copy, with `generate`, presk serve's loop.
         #[arg(long)]
         serve: bool,
         #[arg(long = "dim", value_name = "NAME=N")]
@@ -165,6 +170,33 @@ enum Command {
         /// With --opt: the machine profile for the extraction cost.
         #[arg(long, value_name = "FILE.json")]
         profile: Option<PathBuf>,
+        /// C: the entry to export, as `presk run --entry` names it.
+        #[arg(long)]
+        entry: Option<String>,
+        /// C: the realization, `f64` (the default), `f32`, `bf16`, or `@FILE`.
+        #[arg(long)]
+        realize: Option<String>,
+        /// C: trained parameters for the entry's first argument (a `params M`
+        /// checkpoint, of the dimensions the entry is exported at).
+        #[arg(long, value_name = "ckpt/final.psk.d")]
+        weights: Option<PathBuf>,
+        /// C: a realization plan, `@FILE` (`presk plan --out`): its realization and a
+        /// layout per nest, its splits the program's threads.
+        #[arg(long, value_name = "@FILE", conflicts_with = "realize")]
+        plan: Option<String>,
+        /// C: the native executor's workers (default: the cores), which divide the
+        /// kernels a plan leaves to its default, as for `presk run`.
+        #[arg(long)]
+        threads: Option<usize>,
+        /// C: leave the exact reference's outputs out of `conformance/` (the
+        /// reference interpreter takes hours at a model's full size).
+        #[arg(long)]
+        no_exact: bool,
+        /// C: write the host straight-line, every operation in order in one
+        /// function and nothing released (plan 0.9.0 step 3), the structured
+        /// host's oracle.
+        #[arg(long)]
+        straight_line: bool,
     },
     /// Dump an intermediate representation (development aid).
     Dump {
@@ -500,6 +532,15 @@ enum Command {
         /// finishing at all.
         #[arg(long)]
         native_only: bool,
+        /// With --plan: time the plan's row alone, the native backend under the
+        /// plan, and not the uniform realizations' rows (0.9.0 step 5: the C
+        /// export's speed against the native backend's, statement C4).
+        #[arg(long, requires = "plan")]
+        plan_only: bool,
+        /// Trained parameters for the entry's first argument (a `params M` file,
+        /// of the dimensions the entry is timed at), as for `presk run`.
+        #[arg(long, value_name = "ckpt/final.psk.d")]
+        weights: Option<PathBuf>,
     },
     /// Measure the magnitude envelope of an entry, or one training step under each realization (--step).
     ///
@@ -734,13 +775,20 @@ enum DataCommand {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ExportTarget {
+    /// Readable PyTorch: the typed program printed as Python.
     Pytorch,
+    /// A C program of one entry: its kernels and its host, computing the
+    /// native backend's bits (plan 0.9.0; needs --entry).
+    C,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
 enum ExportMode {
     Readable,
     Graph,
+    /// C only (plan 0.9.0 step 8): the entry's nests at point zero, each a
+    /// standalone C function between `#pragma scop` and `#pragma endscop`.
+    Scop,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -899,7 +947,49 @@ fn main() -> ExitCode {
         },
         Command::Dump { file, stage, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites } => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, &parse_plan(plan.as_deref(), &realize), plan.is_some(), profile, weights, sites),
         Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads } => { set_threads(threads); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
-        Command::Export { file, target: _, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile } => export(&file, mode, &out, shapes.as_deref(), stack, conformance_entry.as_deref(), train, serve, &dims, &consts, seed, Opt { on: opt, profile }),
+        Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line } => {
+            let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
+            if let Some((flag, _)) = pytorch.iter().find(|(_, given)| *given) {
+                eprintln!("presk export: `{flag}` is an option of the PyTorch export, not of --target c");
+                return ExitCode::from(2);
+            }
+            // Point zero, one lane, one worker, and no host (plan 0.9.0 §3.7).
+            let refused = [
+                ("--plan", plan.is_some(), "every nest is at point zero, its default layout, before any plan (a plan's realization is `--realize @FILE`)"),
+                ("--threads", threads.is_some(), "every nest runs on one worker, without OpenMP"),
+                ("--straight-line", straight_line, "the nests have no host"),
+                ("--serve", serve, "the nests have no host (`--entry` names a generation function to export its nests)"),
+                ("--weights", weights.is_some(), "a nest's shapes do not depend on the weights, and the driver draws its inputs"),
+                ("--no-exact", no_exact, "the nests are compared with the native backend, not with the exact reference"),
+            ];
+            if let Some((flag, _, why)) = refused.iter().find(|(_, given, _)| *given) {
+                eprintln!("presk export --mode scop: `{flag}` does not apply: {why}");
+                return ExitCode::from(2);
+            }
+            let Some(entry) = entry else {
+                eprintln!("presk export --target c --mode scop: --entry is required (its nests are captured as `presk plan` captures them)");
+                return ExitCode::from(2);
+            };
+            export_c::export_scop(&export_c::ScopOptions { file: &file, entry: &entry, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), seed, out: &out })
+        }
+        Command::Export { file, target: ExportTarget::C, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line } => {
+            if let Some(m) = mode {
+                eprintln!("presk export: `--mode {}` is a mode of the PyTorch export; --target c has `--mode scop`", if m == ExportMode::Graph { "graph" } else { "readable" });
+                return ExitCode::from(2);
+            }
+            let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
+            set_threads(threads);
+            export_c(&file, &out, entry.as_deref(), &dims, &consts, realize.as_deref().unwrap_or("f64"), plan.as_deref(), weights, seed, (no_exact, straight_line, serve), &pytorch)
+        }
+        Command::Export { file, target: ExportTarget::Pytorch, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line } => {
+            let c_only = [("--mode scop", mode == Some(ExportMode::Scop)), ("--entry", entry.is_some()), ("--realize", realize.is_some()), ("--weights", weights.is_some()), ("--plan", plan.is_some()), ("--threads", threads.is_some()), ("--no-exact", no_exact), ("--straight-line", straight_line)];
+            if let Some((flag, _)) = c_only.iter().find(|(_, given)| *given) {
+                let entry = if *flag == "--entry" { "; the PyTorch export's entry is --conformance-entry" } else { "" };
+                eprintln!("presk export: `{flag}` is an option of --target c{entry}");
+                return ExitCode::from(2);
+            }
+            export(&file, mode.unwrap_or(ExportMode::Readable), &out, shapes.as_deref(), stack.unwrap_or(StackMode::Loop), conformance_entry.as_deref(), train, serve, &dims, &consts, seed, Opt { on: opt, profile })
+        }
         Command::Serve { file, consts, weights, prompt, tokens, entry, dims, temperature, seed, bits, backend, realize, json, opt, profile } => {
             let mut prompt_tokens = Vec::new();
             for t in prompt.split_whitespace() {
@@ -1000,7 +1090,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only } => {
+        Command::Bench { file, entry, dims, consts, bits, repeat, seed, opt, profile, calibrate, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only, plan_only, weights } => {
             set_threads(threads);
             let rules = rules.as_deref().map(presk_kernel::cost::CostRules::parse).transpose();
             let model = match (presk_opt::profile::LoadTerm::parse(&load_term), presk_opt::profile::Combine::parse(&combine), rules) {
@@ -1019,7 +1109,7 @@ fn main() -> ExitCode {
                 (Some(p), None) => Some((p, None)),
                 (None, _) => None,
             };
-            bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate, &parse_plan(plan.as_deref(), &realize), plan.is_some(), native_only)
+            bench(&file, &entry, &dims, &consts, bits, repeat, seed, Opt { on: opt, profile }, calibrate, &parse_plan(plan.as_deref(), &realize), plan.is_some(), (native_only, plan_only), weights.as_deref())
         }
         Command::Data { command } => match data(command) {
             Ok(()) => ExitCode::SUCCESS,
@@ -1833,7 +1923,7 @@ fn entry_args(core: &presk_core::Program, prog: &elab::ElabProgram, opts: &presk
 /// (`--space calib`) its load term, its combination and the fewest workers
 /// a layout of the space is stated on.
 #[allow(clippy::type_complexity)]
-fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, repeat: usize, seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, plan: &presk_rt::Plan, planned: bool, native_only: bool) -> ExitCode {
+fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, repeat: usize, seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, plan: &presk_rt::Plan, planned: bool, (native_only, plan_only): (bool, bool), weights: Option<&Path>) -> ExitCode {
     let realize = &plan.realization;
     let dims = match parse_dims(dims) {
         Ok(d) => d,
@@ -1862,7 +1952,20 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
             return ExitCode::from(1);
         }
     };
-    let args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
+    let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
+    if let Some(w) = weights {
+        match args.first().map(|a| presk_rt::load_params(w, a)) {
+            Some(Ok(v)) => args[0] = v,
+            Some(Err(e)) => {
+                eprint!("{}", render_all(&[presk_syntax::Diagnostic::error(e.code, format!("{}: {}", w.display(), e.message))], &sm, color()));
+                return ExitCode::from(1);
+            }
+            None => {
+                eprintln!("presk bench: --weights: `{entry}` takes no argument");
+                return ExitCode::from(2);
+            }
+        }
+    }
     if let Some((path, layouts)) = calibrate {
         if let Some(model) = layouts {
             return calibrate_layouts(&core, &prog, func, &fdims, &args, plan, repeat.max(3), seed, path, model);
@@ -1896,7 +1999,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     let uniform = |d| presk_rt::Realization::uniform(d);
     let f64r = uniform(presk_rt::Dtype::F64);
     let mut rows = Vec::new();
-    if !native_only {
+    if !native_only && !plan_only {
         if let Some(r) = time(&format!("interp {bits} bits"), &mut presk_rt::InterpBackend::new(&core, &prog, bits, seed), &f64r) {
             rows.push(r);
         }
@@ -1911,6 +2014,9 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     // one wants a row for.
     if !realize.is_uniform() || !want.iter().any(|(_, r)| r == realize) {
         want.push((format!("native {}", realize.label()), realize.clone()));
+    }
+    if plan_only {
+        want.clear();
     }
     for (name, r) in &want {
         // The natural lane count of the machine type: Cranelift's vector
@@ -2735,6 +2841,11 @@ fn check_stages(file: &Path, consts: &[String], summary: bool, quiet: bool, sm_o
 
 /// Lower to PSK-Core and verify the result.
 fn core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap, elab::ElabProgram, presk_core::Program), ExitCode> {
+    typed_core(file, consts, unroll_stack).map(|(sm, prog, _, core)| (sm, prog, core))
+}
+
+/// [`core()`], and the typed program it was lowered from.
+fn typed_core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap, elab::ElabProgram, TypedProgram, presk_core::Program), ExitCode> {
     let (sm, prog, typed) = typed_front(file, consts)?;
     let (core, diags) = presk_core::lower::lower_with(&prog, &typed, &presk_core::lower::Options { unroll_stack });
     eprint!("{}", render_all(&diags, &sm, color()));
@@ -2747,7 +2858,7 @@ fn core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap
         }
         return Err(ExitCode::from(2));
     }
-    Ok((sm, prog, core))
+    Ok((sm, prog, typed, core))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2987,6 +3098,25 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
             ExitCode::SUCCESS
         }
     }
+}
+
+/// `presk export --target c` (plan 0.9.0 step 3, D79): the options first,
+/// then the entry (`export_c::export`). `E8002`, which refused the target
+/// (steps 0–2) and then `--plan` and `--threads` (steps 3–4), is no longer
+/// emitted (step 5, D81). With `--serve` (step 6, D83) the entry is the
+/// file's generation function unless `--entry` names another, as for
+/// `presk serve`.
+#[allow(clippy::too_many_arguments)]
+fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, weights: Option<PathBuf>, seed: u64, (no_exact, straight_line, serve): (bool, bool, bool), pytorch: &[(&str, bool)]) -> ExitCode {
+    if let Some((flag, _)) = pytorch.iter().find(|(_, given)| *given) {
+        eprintln!("presk export: `{flag}` is an option of the PyTorch export, not of --target c");
+        return ExitCode::from(2);
+    }
+    if entry.is_none() && !serve {
+        eprintln!("presk export --target c: --entry is required (the program is one entry at bound dimensions, as `presk run` runs it), or --serve for the file's generation function");
+        return ExitCode::from(2);
+    }
+    export_c::export(&export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, serve, out })
 }
 
 #[allow(clippy::too_many_arguments)]

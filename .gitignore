@@ -1,6 +1,8 @@
 /target
 /out
 /.venv
+/.venv-zig
+/.llvm
 *.snap.new
 .DS_Store
 __pycache__/

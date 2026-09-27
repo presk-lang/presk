@@ -233,8 +233,11 @@ by 9.2× and 16.5× on the attention's two `ein`s at batch 16, and by 27–132×
 on the contractions of BERT-large's attention and of a head of 128. The
 model's candidates within its uncertainty hold a point within 1.03× of the
 best, so measuring them alone is a chooser too (statement Q). `presk plan` gives each nest
-one layout, chosen at the first shape the nest is launched at; a nest
-launched at several shapes keeps it at the others, where it is checked again.
+one layout, which holds at every shape the nest is launched at and is
+checked again at each. A nest launched at several shapes gets the layout the
+model prices at all of them whose predicted time, each shape's weighed by
+its launches, is least; until 0.9.0 (D82) the first shape decided, and a
+tile chosen there could fail to divide another shape.
 
 ## Not in this version
 

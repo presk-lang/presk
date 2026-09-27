@@ -7,9 +7,10 @@ any output directory of `presk export … --conformance-entry train:K`. §3 is
 0.4.0's decisive experiment against PyTorch (`make experiment-gpt`), §4 the
 statements of 0.5.0, §5 MLPerf's acceptance rule set beside a budget on one
 model (`make foil`), §6 the statements of 0.6.0, §7 those of 0.7.0, the
-first test of the research programme's hypothesis RA4 (`make ra4`), and §8
+first test of the research programme's hypothesis RA4 (`make ra4`), §8
 those of 0.8.0, its second, with a model frozen before two fresh sweeps
-(`make ra4-f2`, `make ra4-f1`). Each
+(`make ra4-f2`, `make ra4-f1`), and §9 those of 0.9.0, a C export
+(`make c-conformance`, `make c-speed`). Each
 version named its statements before it began, with what would count as
 failure, and each section reports them as measured.
 
@@ -709,6 +710,74 @@ batch one. What the failures point to (the L2 term beside the loads of a
 one-row tile, the order of pairs within `u`, the cost of costing a point) is
 recorded in `docs/kernels-roadmap.md`, for a model to be frozen and tested
 again on a sweep it was not designed on.
+
+## 9. A C program: the statements of 0.9.0
+
+0.9.0 is not a test of a hypothesis of the research programme. It gives an
+entry a way out of the compiler, as a C program that runs without it
+(`export_c` chapter), and its five statements, fixed before the version
+began (`presk-specs/implementation/presk-plan-0.9.0.md` §3.8), say what the
+program owes: the native backend's bits, the exact reference's band, a
+clean build on the compilers that matter, and `presk serve`'s tokens; its
+speed is reported and decides nothing. The test set is the eleven entries
+`make plan-check` compares (an MLP's loss and its gradient, a LayerNorm
+and an RMSNorm, MiniGPT's forward pass, its training loss, that loss's
+gradient through attention, an optimizer step and `next_token`, and the
+course GPT's attention and forward pass, all at small constants) and the
+course GPT at its course constants. Four hold; the fifth
+decides nothing.
+
+| # | Statement | Asked | Measured | |
+|---|---|---|---|---|
+| C1 | every exported entry of the test set, in `f64`, `f32` and `bf16`, under the default layout and under a plan from `presk plan`, computes outputs **bit-identical** to `presk run --backend native` with the same realization, plan, dimensions, seed and weights | every bit | every entry in the three types, on synthesized parameters and with their zeros drawn, under a mixed realization, under `presk plan`'s plans, both hosts, with OpenMP and without, on one thread and every thread; the course GPT at `T = 256` with its trained checkpoint, at `B = 16` under its plans (201 of 228 launches divided among ten threads); 42 programs with integer weights; every nest in the SCoP form: no bit differs | holds |
+| C2 | the same outputs lie within the realization's conformance band of the exact reference, as the native backend's do | no output outside the band where the native backend's is inside | the outputs are the native backend's, so outside the band on exactly its elements: 34, 121 and 99 of `loss_grad`'s 8 768 in `f64`, `f32` and `bf16`, and a few cancelling logits of the forward passes (question 75) | holds |
+| C3 | the exported C compiles without warnings (`-Wall -Wextra -std=c11`) with GCC and Clang on aarch64, and cross-compiles for x86-64 | no warning or error | GCC 13.3 with and without OpenMP; Clang 21.1 (`zig cc`), linked, run and bit-identical, `generate` giving `presk serve`'s tokens; x86-64 (`x86_64-linux-musl`), linked; the SCoP mode's files on Clang 23.1.2 too: none warns | holds |
+| C4 | the exported program's wall time against the native backend's, one thread and every thread, on the course GPT's forward at `B = 16` | reported | every thread: native 1 094 ms, C 290 ms; one thread: 3 132 and 1 700 ms (`f32`, `T = 256`, under the frozen profile's plan) | — |
+| C5 | the tokens the exported `next_token` generates over a sliding window are those `presk serve` generates, greedy and sampled with the same seed | every token | `generate`'s `--json` document is `presk serve --backend native`'s byte for byte, greedy and at three temperatures and four seeds, in the three types, through both hosts, on the example with its zeros drawn and on the trained checkpoint, with integer weights too | holds |
+
+**How it was measured** (D77–D85). `make test` exports, builds and runs
+every program through the binary and compares its output file with the
+native backend's with `cmp`; `make c-conformance` adds the course GPT, the
+trained checkpoints, the plans, Clang and x86-64 through zig from PyPI, and
+Polly from LLVM's release; `make c-speed` measures C4. Each check was
+checked by mutations of the program that each change its outputs: a
+dropped launch, a slice off by a layer, a loop bound off by one, an early
+release, a gap between threads' pieces, a skipped draw, a scale one channel
+off, and others (`export_c` chapter, "What is checked").
+
+**What makes C1 hold.** Two things the plan named, and one it did not
+know. The program is built without floating-point contraction (`-std=c11
+-ffp-contract=off`; GCC contracts in its default GNU mode, and 14 of 246
+primitive runs then move). It ships the transcendental functions the
+native backend calls through the `libm` crate, which ports musl as it was
+before 1.1.23: current musl's `exp` and `log` differ from it on 8–10 % of
+inputs, glibc's on 1.2–9.8 %, and musl 1.1.22's on none of 10⁶ inputs a
+function. And the native backend's own `sample` called the platform's
+`exp`, not the crate's, which step 6 changed: 540 generations of 32 tokens
+did not move.
+
+**C2 became a check of a copy.** The band is per element, and the native
+backend's outputs cross it where large terms cancel, in gradients and in
+forward passes, where the kernel interpreter, another conforming
+executor, crosses it on other elements. So C2 was judged against the
+native backend's own gap from step 0 on, and question 75 asks how
+conformance should judge an output that cancels.
+
+**C4, reported.** The C program is 3.8 times faster on ten threads and 1.8
+times on one. On one thread both run the same kernels, so the difference
+is the code generator (GCC `-O2` against Cranelift) and the host (the
+native host copies each stacked layer's slice, the program slices by
+pointer); on ten, the native backend also starts a thread per piece at
+each divided launch, where OpenMP keeps a pool. The shares are not
+measured apart.
+
+**What the five together say.** A Presk entry, a gradient or a sampling
+loop included, can leave the compiler as a small C program that computes
+the native backend's bits on any compiler and thread count, so the exact
+reference's measurements of the native backend (its gap, a budget's
+verdict) carry over to it unchanged. The polyhedral comparison the SCoP
+mode prepares, a tool's transformation of the same nests against RA4's
+ranking, comes after 0.9.0.
 
 ## What these experiments do not show
 

@@ -12,7 +12,7 @@
 //! nests: kernels of one entry are launched one after another, so a nest's
 //! time does not depend on another nest's layout.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -285,31 +285,128 @@ pub fn plan(file: &Path, entry: &str, dims: &[String], consts: &[String], base: 
     // which worker counts are well-formed.
     let model_machine = stored.unwrap_or_else(|| captured.machine.clone());
     let t_cost = Instant::now();
-    let mut layout: BTreeMap<String, Layout> = BTreeMap::new();
-    let mut rows: Vec<String> = Vec::new();
+    // Each launch's points the model prices, best first, and its rows.
+    type Costed<'a> = (&'a Launch, Vec<(f64, Layout)>, Vec<String>);
+    let mut costed: Vec<Costed> = Vec::new();
+    let mut unpriced: Vec<&Launch> = Vec::new();
     let mut total_points = 0usize;
     for l in &captured.launches {
         let pts = points(l, space, captured.machine.workers);
-        total_points += pts.len();
-        let mut scored: Vec<(f64, &Layout)> = pts.iter().filter_map(|(p, ks)| predict(&fit, &model_machine, l.dtype, ks).map(|t| (t, p))).collect();
+        let space_size = pts.len();
+        total_points += space_size;
+        let mut scored: Vec<(f64, Layout)> = pts.into_iter().filter_map(|(p, ks)| predict(&fit, &model_machine, l.dtype, &ks).map(|t| (t, p))).collect();
         scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let Some((best_t, best)) = scored.first().copied() else { continue };
+        let Some((best_t, best)) = scored.first() else {
+            // Points none of which a group of the model prices: a type the
+            // profile was not calibrated in (0.9.0, D82).
+            if space_size > 0 {
+                unpriced.push(l);
+            }
+            continue;
+        };
         let kept = scored.iter().filter(|(t, _)| *t <= best_t * (1.0 + fit.u)).count();
+        let mut rows = Vec::new();
         if cost {
             for (t, p) in &scored {
                 rows.push(format!("  {:<28} {:>12.2} µs  {p}", l.nest, t * 1e6));
             }
         }
-        rows.push(format!("{:<28} {:<24} {:>5} points  {:>10.2} µs  {kept:>3} within 1 + u  {best}", l.nest, shape(l), pts.len(), best_t * 1e6));
-        // One layout per nest: the first shape a nest launches at decides it.
-        layout.entry(l.nest.clone()).or_insert_with(|| best.clone());
+        rows.push(format!("{:<28} {:<24} {:>5} points  {:>10.2} µs  {kept:>3} within 1 + u  {best}", l.nest, shape(l), space_size, best_t * 1e6));
+        costed.push((l, scored, rows));
+    }
+    let types: Vec<String> = {
+        let mut t: Vec<String> = fit.pi.keys().filter_map(|g| g.split('+').next()).map(String::from).collect();
+        t.dedup();
+        t
+    };
+    if costed.is_empty() && !unpriced.is_empty() {
+        let dtypes: Vec<String> = unpriced.iter().map(|l| l.dtype.to_string()).collect::<BTreeSet<_>>().into_iter().collect();
+        eprintln!("presk plan: the profile's layout model prices no layout of `{entry}` in {}: {} was calibrated in {} only, and a plan stating no layout would be the default one", dtypes.join(", "), profile.display(), types.join(" and "));
+        return ExitCode::from(2);
+    }
+    // One layout per nest, since a plan states one per name. A nest launched
+    // at one shape takes that shape's best. At several, the first shape's
+    // best may not suit another (a tile that does not divide it, condition
+    // 3), and `presk run` would refuse the plan: the layout is the one the
+    // model prices at every shape whose predicted time, each shape's weighed
+    // by the times the entry launches it, is least (0.9.0, D82).
+    let mut layout: BTreeMap<String, Layout> = BTreeMap::new();
+    let mut rows: Vec<String> = Vec::new();
+    let nests: Vec<&str> = {
+        let mut n: Vec<&str> = Vec::new();
+        for (l, _, _) in &costed {
+            if !n.contains(&l.nest.as_str()) {
+                n.push(&l.nest);
+            }
+        }
+        n
+    };
+    let mut summary: HashMap<&str, String> = HashMap::new();
+    for nest in &nests {
+        // A nest the model cannot price at one of its shapes is left to the
+        // default layout, which suits every shape.
+        if unpriced.iter().any(|l| l.nest == *nest) {
+            continue;
+        }
+        let group: Vec<&Costed> = costed.iter().filter(|(l, _, _)| l.nest == *nest).collect();
+        if let [(_, scored, _)] = group.as_slice() {
+            layout.insert(nest.to_string(), scored[0].1.clone());
+            continue;
+        }
+        let others: Vec<HashMap<String, f64>> = group[1..].iter().map(|(_, s, _)| s.iter().map(|(t, p)| (p.key(), *t)).collect()).collect();
+        let weigh = |ts: &[f64]| -> f64 { ts.iter().zip(&group).map(|(t, (l, _, _))| t * l.count as f64).sum() };
+        let own = weigh(&group.iter().map(|(_, s, _)| s[0].0).collect::<Vec<_>>());
+        let mut chosen: Option<(f64, &Layout)> = None;
+        for (t0, p) in &group[0].1 {
+            let key = p.key();
+            let ts = std::iter::once(Some(*t0)).chain(others.iter().map(|m| m.get(&key).copied())).collect::<Option<Vec<f64>>>();
+            let Some(ts) = ts else { continue };
+            let total = weigh(&ts);
+            if chosen.is_none_or(|(b, _)| total < b) {
+                chosen = Some((total, p));
+            }
+        }
+        let counts = group.iter().map(|(l, _, _)| l.count.to_string()).collect::<Vec<_>>().join(" + ");
+        // A line for a nest whose shapes do not all choose the layout it
+        // takes.
+        match chosen {
+            Some((total, p)) => {
+                layout.insert(nest.to_string(), p.clone());
+                if group.iter().any(|(_, s, _)| s[0].1 != *p) {
+                    summary.insert(nest, format!("= {nest} at {} shapes, {counts} launches: {p}; {:.2} µs over them, {:.2} µs at each shape's own best", group.len(), total * 1e6, own * 1e6));
+                }
+            }
+            None => {
+                summary.insert(nest, format!("= {nest} at {} shapes: no layout the model prices at every one, left to the default", group.len()));
+            }
+        }
+    }
+    for (i, (l, _, r)) in costed.iter().enumerate() {
+        rows.extend(r.iter().cloned());
+        let last = !costed[i + 1..].iter().any(|(m, _, _)| m.nest == l.nest);
+        if last && let Some(line) = summary.get(l.nest.as_str()) {
+            rows.push(line.clone());
+        }
     }
     let cost_seconds = t_cost.elapsed().as_secs_f64();
     println!("{:<28} {:<24} {:>12} {:>13}  {:>17}  layout", "nest", "operands", "space", "predicted", "undecided");
     for r in &rows {
         println!("{r}");
     }
-    println!("-- {} nests, {total_points} points costed in {cost_seconds:.3} s, the entry captured in {:.3} s; u = {:.3}", captured.launches.len(), captured.seconds, fit.u);
+    let all_nests = captured.launches.iter().map(|l| l.nest.as_str()).collect::<BTreeSet<_>>().len();
+    let shapes = if all_nests == captured.launches.len() { String::new() } else { format!(" at {} shapes", captured.launches.len()) };
+    println!("-- {all_nests} nests{shapes}, {total_points} points costed in {cost_seconds:.3} s, the entry captured in {:.3} s; u = {:.3}", captured.seconds, fit.u);
+    if !unpriced.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        for l in &unpriced {
+            let n = unpriced.iter().filter(|m| m.nest == l.nest).count();
+            let name = if n > 1 { format!("{} ({}, {n} shapes)", l.nest, l.dtype) } else { format!("{} ({})", l.nest, l.dtype) };
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        println!("-- left to the default layout, the profile being calibrated in {} only: {}", types.join(" and "), names.join(", "));
+    }
     println!("-- wall time {:.3} s", t0.elapsed().as_secs_f64());
     if let Some(path) = out {
         let p = presk_rt::Plan { realization: base.realization.clone(), realization_ref: base.realization_ref.clone(), profile: Some(profile.display().to_string()), layout };
@@ -1753,5 +1850,88 @@ mod tests {
         let mut wrong = samples[0].clone();
         wrong.group = group_key("f32", 4, 1);
         assert!(recost(&[wrong], &file, "matmul", &machine, &none).unwrap_err().contains("group"));
+    }
+
+    fn root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// `presk plan` into `out`, under `realize`, with a synthetic profile of
+    /// `f32` groups: its exit code and the plan written.
+    fn plan_under(name: &str, file: &str, entry: &str, dims: &[&str], consts: &[&str], realize: &str) -> (ExitCode, Option<presk_rt::Plan>) {
+        let d = scratch(name);
+        let p = d.join("profile.json");
+        profile(&p, 1.0, 0.2);
+        let out = d.join("plan.json");
+        let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
+        let consts: Vec<String> = consts.iter().map(|s| s.to_string()).collect();
+        let base = presk_rt::Plan::from_realization(presk_rt::Realization::parse(realize).unwrap());
+        let code = plan(&root().join(file), entry, &dims, &consts, &base, &p, None, Space::Full, false, Some(&out), 0);
+        let written = out.exists().then(|| presk_rt::Plan::parse(&format!("@{}", out.display())).unwrap());
+        (code, written)
+    }
+
+    /// 0.9.0 (D82): the MLP launches `Linear.apply/%3` at D→4D and at 4D→D.
+    /// The first shape's best layout does not lower at the second, which is
+    /// the plan `presk run` refused; the plan states one that lowers at both,
+    /// and the nests launched at one shape keep their own best.
+    #[test]
+    fn a_nest_at_several_shapes_takes_a_layout_every_shape_takes() {
+        let (file, dims) = ("tests/examples/mlp/mlp.psk", ["D=4", "B=2"]);
+        let (code, written) = plan_under("plan-shapes", file, "mse_grad", &dims, &[], "f32");
+        assert_eq!(code, ExitCode::SUCCESS);
+        let written = written.expect("a plan is written");
+        let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
+        let captured = capture(&root().join(file), "mse_grad", &dims, &[], &f32_plan(), 0, None, Capture::Shapes).unwrap();
+        let workers = captured.machine.workers;
+        let shapes: Vec<&Launch> = captured.launches.iter().filter(|l| l.nest == "Linear.apply/%3").collect();
+        assert_eq!(shapes.len(), 2, "Linear.apply/%3 at two shapes");
+        assert_eq!(shapes.iter().map(|l| l.count).collect::<Vec<_>>(), [3, 3], "each launched three times (twice by the forward pass the gradient recomputes)");
+        // The first shape's own best does not lower at the second.
+        let d = scratch("plan-shapes-fit");
+        profile(&d.join("p.json"), 1.0, 0.2);
+        let (fit, _) = load_fit(Some(&d.join("p.json"))).unwrap().unwrap();
+        let best = |l: &Launch| {
+            let mut s: Vec<(f64, Layout)> = points(l, Space::Full, workers).into_iter().filter_map(|(p, ks)| predict(&fit, &captured.machine, l.dtype, &ks).map(|t| (t, p))).collect();
+            s.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            s.remove(0).1
+        };
+        assert!(lower_launch(shapes[1], &best(shapes[0]), Some(workers)).is_err(), "the first shape's best lowers at the second: the test does not test the rule");
+        // Every nest's layout lowers at every shape of it.
+        for l in &captured.launches {
+            if let Some(layout) = written.layout.get(&l.nest) {
+                assert!(lower_launch(l, layout, Some(workers)).is_ok(), "{} at {}: {layout}", l.nest, shape(l));
+            }
+        }
+        // A nest at one shape keeps its best.
+        for l in captured.launches.iter().filter(|l| captured.launches.iter().filter(|m| m.nest == l.nest).count() == 1) {
+            assert_eq!(written.layout.get(&l.nest), Some(&best(l)), "{}", l.nest);
+        }
+    }
+
+    /// 0.9.0 (D82): a type the profile was not calibrated in is refused, and
+    /// no plan is written, where `presk plan` wrote an empty plan; a
+    /// realization with sites of such a type leaves them to the default.
+    #[test]
+    fn a_type_the_profile_cannot_price_is_refused_or_left_out() {
+        let minigpt = ["V=64", "D=16", "H=2", "L=2"];
+        let dims = ["B=2", "T=8"];
+        let (code, written) = plan_under("plan-bf16", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &dims, &minigpt, "bf16");
+        assert_eq!(code, ExitCode::from(2));
+        assert!(written.is_none(), "a plan was written");
+        let mixed = format!("@{}", root().join("tests/plan/mixed-realization.json").display());
+        let (code, written) = plan_under("plan-mixed", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &dims, &minigpt, &mixed);
+        assert_eq!(code, ExitCode::SUCCESS);
+        let written = written.expect("a plan is written");
+        let base = presk_rt::Plan::from_realization(presk_rt::Realization::parse(&mixed).unwrap());
+        let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
+        let consts: Vec<String> = minigpt.iter().map(|s| s.to_string()).collect();
+        let captured = capture(&root().join("tests/examples/minigpt/minigpt.psk"), "MiniGPT.apply", &dims, &consts, &base, 0, None, Capture::Shapes).unwrap();
+        let other: BTreeSet<&str> = captured.launches.iter().filter(|l| l.dtype != presk_rt::Dtype::F32).map(|l| l.nest.as_str()).collect();
+        assert!(!other.is_empty(), "the mixed realization has sites of other types");
+        for n in &other {
+            assert!(!written.layout.contains_key(*n), "{n}: a layout the profile cannot price");
+        }
+        assert!(!written.layout.is_empty(), "the f32 sites have layouts");
     }
 }

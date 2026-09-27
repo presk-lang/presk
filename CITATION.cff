@@ -16,8 +16,8 @@ authors:
     given-names: Georges-André
     affiliation: "Mines Paris – PSL"
     email: georges-andre.silber@minesparis.psl.eu
-version: 0.8.0
-date-released: 2026-09-26
+version: 0.9.0
+date-released: 2026-09-27
 license: Apache-2.0
 repository-code: "https://github.com/presk-lang/presk"
 url: "https://presk-lang.org"

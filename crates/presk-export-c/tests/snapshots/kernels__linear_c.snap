@@ -1,0 +1,206 @@
+---
+source: crates/presk-export-c/tests/kernels.rs
+expression: text
+---
+// kernel dot (%0 : f64[batch: 2, 4], %1 : f64[4, 8]) -> %2 : f64[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..1 {
+//       v0 = splat(0)
+//       v1 = splat(0)
+//       v2 = splat(0)
+//       v3 = splat(0)
+//       for i2 in 0..4 {
+//         s0 = %0[i0, i2]
+//         v0 = (v0 + (splat(s0) * %1[i2, ((i1 * 8) + 0)]<v>)<v>)<v>
+//         v1 = (v1 + (splat(s0) * %1[i2, ((i1 * 8) + 2)]<v>)<v>)<v>
+//         v2 = (v2 + (splat(s0) * %1[i2, ((i1 * 8) + 4)]<v>)<v>)<v>
+//         v3 = (v3 + (splat(s0) * %1[i2, ((i1 * 8) + 6)]<v>)<v>)<v>
+//       }
+//       %2[i0, ((i1 * 8) + 0)] <v= v0
+//       %2[i0, ((i1 * 8) + 2)] <v= v1
+//       %2[i0, ((i1 * 8) + 4)] <v= v2
+//       %2[i0, ((i1 * 8) + 6)] <v= v3
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+static void f64_k0(const double *restrict in0, const double *restrict in1, double *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0, i2 = 0;
+    double s0 = 0.0;
+    double v0[2] = {0}, v1[2] = {0}, v2[2] = {0}, v3[2] = {0};
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 1; i1++) {
+            for (int l = 0; l < 2; l++) v0[l] = 0.0;
+            for (int l = 0; l < 2; l++) v1[l] = 0.0;
+            for (int l = 0; l < 2; l++) v2[l] = 0.0;
+            for (int l = 0; l < 2; l++) v3[l] = 0.0;
+            for (i2 = 0; i2 < 4; i2++) {
+                s0 = in0[i0 * 4 + i2];
+                for (int l = 0; l < 2; l++) v0[l] = v0[l] + s0 * in1[i2 * 8 + i1 * 8 + l];
+                for (int l = 0; l < 2; l++) v1[l] = v1[l] + s0 * in1[i2 * 8 + i1 * 8 + 2 + l];
+                for (int l = 0; l < 2; l++) v2[l] = v2[l] + s0 * in1[i2 * 8 + i1 * 8 + 4 + l];
+                for (int l = 0; l < 2; l++) v3[l] = v3[l] + s0 * in1[i2 * 8 + i1 * 8 + 6 + l];
+            }
+            for (int l = 0; l < 2; l++) out[i0 * 8 + i1 * 8 + l] = v0[l];
+            for (int l = 0; l < 2; l++) out[i0 * 8 + i1 * 8 + 2 + l] = v1[l];
+            for (int l = 0; l < 2; l++) out[i0 * 8 + i1 * 8 + 4 + l] = v2[l];
+            for (int l = 0; l < 2; l++) out[i0 * 8 + i1 * 8 + 6 + l] = v3[l];
+        }
+    }
+}
+
+// kernel add (%0 : f64[batch: 2, 8], %1 : f64[8]) -> %2 : f64[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..8 {
+//       %2[i0, i1] = (%0[i0, i1] + %1[i1])
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+static void f64_k1(const double *restrict in0, const double *restrict in1, double *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 8; i1++) {
+            out[i0 * 8 + i1] = in0[i0 * 8 + i1] + in1[i1];
+        }
+    }
+}
+
+// kernel dot (%0 : f32[batch: 2, 4], %1 : f32[4, 8]) -> %2 : f32[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..1 {
+//       v0 = splat(0)
+//       v1 = splat(0)
+//       for i2 in 0..4 {
+//         s0 = %0[i0, i2]
+//         v0 = (v0 + (splat(s0) * %1[i2, ((i1 * 8) + 0)]<v>)<v>)<v>
+//         v1 = (v1 + (splat(s0) * %1[i2, ((i1 * 8) + 4)]<v>)<v>)<v>
+//       }
+//       %2[i0, ((i1 * 8) + 0)] <v= v0
+//       %2[i0, ((i1 * 8) + 4)] <v= v1
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+static void f32_k0(const float *restrict in0, const float *restrict in1, float *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0, i2 = 0;
+    float s0 = 0.0f;
+    float v0[4] = {0}, v1[4] = {0};
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 1; i1++) {
+            for (int l = 0; l < 4; l++) v0[l] = 0.0f;
+            for (int l = 0; l < 4; l++) v1[l] = 0.0f;
+            for (i2 = 0; i2 < 4; i2++) {
+                s0 = in0[i0 * 4 + i2];
+                for (int l = 0; l < 4; l++) v0[l] = v0[l] + s0 * in1[i2 * 8 + i1 * 8 + l];
+                for (int l = 0; l < 4; l++) v1[l] = v1[l] + s0 * in1[i2 * 8 + i1 * 8 + 4 + l];
+            }
+            for (int l = 0; l < 4; l++) out[i0 * 8 + i1 * 8 + l] = v0[l];
+            for (int l = 0; l < 4; l++) out[i0 * 8 + i1 * 8 + 4 + l] = v1[l];
+        }
+    }
+}
+
+// kernel add (%0 : f32[batch: 2, 8], %1 : f32[8]) -> %2 : f32[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..8 {
+//       %2[i0, i1] = (%0[i0, i1] + %1[i1])
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+static void f32_k1(const float *restrict in0, const float *restrict in1, float *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 8; i1++) {
+            out[i0 * 8 + i1] = in0[i0 * 8 + i1] + in1[i1];
+        }
+    }
+}
+
+// kernel dot (%0 : bf16[batch: 2, 4], %1 : bf16[4, 8]) -> %2 : bf16[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..1 {
+//       s0 = 0
+//       s1 = 0
+//       s2 = 0
+//       s3 = 0
+//       s4 = 0
+//       s5 = 0
+//       s6 = 0
+//       s7 = 0
+//       for i2 in 0..4 {
+//         s8 = %0[i0, i2]
+//         s0 = (s0 + (s8 * %1[i2, ((i1 * 8) + 0)]))
+//         s1 = (s1 + (s8 * %1[i2, ((i1 * 8) + 1)]))
+//         s2 = (s2 + (s8 * %1[i2, ((i1 * 8) + 2)]))
+//         s3 = (s3 + (s8 * %1[i2, ((i1 * 8) + 3)]))
+//         s4 = (s4 + (s8 * %1[i2, ((i1 * 8) + 4)]))
+//         s5 = (s5 + (s8 * %1[i2, ((i1 * 8) + 5)]))
+//         s6 = (s6 + (s8 * %1[i2, ((i1 * 8) + 6)]))
+//         s7 = (s7 + (s8 * %1[i2, ((i1 * 8) + 7)]))
+//       }
+//       %2[i0, ((i1 * 8) + 0)] = s0
+//       %2[i0, ((i1 * 8) + 1)] = s1
+//       %2[i0, ((i1 * 8) + 2)] = s2
+//       %2[i0, ((i1 * 8) + 3)] = s3
+//       %2[i0, ((i1 * 8) + 4)] = s4
+//       %2[i0, ((i1 * 8) + 5)] = s5
+//       %2[i0, ((i1 * 8) + 6)] = s6
+//       %2[i0, ((i1 * 8) + 7)] = s7
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+static void bf16_k0(const uint16_t *restrict in0, const uint16_t *restrict in1, uint16_t *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0, i2 = 0;
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f, s5 = 0.0f, s6 = 0.0f, s7 = 0.0f, s8 = 0.0f;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 1; i1++) {
+            s0 = 0.0f;
+            s1 = 0.0f;
+            s2 = 0.0f;
+            s3 = 0.0f;
+            s4 = 0.0f;
+            s5 = 0.0f;
+            s6 = 0.0f;
+            s7 = 0.0f;
+            for (i2 = 0; i2 < 4; i2++) {
+                s8 = presk_bf16_to_f32(in0[i0 * 4 + i2]);
+                s0 = s0 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8]);
+                s1 = s1 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 1]);
+                s2 = s2 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 2]);
+                s3 = s3 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 3]);
+                s4 = s4 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 4]);
+                s5 = s5 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 5]);
+                s6 = s6 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 6]);
+                s7 = s7 + s8 * presk_bf16_to_f32(in1[i2 * 8 + i1 * 8 + 7]);
+            }
+            out[i0 * 8 + i1 * 8] = presk_f32_to_bf16(s0);
+            out[i0 * 8 + i1 * 8 + 1] = presk_f32_to_bf16(s1);
+            out[i0 * 8 + i1 * 8 + 2] = presk_f32_to_bf16(s2);
+            out[i0 * 8 + i1 * 8 + 3] = presk_f32_to_bf16(s3);
+            out[i0 * 8 + i1 * 8 + 4] = presk_f32_to_bf16(s4);
+            out[i0 * 8 + i1 * 8 + 5] = presk_f32_to_bf16(s5);
+            out[i0 * 8 + i1 * 8 + 6] = presk_f32_to_bf16(s6);
+            out[i0 * 8 + i1 * 8 + 7] = presk_f32_to_bf16(s7);
+        }
+    }
+}
+
+// kernel add (%0 : bf16[batch: 2, 8], %1 : bf16[8]) -> %2 : bf16[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..8 {
+//       %2[i0, i1] = (%0[i0, i1] + %1[i1])
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+static void bf16_k1(const uint16_t *restrict in0, const uint16_t *restrict in1, uint16_t *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 8; i1++) {
+            out[i0 * 8 + i1] = presk_f32_to_bf16(presk_bf16_to_f32(in0[i0 * 8 + i1]) + presk_bf16_to_f32(in1[i1]));
+        }
+    }
+}

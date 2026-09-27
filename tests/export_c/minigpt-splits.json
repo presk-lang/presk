@@ -1,0 +1,12 @@
+{
+  "realization": { "default": "f32", "order": { "kind": "sequential" } },
+  "layout": {
+    "Embedding.apply/%3": { "split": { "depth": 0, "workers": 4 } },
+    "LayerNorm.apply/%5": { "split": { "depth": 1, "workers": 4 } },
+    "Linear.apply/%3": { "split": { "depth": 1, "workers": 2 } },
+    "SelfAttention.apply/%12": { "split": { "depth": 2, "workers": 4 } },
+    "SelfAttention.apply/%18": { "split": { "depth": 1, "workers": 2 } },
+    "MLP.apply/%4": { "split": { "depth": 0, "workers": 4 } },
+    "MiniGPT.apply/%11": { "split": { "depth": 2, "workers": 4 } }
+  }
+}

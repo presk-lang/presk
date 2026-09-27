@@ -6,7 +6,7 @@
 #   make export-examples  export the example files to out/ (with conformance data)
 #   make venv             create .venv with PyTorch, ONNX Runtime (uv) for the conformance tests
 #   make conformance      export-examples, then run the generated PyTorch tests in .venv
-#   make tutorial         every command of the manual's tutorial chapter (tutorial/*.psk)
+#   make tutorial         every command of the manual's tutorial chapter, steps 0 to 18 (tutorial/*.psk)
 #   make train-examples   presk train on the regression and the tiny MiniGPT, on the reference and natively
 #   make serve-examples   presk serve on the tiny MiniGPT's checkpoint: greedy tokens identical on every backend; export --serve
 #   make serve-pt          ...and the exported serve.py gives the same tokens (needs the venv)
@@ -27,6 +27,10 @@
 #   make experiment-gpt   the course GPT trained by presk and by PyTorch on the same data (manual, `experiments` §3)
 #   make coverage         presk check on the MLPerf transcriptions (manual, `coverage`)
 #   make plan-check       a default plan lowers every example entry to the same kernels (0.7.0 step 1)
+#   make c-conformance    the C export: every entry of the plan-check set and the course GPT exported, built, run, bit for bit, under the default layout and under plans, on GCC, Clang and for x86-64; presk serve's tokens from the exported generation loop; integer weights on the trained checkpoints; every nest in the SCoP mode against Polly (0.9.0 steps 3–8)
+#   make c-speed          statement C4: the exported course GPT's forward at B = 16 against the native backend's, one thread and every thread (0.9.0 step 5; a quiet machine)
+#   make zig              zig from PyPI in .venv-zig: the Clang and the x86-64 cross-compiler of statement C3 (0.9.0 step 5)
+#   make llvm             LLVM's release for Linux on aarch64 in .llvm: the clang with Polly the SCoP mode's nests are checked with (0.9.0 step 8)
 #   make calibrate-ra4    the layout cost model's calibration on a GEMM and two thin products, pinned to the RA4 cores (0.7.0 step 4, 0.8.0 steps 3–4)
 #   make ra4-small        the RA4 sweep's daily subset on the tutorial's attention, two days back to back, ranked (0.7.0 step 5)
 #   make ra4              the RA4 sweep, day one: the course GPT's attention, the GEMM, a BERT-shaped sample (about two hours; 0.7.0 step 6)
@@ -70,7 +74,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: c-conformance c-speed zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -111,9 +115,10 @@ conformance: export-examples
 	    echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; \
 	done
 
-# The commands of the tutorial chapter, steps 0 to 17, in order
+# The commands of the tutorial chapter, steps 0 to 18, in order
 # (crates/presk-manual/manual/tutorial.md): every output the chapter quotes is
-# one of these commands'. The PyTorch conformance tests need `make venv`.
+# one of these commands'. The PyTorch conformance tests need `make venv`, and
+# step 18 a C compiler (with OpenMP for the planned program's threads).
 tutorial: build
 	$(PRESK) --help
 	$(PRESK) check tests/examples/mlp/mlp.psk
@@ -207,6 +212,20 @@ tutorial: build
 	    --space small --profile out/tut_layout.json --out out/tut_tune/day2
 	$(PRESK) rank out/tut_tune/day1 out/tut_tune/day2 --entry attend --out out/tut_rank.md \
 	    | sed -n '/^## Statements/,/^| tile/p'
+	rm -rf out/tut_c out/tut_c16 out/tut_scop
+	$(PRESK) export tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim T=3 -o out/tut_c
+	$(MAKE) -C out/tut_c check PRESK=$(CURDIR)/target/debug/presk
+	out/tut_c/model out/tut_c/conformance/inputs.psk.d out/tut_c/out.psk.d
+	$(PRESK) data info out/tut_c/out.psk.d
+	$(PRESK) export tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 \
+	    --plan @out/tut_plan.json -o out/tut_c16
+	$(MAKE) -s -C out/tut_c16 check
+	OMP_NUM_THREADS=1 $(MAKE) -s -C out/tut_c16 check
+	out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d out/tut_c16/out.psk.d
+	OMP_NUM_THREADS=1 out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d out/tut_c16/out.psk.d
+	$(PRESK) export tutorial/03_attention.psk --target c --mode scop --entry attend --dim B=16 --dim T=256 \
+	    --realize f32 -o out/tut_scop
+	$(MAKE) -s -C out/tut_scop check
 
 train-examples: build
 	$(PRESK) train tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
@@ -720,6 +739,65 @@ plan-check: build
 	  if cmp -s out/plan-check.bare out/plan-check.plan; then echo "same kernels  $$entry ($$file)"; \
 	  else echo "DIFFERENT     $$entry ($$file)"; diff out/plan-check.bare out/plan-check.plan | head -20; exit 1; fi; \
 	done < tests/plan/entries.txt
+
+# 0.9.0 step 3 (D79): statements C1 and C2 of the C export. Every entry of
+# tests/plan/entries.txt (next_token since step 6), in f64, f32 and bf16, on its
+# synthesized parameters and with their zeros drawn (also in `make test`),
+# and the course GPT at its constants, zeros drawn at T = 8 and with the
+# course's trained checkpoint at T = 256 (out/course_probe_f32/final.psk.d):
+# each exported, built and run by its own conformance/check.sh, its outputs
+# compared with the native backend's bit for bit, and the elements outside
+# the conformance band reported. Step 5 (D81): every entry also under the
+# plan `presk plan` gives with the frozen profile (RA4_FROZEN), the course
+# GPT at B = 16, T = 256 under its plans and under the default layout, its
+# launches divided among threads; every program built with GCC with OpenMP
+# and without it and run on one thread and on every thread, and with Clang
+# and for x86-64 (zig cc, statement C3). Step 6 (D83): statement C5, the
+# generation loop exported with --serve against `presk serve --backend
+# native`, with the tiny MiniGPT's trained checkpoint (out/ckpt/final.psk.d,
+# `make train-examples`) in the three types through both hosts, and C1 on
+# next_token with it; generate.c through C3 too. Step 8 (D85): the SCoP
+# mode, every nest of the test set in the three types and the course GPT's
+# at its constants, built, run against the native backend, and read by
+# Polly (LLVM 23.1.2's clang, `make llvm`): one SCoP per static-control nest.
+c-conformance: .venv-zig/bin/python .llvm/bin/clang
+	PRESK_C3=1 RA4_FROZEN=$(RA4_FROZEN) $(CARGO) test --release -p presk --test export_c --test export_scop -- --include-ignored --nocapture
+
+# 0.9.0 step 8 (D85): Polly, the polyhedral front end the SCoP mode's nests
+# are read by. LLVM's release links it into its clang (`-mllvm -polly`). It is
+# 1.8 GB, from GitHub, its checksum pinned; only clang and its headers are
+# kept, in .llvm, without root (presk-tooling.md, `Polly`). The release for
+# Linux on aarch64 only, falicon's; elsewhere, POLLY names a clang with Polly.
+LLVM_VERSION = 23.1.2
+LLVM_RELEASE = LLVM-$(LLVM_VERSION)-Linux-ARM64
+LLVM_SHA256 = 075da47cb832273717d4c7bad4b6b4848d7c154262e9ba0dcc0025426d4073f0
+llvm: .llvm/bin/clang
+.llvm/bin/clang:
+	@test "$$(uname -sm)" = "Linux aarch64" || { echo "make llvm: LLVM's release for Linux on aarch64 only; elsewhere set POLLY to a clang that links Polly"; exit 1; }
+	mkdir -p .llvm
+	curl -fL -o .llvm/$(LLVM_RELEASE).tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/$(LLVM_RELEASE).tar.xz
+	echo "$(LLVM_SHA256)  .llvm/$(LLVM_RELEASE).tar.xz" | sha256sum -c -
+	tar -xJf .llvm/$(LLVM_RELEASE).tar.xz -C .llvm --strip-components=1 $(LLVM_RELEASE)/bin/clang $(LLVM_RELEASE)/bin/clang-$(firstword $(subst ., ,$(LLVM_VERSION))) $(LLVM_RELEASE)/lib/clang
+	rm .llvm/$(LLVM_RELEASE).tar.xz
+	.llvm/bin/clang --version | head -1
+
+# 0.9.0 step 5 (D81): statement C3's Clang and x86-64 cross-compiler, `zig
+# cc` from zig's PyPI package, in a virtual environment: no sudo, one pinned
+# version, the same on every machine (presk-tooling.md, `zig`).
+ZIG_VERSION ?= 0.16.0
+zig: .venv-zig/bin/python
+.venv-zig/bin/python:
+	python3 -m venv .venv-zig
+	.venv-zig/bin/pip install -q ziglang==$(ZIG_VERSION)
+
+# 0.9.0 step 5 (D81): statement C4, reported and deciding nothing: the
+# exported course GPT's forward pass at B = 16, T = 256 with the trained
+# checkpoint, under the plan the frozen profile gives, against `presk bench
+# --plan-only`, one thread and every thread, into out/c-speed/report.md.
+# Times: a quiet machine, nothing beside it.
+c-speed:
+	$(CARGO) build --release -p presk
+	PROFILE=$(RA4_FROZEN) experiments/c_speed.sh out/c-speed
 
 sync-examples:
 	rsync -a --delete --exclude PROVENANCE.md $(PRESK_SPECS_DIR)/examples/ tests/examples/

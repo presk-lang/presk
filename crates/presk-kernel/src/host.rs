@@ -66,6 +66,10 @@ pub struct Launch {
     /// The accumulation type the realization states for the nest.
     pub accum: Dtype,
     pub inputs: Vec<Buf>,
+    /// How many times the entry launches the nest at these operands, the
+    /// first included: what `presk plan` weighs a shape's prediction by when
+    /// one layout must serve a nest launched at several.
+    pub count: usize,
 }
 
 /// What a captured launch computes.
@@ -129,6 +133,10 @@ pub struct KernelBackend<'p> {
     /// When set, the first launch of every nest at every shape is recorded
     /// here (0.7.0 step 5): the planning tools' view of an entry.
     pub capture: Option<Vec<Launch>>,
+    /// When set, the host program of the next call is recorded, for the C
+    /// export (plan 0.9.0 step 3, D79). Its hooks only observe: the backend
+    /// computes and launches what it does without it.
+    pub recorder: Option<Box<crate::record::Recorder>>,
 }
 
 impl Backend for KernelBackend<'_> {
@@ -151,7 +159,10 @@ impl Backend for KernelBackend<'_> {
     }
 
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value> {
-        let args = args.iter().map(|a| self.realize_value(a)).collect();
+        let args: Vec<Value> = args.iter().map(|a| self.realize_value(a)).collect();
+        if let Some(r) = self.recorder.as_deref_mut() {
+            r.entry(&args);
+        }
         self.call_fn(p.func, p.dims.clone(), args)
     }
 }
@@ -166,7 +177,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -236,14 +247,15 @@ impl<'p> KernelBackend<'p> {
     }
 
     /// Records the first launch of the nest being executed at these operand
-    /// shapes, when capturing (0.7.0 step 5).
+    /// shapes, when capturing (0.7.0 step 5), and counts the others.
     fn record(&mut self, what: LaunchOp, operands: &[Operand], dtype: Dtype, accum: Dtype, inputs: &[Buf]) {
         let site = self.site.clone();
         let order = self.realize.order;
         let Some(c) = self.capture.as_mut() else { return };
         let same = |l: &Launch| l.nest == site && l.dtype == dtype && l.operands.len() == operands.len() && l.operands.iter().zip(operands).all(|(a, b)| a.axes == b.axes);
-        if !c.iter().any(same) {
-            c.push(Launch { nest: site, what, operands: operands.to_vec(), dtype, order, accum, inputs: inputs.to_vec() });
+        match c.iter_mut().find(|l| same(l)) {
+            Some(l) => l.count += 1,
+            None => c.push(Launch { nest: site, what, operands: operands.to_vec(), dtype, order, accum, inputs: inputs.to_vec(), count: 1 }),
         }
     }
 
@@ -265,6 +277,7 @@ impl<'p> KernelBackend<'p> {
     /// nest's, and carries the nest's thread split; the copy of a pack does
     /// not, and takes the executor's default.
     fn launch(&mut self, key: String, lowered: impl FnOnce() -> std::result::Result<Lowered, String>, inputs: &[&Buf], split: bool) -> Result<Value> {
+        let pack = key.starts_with("pack|");
         let idx = match self.cache.get(&key) {
             Some(i) => *i,
             None => {
@@ -306,6 +319,10 @@ impl<'p> KernelBackend<'p> {
         self.exec.run(idx, k, &refs, &mut out)?;
         self.launches += 1;
         let (axes, kind, bound) = self.outs[idx].clone();
+        if let Some(r) = self.recorder.as_deref_mut() {
+            let shape: Vec<usize> = axes.iter().map(|a| a.len).collect();
+            r.launch(idx, &self.kernels[idx], pack, &shape, (kind == BufKind::Idx).then_some(bound));
+        }
         Ok(match kind {
             BufKind::Real | BufKind::Quant { .. } => Value::Real(Tensor { axes, data: out }),
             BufKind::Idx => Value::Idx { bound, t: Tensor { axes, data: out } },
@@ -344,6 +361,11 @@ impl<'p> KernelBackend<'p> {
         if func.params.len() != args.len() {
             return err("E7001", format!("`{}` called with {} arguments, {} expected", func.name, args.len(), func.params.len()));
         }
+        let elab = self.elab;
+        if let Some(r) = self.recorder.as_deref_mut() {
+            let named: Vec<(String, u64)> = func.dims.iter().filter_map(|v| dims.get(v).map(|n| (elab.dim_name(*v), *n))).collect();
+            r.enter(&func.name, named, &func.params.iter().map(|p| p.var).collect::<Vec<_>>(), func.params.iter().map(|p| p.name.clone()).collect());
+        }
         let mut env: HashMap<VarId, Value> = HashMap::new();
         for (p, a) in func.params.iter().zip(args) {
             let a = self.retag(a, &p.ty);
@@ -373,13 +395,22 @@ impl<'p> KernelBackend<'p> {
                     code: e.code,
                 })?;
                 let v = self.retag(v, &l.ty);
+                if let Some(r) = self.recorder.as_deref_mut() {
+                    r.fused(l.var, &g.inputs, self.dtype, &self.site, l.name.as_deref());
+                }
                 env.insert(l.var, v);
                 continue;
+            }
+            if let Some(r) = self.recorder.as_deref_mut() {
+                r.let_begin(l.var, &self.site, l.name.as_deref());
             }
             let v = match &l.rhs {
                 Rhs::Closure { f, captured } => {
                     let c: Vec<Value> = captured.iter().map(|c| env.get(c).cloned().ok_or_else(|| RtError { code: "E7001", message: "captured variable undefined".into(), span: Some(l.span) })).collect::<Result<_>>()?;
                     closures.insert(l.var, (*f, c));
+                    if let Some(r) = self.recorder.as_deref_mut() {
+                        r.closure(l.var, *f, captured);
+                    }
                     Value::Nat(0)
                 }
                 rhs => self.rhs(rhs, &l.ty, &dims, &env, &closures).map_err(|e| RtError {
@@ -389,7 +420,15 @@ impl<'p> KernelBackend<'p> {
                 })?,
             };
             let v = self.retag(v, &l.ty);
+            if let Some(r) = self.recorder.as_deref_mut()
+                && !matches!(l.rhs, Rhs::Closure { .. })
+            {
+                r.let_end(l.var, &l.rhs, &v, self.dtype, &self.site, l.name.as_deref());
+            }
             env.insert(l.var, v);
+        }
+        if let Some(r) = self.recorder.as_deref_mut() {
+            r.leave(func.body.result);
         }
         self.site = outer_site;
         self.dtype = outer_dtype;
@@ -486,6 +525,9 @@ impl<'p> KernelBackend<'p> {
             Rhs::Call { f, dim_args, args } => {
                 let vals: Vec<Value> = args.iter().map(get).collect::<Result<_>>()?;
                 let callee_dims = self.callee_dims(dim_args, dims);
+                if let Some(r) = self.recorder.as_deref_mut() {
+                    r.call(args);
+                }
                 self.call_fn(*f, callee_dims, vals)
             }
             Rhs::Tuple(vs) => Ok(Value::Tuple(vs.iter().map(get).collect::<Result<_>>()?)),
@@ -508,6 +550,9 @@ impl<'p> KernelBackend<'p> {
                 for a in args {
                     all.push(get(a)?);
                 }
+                if let Some(r) = self.recorder.as_deref_mut() {
+                    r.apply(*fun, args);
+                }
                 self.call_fn(*f, dims.clone(), all)
             }
             Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, scan } => {
@@ -518,6 +563,9 @@ impl<'p> KernelBackend<'p> {
                 let callee_dims = self.callee_dims(dim_args, dims);
                 let order: Vec<usize> = if *reverse { (0..count).rev().collect() } else { (0..count).collect() };
                 let mut pre: Vec<(usize, Value)> = Vec::new();
+                if let Some(r) = self.recorder.as_deref_mut() {
+                    r.fold_begin(stacked, extra, *init, *index, *reverse, *scan, count);
+                }
                 for i in order {
                     if *scan {
                         pre.push((i, acc.clone()));
@@ -531,7 +579,16 @@ impl<'p> KernelBackend<'p> {
                     }
                     args.push(acc);
                     args.extend(ex.iter().cloned());
+                    if let Some(r) = self.recorder.as_deref_mut() {
+                        r.fold_iter(i);
+                    }
                     acc = self.call_fn(*body, callee_dims.clone(), args)?;
+                    if let Some(r) = self.recorder.as_deref_mut() {
+                        r.fold_iter_end();
+                    }
+                }
+                if let Some(r) = self.recorder.as_deref_mut() {
+                    r.fold_end();
                 }
                 if *scan {
                     pre.sort_by_key(|(i, _)| *i);
@@ -715,7 +772,11 @@ impl<'p> KernelBackend<'p> {
                 for p in 0..n {
                     let row = &data[p * v..(p + 1) * v];
                     let m = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    let exps: Vec<f64> = row.iter().map(|x| (x - m).exp()).collect();
+                    // The `libm` crate's `exp`, musl's, as the native
+                    // kernels call, not the platform's (`f64::exp`): the
+                    // same draws on every machine, and the C export's
+                    // `presk_exp` (plan 0.9.0 step 6, D83).
+                    let exps: Vec<f64> = row.iter().map(|x| libm::exp(x - m)).collect();
                     let z: f64 = exps.iter().sum();
                     let u = uniform01(&mut self.sample_rng);
                     let mut acc = 0.0;

@@ -1,0 +1,5 @@
+-- E8006: a key in the result of an exported entry. Until plan 0.9.0 step 6
+-- the C program computes no key (no ChaCha20 in its runtime): a key may only
+-- be split, or given to a dropout mask outside training, which reads none.
+--   presk export tests/diag/export_c_key.psk --target c --entry halves -o DIR
+fn halves(k : key) -> (key, key) uses Rand = split_key(k)

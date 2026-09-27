@@ -298,8 +298,13 @@ fn scale_of(m: f64, qmax: f64, scheme: QuantScheme) -> f32 {
     match scheme {
         QuantScheme::Absmax => (m / qmax) as f32,
         QuantScheme::Pow2 => {
-            let mut s = 2f64.powi((m / qmax).log2().ceil() as i32);
-            // `log2` may land a hair on either side of an exact power.
+            // The two loops find the smallest power of two with `m/s ≤ qmax`
+            // from any finite power of two they start at. They started at
+            // `2^⌈log2(m/qmax)⌉`, which `powi` makes 0 when `m/qmax` is at
+            // most 2⁻¹⁰²⁴, and the second loop then doubled 0 for ever (plan 0.9.0
+            // step 7, D84). From 1 they take at most about 2 100 steps, and
+            // the C export's quantizer runs the same loops.
+            let mut s = 1.0f64;
             while m / (s / 2.0) <= qmax {
                 s /= 2.0;
             }

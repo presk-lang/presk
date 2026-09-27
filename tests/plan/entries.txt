@@ -4,6 +4,7 @@ tests/examples/layernorm/layernorm.psk|LayerNorm{8}.apply|--dim batch=3
 tests/examples/layernorm/layernorm.psk|RMSNorm{8}.apply|--dim batch=3
 tests/examples/minigpt/minigpt.psk|MiniGPT.apply|--const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 tests/examples/minigpt/train_minigpt.psk|loss|--const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
+tests/plan/minigpt_grad.psk|loss_grad|--const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 tests/examples/minigpt/train_minigpt.psk|adamw.step|--const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 tests/examples/minigpt/serve_minigpt.psk|next_token|--const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 corpus/nlp/05_gpt.psk|SelfAttention.apply|--const V=92 --const D=16 --const H=2 --const L=1 --dim B=2 --dim T=8

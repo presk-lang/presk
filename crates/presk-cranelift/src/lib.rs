@@ -3,7 +3,9 @@
 //! function pointer; the host program is the kernel backend's. Buffers are
 //! passed as an array of pointers, loops become basic blocks, `sqrt` is
 //! native and the other transcendental functions and `erf` are calls into
-//! `libm`, the same definitions the kernel interpreter uses.
+//! the `libm` crate, a port of musl's. The kernel interpreter uses the same
+//! crate for `erf` only, and Rust's standard library, the system's C library,
+//! for the others (D76).
 
 use std::collections::HashMap;
 

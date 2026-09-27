@@ -36,7 +36,7 @@ declaration keyword.
 | `E5xxx` | lowering to PSK-Core | implemented |
 | `E6xxx` | automatic differentiation | implemented |
 | `E7xxx` | `presk run`, `train`, `serve`, `bench` (entry resolution, input synthesis, runtime — on every backend: the kernel and native backends report through `E7001` too; a realization plan's layout, `E7002`) | implemented |
-| `E8xxx` | PyTorch export | implemented |
+| `E8xxx` | `presk export`: the PyTorch export (`E8001`); the C export (`E8003`–`E8009`, 0.9.0; `E8002` no longer emitted since 0.9.0 step 5, `E8005` since step 6) | implemented |
 | `E9xxx` | `.psk.d` data files (`presk data`, the training pipeline) | implemented (0.2.0 step 1) |
 | `W0xxx` | warnings | implemented (W0001, W0002, W0003) |
 
@@ -118,9 +118,24 @@ report is a snapshot test; adding a code means adding such a file.
 
 ## Export codes
 
+The C export's codes, `E8003`–`E8009`, are reported when the entry is
+exported, not by `presk check`: `crates/presk-cli/tests/export_c.rs` runs
+`presk export --target c` on `tests/diag/export_c_key.psk`,
+`tests/diag/export_c_scalar.psk`, `tests/diag/export_c_quant.psk`,
+`tests/export_c/serve_untied.psk` and the examples, and asserts each code
+and message.
+
 | Code | Message | Cause |
 |---|---|---|
 | `E8001` | not exported / builtin has no PyTorch export | a construct with no readable PyTorch form (a `let` inside an expression, a builtin outside the table) |
+| `E8002` | (no longer emitted) | refused `presk export --target c` as a whole in 0.9.0 steps 0–2, then its options `--plan` and `--threads` in steps 3–4, exit code 2; both are implemented since step 5, and the code is not reused |
+| `E8003` | `E` is exported at bound dimensions only: unbound dimension … | `presk export --target c` without a `--dim` for one of the entry's dimensions, or with a shape left open (`...`): the C program has literal shapes only |
+| `E8004` | the entry calls the initializer `f`, which the C runtime does not provide | the exported entry runs an initializer (`normal`, `xavier_uniform`), as `M.init` does: an exported model reads its parameters |
+| `E8005` | (no longer emitted) | refused an entry that calls `sample` in 0.9.0 steps 3–5; since step 6 `sample` is exported, drawing from the program's stream (`sample` takes no key), and the code is not reused |
+| `E8006` | a key reaches …: the C program holds no key | a key the C program would have to compute with: in the entry's result, in a kernel's operand. A key may only be split (`split_key`) or given to a dropout mask outside training, which reads none, and the program drops it |
+| `E8007` | the entry's result holds integer weights / `merge a, b` reshapes integer weights | integer weights where the C program cannot follow them: in the exported entry's result (the program writes the reals it computes, and the weights are read), under a reshape (`merge`, `split`, `reshape_like`, which keep the integers with their scales' axis under a new shape), or drawn from by `sample`. Every integer weight was refused until 0.9.0 step 7; since then the program reads them, quantizing them as it reads them, slices them and hands them to its kernels |
+| `E8008` | the entry's result holds a nat | a scalar (`nat`, `int`, `f64`, `bool`) in the exported entry's result: the program writes its outputs as a `.psk.d` file, which holds tensors only |
+| `E8009` | `E` is served over the whole context, which grows by a token at every step | `presk export --target c --serve` of a generation function whose model's parameters do not fix the context's length: `presk serve` then passes the whole context, one token longer at every step, and a C program has one shape. The rule is `presk serve`'s own (the initializer's dimensions include the context's), so `generate` slides a window exactly where `presk serve` does (0.9.0 step 6) |
 
 ## Data codes
 

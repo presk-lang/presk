@@ -303,6 +303,17 @@ the interim form of the specification's "error bound carried by each
 kernel" (question 39): stated and measured, not derived; the precision
 solver will replace it.
 
+Since 0.9.0 step 3 the suite also runs the examples with every value their
+initializers set to zero drawn (`examples_with_their_zeros_drawn`), so that
+MiniGPT's logits are not zero. The band holds on every example in `f64`,
+and on every one but `MiniGPT.apply` in `f32` and `bf16`. There a few
+logits, 6·10⁻⁴ to 3·10⁻³ against a median of 0.17, are sums that cancel:
+4 of 1 024 leave the `f32` band and 35 the `bf16` band, by up to 3.7 times
+it. They are reported, not asserted. The native backend leaves the band on
+other logits than the kernel interpreter, since their `exp` differ in the
+last bits, so no rule holding one executor to the other element by element
+would hold either (spec question 75, D79).
+
 ## The Cranelift backend: `--backend native`
 
 `presk-cranelift` compiles every kernel once, on first use, to machine code
@@ -310,11 +321,15 @@ with Cranelift's JIT, and the host program calls the function through a
 pointer: buffers are passed as an array of pointers, the loop nest becomes
 basic blocks with an induction variable per loop, scalar variables are
 Cranelift variables, `sqrt` is a native instruction, and the transcendental
-functions and `erf` are calls into `libm`, the same definitions the kernel
-interpreter uses. Everything else, from the host program to the sampling
+functions and `erf` are calls into the `libm` crate, a port of musl's C
+library as it was before musl 1.1.23 rewrote `exp` and `log` (the C export
+ships those functions, bit-identical to the crate: D78). The kernel interpreter calls the same crate for `erf` only, and
+Rust's standard library, the system's C library (glibc on Linux), for
+`exp`, `log`, `tanh`, `sin` and `cos`. Everything else, from the host program to the sampling
 keys, is the kernel backend's, so a native run is the kernel run with the
 launches compiled. Compilation happens in process; there is no object file,
-no bundle and no cross-compilation yet (spec question 36).
+no bundle and no cross-compilation yet (spec question 36): an entry that
+must run elsewhere leaves as a C program (below).
 
 The native backend passes the same conformance suite as the kernel
 interpreter with the same measured gaps, up to the last digits of `libm`'s
@@ -641,3 +656,12 @@ the gain is two orders of magnitude, which is what a native path is for;
 against PyTorch's BLAS on the same shapes it was far behind, as the plan
 expected. `f32` is not faster than `f64` here because the work is dominated
 by loop overhead, not by arithmetic width.
+
+## A C program: `presk export --target c`
+
+Since 0.9.0 an entry can leave the compiler as a C program that computes
+this backend's bits: its kernels are this backend's, printed as C, its host
+a recording of this backend's own run of the entry, and it ships the
+transcendental functions the `libm` crate ports (musl 1.1.22's), built
+without floating-point contraction. The `export_c` chapter says how it is
+made, why its bits are this backend's, and what is checked.

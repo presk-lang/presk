@@ -243,3 +243,63 @@ fn stacked_slices_stay_quantised() {
         }
     }
 }
+
+/// `pow2` on a channel whose largest magnitude is tiny (plan 0.9.0 step 7,
+/// D84). The scale loops started at `2^⌈log2(m/qmax)⌉`, which `powi` makes 0
+/// when `m/qmax` is at most 2⁻¹⁰²⁴, and never ended; they now start at 1.
+/// Wherever the old start
+/// ended, the new one gives the same scale: both are the smallest power of
+/// two with `m/s ≤ qmax`.
+#[test]
+fn pow2_scales_of_tiny_channels_end() {
+    let old = |m: f64, qmax: f64| -> Option<f32> {
+        let mut s = 2f64.powi((m / qmax).log2().ceil() as i32);
+        let mut steps = 0;
+        while m / (s / 2.0) <= qmax {
+            s /= 2.0;
+            steps += 1;
+        }
+        while m / s > qmax {
+            s *= 2.0;
+            steps += 1;
+            if steps > 10_000 {
+                return None;
+            }
+        }
+        Some(s as f32)
+    };
+    let (mut compared, mut hung) = (0, 0);
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    for i in 0..200_000u64 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        // Every exponent, subnormals and infinity included.
+        let m = match i {
+            0 => f64::from_bits(1),
+            1 => f64::MIN_POSITIVE,
+            2 => f64::MAX,
+            3 => f64::INFINITY,
+            _ => f64::from_bits(x & 0x7fff_ffff_ffff_ffff).min(f64::INFINITY),
+        };
+        if m.is_nan() || m == 0.0 {
+            continue;
+        }
+        for bits in [8u8, 4] {
+            let t = Tensor { axes: vec![ax(None, 2), ax(None, 1)], data: Buf::F64(vec![m, -m / 3.0]) };
+            let qt = QTensor::quantize(&t, &q(bits, AxisRef::Pos(0), QuantScheme::Pow2)).unwrap();
+            match old(m, ((1 << (bits - 1)) - 1) as f64) {
+                Some(s) => {
+                    assert_eq!(qt.scales[0].to_bits(), s.to_bits(), "int{bits}, m = {m:e}");
+                    compared += 1;
+                }
+                None => {
+                    assert_eq!(qt.scales[0], 0.0, "int{bits}, m = {m:e}: a scale below every f32");
+                    assert_eq!(qt.int(0), 0);
+                    hung += 1;
+                }
+            }
+        }
+    }
+    assert!(compared > 300_000 && hung > 500, "{compared} scales compared, {hung} that never ended before");
+}

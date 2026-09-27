@@ -8,7 +8,11 @@
 - `m4` and a C compiler: the interpreter uses MPFR through the `rug` crate,
   which `gmp-mpfr-sys` builds from bundled sources the first time (a few
   minutes, cached under `target/`). With Homebrew's `mpfr` installed, the
-  `use-system-libs` feature of `gmp-mpfr-sys` links it instead.
+  `use-system-libs` feature of `gmp-mpfr-sys` links it instead. Since 0.9.0
+  `make test` also compiles the C export's kernels and programs with it
+  (`cc`, or the compiler `CC` names), with OpenMP when it has it (GCC's
+  `-fopenmp`), and so does step 18 of `make tutorial`. An exported program
+  needs only a C11 compiler (`export_c` chapter).
 - PyTorch is *not* needed to build or test the compiler; only to run the
   conformance tests that `presk export` generates.
 
@@ -41,7 +45,7 @@ make run-examples                # the reference presk run commands
 make export-examples             # export the example files to out/ (mlp, layernorm, minigpt, train_minigpt)
 make venv                        # once: .venv with PyTorch, NumPy and pytest (needs uv)
 make conformance                 # export, then run every generated test_conformance.py in .venv
-make tutorial                    # every command of the tutorial chapter (ends with two conformance tests)
+make tutorial                    # every command of the tutorial chapter, steps 0 to 18 (needs .venv and a C compiler)
 make train-examples              # presk train on the regression and the tiny MiniGPT
 make experiment                  # exact versus almost (manual chapter `experiments`)
 make bench                       # every backend on the tiny MiniGPT (manual chapter `native`)
@@ -56,6 +60,8 @@ make ra4-dev ra4-dev-frozen ra4-ablation
 make calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-check ra4-f2-day2
 make ra4-f1-dry ra4-f1 ra4-f1-check ra4-f1-day2
                                  # 0.8.0's fresh sweeps F2 and F1 (chapter `experiments` §8; hours each)
+make c-conformance               # the C export on the test set, the course GPT and the trained checkpoints, Clang and x86-64, Polly (0.9.0; minutes, installs .venv-zig and .llvm)
+make c-speed                     # statement C4: the exported course GPT against the native backend (a quiet machine)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
@@ -83,9 +89,10 @@ crates/presk-types           dimensions, Presburger solver, elaboration, typing 
 crates/presk-core            PSK-Core IR, lowering, regularity, effects, AD       (step 4–6)
 crates/presk-interp          reference interpreter                                (step 7)
 crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
+crates/presk-export-c        the C export: the kernel printer, the host, the runtime, the math functions, the SCoP mode (0.9.0)
 crates/presk-data            .psk.d data files and the training pipeline           (0.2.0 step 1)
 crates/presk-rt              the runtime seam: values, the Backend trait, InterpBackend, Layout and Plan (0.3.0 step 1, 0.7.0)
-crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program, the contraction builder, the layout cost model   (0.3.0 step 2, 0.7.0, 0.8.0)
+crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program, the contraction builder, the layout cost model, the host's recorder   (0.3.0 step 2, 0.7.0, 0.8.0, 0.9.0)
 crates/presk-cranelift       the Cranelift JIT over the kernels, --backend native          (0.3.0 step 3)
 crates/presk-train           the training loop over a Backend, presk train           (0.2.0 step 5)
 crates/presk-serve           the generation loop over a Backend, presk serve         (0.3.0 step 5)
@@ -101,9 +108,10 @@ tests/data                   a token stream for the .psk.d tests
 tests/train                  regressions trained by presk train
 tests/quant                  a program of odd widths for the int4 kernels
 tests/plan                   realization plans, and the entries make plan-check compares
+tests/export_c               programs and a plan the C export's tests need beyond the test set
 corpus/nlp                   the corpus of an NLP course (manual chapter `corpus`)
 coverage                     the MLPerf transcriptions (manual chapter `coverage`)
-experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert, ra4*
+experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert, ra4*, c-speed
 ```
 
 The example programs are refreshed from the specification repository with

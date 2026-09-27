@@ -76,7 +76,9 @@ reference interpreter (`--bits`), on the kernel interpreter or natively
   `0.8` in the example): the function is called as written; its `sample`
   draws from the backend's stream seeded by `--seed`, so two backends need
   not produce the same tokens (question 41), but one backend is deterministic
-  for a seed;
+  for a seed; the kernel backends draw with the `libm` crate's `exp`, the
+  one their kernels call, so their tokens do not depend on the machine's C
+  library (since 0.9.0 step 6);
 - **greedy** (`--temperature 0`): a copy of the function in which every
   `sample` is an `argmax` is called instead (`next_token.greedy`, appended to
   the Core program; the temperature is passed as `1`). Every backend and
@@ -168,3 +170,24 @@ read), a server process: the block's fields are checked and ignored, and
 `presk serve` is a command-line loop, not a service. What it fixes is the seam: the generation function of the language,
 run through `Backend`, agreeing bit for bit with the reference on the
 deterministic path.
+
+## In C: `presk export --target c --serve`
+
+```sh
+presk export tests/examples/minigpt/serve_minigpt.psk --target c --serve \
+     --const V=64 --const D=16 --const H=2 --const L=2 --dim T=8 --weights out/ckpt/final.psk.d -o out/serve_c
+make -C out/serve_c
+out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0
+```
+
+The C export (plan 0.9.0 step 6; `cli` chapter) writes the generation
+function and its greedy copy as C functions, at one sequence and the window
+the parameters fix (`--dim T=8`, which a C program of one shape needs where
+`presk serve` takes the prompt's length), and `generate`, the same loop. Its
+draws come from a copy of the native backend's stream, and its output is
+`presk serve --backend native`'s byte for byte, in every realization,
+greedy and sampled, `--json` included (statement C5): the eight greedy tokens
+above are `33 33 33 33 0 0 0 0` again, and with `--seed` the sampled ones are
+the native backend's for that seed. A model whose parameters do not fix the
+context's length is refused (`E8009`): `presk serve` passes it a context that
+grows.

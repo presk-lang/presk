@@ -5,7 +5,7 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.8.0**: the front-end (`presk check`); an arbitrary-precision
+**Version 0.9.0**: the front-end (`presk check`); an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), the oracle
 every other executor is measured against; a native backend — PSK-Kernel v0
 compiled by Cranelift, with fusion groups, threads, blocked contractions and
@@ -24,8 +24,13 @@ layout per nest (`--plan`), a cost model that reads it — its work, its
 register loads and its traffic from each cache level, calibrated per machine
 — and the tools that test whether that model chooses as well as measuring
 (`presk plan`, `presk autotune`, `presk rank`, `presk reprice`, `presk
-refit`); and a PyTorch export of models, training and
-serving with conformance tests (`presk export`). A
+refit`); a PyTorch export of models, training and serving with conformance
+tests (`presk export`); and a C export of any entry the native backend runs,
+in the style of llama2.c — its kernels printed as C, its host recorded from
+the native run, under a plan and on OpenMP threads, sampling and `presk
+serve`'s loop, integer weights — that computes the native backend's bits
+with musl's transcendental functions shipped, and a SCoP mode that writes
+each loop nest for polyhedral tools (`presk export --target c`). A
 corpus of real models (`corpus/nlp/`, the ladder of an NLP course on the
 French civil code) and transcriptions of the MLPerf architectures
 (`coverage/`, BERT-large running at MLPerf's constants) come with it. Every
@@ -39,7 +44,10 @@ measurement does, failed its first test for a reason it named (0.7.0); a
 model with the missing term, frozen before a second test on two fresh
 sweeps, ranks 91.7–92.7 % on another core and 85–89 % on new shapes, picks
 within 1.05× of the best, and prunes a search to under 2 % of its cost
-(0.8.0; the manual's `experiments` chapter, §7 and §8). See `CHANGELOG.md` and the
+(0.8.0; the manual's `experiments` chapter, §7 and §8). An exported C
+program is bit-identical to the native backend on every entry tested, with
+GCC and Clang, on any number of threads, and generates `presk serve`'s
+tokens (0.9.0, §9). See `CHANGELOG.md` and the
 user manual (`make doc`); its tutorial chapter (programs in `tutorial/`,
 commands in `make tutorial`) is the place to start.
 
@@ -54,7 +62,7 @@ make opt-examples                            # the e-graph optimizer: report, an
 make calibrate                               # time the native kernels of the tiny MiniGPT, fit the roofline profile (out/profile.json)
 make experiment                              # exact versus almost: float32/float64 training against the exact reference
 make venv && make conformance                # PyTorch/ONNX Runtime conformance of the exports
-make tutorial                                # every command of the tutorial chapter (needs the venv)
+make tutorial                                # every command of the tutorial chapter (needs the venv and a C compiler)
 make corpus && make corpus-gpt               # the NLP-course ladder on the Code civil, and the course GPT
 make coverage                                # the MLPerf transcriptions
 make gpt-trained && make precision           # a trained corpus GPT; envelope, bound, sensitivity, solve on it
@@ -67,6 +75,8 @@ make ra4 ra4-check ra4-20 ra4-day2           # the RA4 measurement of 0.7.0 (a n
 make ra4-dev ra4-dev-frozen ra4-ablation     # 0.8.0's development set: 0.7.0's days priced again under a profile (minutes)
 make calibrate-ra4-small ra4-f2 ra4-f2-check ra4-f2-day2 ra4-f1 ra4-f1-check ra4-f1-day2
                                              # 0.8.0's fresh sweeps (hours each; manual chapter experiments §8)
+make c-conformance                           # the C export: bit identity, Clang and x86-64, presk serve's tokens, Polly (minutes)
+make c-speed                                 # the exported course GPT against the native backend (a quiet machine)
 make doc                                     # the user manual (rustdoc)
 ```
 
@@ -84,6 +94,9 @@ presk serve FILE.psk --prompt "t1 t2 ..." [--weights FILE.psk.d] [--tokens N] [-
     [--dim NAME=N]... [--const NAME=N]... [--bits 256] [--backend ...] [--realize ...] [--json] [--opt [--profile FILE.json]]
 presk export FILE.psk --target pytorch --mode readable|graph -o DIR [--shapes=check] [--stack=loop|unroll] [--train] [--serve]
     [--conformance-entry ENTRY|adamw.step|train:K ...] [--dim NAME=N]... [--const NAME=N]... [--seed S] [--opt [--profile FILE.json]]
+presk export FILE.psk --target c --entry ENTRY -o DIR [--dim NAME=N]... [--const NAME=N]... [--realize R | --plan @P.json]
+    [--threads N] [--weights ckpt/final.psk.d] [--seed S] [--no-exact] [--straight-line] [--serve]
+presk export FILE.psk --target c --mode scop --entry ENTRY -o DIR [--dim NAME=N]... [--const NAME=N]... [--realize R] [--seed S]
 presk bench FILE.psk --entry ENTRY [--dim NAME=N]... [--const NAME=N]... [--bits 64] [--repeat 5] [--seed S] [--threads N]
     [--realize R | --plan @P.json] [--native-only] [--opt [--profile FILE.json]] [--calibrate FILE.json [--space calib
     [--load-term group|machine|none] [--combine max|sum|pnorm] [--rules none|lines,shared,overhead] [--min-workers N]]]
@@ -125,6 +138,8 @@ presk solve --step tutorial/07_train.psk --precision out/tut_step.json --budget 
 presk train tutorial/07_train.psk --backend native --realize @out/tut_step_solved.json
 presk plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --profile out/tut_layout.json --out out/tut_plan.json
 presk run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native --plan @out/tut_plan.json
+presk export tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 --plan @out/tut_plan.json -o out/tut_c16
+make -C out/tut_c16 check
 ```
 
 Exit codes: 0 success, 1 diagnostics with errors or a run-time error, 2 usage
@@ -135,7 +150,8 @@ error or not implemented.
 A Rust toolchain (edition 2024, rustc ≥ 1.85), `make`, and for the
 interpreter `m4` and a C compiler (the `rug` crate builds GMP and MPFR from
 source once; Homebrew's `mpfr` can be used instead through the
-`use-system-libs` feature of `gmp-mpfr-sys`). PyTorch, ONNX and ONNX Runtime
+`use-system-libs` feature of `gmp-mpfr-sys`); the C export's tests use the
+same compiler, with OpenMP when it has it. PyTorch, ONNX and ONNX Runtime
 are not needed to build or test the compiler; `make venv` installs them in
 `.venv` with `uv` to run the generated conformance tests and training scripts
 (without `uv`: `python3 -m venv .venv`, then `pip install` the packages the

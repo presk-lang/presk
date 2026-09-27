@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.8.0 prints (timings vary from one run and one machine
+shown is what version 0.9.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -26,7 +26,9 @@ What you will do, in order:
 14. run the whole test suite;
 15. give an entry an error budget, and let the compiler choose the types;
 16. give the training step a budget, and train under what it chooses;
-17. give the attention kernels a layout, chosen statically, and measure the choice.
+17. give the attention kernels a layout, chosen statically, and measure the choice;
+18. export the attention as a C program, check its bits against the native
+    backend, and write its loop nests for a polyhedral tool.
 
 Commands are run from the root of the repository. Presk source files use
 Unicode symbols (`ℝ`, `λ`, `·`, `θ`); each has an ASCII synonym (`Real`,
@@ -47,14 +49,14 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.8.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch export)
+Presk compiler (0.9.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)
 
 Usage: presk <COMMAND>
 
 Commands:
   check      Type-check a program: shapes, regularity classes, effects
   run        Evaluate an entry point on the reference interpreter or natively
-  export     Export a program to another framework
+  export     Export a program to another framework (PyTorch), or an entry as a C program
   dump       Dump an intermediate representation (development aid)
   train      Run the `training run` of a file, on the reference interpreter or natively
   serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
@@ -1239,7 +1241,7 @@ not reach yet.
 
 | Command | What it verifies |
 |---|---|
-| `make test` | the Rust test suite: unit tests, snapshot tests of every stage on the examples and of every diagnostic in `tests/diag/`, property tests of the shape decision procedure, gradients against finite differences at 512 bits (`mse`, two stacked modules), golden outputs of `presk run` in `tests/run/`, the `.psk.d` container, the optimizer's schedule and step, the training loop (a regression converges, the tiny MiniGPT's 20-step log), and that the generated Python byte-compiles |
+| `make test` | the Rust test suite: unit tests, snapshot tests of every stage on the examples and of every diagnostic in `tests/diag/`, property tests of the shape decision procedure, gradients against finite differences at 512 bits (`mse`, two stacked modules), golden outputs of `presk run` in `tests/run/`, the `.psk.d` container, the optimizer's schedule and step, the training loop (a regression converges, the tiny MiniGPT's 20-step log), that the generated Python byte-compiles, and the C export's programs, built and compared bit for bit with the native backend (step 18) |
 | `make check-examples` | `presk check` on the five reference programs: no error, only `W0001` |
 | `make run-examples` | the reference `presk run` commands |
 | `make export-examples` | the exports with conformance data, under `out/`: three models, the training loss, one optimizer step, twenty training steps, the ONNX graph |
@@ -1262,6 +1264,7 @@ not reach yet.
 | `make ra4`, `make ra4-check`, `make ra4-20`, `make ra4-day2` | the RA4 measurement of 0.7.0: the course GPT's attention, the GEMM and a BERT-shaped sample, every point checked on the kernel interpreter, the 20-core sweep, the second run and the report (`experiments` chapter §7; a night) |
 | `make ra4-dev`, `make ra4-dev-frozen`, `make ra4-ablation` | 0.8.0's development set: 0.7.0's measurements priced again under a profile, nothing measured; the frozen model's report on it, byte for byte; every form of the model on it (`cli` chapter, `presk reprice`; minutes) |
 | `make calibrate-ra4-small`, `make ra4-f2*`, `make ra4-f1*` | 0.8.0's fresh sweeps, each a dry run, two days, a check of every point on the kernel interpreter and a report: the A725 cores calibrated and 0.7.0's shapes swept on them (F2), new shapes on the X925 cores (F1) (`experiments` chapter §8; hours each) |
+| `make c-conformance`, `make c-speed` | the C export on the example entries and the course GPT, under plans, on threads, with integer weights, built with GCC, Clang and for x86-64, bit for bit against the native backend; `presk serve`'s tokens from the exported loop; the SCoP mode's nests against Polly; the exported course GPT timed against the native backend (`export_c` chapter; minutes, installs zig and LLVM's release) |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
@@ -1743,13 +1746,255 @@ head of 128 on the large cores, so `M` fails. `O` and `Q` hold there, and
 like cores, as `make ra4-small` does: the machine description, the worker
 count and the noise all depend on it.
 
+## 18. A C program
+
+Everything so far has run inside `presk`. Since 0.9.0 an entry can leave it
+as a C program, in the style of llama2.c: a few files a C compiler builds on
+any machine, which run without the compiler and compute what `presk run
+--backend native` computes, bit for bit. Export step 3's attention:
+
+```sh
+presk export tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim T=3 -o out/tut_c
+```
+
+```text
+presk export: `attend` at B = 1, T = 3 in f64: 7 launches (0 dead, on one thread) of 7 kernels, 1 function besides the entry's and 0 loops, an arena of 1472 bytes (1792 released nothing), into out/tut_c; `make -C out/tut_c check` builds it and compares it with the native backend
+```
+
+The export runs the entry once on the native backend, at step 3's
+dimensions and on the inputs `presk run` would synthesize, and records
+what its host does: every kernel it launches, in order, with the buffers
+each reads and writes. The program is that recording in C. `kernels.c`
+holds the seven kernels, each the native backend's, printed as one C
+function under its PSK-Kernel text:
+
+```c
+// kernel ein[batch, heads, seq, seq2] (%0 : f64[batch: 1, heads: 2, seq: 3, hd: 4], %1 : f64[batch: 1, heads: 2, seq: 3, hd: 4]) -> %2 : f64[batch: 1, heads: 2, seq: 3, seq2: 3] {
+// …
+static void k0(const double *restrict in0, const double *restrict in1, double *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0, i2 = 0, i3 = 0, i4 = 0;
+    double s0 = 0.0, s1 = 0.0;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 2; i1++) {
+            for (i2 = 0; i2 < 3; i2++) {
+                for (i3 = 0; i3 < 3; i3++) {
+                    s0 = 0.0;
+                    for (i4 = 0; i4 < 4; i4++) {
+                        s1 = in0[i0 * 24 + i1 * 12 + i2 * 4 + i4];
+                        s0 = s0 + s1 * in1[i0 * 24 + i1 * 12 + i3 * 4 + i4];
+                    }
+                    out[i0 * 18 + i1 * 9 + i2 * 3 + i3] = s0;
+                }
+            }
+        }
+    }
+}
+```
+
+`model.c` holds the host: a C function per Presk function, here `scores`
+(the "1 function besides the entry's") and the entry, which calls it and
+launches the mask, the softmax and the values `ein`, each buffer named
+after its `let` and taken from one arena whose size the export computed:
+
+```c
+void presk_attend(presk_arena *arena, const presk_attend_in *in, presk_attend_out *out)
+{
+    const double *q = in->q;
+    const double *k = in->k;
+    const double *v = in->v;
+    double *result = presk_alloc(arena, 24 * sizeof(double));
+    const size_t mark = presk_mark(arena);
+    /* attend/%3 (s) */
+    double *s = presk_alloc(arena, 18 * sizeof(double));
+    presk_scores(arena, q, k, s);
+    /* attend/%4 */
+    double *t4 = presk_alloc(arena, 9 * sizeof(double));
+    k3(t4, 0, 3);
+    /* attend/%5 */
+    double *t5 = presk_alloc(arena, 18 * sizeof(double));
+    k4(s, t4, t5, 0, 1);
+    /* attend/%6 (a) */
+    double *a = presk_alloc(arena, 18 * sizeof(double));
+    k5(t5, a, 0, 1);
+    /* attend/%7 */
+    k6(a, v, result, 0, 1);
+    out->result = result;
+    presk_release(arena, mark);
+}
+```
+
+Beside them: `main.c`, which reads the inputs from a `.psk.d` file, calls
+`presk_attend` and writes the outputs; the runtime; `presk_libm.c`, the
+`exp` the softmax calls, musl's as the native backend's `libm` crate ports
+it; a `Makefile`; a `README.md` that says all of this for this program; and
+`conformance/`, the inputs, the native backend's outputs and the exact
+reference's. Build it and compare:
+
+```sh
+make -C out/tut_c check PRESK=$PWD/target/debug/presk
+```
+
+```text
+cc -std=c11 -ffp-contract=off -O2 -Wall -Wextra  -o model main.c model.c presk_rt.c presk_libm.c -lm
+sh conformance/check.sh
+C1 holds: the outputs are the native backend's, bit for bit
+against the exact reference:
+presk data: ‖a − b‖₂ 3.477764e-16   ‖a‖₂ 4.687967e0   relative 7.418490e-17   over 24 reals
+```
+
+(`make`'s lines entering and leaving the directory are left out here.) The
+script runs the program on the inputs and compares its outputs with the
+native backend's, byte for byte, with `cmp`; `PRESK` names the compiler, so
+that it also prints the distance to the exact reference. Two flags make the
+bits the same: `-std=c11 -ffp-contract=off` forbids the compiler to fuse a
+product and a sum into one rounding, which the native backend never does
+(GCC does by default, in its GNU modes), and the program calls its own
+`exp`, not the C library's: glibc's differs from the native backend's in the
+last bit on one to ten inputs in a hundred, depending on the function. Run
+it by hand:
+
+```sh
+out/tut_c/model out/tut_c/conformance/inputs.psk.d out/tut_c/out.psk.d
+presk data info out/tut_c/out.psk.d
+```
+
+```text
+type    ℝ[1, 2, 3, 4]
+count   1
+version 1
+sample  192 bytes, 1 leaves
+[0] [[[[-0.2630606226931485, -1.227189555438751, -0.522860365685521, -0.6501994362402844], [-0.455980730477033, -1.0326643349418838, -0.21637551683825543, -0.5595661867201479], [-0.7999946376879477, -0.6410120274962912, 0.3293447034493807, -0.18354497498929842]], [[-1.1081571575929285, -1.3949974763568258, -1.1328024940237533, 0.420503653957042], [-1.5352932984844576, -0.9314255802951602, -1.7831217000720225, 0.3615592894447046], [-1.6226084683183153, -0.6828903979005011, -1.547601863846864, 0.4638027209419699]]]]
+```
+
+Step 3's result, to its five digits, in `f64`. The program is the native
+backend's run, so it follows what that run followed. At step 17's size and
+under its plan:
+
+```sh
+presk export tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 \
+    --plan @out/tut_plan.json -o out/tut_c16
+make -s -C out/tut_c16 check
+OMP_NUM_THREADS=1 make -s -C out/tut_c16 check
+```
+
+```text
+presk export: `attend` at B = 16, T = 256 in f32 under the plan out/tut_plan.json: 8 launches (0 dead, 5 of them divided among up to 20 threads) of 8 kernels, 1 function besides the entry's and 0 loops, an arena of 25952256 bytes (34472064 released nothing), into out/tut_c16; `make -C out/tut_c16 check` builds it and compares it with the native backend
+C1 holds: the outputs are the native backend's, bit for bit
+C1 holds: the outputs are the native backend's, bit for bit
+```
+
+The kernels are now the plan's, in `f32`: the register tiles, the lanes,
+the pack of `k`. Each launch the plan splits is an OpenMP region whose
+threads each run the kernel on their piece of the divided loop, the pieces
+the native backend computes. Each `ein` is split at its batch loop, of 16
+iterations, among the plan's 20 workers, so it runs on 16 of them; the
+values `ein`:
+
+```c
+#ifdef _OPENMP
+#pragma omp parallel num_threads(presk_team(16))
+    {
+        int64_t t = omp_get_thread_num(), w = omp_get_num_threads();
+        k7(a, v, result, 16 * t / w, 16 * (t + 1) / w);
+    }
+#else
+    k7(a, v, result, 0, 16);
+#endif
+```
+
+Twenty is the plan's number, the workers of step 17's calibration, which
+ran unpinned on this machine's twenty cores; on another machine the plan,
+and so the program, says what its calibration saw. The team is at most the
+threads OpenMP may use, so `OMP_NUM_THREADS=1` runs every region on one
+thread, and the second check shows the same bits: each element is computed
+by one thread, by the same loops in the same order, whatever the team.
+Built without OpenMP (`make OPENMP=`) the regions are plain calls, again the
+same bits. `-r` times the entry:
+
+```sh
+out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d out/tut_c16/out.psk.d
+OMP_NUM_THREADS=1 out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d out/tut_c16/out.psk.d
+```
+
+```text
+presk_attend: 11 calls, median 2.402 ms, best 2.002 ms
+presk_attend: 11 calls, median 8.587 ms, best 8.499 ms
+```
+
+The `export_c` chapter compares the program's speed with the native
+backend's, on the course GPT (statement C4).
+
+A polyhedral compiler would transform the same loop nests that step 17's
+plan chooses layouts for, and comparing the two is a question for after
+0.9.0. `--mode scop` prepares it: it writes each nest of the entry on its
+own, at point zero (its default layout, one lane, one worker), in the form
+such tools read:
+
+```sh
+presk export tutorial/03_attention.psk --target c --mode scop --entry attend --dim B=16 --dim T=256 \
+    --realize f32 -o out/tut_scop
+make -s -C out/tut_scop check
+```
+
+```text
+presk export: `attend` at B = 16, T = 256 in f32: 6 nests at 6 shapes at point zero, a C function each, 6 of them static-control parts and 0 not (`nests.json` says why), into out/tut_scop; `make -C out/tut_scop check` builds them and compares each with the native backend
+the 6 nests compute the native backend's bits
+```
+
+The six nests are step 17's. Each is a file of its own, `nests/attend_6.c`
+for the softmax:
+
+```c
+void attend_6(const float in0[restrict 16][2][256][256], float out[restrict 16][2][256][256]) {
+    int64_t i0 = 0, i1 = 0, i2 = 0, i3 = 0;
+    float s0 = 0.0f, s1 = 0.0f;
+#pragma scop
+    for (i0 = 0; i0 < 16; i0++) {
+        for (i1 = 0; i1 < 2; i1++) {
+            for (i2 = 0; i2 < 256; i2++) {
+                s0 = in0[i0][i1][i2][0];
+                for (i3 = 0; i3 < 256; i3++) {
+                    s0 = in0[i0][i1][i2][i3] > s0 ? in0[i0][i1][i2][i3] : s0;
+                }
+                s1 = 0.0f;
+                for (i3 = 0; i3 < 256; i3++) {
+                    s1 = s1 + presk_expf(in0[i0][i1][i2][i3] - s0);
+                }
+                for (i3 = 0; i3 < 256; i3++) {
+                    out[i0][i1][i2][i3] = presk_expf(in0[i0][i1][i2][i3] - s0) / s1;
+                }
+            }
+        }
+    }
+#pragma endscop
+}
+```
+
+Arrays of literal dimensions, loops to literal bounds, every access affine
+in the loop variables, and the running maximum a selection rather than a
+branch: a static-control part, the region between the pragmas, which pet,
+PPCG and PLUTO read. The check runs each nest on inputs its driver draws
+and compares it with the native backend's point zero, bit for bit; `make
+-C out/tut_scop time` times each nest. `make llvm` installs LLVM's release,
+whose clang links Polly, and `make -C out/tut_scop polly
+POLLY=$PWD/.llvm/bin/clang` shows each nest as Polly sees it, one SCoP each
+here (`make tutorial` leaves this out: the release is 1.8 GB to download).
+A nest that gathers (an embedding's `table[ids[b][t]][d]`) is not static
+control, and the README says so.
+
+The exported programs of the test set, under plans and with integer
+weights, with Clang and for x86-64, and the generation loop of `presk serve`
+exported with `--serve`, are checked by `make test` and `make
+c-conformance` (step 14); the `export_c` chapter says why the bits are the
+native backend's and what is checked.
+
 ## Where to go next
 
 - The `experiments` chapter for what these tools show about the approach
   (`make experiment`): a silent broadcasting bug of plain PyTorch that the
   types rule out, the gap of float32 and float64 training to the exact
   reference with presk's own realizations next to PyTorch's, and the
-  falsifiable statements of 0.4.0 to 0.8.0, each answered by
+  falsifiable statements of 0.4.0 to 0.9.0, each answered by
   measurement.
 - The `precision` chapter for everything behind steps 15 and 16: the
   envelope, the bound and the condition number, sensitivities, the solver,
@@ -1761,7 +2006,9 @@ count and the noise all depend on it.
   contraction; the `realize` chapter for fusion groups and the plan file of
   step 17; the `optimization` chapter for the rules, the oracle, the
   calibrated roofline and the layout cost model, what its fresh test found; the
-  `serve` chapter for `inference serve` and `presk serve`.
+  `serve` chapter for `inference serve` and `presk serve`; the `export_c`
+  chapter for the C programs of step 18, sampling and integer weights
+  included, and the SCoP mode.
 - The `cli` chapter for every flag, the `language` chapter for the
   constructs accepted and how they are typed, `diagnostics` for the codes.
 - `docs/spec-questions.md` for the points where this implementation had to

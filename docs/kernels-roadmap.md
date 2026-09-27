@@ -310,3 +310,68 @@ a model frozen again and a sweep it was not designed on, as 0.8.0 did.
    to five times faster, for instance by sharing the walk between points
    that differ in one decision, or the footprints across points as 0.8.0
    step 1 shared them across cache levels (D64).
+
+## Work a gradient does and discards (2026-09-26, 0.9.0 step 3)
+
+The C export's recording of the host (D79) showed that the kernel backend
+computes, for a gradient, values that nothing reads.
+- **The counts.** 15 of `mse_grad`'s 46 launches and 125 of `loss_grad`'s
+  767 (`tests/plan/minigpt_grad.psk`) compute values the result does not
+  depend on. The native backend launches them, and step 3's C program
+  copies them launch for launch, so that C4 compares the same work and a
+  disagreement can be traced launch by launch.
+- **Where they are launched**, in `loss_grad`:
+  - 89 in forward functions: `Linear.apply` 32, `LayerNorm.apply` 25,
+    `SelfAttention.apply` 18, `Model.apply` 6, `Block.apply` 4,
+    `MLP.apply` 2, `loss` 2;
+  - 36 in the `.vjp` functions and the fold's backward body.
+- **What they are.** They come from two sources: the forward pass whose
+  value, the primal loss, `grad` discards; and primal values computed
+  inside the `.vjp` functions that no caller reads.
+
+**The fix** is dead-code elimination in PSK-Core after automatic
+differentiation, in two parts.
+- **Within a function**, a `let` nothing reads can go. PSK-Core is pure,
+  since a key is an argument, so this is safe.
+- **Across calls**, a `.vjp` whose caller reads only its cotangents needs a
+  specialized copy without the primal computation. That is the larger part.
+
+The native backend and the C export would both gain, and the C would still
+copy the native host launch for launch.
+
+**Not measured yet.**
+- Their share of a gradient's time. The forward pass is about a third of a
+  forward-and-backward step's work, so a duplicated one could be a large
+  part of a training step.
+- Whether `presk-opt`'s extraction (`--opt`) already removes some of them.
+
+**Its cost.** It changes launch counts that goldens, `presk dump --stage
+kernel` and the tutorial quote. Every timing taken since 0.3.0 would then
+include less work. So it wants its own step, with a measurement before and
+after, not a place inside the C export's steps.
+
+## What the C export's speed says (2026-09-27, 0.9.0 step 9)
+
+Statement C4 timed the exported course GPT against the native backend on
+the same kernels, under the same plan (D81): at `B = 16`, `T = 256` in
+`f32`, 290 ms against 1 094 ms on ten threads, 1 700 against 3 132 ms on one
+X925 core. Nothing about those kernels differs but who compiles them and
+what runs around them, so the gaps point at the native backend itself.
+- **On one thread, 1.8×.** Two candidates, not measured apart:
+  - the code generator: GCC `-O2` on the C text of each kernel, against
+    Cranelift on the same loop nest, which neither unrolls loops nor
+    rewrites their induction variables;
+  - the host: the native host copies each stacked layer's parameters out
+    of the stack at every layer (`slice_tree`) and materializes views,
+    where the C program passes `w + l * chunk`.
+- **On ten threads, 3.8×.** Beside those two, the native backend starts a
+  scoped OS thread per piece at every divided launch (201 of the 228), where
+  the C program's OpenMP team is a pool.
+
+**How to measure the shares.** The C program is the instrument. Made to
+copy each slice as the native host does (an option of the export), it
+gives the host's share on one thread; the per-launch spawn shows as the
+ten-thread gap less the one-thread one, and a thread pool in
+`presk-cranelift` would close it; the code generator's share is what
+remains. None of it changes a bit, so each is a change to measure, not to
+check.
