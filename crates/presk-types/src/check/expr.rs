@@ -267,6 +267,7 @@ impl Checker<'_> {
                     if let Some(&fid) = self.prog.units[self.unit].fns.get(name) {
                         let targs = self.args(args, env)?;
                         self.typed.callees.insert(span, Callee::Fn { id: fid, module: None, explicit_theta: false });
+                        self.calls.extend(self.fn_id.map(|caller| (caller, fid, span)));
                         return self.call_fn(fid, None, targs, span);
                     }
                     let targs = self.args(args, env)?;
@@ -346,6 +347,7 @@ impl Checker<'_> {
             return None;
         };
         self.typed.callees.insert(span, Callee::Fn { id: fid, module: Some(r.clone()), explicit_theta: explicit });
+        self.calls.extend(self.fn_id.map(|caller| (caller, fid, span)));
         if explicit {
             if targs.is_empty() {
                 self.error(Diagnostic::error("E2004", format!("`{}.{fname}` called outside its module needs the parameter tree as first argument", def.name)).label(span, "missing `θ`"));
@@ -456,6 +458,7 @@ impl Checker<'_> {
         let (mut shape, rebuild): (Shape, Box<dyn Fn(Shape) -> Ty>) = match z {
             Ty::Real(s) => (s, Box::new(Ty::Real)),
             Ty::Idx { bound, shape } => (shape, Box::new(move |s| Ty::Idx { bound: bound.clone(), shape: s })),
+            Ty::Truth(s) => (s, Box::new(Ty::Truth)),
             other => {
                 let s = self.show(&other);
                 self.error(Diagnostic::error("E2002", format!("cannot index a value of type `{s}`")).label(span, "expected a tensor"));

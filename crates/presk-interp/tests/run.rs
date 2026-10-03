@@ -82,7 +82,7 @@ fn softmax_rows_sum_to_one() {
     // attention weights through `loss`, which exercises softmax; check the
     // invariant on a direct softmax instead: Σ_axis softmax(x) = 1 at 2^-200.
     let (prog, core) = prepare("tests/examples/minigpt/minigpt.psk", TINY);
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let x = Value::Real(presk_interp::Tensor { axes: vec![presk_interp::value::Axis { name: Some("seq2".into()), len: 5 }], data: (0..5).map(|i| Float::with_val(256, i as f64 * 0.7 - 1.0)).collect() });
     let sm = interp.prim_public(&presk_core::PrimOp::Softmax { axis: "seq2".into() }, &[x]).unwrap();
     let Value::Real(t) = sm else { panic!() };
@@ -107,7 +107,7 @@ fn ad_matches_finite_differences() {
     let theta = out.inputs[0].1.clone();
     let x = out.inputs[1].1.clone();
     let y = out.inputs[2].1.clone();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     let h = Float::with_val(bits, 2f64.powi(-120));
     let tol = Float::with_val(bits, 2f64.powi(-100));
     let paths = leaf_paths(&theta);
@@ -167,6 +167,45 @@ fn set_leaf_elem(v: &Value<Float>, path: &[String], i: usize, x: Float) -> Value
     }
 }
 
+/// A closure applied inside a differentiated function (0.10.0 step 3, defect
+/// 3a of the reference's chapter 5). The `.vjp` stored the body's closures
+/// under the body's variables and looked them up under its own, so one
+/// closure in scope was refused (`E6001`) and, of two, the other one was
+/// differentiated, without a diagnostic. Each gradient agrees with central
+/// finite differences of its primal at 512 bits, h = 2^-120, to 2^-100
+/// relative, and the closure that is never applied changes no bit.
+#[test]
+fn ad_through_applied_closures_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/closure_grad.psk";
+    let (prog, core) = prepare(rel, &[]);
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
+    let mut grads = vec![];
+    for (entry, primal) in [("d_two", "two"), ("d_one", "one"), ("d_captured", "captured")] {
+        let out = run(rel, &[], entry, &[], bits);
+        let f = core.find(primal).unwrap();
+        let (x, y) = (out.inputs[0].1.clone(), out.inputs[1].1.clone());
+        let (Value::Real(xt), Value::Real(g)) = (&x, &out.result) else { panic!("{entry}: tensors") };
+        for i in 0..xt.data.len() {
+            let at = |d: Float| {
+                let mut t = xt.clone();
+                t.data[i] = Float::with_val(bits, &t.data[i] + d);
+                Value::Real(t)
+            };
+            let fp = scalar(&interp.call(f, Default::default(), vec![at(h.clone()), y.clone()]).unwrap());
+            let fm = scalar(&interp.call(f, Default::default(), vec![at(-h.clone()), y.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "{entry}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+        }
+        grads.push(g.data.clone());
+    }
+    assert_eq!(grads[0], grads[1], "a closure never applied changes nothing");
+}
+
 /// The optimizer functions lowered from `optimizer adamw { … }` (0.2.0 step 3):
 /// the cosine schedule of `train_minigpt.psk` at chosen steps, and one AdamW
 /// step from zero moments on `tests/data/train_ok.psk`, against the closed forms.
@@ -174,7 +213,7 @@ fn set_leaf_elem(v: &Value<Float>, path: &[String], i: usize, x: Float) -> Value
 fn optimizer_schedule_and_step() {
     use presk_interp::value::Axis;
     let (prog, core) = prepare("tests/examples/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)]);
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     let lr = core.find("adamw.lr").unwrap();
     let mut f = |t: u64, total: u64| -> f64 {
         match interp.call(lr, Default::default(), vec![Value::Nat(t), Value::Nat(total)]).unwrap() {
@@ -190,7 +229,7 @@ fn optimizer_schedule_and_step() {
     assert!((f(5000, 4000)).abs() < 1e-18, "past the horizon the rate stays at 0");
 
     let (prog, core) = prepare("tests/data/train_ok.psk", &[]);
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     let step = core.find("adamw.step").unwrap();
     let tensor = |x: f64| Value::Real(presk_interp::Tensor { axes: vec![Axis { name: None, len: 64 }, Axis { name: None, len: 4 }], data: vec![Float::with_val(128, x); 256] });
     let tree = |x: f64| Value::record(vec![("w".to_string(), tensor(x))]);
@@ -229,7 +268,7 @@ fn ad_through_fold_matches_finite_differences() {
     let theta = out.inputs[0].1.clone();
     let x = out.inputs[1].1.clone();
     let scale = out.inputs[2].1.clone();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     let h = Float::with_val(bits, 2f64.powi(-120));
     let tol = Float::with_val(bits, 2f64.powi(-100));
     let mut checked = 0;
@@ -278,7 +317,7 @@ fn ad_through_dropout_matches_finite_differences() {
     let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
     let (theta, x, key) = (args[0].clone(), args[1].clone(), args[2].clone());
     // Training on: without it the mask is all ones and nothing is dropped.
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     interp.training = true;
     let grad = interp.call(gradf, dims.clone(), args.clone()).unwrap();
 
@@ -320,7 +359,7 @@ fn ad_through_dropout_matches_finite_differences() {
     assert!(sum(&elsewhere) != sum(&grad), "another key gives another mask");
 
     // Training off, the mask is all ones: the model is its own expectation.
-    let mut plain: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut plain: Interp<Float> = Interp::new(&core, &prog, bits);
     let off = scalar(&plain.call(loss, ldims.clone(), vec![theta.clone(), x.clone(), key.clone()]).unwrap());
     let on = scalar(&interp.call(loss, ldims, vec![theta, x, key]).unwrap());
     assert!(off != on, "dropping must change the loss: off = {off}, on = {on}");
@@ -339,7 +378,7 @@ fn ad_through_merge_matches_finite_differences() {
     let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
     let theta = out.inputs[0].1.clone();
     let ids = out.inputs[1].1.clone();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     let h = Float::with_val(bits, 2f64.powi(-120));
     let tol = Float::with_val(bits, 2f64.powi(-100));
     let mut checked = 0;
@@ -376,7 +415,7 @@ fn stacked_layers_draw_independent_keys() {
         let opts = presk_interp::RunOptions { entry: entry.into(), dims: vec![("B".into(), 8)], seed: 0, bits, digits: 12 };
         let (f, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
         let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
-        let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+        let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
         interp.training = true;
         let Value::Real(t) = interp.call(f, dims, args).unwrap() else { panic!("a tensor") };
         (t.data.iter().filter(|x| x.is_zero()).count(), t.data.len())
@@ -395,7 +434,7 @@ fn stacked_layers_draw_independent_keys() {
     let opts = presk_interp::RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 2)], seed: 0, bits, digits: 12 };
     let (gradf, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     interp.training = true;
     let g = interp.call(gradf, dims, args).unwrap();
     let per_layer: Vec<f64> = leaf_paths(&g)
@@ -407,6 +446,55 @@ fn stacked_layers_draw_independent_keys() {
         .collect();
     assert!(!per_layer.is_empty(), "the gradient has leaves");
     assert!(per_layer.iter().all(|x| x.is_finite()), "every leaf is finite");
+}
+
+/// The gradient of a stacked module that drops, training on, agrees with
+/// central finite differences (0.10.0 step 4, defect 3f of the reference's
+/// chapter 5). The key rides the fold's accumulator, so the backward fold
+/// reads each layer's key from what the forward fold stacked: a stack that
+/// kept the first key gave every layer's reverse sweep layer 0's mask, off by
+/// up to 77 % here. The blocks are residual, `x + dropout(tanh(x · γ))`, so
+/// that a dropped position is no exact zero of what flows on, which hid the
+/// defect in `tanh(dropout(x · γ))`.
+#[test]
+fn ad_through_stacked_dropout_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/stack_dropout_grad.psk";
+    let (prog, core) = prepare(rel, &[]);
+    let opts = presk_interp::RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 8)], seed: 0, bits, digits: 12 };
+    let (gradf, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+    let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
+    let (theta, x, key) = (args[0].clone(), args[1].clone(), args[2].clone());
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
+    interp.training = true;
+    let grad = interp.call(gradf, dims.clone(), args.clone()).unwrap();
+
+    let loss = core.find("loss").unwrap();
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let mut checked = 0;
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&grad, path) else { panic!("gradient leaf missing") };
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, dims.clone(), vec![plus, x.clone(), key.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, dims.clone(), vec![minus, x.clone(), key.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "leaf {path:?}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 3 * 4, "every element of the three layers");
+
+    // Dropping must matter: training off, the loss differs.
+    let mut plain: Interp<Float> = Interp::new(&core, &prog, bits);
+    let off = scalar(&plain.call(loss, dims.clone(), vec![theta.clone(), x.clone(), key.clone()]).unwrap());
+    let on = scalar(&interp.call(loss, dims, vec![theta, x, key]).unwrap());
+    assert!(off != on, "dropping must change the loss: off = {off}, on = {on}");
 }
 
 /// The adjoint of `split` (0.5.0 step 1): reading one axis as two moves no
@@ -425,7 +513,7 @@ fn ad_through_split_matches_finite_differences() {
     let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
     let theta = out.inputs[0].1.clone();
     let ids = out.inputs[1].1.clone();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     let h = Float::with_val(bits, 2f64.powi(-120));
     let tol = Float::with_val(bits, 2f64.powi(-100));
     let mut checked = 0;
@@ -460,7 +548,7 @@ fn ad_through_fold_with_open_prefix() {
     let loss = core.find("loss").unwrap();
     let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, 3u64)).collect();
     let (theta, x, y) = (out.inputs[0].1.clone(), out.inputs[1].1.clone(), out.inputs[2].1.clone());
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
     let h = Float::with_val(bits, 2f64.powi(-120));
     let tol = Float::with_val(bits, 2f64.powi(-100));
     let mut checked = 0;

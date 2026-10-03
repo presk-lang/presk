@@ -62,6 +62,12 @@ make ra4-f1-dry ra4-f1 ra4-f1-check ra4-f1-day2
                                  # 0.8.0's fresh sweeps F2 and F1 (chapter `experiments` §8; hours each)
 make c-conformance               # the C export on the test set, the course GPT and the trained checkpoints, Clang and x86-64, Polly (0.9.0; minutes, installs .venv-zig and .llvm)
 make c-speed                     # statement C4: the exported course GPT against the native backend (a quiet machine)
+make pytorch-baseline            # the course GPT's forward pass and training step: native, C and PyTorch (D87; 0.10.0's T2 and T4; a quiet machine, about twenty minutes, needs .venv)
+make ra4-t3-dry ra4-t3 ra4-t3-check ra4-t3-day2
+                                 # 0.10.0's T3: the frozen model on the derivatives of `dot` (chapter `experiments` §8; hours each)
+make host-profile                # the native host by phase on the course GPT (0.10.0 step 5; a quiet machine)
+make delta-p                     # the reference's own gap at 128 to 1 024 bits on the course GPT (D98; about half an hour, 9 GB)
+make compile-times               # the time presk check, calibrate, solve and the exact reference take per model (D101; a quiet machine, hours)
 ```
 
 The conformance tests are the only thing that needs PyTorch; `.venv` is
@@ -111,7 +117,7 @@ tests/plan                   realization plans, and the entries make plan-check 
 tests/export_c               programs and a plan the C export's tests need beyond the test set
 corpus/nlp                   the corpus of an NLP course (manual chapter `corpus`)
 coverage                     the MLPerf transcriptions (manual chapter `coverage`)
-experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert, ra4*, c-speed
+experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert, ra4*, c-speed, pytorch-baseline
 ```
 
 The example programs are refreshed from the specification repository with

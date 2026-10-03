@@ -79,7 +79,34 @@ impl Checker<'_> {
                 }
             },
             "softmax" => {
-                let (sh, _) = self.axis_and_tensor(name, args, span)?;
+                // `softmax(axis a, x)`, or with a mask, `softmax(axis a, x,
+                // where = m)`, `m : bool[S2]` with S ⊔ S2 = S (plan 0.10.0
+                // step 7b; the reference's signature of `softmax`).
+                let (plain, mask) = match args {
+                    [_, _] => (args, None),
+                    [_, _, TArg::Named(n, m, ms)] if n == "where" => (&args[..2], Some((m, *ms))),
+                    _ => {
+                        self.error(Diagnostic::error("E2004", "`softmax` takes `(axis NAME, tensor)` or `(axis NAME, tensor, where = mask)`").label(span, "wrong arguments"));
+                        return None;
+                    }
+                };
+                let (sh, _) = self.axis_and_tensor(name, plain, span)?;
+                if let Some((m, ms)) = mask {
+                    let Ty::Truth(msh) = self.zonk(m) else {
+                        let st = self.show(m);
+                        self.error(
+                            Diagnostic::error("E2002", format!("the mask of `softmax` must be a tensor of truth values `bool[…]`, found `{st}`"))
+                                .label(ms, "not a mask")
+                                .note("`where = m` keeps the positions where `m` is true; a real mask added to the scores is no longer a mask"),
+                        );
+                        return None;
+                    };
+                    // The mask broadcasts into the scores without widening them.
+                    let joined = self.broadcast(&sh, &msh, ms)?;
+                    if !self.unify_shape(&joined, &sh, ms) {
+                        return None;
+                    }
+                }
                 Some(Ty::Real(sh))
             }
             "real" => {
@@ -306,6 +333,27 @@ impl Checker<'_> {
                 Some(Ty::Real(out))
             }
             "argmax" | "sample" => {
+                // `sample(key, logits)`: it draws from its key, one uniform
+                // per position (plan 0.10.0 step 7b; the reference's chapter
+                // 3, definition "Draws").
+                let args = if name == "sample" {
+                    let [TArg::Pos(k, ks), rest @ ..] = args else {
+                        self.error(Diagnostic::error("E2004", "`sample` takes `(key, logits)`").label(span, "wrong arguments"));
+                        return None;
+                    };
+                    if !matches!(self.zonk(k), Ty::Key) {
+                        let st = self.show(k);
+                        self.error(
+                            Diagnostic::error("E2002", format!("`sample` needs a key, found `{st}`"))
+                                .label(*ks, "not a key")
+                                .note("the draw is a function of the key, one uniform per position; a function that samples takes a `key` parameter, as one that drops out does"),
+                        );
+                        return None;
+                    }
+                    rest
+                } else {
+                    args
+                };
                 let (_, sh) = self.one_tensor(name, args, span)?;
                 let sh = self.resolve_shape(&sh);
                 let Some(last) = sh.axes.last() else {
@@ -361,7 +409,9 @@ impl Checker<'_> {
                 if name == "positions" {
                     Some(Ty::Idx { bound: len.clone(), shape: Shape::closed(vec![Axis { name: Some(a.clone()), len: len.clone() }]) })
                 } else {
-                    Some(Ty::Real(Shape::closed(vec![Axis { name: Some(a.clone()), len: len.clone() }, Axis { name: Some(format!("{a}2")), len: len.clone() }])))
+                    // A mask: position (i, j) allowed when j ≤ i (plan 0.10.0
+                    // step 7b).
+                    Some(Ty::Truth(Shape::closed(vec![Axis { name: Some(a.clone()), len: len.clone() }, Axis { name: Some(format!("{a}2")), len: len.clone() }])))
                 }
             }
             "grad" => {

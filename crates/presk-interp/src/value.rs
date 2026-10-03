@@ -135,6 +135,11 @@ pub enum Value<R: Real> {
     Tuple(Shared<Value<R>>),
     Record(Shared<(String, Value<R>)>),
     Closure { f: FuncId, captured: Vec<Value<R>> },
+    /// A leaf with no axis to stack along (a key, a scalar, a function
+    /// value), stacked by a scanned `fold`: one value per layer, as a stacked
+    /// tensor holds one slice per layer. Its type is the leaf's own
+    /// ([`presk_core::ir::stack_ty`] leaves such a type unchanged).
+    Stacked(Shared<Value<R>>),
 }
 
 impl<R: Real> Value<R> {
@@ -158,6 +163,7 @@ impl<R: Real> Value<R> {
             Value::Tuple(_) => "tuple",
             Value::Record(_) => "record",
             Value::Closure { .. } => "function",
+            Value::Stacked(_) => "stacked value",
         }
     }
 

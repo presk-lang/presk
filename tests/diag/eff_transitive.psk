@@ -1,6 +1,6 @@
 -- E4001: the effect of a callee must be declared by the caller too.
 dim B
-fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
-  sample(logits)
-fn twice(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
-  pick(logits)
+fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
+  sample(key, logits)
+fn twice(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+  pick(key, logits)

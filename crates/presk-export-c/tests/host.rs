@@ -106,7 +106,7 @@ fn record(rel: &str, consts: &[(&str, u64)], dims: &[(&str, u64)], entry: &str, 
         _ => None,
     });
     let r = Realization::uniform(realize);
-    let mut b = presk_cranelift::native_backend(&core, &prog, &r, 0).unwrap();
+    let mut b = presk_cranelift::native_backend(&core, &prog, &r).unwrap();
     let p = b.prepare(func, &fdims, &r).unwrap();
     b.recorder = Some(Box::new(Recorder::named(names.clone())));
     let out = b.call(&p, args.clone()).unwrap();
@@ -372,12 +372,26 @@ fn swapping_the_buffers_of_two_launches_changes_the_outputs() {
             Op::Launch { out, .. } => *out,
             _ => unreachable!(),
         };
-        // Pairs of live launches whose outputs have one type and size.
+        // The launches that read each buffer.
+        let mut readers: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        for (k, op) in r.rec.ops.iter().enumerate() {
+            if let Op::Launch { inputs, .. } = op {
+                for v in inputs {
+                    readers.entry(v.buf).or_default().push(k);
+                }
+            }
+        }
+        // Pairs of live launches whose outputs have one type and size, but
+        // for two that one launch alone reads: it may read them as operands
+        // of a product, where exchanging them changes no bit (`mse.bwd`'s
+        // `(ŷ - y)` and `mean_vjp`, since the gradient keeps the first as a
+        // residual, 0.10.0 step 4).
         let mut pairs = Vec::new();
         for (a, &i) in live.iter().enumerate() {
             for &j in &live[a + 1..] {
                 let (bi, bj) = (&r.rec.bufs[out(i)], &r.rec.bufs[out(j)]);
-                if bi.store == bj.store && bi.len == bj.len {
+                let (ri, rj) = (readers.get(&out(i)), readers.get(&out(j)));
+                if bi.store == bj.store && bi.len == bj.len && !(ri == rj && ri.is_some_and(|v| v.len() == 1)) {
                     pairs.push((i, j));
                 }
             }
@@ -822,6 +836,7 @@ fn a_scalar_computed_at_run_time_crosses_calls_as_a_double() {
         result: Some(Sym::Tensor(y.clone())),
         vars: 2,
         scalar_args: vec![],
+        key_args: vec![],
         calls: vec![
             Call { func: "f".into(), dims: vec![], params: vec!["x".into()], args: vec![Sym::Tensor(x.clone())], result: Some(Sym::Tensor(y.clone())), body: vec![Node::Op(0), Node::Call(1), Node::Op(2)], var: None, name: None, apply: false },
             Call { func: "g".into(), dims: vec![], params: vec!["a".into()], args: vec![Sym::F64(Scalar::Var(0))], result: Some(Sym::F64(Scalar::Var(1))), body: vec![Node::Op(1)], var: Some(2), name: None, apply: false },
@@ -836,7 +851,7 @@ fn a_scalar_computed_at_run_time_crosses_calls_as_a_double() {
     rec.result = Some(Sym::Tensor(y1.clone()));
     rec.calls[0].result = Some(Sym::Tensor(y1));
     let xs = [1.25f64, -3.0, 0.5, 7.0];
-    let r = Recorded { rec, kernels: vec![], native: vec![((xs[0] * 2.5) as f32 as f64).to_bits()], args: vec![Value::Real(presk_rt::Tensor { axes: vec![presk_rt::Axis { name: None, len: 4 }], data: Buf::F64(xs.to_vec()) })], names: vec!["x".into()], module: None, realize: Dtype::F32, entry: "f".into() };
+    let r = Recorded { rec, kernels: vec![], native: vec![((xs[0] * 2.5) as f32 as f64).to_bits()], args: vec![Value::Real(presk_rt::Tensor { axes: vec![presk_rt::Axis { name: None, len: 4 }], data: Buf::F64(xs.to_vec().into()) })], names: vec!["x".into()], module: None, realize: Dtype::F32, entry: "f".into() };
     let st = host::structure(&r.kernels, &r.rec, 1).unwrap();
     let g = st.funcs.iter().find(|f| f.form.func == "g").expect("`g` is a function");
     assert_eq!(g.form.souts.len(), 1, "`g` returns its scalar through a pointer");

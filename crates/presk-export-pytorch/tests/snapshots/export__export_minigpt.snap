@@ -34,7 +34,7 @@ assert D % H == 0, "static assert D % H == 0"
 # dim T <= 1024  (symbolic; bound checked where the dimension is bound)
 # type Tokens = idx[50257][batch: B, seq: T]
 # type Acts = ℝ[batch: B, seq: T, model: 768]
-# type Mask = ℝ[seq: T, seq2: T]
+# type Mask = bool[seq: T, seq2: T]
 
 class SelfAttention(nn.Module):
     """Generated from `module SelfAttention` (minigpt.psk:29). Do not edit by hand."""
@@ -52,8 +52,8 @@ class SelfAttention(nn.Module):
         B = x.shape[0]
         T = x.shape[1]
         assert x.shape == (B, T, 768,), f"x: expected ℝ[batch: B, seq: T, model: 768] " + str(tuple(x.shape))
-        # mask : ℝ[seq: T, seq2: T]
-        assert mask.shape == (T, T,), f"mask: expected ℝ[seq: T, seq2: T] " + str(tuple(mask.shape))
+        # mask : bool[seq: T, seq2: T]
+        assert mask.shape == (T, T,), f"mask: expected bool[seq: T, seq2: T] " + str(tuple(mask.shape))
         q = _split_heads(self.wq(x), H, HD)  # ℝ[batch: B, heads: 12, seq: T, hd: 64]
         assert q.shape == (B, 12, T, 64,), str(tuple(q.shape))
         k = _split_heads(self.wk(x), H, HD)  # ℝ[batch: B, heads: 12, seq: T, hd: 64]
@@ -62,7 +62,7 @@ class SelfAttention(nn.Module):
         assert v.shape == (B, 12, T, 64,), str(tuple(v.shape))
         s = torch.einsum("abcd,abed->abce", q, k) / math.sqrt(float(HD))  # ℝ[batch: B, heads: 12, seq: T, seq2: T]
         assert s.shape == (B, 12, T, T,), str(tuple(s.shape))
-        a = torch.softmax((s + mask), dim=3)  # ℝ[batch: B, heads: 12, seq: T, seq2: T]
+        a = torch.softmax(s.masked_fill(~mask, float("-inf")), dim=3)  # ℝ[batch: B, heads: 12, seq: T, seq2: T]
         assert a.shape == (B, 12, T, T,), str(tuple(a.shape))
         o = torch.einsum("abcd,abde->abce", a, v)  # ℝ[batch: B, heads: 12, seq: T, hd: 64]
         assert o.shape == (B, 12, T, 64,), str(tuple(o.shape))
@@ -84,8 +84,8 @@ class Block(nn.Module):
         B = x.shape[0]
         T = x.shape[1]
         assert x.shape == (B, T, 768,), f"x: expected ℝ[batch: B, seq: T, model: 768] " + str(tuple(x.shape))
-        # mask : ℝ[seq: T, seq2: T]
-        assert mask.shape == (T, T,), f"mask: expected ℝ[seq: T, seq2: T] " + str(tuple(mask.shape))
+        # mask : bool[seq: T, seq2: T]
+        assert mask.shape == (T, T,), f"mask: expected bool[seq: T, seq2: T] " + str(tuple(mask.shape))
         x = x + self.attn(self.ln1(x), mask)  # ℝ[batch: B, seq: T, model: 768]
         assert x.shape == (B, T, 768,), str(tuple(x.shape))
         return x + self.mlp(self.ln2(x))
@@ -126,7 +126,7 @@ class MiniGPT(nn.Module):
         # ids : idx[50257][batch: B, seq: T]
         B = ids.shape[0]
         assert ids.shape == (B, self.T,), f"ids: expected idx[50257][batch: B, seq: T] " + str(tuple(ids.shape))
-        mask = torch.triu(torch.full((self.T, self.T), float("-inf")), diagonal=1)  # ℝ[seq: T, seq2: T]
+        mask = torch.ones((self.T, self.T), dtype=torch.bool).tril()  # bool[seq: T, seq2: T]
         assert mask.shape == (self.T, self.T,), str(tuple(mask.shape))
         h0 = self.emb(ids)  # ℝ[batch: B, seq: T, model: 768]
         assert h0.shape == (B, self.T, 768,), str(tuple(h0.shape))

@@ -14,5 +14,5 @@ fn scores(q : Q, k : Q) -> ℝ[batch: B, heads: H, seq: T, seq2: T] =
 
 fn attend(q : Q, k : Q, v : Q) -> Q =
   let s = scores(q, k)
-  let a = softmax(axis seq2, s + causal_mask(seq: T))
+  let a = softmax(axis seq2, s, where = causal_mask(seq: T))
   ein[batch, heads, seq, hd](a * v)

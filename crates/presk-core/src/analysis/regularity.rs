@@ -94,7 +94,9 @@ pub fn analyze(prog: &Program, elab: &ElabProgram, diags: &mut Vec<Diagnostic>) 
 fn prim_class(op: &PrimOp, arg: usize, arg_ty: &Ty) -> Class {
     match op {
         PrimOp::Argmax | PrimOp::Sample | PrimOp::OneHot => Class::Disc,
-        PrimOp::Embed | PrimOp::CrossEntropy => {
+        // `softmax` is discontinuous in its mask (the reference's table of
+        // static classes).
+        PrimOp::Embed | PrimOp::CrossEntropy | PrimOp::Softmax { .. } => {
             if arg == 1 { Class::Disc } else { Class::Smooth }
         }
         PrimOp::Relu | PrimOp::Abs => Class::PiecewiseSmooth,

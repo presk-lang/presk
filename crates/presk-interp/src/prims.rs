@@ -2,7 +2,7 @@
 //! reductions, indexing, initializers, and the adjoint primitives of AD.
 
 use presk_core::PrimOp;
-use presk_types::ty::Ty;
+use presk_types::ty::{ParamsTree, Ty};
 use rand_core::RngCore;
 
 use crate::eval::{Dims, Interp, Result, err};
@@ -107,12 +107,12 @@ impl<R: Real> Interp<'_, R> {
                 return Ok(b.map_leaves(&mut |y| self.binary(a, y, f, what).unwrap_or_else(|_| y.clone())));
             }
             (Value::Record(_) | Value::Tuple(_), _) | (_, Value::Record(_) | Value::Tuple(_)) => {
-                return a.zip_leaves(b, &mut |x, y| self.binary(x, y, f, what).map_err(|e| e.message)).map_err(|m| crate::eval::RunError { message: m, span: None });
+                return a.zip_leaves(b, &mut |x, y| self.binary(x, y, f, what).map_err(|e| e.message)).map_err(|m| crate::eval::RunError { code: None, message: m, span: None });
             }
             _ => {}
         }
         let (ta, tb) = (self.tensor(a, what)?, self.tensor(b, what)?);
-        let axes = result_axes(&ta.axes, &tb.axes).ok_or_else(|| crate::eval::RunError { message: format!("{what}: cannot broadcast {} with {}", show_axes(&ta.axes), show_axes(&tb.axes)), span: None })?;
+        let axes = result_axes(&ta.axes, &tb.axes).ok_or_else(|| crate::eval::RunError { code: None, message: format!("{what}: cannot broadcast {} with {}", show_axes(&ta.axes), show_axes(&tb.axes)), span: None })?;
         let (xa, xb) = (broadcast_to(ta, &axes).unwrap(), broadcast_to(tb, &axes).unwrap());
         Ok(Value::Real(Tensor { axes, data: xa.data.iter().zip(&xb.data).map(|(x, y)| f(x, y)).collect() }))
     }
@@ -158,8 +158,8 @@ impl<R: Real> Interp<'_, R> {
         self.prim(op, args, &Ty::Nat, &Dims::new())
     }
 
-    pub(crate) fn prim(&mut self, op: &PrimOp, args: &[Value<R>], _ty: &Ty, dims: &Dims) -> Result<Value<R>> {
-        let a = |i: usize| -> Result<&Value<R>> { args.get(i).ok_or_else(|| crate::eval::RunError { message: format!("`{}`: missing argument {i}", op.name()), span: None }) };
+    pub(crate) fn prim(&mut self, op: &PrimOp, args: &[Value<R>], ty: &Ty, dims: &Dims) -> Result<Value<R>> {
+        let a = |i: usize| -> Result<&Value<R>> { args.get(i).ok_or_else(|| crate::eval::RunError { code: None, message: format!("`{}`: missing argument {i}", op.name()), span: None }) };
         let name = op.name();
         match op {
             PrimOp::Add => self.binary(a(0)?, a(1)?, &|x, y| x.add(y), "add"),
@@ -224,7 +224,7 @@ impl<R: Real> Interp<'_, R> {
             }
             PrimOp::Sum { axis } | PrimOp::Mean { axis } => {
                 let t = self.tensor(a(0)?, &name)?;
-                let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { message: format!("{name}: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
+                let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { code: None, message: format!("{name}: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
                 let mut r = self.reduce_axis(t, p);
                 if matches!(op, PrimOp::Mean { .. }) {
                     let n = self.real(t.axes[p].len as u64);
@@ -238,14 +238,20 @@ impl<R: Real> Interp<'_, R> {
                     None => tmpl.numel() as u64,
                     Some(ax) => tmpl.axes.iter().find(|x| x.name.as_deref() == Some(ax)).map(|x| x.len as u64).unwrap_or(1),
                 };
-                let b = broadcast_to(ct, &tmpl.axes).ok_or_else(|| crate::eval::RunError { message: format!("mean_vjp: cannot broadcast {} to {}", show_axes(&ct.axes), show_axes(&tmpl.axes)), span: None })?;
+                let b = broadcast_to(ct, &tmpl.axes).ok_or_else(|| crate::eval::RunError { code: None, message: format!("mean_vjp: cannot broadcast {} to {}", show_axes(&ct.axes), show_axes(&tmpl.axes)), span: None })?;
                 let nn = self.real(n);
                 Ok(Value::Real(b.map(|x| x.div(&nn))))
             }
             PrimOp::Softmax { axis } => {
                 let t = self.tensor(a(0)?, &name)?;
-                let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { message: format!("softmax: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
-                Ok(Value::Real(self.softmax(t, p)))
+                let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { code: None, message: format!("softmax: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
+                match args.get(1) {
+                    None => Ok(Value::Real(self.softmax(t, p))),
+                    Some(m) => {
+                        let Value::Idx { t: m, .. } = m else { return err(format!("softmax: the mask is a {}", m.kind())) };
+                        Ok(Value::Real(self.masked_softmax(t, p, m)?))
+                    }
+                }
             }
             PrimOp::MergeAxes { a: an, b: bn } => {
                 let t = self.tensor(a(0)?, &name)?;
@@ -335,7 +341,7 @@ impl<R: Real> Interp<'_, R> {
             PrimOp::CrossEntropy => {
                 let logits = self.tensor(a(0)?, &name)?;
                 let (_, y) = self.idx(a(1)?, &name)?;
-                let v = logits.axes.last().ok_or_else(|| crate::eval::RunError { message: "cross_entropy: scalar logits".into(), span: None })?.len;
+                let v = logits.axes.last().ok_or_else(|| crate::eval::RunError { code: None, message: "cross_entropy: scalar logits".into(), span: None })?.len;
                 let sm = self.softmax(logits, logits.rank() - 1);
                 let mut data = Vec::with_capacity(y.numel());
                 for (p, &t) in y.data.iter().enumerate() {
@@ -364,24 +370,31 @@ impl<R: Real> Interp<'_, R> {
             }
             PrimOp::Argmax => {
                 let t = self.tensor(a(0)?, &name)?;
-                let v = t.axes.last().ok_or_else(|| crate::eval::RunError { message: "argmax: scalar argument".into(), span: None })?.len;
+                let v = t.axes.last().ok_or_else(|| crate::eval::RunError { code: None, message: "argmax: scalar argument".into(), span: None })?.len;
                 let n = t.numel() / v.max(1);
                 let data: Vec<i64> = (0..n).map(|p| (0..v).max_by(|&i, &j| t.data[p * v + i].cmp(&t.data[p * v + j])).unwrap_or(0) as i64).collect();
                 Ok(Value::Idx { bound: v as u64, t: Tensor { axes: t.axes[..t.rank() - 1].to_vec(), data } })
             }
             PrimOp::Sample => {
-                let t = self.tensor(a(0)?, &name)?;
-                let v = t.axes.last().ok_or_else(|| crate::eval::RunError { message: "sample: scalar argument".into(), span: None })?.len;
+                // From its key (plan 0.10.0 step 7b; the reference's
+                // definition "Draws"): at the position of rank `p`, the
+                // least index whose cumulative probability exceeds the
+                // key's uniform draw `u_p`. The draw is a dyadic number of
+                // 53 bits, exact here; the probabilities and their sums
+                // are at the interpreter's precision.
+                let mut rng = self.key_of(a(0)?)?.rng();
+                let t = self.tensor(a(1)?, &name)?;
+                let v = t.axes.last().ok_or_else(|| crate::eval::RunError { code: None, message: "sample: scalar argument".into(), span: None })?.len;
                 let sm = self.softmax(t, t.rank() - 1);
                 let n = t.numel() / v.max(1);
                 let mut data = Vec::with_capacity(n);
                 for p in 0..n {
-                    let u = uniform01(&mut self.sample_rng);
-                    let mut acc = 0.0;
+                    let u = R::from_f64(uniform01(&mut rng), self.prec);
+                    let mut acc = self.real(0);
                     let mut pick = v - 1;
                     for i in 0..v {
-                        acc += sm.data[p * v + i].to_f64();
-                        if u < acc {
+                        acc = acc.add(&sm.data[p * v + i]);
+                        if u.cmp(&acc) == std::cmp::Ordering::Less {
                             pick = i;
                             break;
                         }
@@ -397,7 +410,7 @@ impl<R: Real> Interp<'_, R> {
             },
             PrimOp::ScatterIndex { axis, index } => {
                 let (tmpl, ct) = (self.tensor(a(0)?, &name)?, self.tensor(a(1)?, &name)?);
-                let p = tmpl.axis_pos(axis).ok_or_else(|| crate::eval::RunError { message: format!("scatter_index: no axis `{axis}`"), span: None })?;
+                let p = tmpl.axis_pos(axis).ok_or_else(|| crate::eval::RunError { code: None, message: format!("scatter_index: no axis `{axis}`"), span: None })?;
                 let len = tmpl.axes[p].len as i64;
                 let i = if *index < 0 { len + index } else { *index } as usize;
                 let mut out = self.zeros_like_tensor(tmpl);
@@ -465,16 +478,16 @@ impl<R: Real> Interp<'_, R> {
                 let n = self.dim(len, dims)?;
                 Ok(Value::Idx { bound: n, t: Tensor { axes: vec![Axis { name: Some(axis.clone()), len: n as usize }], data: (0..n as i64).collect() } })
             }
+            // A mask (plan 0.10.0 step 7b): true, 1, where j ≤ i.
             PrimOp::CausalMask { axis, len } => {
                 let n = self.dim(len, dims)? as usize;
-                let (zero, ninf) = (self.real(0), R::neg_infinity(self.prec));
                 let mut data = Vec::with_capacity(n * n);
                 for i in 0..n {
                     for j in 0..n {
-                        data.push(if j <= i { zero.clone() } else { ninf.clone() });
+                        data.push(i64::from(j <= i));
                     }
                 }
-                Ok(Value::Real(Tensor { axes: vec![Axis { name: Some(axis.clone()), len: n }, Axis { name: Some(format!("{axis}2")), len: n }], data }))
+                Ok(Value::Idx { bound: 2, t: Tensor { axes: vec![Axis { name: Some(axis.clone()), len: n }, Axis { name: Some(format!("{axis}2")), len: n }], data } })
             }
             PrimOp::Zeros { ty } | PrimOp::Ones { ty } => {
                 let axes = self.axes_of(shape_of(ty)?, dims)?;
@@ -562,6 +575,9 @@ impl<R: Real> Interp<'_, R> {
                 if args.len() != *n as usize {
                     return err("stack_params: wrong number of parts");
                 }
+                if args.is_empty() {
+                    return self.empty_stack(ty, dims);
+                }
                 self.stack_trees(args)
             }
             PrimOp::ScatterParams { index } => {
@@ -615,11 +631,11 @@ impl<R: Real> Interp<'_, R> {
             PrimOp::SumTo => {
                 let (x, tmpl) = (self.tensor(a(0)?, &name)?, self.tensor(a(1)?, &name)?);
                 let zero = self.real(0);
-                sum_to(x, &tmpl.axes, &zero).map(Value::Real).ok_or_else(|| crate::eval::RunError { message: format!("sum_to: cannot reduce {} to {}", show_axes(&x.axes), show_axes(&tmpl.axes)), span: None })
+                sum_to(x, &tmpl.axes, &zero).map(Value::Real).ok_or_else(|| crate::eval::RunError { code: None, message: format!("sum_to: cannot reduce {} to {}", show_axes(&x.axes), show_axes(&tmpl.axes)), span: None })
             }
             PrimOp::BroadcastLike => {
                 let (x, tmpl) = (self.tensor(a(0)?, &name)?, self.tensor(a(1)?, &name)?);
-                broadcast_to(x, &tmpl.axes).map(Value::Real).ok_or_else(|| crate::eval::RunError { message: format!("broadcast_like: cannot broadcast {} to {}", show_axes(&x.axes), show_axes(&tmpl.axes)), span: None })
+                broadcast_to(x, &tmpl.axes).map(Value::Real).ok_or_else(|| crate::eval::RunError { code: None, message: format!("broadcast_like: cannot broadcast {} to {}", show_axes(&x.axes), show_axes(&tmpl.axes)), span: None })
             }
         }
     }
@@ -726,7 +742,7 @@ impl<R: Real> Interp<'_, R> {
         let mut names: Vec<(String, usize)> = Vec::new();
         for t in ts {
             for a in &t.axes {
-                let n = a.name.clone().ok_or_else(|| crate::eval::RunError { message: "ein: unnamed axis".into(), span: None })?;
+                let n = a.name.clone().ok_or_else(|| crate::eval::RunError { code: None, message: "ein: unnamed axis".into(), span: None })?;
                 match names.iter().find(|(m, _)| *m == n) {
                     Some((_, l)) if *l != a.len => return err(format!("ein: axis `{n}` has lengths {l} and {}", a.len)),
                     Some(_) => {}
@@ -784,6 +800,10 @@ impl<R: Real> Interp<'_, R> {
 
     fn softmax(&self, t: &Tensor<R>, p: usize) -> Tensor<R> {
         let n = t.axes[p].len;
+        // Over an axis of length 0 the softmax is defined, and empty.
+        if n == 0 {
+            return t.clone();
+        }
         let strides = t.strides();
         let mut out = t.clone();
         let mut outer: Vec<usize> = t.dims();
@@ -814,8 +834,52 @@ impl<R: Real> Interp<'_, R> {
         out
     }
 
+    /// The softmax along axis `p` over the positions the mask `m` allows, 0
+    /// where it refuses (plan 0.10.0 step 7b; the reference's definition
+    /// "Reductions and softmax"): the maximum and the sum over the allowed
+    /// positions of each row. A row the mask empties has no value, an error
+    /// of the run. The mask broadcasts into `t`, aligned as the operands of
+    /// an elementwise operation.
+    fn masked_softmax(&self, t: &Tensor<R>, p: usize, m: &Tensor<i64>) -> Result<Tensor<R>> {
+        let Some(mb) = broadcast_to(m, &t.axes) else {
+            return err(format!("softmax: the mask {} does not broadcast into {}", show_axes(&m.axes), show_axes(&t.axes)));
+        };
+        let n = t.axes[p].len;
+        let strides = t.strides();
+        let mut out = t.clone();
+        let mut outer: Vec<usize> = t.dims();
+        outer.remove(p);
+        for idx in Indices::new(outer) {
+            let offs: Vec<usize> = (0..n)
+                .map(|i| {
+                    let mut full = idx.clone();
+                    full.insert(p, i);
+                    full.iter().zip(&strides).map(|(x, s)| x * s).sum()
+                })
+                .collect();
+            let allowed: Vec<usize> = offs.iter().copied().filter(|&o| mb.data[o] != 0).collect();
+            let Some(&first) = allowed.first() else {
+                return err(format!("softmax: the mask allows no position of a row along `{}`", t.axes[p].name.as_deref().unwrap_or("_")));
+            };
+            let mut mx = t.data[first].clone();
+            for &o in &allowed[1..] {
+                if t.data[o].cmp(&mx) == std::cmp::Ordering::Greater {
+                    mx = t.data[o].clone();
+                }
+            }
+            let mut z = self.real(0);
+            for &o in &allowed {
+                z = z.add(&t.data[o].sub(&mx).exp());
+            }
+            for &o in &offs {
+                out.data[o] = if mb.data[o] != 0 { t.data[o].sub(&mx).exp().div(&z) } else { self.real(0) };
+            }
+        }
+        Ok(out)
+    }
+
     fn select<T: Clone>(&self, t: &Tensor<T>, axis: &str, index: i64) -> Result<Tensor<T>> {
-        let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { message: format!("index: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
+        let p = t.axis_pos(axis).ok_or_else(|| crate::eval::RunError { code: None, message: format!("index: no axis `{axis}` in {}", show_axes(&t.axes)), span: None })?;
         let len = t.axes[p].len as i64;
         let i = if index < 0 { len + index } else { index };
         if i < 0 || i >= len {
@@ -839,15 +903,74 @@ impl<R: Real> Interp<'_, R> {
         Tensor { axes, data }
     }
 
-    /// Stack trees leaf by leaf along a new leading axis.
-    /// Slice `i` along the leading axis of every tensor leaf of a stacked value.
+    /// Slice `i` along the leading axis of every tensor leaf of a stacked
+    /// value; a stacked leaf of another kind gives its value of layer `i`.
     pub(crate) fn slice_tree(&self, v: &Value<R>, i: usize) -> Value<R> {
         v.map_leaves(&mut |leaf| match leaf {
             Value::Real(t) if t.rank() >= 1 => Value::Real(self.select_pos(t, 0, i)),
+            Value::Idx { bound, t } if t.rank() >= 1 => Value::Idx { bound: *bound, t: self.select_pos(t, 0, i) },
+            Value::Stacked(vs) => vs[i].clone(),
             other => other.clone(),
         })
     }
 
+    /// A stack of no part from its type (D99's addendum, 0.10.0 step 8): the
+    /// parameters of `stack{0}(M)`, and the scan of a fold of count 0, the
+    /// stack of the accumulators of no iteration. `stack_trees` takes a
+    /// stack's shapes from its first part, which a stack of none does not
+    /// have. A tensor's type has its leading axis of length 0 already; a
+    /// parameter tree's leaves get one per enclosing stack; a leaf stacked as
+    /// the sequence of its values (a key, a scalar) is the sequence of none.
+    pub(crate) fn empty_stack(&self, ty: &Ty, dims: &Dims) -> Result<Value<R>> {
+        let tensor = |s: &presk_types::ty::Shape| -> Result<Tensor<()>> {
+            let axes = self.axes_of(s, dims)?;
+            let n: usize = axes.iter().map(|x| x.len).product();
+            Ok(Tensor { axes, data: vec![(); n] })
+        };
+        Ok(match ty {
+            Ty::Params(m) => self.tree_value(&self.elab.params_tree(m), &mut Vec::new(), dims)?,
+            Ty::Real(s) => {
+                let t = tensor(s)?;
+                Value::Real(Tensor { data: vec![self.real(0); t.data.len()], axes: t.axes })
+            }
+            Ty::Idx { bound, shape } => {
+                let t = tensor(shape)?;
+                Value::Idx { bound: self.dim(bound, dims)?, t: Tensor { data: vec![0; t.data.len()], axes: t.axes } }
+            }
+            Ty::Truth(s) => {
+                let t = tensor(s)?;
+                Value::Idx { bound: 2, t: Tensor { data: vec![0; t.data.len()], axes: t.axes } }
+            }
+            Ty::Tuple(ts) => Value::tuple(ts.iter().map(|t| self.empty_stack(t, dims)).collect::<Result<_>>()?),
+            _ => Value::Stacked(std::sync::Arc::new(Vec::new())),
+        })
+    }
+
+    fn tree_value(&self, t: &ParamsTree, lead: &mut Vec<Axis>, dims: &Dims) -> Result<Value<R>> {
+        match t {
+            ParamsTree::Leaf(Ty::Real(s)) => {
+                let mut axes = lead.clone();
+                axes.extend(self.axes_of(s, dims)?);
+                let n: usize = axes.iter().map(|x| x.len).product();
+                Ok(Value::Real(Tensor { axes, data: vec![self.real(0); n] }))
+            }
+            ParamsTree::Leaf(other) => err(format!("stack_params: a parameter of type `{other:?}`")),
+            ParamsTree::Node(fields) => Ok(Value::record(fields.iter().map(|(n, s)| Ok((n.clone(), self.tree_value(s, lead, dims)?))).collect::<Result<Vec<_>>>()?)),
+            ParamsTree::Stacked { n, inner } => {
+                lead.push(Axis { name: None, len: self.dim(n, dims)? as usize });
+                let v = self.tree_value(inner, lead, dims);
+                lead.pop();
+                v
+            }
+        }
+    }
+
+    /// Stack trees leaf by leaf along a new leading axis. A leaf with no axis
+    /// to stack along (a key, a scalar) is stacked as the sequence of its
+    /// values, one per part: a scanned fold whose accumulator holds a key
+    /// keeps every layer's key (defect 3f of the reference's chapter 5, 0.10.0
+    /// step 4: the first was kept for all, and every layer's reverse sweep
+    /// drew layer 0's dropout mask).
     pub(crate) fn stack_trees(&self, parts: &[Value<R>]) -> Result<Value<R>> {
         match &parts[0] {
             Value::Real(first) => {
@@ -859,6 +982,18 @@ impl<R: Real> Interp<'_, R> {
                     data.extend(t.data.iter().cloned());
                 }
                 Ok(Value::Real(Tensor { axes, data }))
+            }
+            Value::Idx { bound, t: first } => {
+                let mut axes = vec![Axis { name: None, len: parts.len() }];
+                axes.extend(first.axes.iter().cloned());
+                let mut data = Vec::with_capacity(first.numel() * parts.len());
+                for p in parts {
+                    match p {
+                        Value::Idx { t, .. } => data.extend(t.data.iter().copied()),
+                        other => return err(format!("stack: expected an index tensor, found a {}", other.kind())),
+                    }
+                }
+                Ok(Value::Idx { bound: *bound, t: Tensor { axes, data } })
             }
             Value::Record(fs) => {
                 let mut out = Vec::new();
@@ -882,7 +1017,7 @@ impl<R: Real> Interp<'_, R> {
                 }
                 Ok(Value::tuple(out))
             }
-            other => Ok(other.clone()),
+            _ => Ok(Value::Stacked(std::sync::Arc::new(parts.to_vec()))),
         }
     }
 }

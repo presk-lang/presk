@@ -47,7 +47,7 @@ fn tiny() -> &'static Tiny {
         let fns = prepare_training(&mut core, &prog, &typed).unwrap();
         let dir = std::env::temp_dir().join(format!("presk-step-{}", std::process::id()));
         let topts = TrainOptions { data: None, steps: Some(5), epochs: None, seed: 0, bits: 64, realize: Realization::uniform(Dtype::F64), ckpt: Some(dir.clone()), checkpoints: true };
-        let mut b = KernelBackend::new(&core, &prog, &Realization::uniform(Dtype::F64), 0);
+        let mut b = KernelBackend::new(&core, &prog, &Realization::uniform(Dtype::F64));
         train(&mut b, &core, &prog, &typed, &fns, &topts, |_| {}).unwrap();
         Tiny { prog, typed, core, fns, ckpt: dir.join("final.psk.d") }
     })
@@ -55,7 +55,7 @@ fn tiny() -> &'static Tiny {
 
 fn state(t: &Tiny, warmup: u64) -> StepSetup {
     let opts = StepOptions { weights: t.ckpt.clone(), warmup, data: None, from: 0, samples: 2, steps: None, seed: 0 };
-    let mut warm = KernelBackend::new(&t.core, &t.prog, &Realization::uniform(Dtype::F64), 0);
+    let mut warm = KernelBackend::new(&t.core, &t.prog, &Realization::uniform(Dtype::F64));
     setup(&mut warm, &t.core, &t.prog, &t.typed, &t.fns, &opts).unwrap()
 }
 
@@ -67,7 +67,7 @@ fn f64_is_the_exact_step_and_f32_is_not() {
     let t = tiny();
     let s = state(t, 30);
     assert_eq!(s.t, 31);
-    let mut exact = InterpBackend::new(&t.core, &t.prog, 128, 0);
+    let mut exact = InterpBackend::new(&t.core, &t.prog, 128);
     exact.interp.magnitudes = Some(Default::default());
     let e64 = s.step(&mut exact, &Realization::uniform(Dtype::F64)).unwrap();
     let sites = exact.interp.magnitudes.take().unwrap();
@@ -76,7 +76,7 @@ fn f64_is_the_exact_step_and_f32_is_not() {
 
     let one = |d: Dtype| {
         let r = Realization::uniform(d);
-        let mut b = KernelBackend::new(&t.core, &t.prog, &r, 0);
+        let mut b = KernelBackend::new(&t.core, &t.prog, &r);
         (r.clone(), s.step(&mut b, &r).unwrap())
     };
     let (r64, n64) = one(Dtype::F64);
@@ -85,14 +85,14 @@ fn f64_is_the_exact_step_and_f32_is_not() {
     assert!(g64.update < 1e-11 && g64.update < 1.1 * g64.floor + 1e-13, "f64 update {:e}, floor {:e}", g64.update, g64.floor);
 
     let (r32, n32) = one(Dtype::F32);
-    let mut exact32 = InterpBackend::new(&t.core, &t.prog, 128, 0);
+    let mut exact32 = InterpBackend::new(&t.core, &t.prog, 128);
     let e32 = s.step(&mut exact32, &r32).unwrap();
     let g32 = s.gap(&r32, &e32, &n32);
     assert!(g32.grad > 1e3 * g64.grad && g32.update > 1e3 * g64.update, "f32 {g32:?} against f64 {g64:?}");
     assert!(g32.update >= 0.9 * g32.floor, "the storage floor is part of the gap: {g32:?}");
 
     // Two batches' gradients are far apart: that is the scale.
-    let mut b = KernelBackend::new(&t.core, &t.prog, &r64, 0);
+    let mut b = KernelBackend::new(&t.core, &t.prog, &r64);
     let other = s.step_other_batch(&mut b, &r64).unwrap();
     assert!(presk_train::step::sampling_noise(&n64, &other) > 1e-2);
 }
@@ -105,7 +105,7 @@ fn a_realization_by_function_reaches_the_optimizer() {
     let t = tiny();
     let run = |r: Realization| {
         let o = TrainOptions { data: None, steps: Some(2), epochs: None, seed: 0, bits: 64, realize: r.clone(), ckpt: None, checkpoints: false };
-        let mut b = KernelBackend::new(&t.core, &t.prog, &r, 0);
+        let mut b = KernelBackend::new(&t.core, &t.prog, &r);
         train(&mut b, &t.core, &t.prog, &t.typed, &t.fns, &o, |_| {}).unwrap().theta
     };
     let base = run(Realization::uniform(Dtype::F64));
@@ -123,7 +123,7 @@ fn a_realization_by_function_reaches_the_optimizer() {
 fn the_step_solver_is_inside_its_budget() {
     let t = tiny();
     let s = state(t, 30);
-    let mut exact = InterpBackend::new(&t.core, &t.prog, 128, 0);
+    let mut exact = InterpBackend::new(&t.core, &t.prog, 128);
     exact.interp.magnitudes = Some(Default::default());
     exact.interp.elems = Some(Default::default());
     let e64 = s.step(&mut exact, &Realization::uniform(Dtype::F64)).unwrap();
@@ -134,7 +134,7 @@ fn the_step_solver_is_inside_its_budget() {
     let groups = step_groups(&env, &menu, &Traffic);
     assert!(groups.iter().any(|g| g.name == "adamw.step") && groups.iter().any(|g| g.name.ends_with(".vjp")));
     let mut measure = |r: &Realization| {
-        let mut b = KernelBackend::new(&t.core, &t.prog, r, 0);
+        let mut b = KernelBackend::new(&t.core, &t.prog, r);
         s.gap(r, &e64, &s.step(&mut b, r).unwrap()).update
     };
     let sol = solve_step(groups.clone(), 1e-2, &menu, Dtype::F64, &mut measure, true);

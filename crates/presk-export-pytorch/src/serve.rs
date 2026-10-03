@@ -20,8 +20,11 @@ pub struct ServeSpec {
     pub ctor_dims: Vec<String>,
     /// Python module (stem) of the source file (defines the generation function).
     pub main_stem: String,
-    /// The generation function and, when it takes one, its temperature's default.
+    /// The generation function, whether it takes a key before the context
+    /// (plan 0.10.0 step 7b), and, when it takes one, its temperature's
+    /// default.
     pub generate: Option<String>,
+    pub key: bool,
     pub temperature: Option<String>,
     /// The name of the context's `seq` dimension (`T`).
     pub seq_dim: Option<String>,
@@ -56,9 +59,13 @@ fn serve_py(s: &ServeSpec) -> String {
         Some(g) => format!("from {} import {g}\n", s.main_stem),
         None => String::new(),
     };
+    // The key is passed as None: the draws are PyTorch's own, from its
+    // global generator seeded by --seed, as its dropout masks are, not the
+    // Presk key's (plan 0.10.0 step 7b).
+    let key = if s.key { "None, " } else { "" };
     let generate_call = match (&s.generate, &s.temperature) {
-        (Some(g), Some(_)) => format!("{g}(theta, ctx, args.temperature, generator=gen)"),
-        (Some(g), None) => format!("{g}(theta, ctx, generator=gen)"),
+        (Some(g), Some(_)) => format!("{g}(theta, {key}ctx, args.temperature)"),
+        (Some(g), None) => format!("{g}(theta, {key}ctx)"),
         (None, _) => "None".into(),
     };
     let sample_branch = match &s.generate {
@@ -73,9 +80,11 @@ fn serve_py(s: &ServeSpec) -> String {
 # The `inference serve` of the source as a PyTorch generation loop: the model
 # `{class}` with the weights of `final.pt` (train.py) or of a `params {class}`
 # .psk.d checkpoint (presk train), the prompt as token indices, then
-# `--tokens` steps of the generation function `{generate}` (sampling, with a
-# seeded generator) or of argmax over the model's last position when
-# `--temperature 0` (greedy, the path `presk serve` compares bit for bit).
+# `--tokens` steps of the generation function `{generate}` (sampling from
+# PyTorch's generator seeded by --seed, not from the Presk key, which is passed
+# as None: other tokens than `presk serve`'s) or of argmax over the model's last
+# position when `--temperature 0` (greedy, the path `presk serve` compares bit
+# for bit).
 # When the parameters fix the context length (`--dim {seq_dim}=N`, default the
 # prompt's length), the model sees the last N tokens: a sliding window.
 {ignored}import argparse
@@ -127,7 +136,7 @@ def main():
             raise SystemExit(f"the prompt has {{len(prompt)}} tokens but the model's context length is {{SEQ_DIM}} = {{window}}")
     model = load_weights(make_model(dims).to(dtype), args.weights).eval()
     theta = dict(model.named_parameters())
-    gen = torch.Generator().manual_seed(args.seed)
+    torch.manual_seed(args.seed)
     tokens = list(prompt)
     generated = []
     with torch.no_grad():

@@ -64,7 +64,22 @@ pub fn export(o: &Options) -> ExitCode {
         Err(c) => return c,
         Ok(x) => x,
     };
-    let diags = presk_core::ad::transform(&mut core);
+    // The plan, or the realization with the default layout, as `presk run`
+    // takes them: a gradient keeps its fusion groups when its realization
+    // can see them.
+    let plan = match o.plan {
+        Some(spec) => presk_rt::Plan::parse(spec),
+        None => presk_rt::Realization::parse(o.realize).map(presk_rt::Plan::from_realization),
+    };
+    let plan = match plan {
+        Ok(p) => p,
+        Err(m) => {
+            eprintln!("presk: {m}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut diags = crate::differentiate(&mut core, plan.realization.groups_visible());
+    diags.extend(crate::stored_vjps(&core, &plan.realization));
     eprint!("{}", render_all(&diags, &sm, color()));
     if has_errors(&diags) {
         return ExitCode::from(1);
@@ -110,19 +125,6 @@ pub fn export(o: &Options) -> ExitCode {
             None => dims.push((f.batch_dim.clone(), 1)),
         }
     }
-    // The plan, or the realization with the default layout, as `presk run`
-    // takes them.
-    let plan = match o.plan {
-        Some(spec) => presk_rt::Plan::parse(spec),
-        None => presk_rt::Realization::parse(o.realize).map(presk_rt::Plan::from_realization),
-    };
-    let plan = match plan {
-        Ok(p) => p,
-        Err(m) => {
-            eprintln!("presk: {m}");
-            return ExitCode::from(2);
-        }
-    };
     let realize = plan.realization.clone();
     if let Err(c) = check_plan(&plan, &core, &sm) {
         return c;
@@ -135,7 +137,10 @@ pub fn export(o: &Options) -> ExitCode {
         Err(e) if e.message.contains("unbound dimension") || e.message.contains("open prefix") => {
             return report("E8003", format!("`{entry}` is exported at bound dimensions only: {}", e.message));
         }
-        Err(e) => return report("E7001", e.message),
+        Err(e) => {
+            eprint!("{}", render_all(&[crate::interp_diag(e)], &sm, color()));
+            return ExitCode::from(1);
+        }
     };
     let names: Vec<String> = inputs.iter().map(|(n, _)| n.clone()).collect();
     let mut args: Vec<Value> = match inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<presk_rt::Result<_>>() {
@@ -179,7 +184,7 @@ pub fn export(o: &Options) -> ExitCode {
     }
 
     // ----- the native run, recorded -----------------------------------------
-    let mut b = match presk_cranelift::native_backend(&core, &prog, &realize, o.seed) {
+    let mut b = match presk_cranelift::native_backend(&core, &prog, &realize) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("presk export: the native backend is unavailable, and the C program is its copy: {}", e.message);
@@ -215,7 +220,7 @@ pub fn export(o: &Options) -> ExitCode {
         Some(f) => {
             let mut gargs = args.clone();
             if f.temperature {
-                gargs[2] = Value::F64(1.0);
+                gargs[if f.key { 3 } else { 2 }] = Value::F64(1.0);
             }
             let ran = b.prepare(f.greedy, &fdims, &realize).and_then(|p| {
                 b.recorder = Some(Box::new(presk_kernel::record::Recorder::named(names.clone())));
@@ -238,7 +243,7 @@ pub fn export(o: &Options) -> ExitCode {
     let exact = if o.no_exact {
         None
     } else {
-        let mut ib = presk_rt::InterpBackend::new(&core, &prog, BITS, o.seed);
+        let mut ib = presk_rt::InterpBackend::new(&core, &prog, BITS);
         match ib.prepare(func, &fdims, &realize).and_then(|p| ib.call(&p, args.clone())) {
             Ok(v) => Some(v),
             Err(e) => return report(e.code, e.message),
@@ -266,14 +271,15 @@ pub fn export(o: &Options) -> ExitCode {
     let arg_roles: Vec<presk_export_c::host::Arg> = names.iter().enumerate().map(|(i, n)| presk_export_c::host::Arg { name: n.clone(), weights: i == 0 && params_module.is_some() }).collect();
     let serve = fns.as_ref().map(|f| presk_export_c::host::Serve {
         model: f.model.clone(),
-        vocab: match &args[1] {
+        vocab: match &args[if f.key { 2 } else { 1 }] {
             Value::Idx { bound, .. } => *bound,
             _ => 0,
         },
         seq_dim: f.seq_dim.clone(),
         window: fdims.iter().find(|(v, _)| prog.dim_name(**v) == f.seq_dim).map(|(_, n)| *n).unwrap_or(0),
-        ctx: 1,
-        temperature: f.temperature.then_some(2),
+        key: f.key.then_some(1),
+        ctx: if f.key { 2 } else { 1 },
+        temperature: f.temperature.then_some(if f.key { 3 } else { 2 }),
         default_temperature: f.default_temperature.unwrap_or(1.0),
         greedy: core.func(f.greedy).name.clone(),
     });
@@ -357,7 +363,7 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
         return ExitCode::from(2);
     }
     let plan = presk_rt::Plan::from_realization(realize.clone());
-    let captured = match super::ra4::capture(o.file, o.entry, o.dims, o.consts, &plan, o.seed, None, super::ra4::Capture::Shapes) {
+    let captured = match super::ra4::capture(o.file, o.entry, o.dims, o.consts, &plan, o.seed, &[], super::ra4::Capture::Shapes) {
         Ok(c) => c,
         Err(c) => return c,
     };
@@ -399,7 +405,7 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
             .into_iter()
             .map(|d| match d {
                 scop::Drawn::Real(v) => Buf::of(k.dtype, &v),
-                scop::Drawn::Idx(v) => Buf::I64(v),
+                scop::Drawn::Idx(v) => Buf::I64(v.into()),
             })
             .collect();
         let refs: Vec<&Buf> = bufs.iter().collect();

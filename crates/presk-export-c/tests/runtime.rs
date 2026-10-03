@@ -213,10 +213,10 @@ fn native_convert(b: &Buf, to: i32) -> Buf {
 /// An empty buffer of `n` elements of a type, and a pointer to its data.
 fn buf(d: i32, n: usize) -> Buf {
     match d {
-        F64 => Buf::F64(vec![0.0; n]),
-        F32 => Buf::F32(vec![0.0; n]),
-        BF16 => Buf::Bf16(vec![0; n]),
-        _ => Buf::I64(vec![0; n]),
+        F64 => Buf::F64(vec![0.0; n].into()),
+        F32 => Buf::F32(vec![0.0; n].into()),
+        BF16 => Buf::Bf16(vec![0; n].into()),
+        _ => Buf::I64(vec![0; n].into()),
     }
 }
 
@@ -331,7 +331,7 @@ fn leaves(layout: &Layout) -> Vec<CLeaf> {
 /// The leaves of a sample as buffers: reals in `f64`, indices in `i64`.
 fn sample_bufs(v: &Value) -> Vec<Buf> {
     match v {
-        Value::Real(x) => vec![Buf::F64(x.clone())],
+        Value::Real(x) => vec![Buf::F64(x.clone().into())],
         Value::Idx(x) => vec![Buf::I64(x.iter().map(|i| *i as i64).collect())],
         Value::Tuple(ts) => ts.iter().flat_map(sample_bufs).collect(),
         Value::Record(fs) => fs.iter().flat_map(|(_, t)| sample_bufs(t)).collect(),
@@ -636,7 +636,7 @@ fn quantization_is_presk_rts() {
                         }
                     }
                     let axes = vec![Axis { name: None, len: outer }, Axis { name: None, len: k }, Axis { name: None, len: inner }];
-                    let t = Tensor { axes, data: Buf::F64(w.clone()) };
+                    let t = Tensor { axes, data: Buf::F64(w.clone().into()) };
                     let want = QTensor::quantize(&t, &Quant { bits: width, over: AxisRef::Pos(1), scheme }).unwrap();
                     let mut q = vec![0u8; want.data.len()];
                     let mut s = vec![0f32; outer * inner];

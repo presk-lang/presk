@@ -10,8 +10,6 @@ use presk_syntax::Span;
 use presk_types::dim::{DimExpr, DimVar};
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{Shape, Ty};
-use rand_chacha::ChaCha20Rng;
-use rand_core::SeedableRng;
 
 use crate::key::Key;
 use crate::real::Real;
@@ -20,6 +18,9 @@ use crate::value::{Axis, Tensor, Value};
 /// A runtime error, with the span of the binding being evaluated.
 #[derive(Debug, Clone)]
 pub struct RunError {
+    /// The diagnostic's code when it is not the run's `E7001`: `E7003`, an
+    /// entry refused at its dimensions ([`crate::defined`]).
+    pub code: Option<&'static str>,
     pub message: String,
     pub span: Option<Span>,
 }
@@ -27,7 +28,7 @@ pub struct RunError {
 pub type Result<T> = std::result::Result<T, RunError>;
 
 pub fn err<T>(msg: impl Into<String>) -> Result<T> {
-    Err(RunError { message: msg.into(), span: None })
+    Err(RunError { code: None, message: msg.into(), span: None })
 }
 
 pub type Dims = BTreeMap<DimVar, u64>;
@@ -36,8 +37,6 @@ pub struct Interp<'p, R: Real> {
     pub prog: &'p Program,
     pub elab: &'p ElabProgram,
     pub prec: u32,
-    /// Stream used by `sample` (the `Rand` effect without an explicit key in 0.1.0).
-    pub sample_rng: ChaCha20Rng,
     /// Whether `dropout` drops: off, its mask is all ones, which is the
     /// expectation of the random function it denotes.
     pub training: bool,
@@ -76,8 +75,8 @@ pub struct Interp<'p, R: Real> {
 }
 
 impl<'p, R: Real> Interp<'p, R> {
-    pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32, seed: u64) -> Self {
-        Interp { prog, elab, prec, sample_rng: ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a_5a5a), training: false, magnitudes: None, minima: None, sums: None, elems: None, ops: None, terms: None, _r: std::marker::PhantomData }
+    pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32) -> Self {
+        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, sums: None, elems: None, ops: None, terms: None, _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.
@@ -126,6 +125,7 @@ impl<'p, R: Real> Interp<'p, R> {
         let mut closures: HashMap<VarId, (FuncId, Vec<Value<R>>)> = HashMap::new();
         for l in &func.body.lets {
             let v = self.rhs(&l.rhs, &l.ty, &dims, &env, &closures).map_err(|e| RunError {
+                code: e.code,
                 span: e.span.or(Some(l.span)),
                 // Name the function once, from the innermost frame.
                 message: if e.message.starts_with("in `") { e.message } else { format!("in `{}` ({}): {}", func.name, l.name.clone().unwrap_or_else(|| format!("%{}", l.var.0)), e.message) },
@@ -148,7 +148,7 @@ impl<'p, R: Real> Interp<'p, R> {
             if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.elems.is_some() || self.ops.is_some() {
                 let site = format!("{}/%{}", func.name, l.var.0);
                 let m = max_abs(&v);
-                if self.magnitudes.is_some() && m.is_finite() {
+                if self.magnitudes.is_some() {
                     let e = self.magnitudes.as_mut().expect("just checked").entry(site.clone()).or_insert(0.0);
                     if m > *e {
                         *e = m;
@@ -168,11 +168,9 @@ impl<'p, R: Real> Interp<'p, R> {
                 }
                 if self.sums.is_some() {
                     let t = sum_abs(&v);
-                    if t.is_finite() {
-                        let e = self.sums.as_mut().expect("just checked").entry(site.clone()).or_insert(0.0);
-                        if t > *e {
-                            *e = t;
-                        }
+                    let e = self.sums.as_mut().expect("just checked").entry(site.clone()).or_insert(0.0);
+                    if t > *e {
+                        *e = t;
                     }
                 }
                 if let Some(mins) = self.minima.as_mut() {
@@ -187,15 +185,15 @@ impl<'p, R: Real> Interp<'p, R> {
             }
             env.insert(l.var, v);
         }
-        env.remove(&func.body.result).ok_or_else(|| RunError { message: "result variable undefined".into(), span: Some(func.span) })
+        env.remove(&func.body.result).ok_or_else(|| RunError { code: None, message: "result variable undefined".into(), span: Some(func.span) })
     }
 
     fn rhs(&mut self, rhs: &Rhs, ty: &Ty, dims: &Dims, env: &HashMap<VarId, Value<R>>, closures: &HashMap<VarId, (FuncId, Vec<Value<R>>)>) -> Result<Value<R>> {
-        let look = |v: &VarId| -> Result<&Value<R>> { env.get(v).ok_or_else(|| RunError { message: format!("variable %{} undefined", v.0), span: None }) };
+        let look = |v: &VarId| -> Result<&Value<R>> { env.get(v).ok_or_else(|| RunError { code: None, message: format!("variable %{} undefined", v.0), span: None }) };
         let get = |v: &VarId| -> Result<Value<R>> { look(v).cloned() };
         match rhs {
             Rhs::Lit(Lit::Nat(n)) => Ok(Value::Nat(*n)),
-            Rhs::Lit(Lit::Float(s)) => Ok(Value::F64(s.parse().map_err(|_| RunError { message: format!("bad float literal `{s}`"), span: None })?)),
+            Rhs::Lit(Lit::Float(s)) => Ok(Value::F64(s.parse().map_err(|_| RunError { code: None, message: format!("bad float literal `{s}`"), span: None })?)),
             Rhs::Prim { op, args } => {
                 let vals: Vec<Value<R>> = args.iter().map(get).collect::<Result<_>>()?;
                 self.prim(op, &vals, ty, dims)
@@ -217,12 +215,12 @@ impl<'p, R: Real> Interp<'p, R> {
             // A projection or a field clones the element it selects and
             // nothing else (0.6.0 step 8).
             Rhs::Proj(v, i) => match look(v)? {
-                Value::Tuple(vs) => vs.get(*i).cloned().ok_or_else(|| RunError { message: format!("tuple has no element {i}"), span: None }),
+                Value::Tuple(vs) => vs.get(*i).cloned().ok_or_else(|| RunError { code: None, message: format!("tuple has no element {i}"), span: None }),
                 other => err(format!("projection on a {}", other.kind())),
             },
             Rhs::Record(fields) => Ok(Value::record(fields.iter().map(|(n, v)| Ok((n.clone(), get(v)?))).collect::<Result<_>>()?)),
             Rhs::Field(v, name) => match look(v)? {
-                Value::Record(fs) => fs.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).ok_or_else(|| RunError { message: format!("record has no field `{name}`"), span: None }),
+                Value::Record(fs) => fs.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).ok_or_else(|| RunError { code: None, message: format!("record has no field `{name}`"), span: None }),
                 other => err(format!("field `{name}` of a {}", other.kind())),
             },
             Rhs::Closure { f, captured } => Ok(Value::Closure { f: *f, captured: captured.iter().map(get).collect::<Result<_>>()? }),
@@ -258,7 +256,11 @@ impl<'p, R: Real> Interp<'p, R> {
                 if *scan {
                     pre.sort_by_key(|(i, _)| *i);
                     let parts: Vec<Value<R>> = pre.into_iter().map(|(_, v)| v).collect();
-                    let stacked = self.stack_trees(&parts)?;
+                    // No iteration: the stack of none, from the fold's type.
+                    let stacked = match (parts.is_empty(), ty) {
+                        (true, Ty::Tuple(ts)) if ts.len() == 2 => self.empty_stack(&ts[1], dims)?,
+                        _ => self.stack_trees(&parts)?,
+                    };
                     Ok(Value::tuple(vec![acc, stacked]))
                 } else {
                     Ok(acc)
@@ -303,7 +305,7 @@ impl<'p, R: Real> Interp<'p, R> {
                 apply(&mut t, s);
                 Value::Real(t)
             }
-            (Value::Idx { bound, mut t }, Ty::Idx { shape, .. }) => {
+            (Value::Idx { bound, mut t }, Ty::Idx { shape, .. } | Ty::Truth(shape)) => {
                 apply(&mut t, shape);
                 Value::Idx { bound, t }
             }
@@ -426,12 +428,13 @@ impl TermKind {
 ///
 /// One number a site, even when the value is a whole parameter tree: the
 /// site is the unit a realization assigns a type to (D34), so a bound that
-/// is to cover it must cover its widest leaf. Indices and naturals are not
-/// reals and contribute nothing; infinities are skipped by the caller, since
-/// a `-inf` mask entry says nothing about the magnitude of anything.
+/// is to cover it must cover its widest leaf. Indices, masks and naturals are
+/// not reals and contribute nothing. An infinity is a magnitude like any
+/// other: it was skipped while a mask was a real tensor holding `-∞`, which
+/// no tensor holds since plan 0.10.0 step 7b.
 pub fn max_abs<R: Real>(v: &Value<R>) -> f64 {
     match v {
-        Value::Real(t) => t.data.iter().map(|x| x.abs().to_f64()).filter(|x| x.is_finite()).fold(0.0, f64::max),
+        Value::Real(t) => t.data.iter().map(|x| x.abs().to_f64()).fold(0.0, f64::max),
         Value::Tuple(xs) => xs.iter().map(max_abs).fold(0.0, f64::max),
         Value::Record(xs) => xs.iter().map(|(_, x)| max_abs(x)).fold(0.0, f64::max),
         Value::F64(x) => x.abs(),
@@ -463,7 +466,7 @@ pub fn min_abs_nonzero<R: Real>(v: &Value<R>) -> f64 {
 /// `Σ |x|` over every real leaf of a value: the 1-norm.
 pub fn sum_abs<R: Real>(v: &Value<R>) -> f64 {
     match v {
-        Value::Real(t) => t.data.iter().map(|x| x.abs().to_f64()).filter(|x| x.is_finite()).sum(),
+        Value::Real(t) => t.data.iter().map(|x| x.abs().to_f64()).sum(),
         Value::Tuple(xs) => xs.iter().map(sum_abs).sum(),
         Value::Record(xs) => xs.iter().map(|(_, x)| sum_abs(x)).sum(),
         Value::F64(x) => x.abs(),

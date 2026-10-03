@@ -1,5 +1,518 @@
 # Changelog
 
+## 0.10.0 — 2026-10-02
+
+Make a training step pay (`presk-specs/implementation/presk-plan-0.10.0.md`),
+from the PyTorch baseline below (D87): on the course GPT at `B = 16`, `T =
+256`, `f32`, a training step in C under a plan takes 12× PyTorch's and
+`presk train` 22×, and four fifths of the C gradient is the derivatives of
+`dot`, outside the layout space. 0.10.0 takes the causes in order. The
+derivatives of `dot` become contraction nests of the layout space, their
+default layout today's kernel, and the frozen model of 0.8.0 ranks them,
+nests it has never seen. A gradient stops recomputing its forward pass: the
+dead code after differentiation removed, then a forward pass that returns
+its residuals and a backward pass that reads them (`--remat store`, the
+default), today's recomputation kept as `--remat recompute`. The native
+host is measured phase by phase, then fixed: values sharing their
+buffers, views, buffers reused, dropout masks drawn on the workers, a pool
+of workers on `std`. The bias of
+a linear layer becomes its product's epilogue, and the C export's compiler
+flags are measured. Every change is exact. Judged on five statements, fixed
+before the version began: every change bit-identical to 0.9.0's outputs in
+`f64`, `f32` and `bf16`, and C1 kept (T1); the course GPT's training step
+in C under the plans within 2× of PyTorch's on the ten X925 cores (T2);
+0.8.0's statements O and Q on the derivative nests, RA4's third fresh test
+(T3); the native backend within 1.3× of the C program on the forward pass
+and on the step (T4); the gradient's peak memory under both policies
+reported (T5); and, with step 7b, the language's four decisions of
+2026-09-29 changing no value (T6). The CUDA export comes after it.
+
+**What it shows.** A training step can be made fast without moving a bit.
+On the course GPT at `B = 16`, `T = 256`, `f32`, on ten X925 cores, the
+C program's training step under the frozen profile's plans takes 995.4 ms
+against PyTorch's 1 008.6, 0.99× where it was 12× at 0.9.0 (T2), and every
+change on the way was a layout the space proves bit-identical or the same
+operations in the same order (T1); the two gradient defects found on the
+way (3a, 3f) were fixed and what they moved measured again (D93). The
+derivatives of `dot` run at 633 GFLOP/s under the plan, as the products do.
+The frozen model of 0.8.0 picks within 1.19× of the best on derivative
+nests it had never seen, and fails Q on the cost of deciding (T3). The
+native backend's host is gone, and what is left between it and the C
+program is the kernels' code, Cranelift's against GCC's: 1.52× on the
+forward pass and 1.60× on the step, over the 1.3 asked (T4 fails, as
+decision 2 accepted). Storing the residuals costs 2.75 times the
+recomputing gradient's memory, 2.49 GB against 0.91 (T5). The language's
+four decisions of 2026-09-29 changed no value (T6), and the reference's own
+gap, measured, is 21 orders of magnitude below what any gap is read at
+(D98).
+
+- The compiler's own time measured (D101, on 2026-10-02, after step 8, for
+  the paper's setup table). `make compile-times`
+  (`experiments/compile_times.sh`, the report
+  `docs/compile-times-2026-10-02.md`): `presk check`, `presk calibrate
+  --precision`, `presk solve --budget 1e-3` and the exact reference on one
+  sample, wall seconds on one X925 core, on four models. The front end is
+  milliseconds (7 ms on the course GPT); the rest is the reference
+  interpreter at 128 bits: on the course GPT at its course constants, 178.6
+  s for the reference on one window, 1 497.7 s to calibrate on two, 2 702.4
+  s to solve; on BERT-large's two blocks, on their SQuAD loss, 616.9 s,
+  5 086.2 s and 10 463.8 s. `presk solve` now refuses an entry that does
+  not return a scalar `ℝ[]` before computing anything, as `presk dump
+  --stage sensitivity` does: on BERT-large's `squad`, which returns its
+  logits, it ran the reverse sweep's forward half for 39 minutes before
+  failing. `coverage/bert.psk` gained `squad_loss`, BERT's SQuAD
+  fine-tuning loss as `run_squad.py` computes it, and
+  `experiments/bert_features.py` an answer's span (`--span`), on which
+  BERT's row is measured.
+- Step 8: documentation, the final measurement, version 0.10.0 (D100).
+  Seven code items, one commit each:
+  - **Recursion refused** (`E2016`, the reference's requirement "No
+    recursion"): a function that calls itself, directly or through others,
+    and a module that includes itself through its `use` members, by the
+    checker once every call is resolved, one diagnostic per cycle naming
+    its functions or modules; both overflowed the stack of the analyses,
+    and `presk dump --stage elab` refuses the module form too.
+  - **W4's field**: `inference serve`'s `generate = name` names the
+    generation function; a name that is no top-level function of the
+    file, or whose signature does not fit, is `E2010`; without it, the
+    first that fits. `presk serve` and both exports' serves take it;
+    `--entry` overrides.
+  - **A stack of no layer**: the parameters of `stack{0}(M)`, every leaf of
+    `M` with a leading axis of length 0, built from their type on the
+    interpreter and the kernel backend, and the scan of a fold of count 0
+    (a gradient through such a stack) likewise; the C export follows. Both
+    panicked.
+  - **A mask printed as truth values**: `presk run` prints a value of type
+    `bool[S]` as `bool[…]` of `true` and `false`, and in `--json` as JSON
+    booleans, from the entry's signature; at run time and in a `.psk.d` a
+    mask stays an index tensor of bound 2.
+  - **A declared accumulation type the kernels do not honour**, other than
+    the storage's arithmetic type, refused by the kernel and native
+    backends before anything runs (`E7002`); condition 7, which read it,
+    admitted spills whose bits differed from the default's.
+  - **`bf16`'s unit roundoff is 2⁻⁸**, not 2⁻⁹ (the reference's chapter 4):
+    every `bf16` bound doubles, and the solver keeps a few sites in `f32`
+    it gave to `bf16` (`make precision`: two at 10⁻³, the same measured
+    gap); the `precision` chapter's curve, not measured again, is dated.
+  - **The gap is +∞ at a non-finite difference**: `presk solve`,
+    `quantize` and `check --precision --measure` left such an element out,
+    so a realization that overflowed was measured on the rest and could be
+    accepted (`tests/data/overflow.psk`: `main` accepted `f32`, now
+    `f64`).
+  Against `main`'s binary, 154 outputs and training runs identical, a
+  mask's printing aside; C1, `plan-check`, the archived rankings byte for
+  byte. The final measurement on the version's tree
+  (`docs/pytorch-baseline-0.10.0.md`): T2 0.99×, T4 1.52× and 1.60×, T5
+  2.49 and 0.91 GB. `docs/spec-questions.md` marked from the reference's
+  chapter 8; the reconciliations' documentation items; the manual at
+  0.10.0 (`experiments` §10, `status` closed); spec questions 76–77 copied
+  to presk-specs; the tutorial refreshed. The findings the user recorded
+  for a later plan on 2026-10-02 (the reference's chapters 3, 4, 5, and
+  δ_p's two) are in plan §8. Version `0.10.0`.
+- Step 7b: the language's four decisions of 2026-09-29 (the reference,
+  draft v0.6), in the compiler (D99). Four premises of the plan did not
+  hold and were amended at the step.
+  - **Refused at the dimensions where an operation is undefined**
+    (`E7003`, a code of the run's range). Before an entry runs, on the
+    dimensions it is given: a `mean` over no element, `mean axis a` with
+    `a` of length 0, a selection outside its axis, `embed` reading indices
+    below 0, `cross_entropy`, `argmax` and `sample` over a last axis of
+    length 0, and their derivatives; through the functions the entry calls
+    at their instantiations, the closures it applies and every `fold` of
+    count at least 1; and a parameter whose type has no value (`idx[0][S]`
+    with an element). In `presk run`, both exports, `bench`, `plan`,
+    `autotune`, `dump`, `calibrate`, `quantize`, `solve`, and in every
+    backend's `prepare`, so in `presk train` and at each of `presk serve`'s
+    context lengths. A division by zero and a mask that empties a row stay
+    errors of the run. An unmasked softmax over an empty axis computes
+    nothing: the interpreter panicked there and the kernels read out of
+    bounds. A `tests/diag/run_*.psk` per condition.
+  - **`sample(key, logits)`**. Every draw from its key, as the reference
+    defines it. The three private streams of `sample` are gone (the
+    interpreter's, the kernel backend's, the C program's), and with them
+    the backends' seed (`Interp::new`, `InterpBackend::new`,
+    `KernelBackend::new`, `native_backend`); PSK-Core keeps no `let`
+    because it may draw. The interpreter compares the key's draw exactly.
+    `presk serve` gives token `i` the child `i` of the key `--seed` names,
+    to a generation function that takes a key as its second parameter; one
+    without a key is served as before. The interpreter and the native
+    backend now draw the same tokens. The C runtime gains a key
+    (`presk_key`, `presk_key_from_seed`, `presk_key_split`,
+    `presk_key_child`, `presk-interp`'s `Key` byte for byte); an entry's
+    key that `sample` reads is a field of its inputs, derived by `main`
+    from `-s SEED`; `generate.c` gives each token its child; a key the
+    program does not hold reaching `sample` is refused (`E8006`). The
+    PyTorch export takes the key and draws with PyTorch's own generator.
+  - **`bool[S]`, `causal_mask`, `softmax(axis a, x, where = m)`**. A tensor
+    of truth values is a type (`bool` followed by axes); `causal_mask`
+    gives one, and `softmax` reads one with `where`, the masked softmax on
+    the interpreter, both executors in three passes and in two, the C
+    export, the SCoP mode (selections only, still static control) and the
+    PyTorch export (`masked_fill`). Its bits are those of the scores with
+    `−∞` added at the refused positions. A mask is an index tensor of
+    bound 2 at run time, synthesized all true, stored `idx[2][…]` in a
+    `.psk.d` (a file's type may write `bool[…]`). No tensor holds `−∞`:
+    `causal_mask` made the only ones, and the envelope's special case for
+    them is gone.
+  - **The programs.** The course GPT, the tutorial's attention and
+    sampling and the Llama transcription rewritten; the examples
+    synchronized with presk-specs (`train_minigpt.psk` and
+    `serve_minigpt.psk` write `m.B`, `m.T`: a function's dimensions now
+    include those its signature mentions from an imported file). The
+    archived days of 0.7.0's and 0.8.0's sweeps name the old attention's
+    nests, so it is frozen in `experiments/ra4_attention.psk`, which
+    `make ra4-dev-frozen`, `ra4-f1` and `ra4-f2` read; four plans
+    renumbered.
+  - **T6 holds**: against `main`'s binary, 147 outputs and training runs
+    byte for byte (the eleven entries on three executors in three types
+    and under plans, the course GPT's forward pass and gradient, the
+    training runs), only `next_token`'s draws moving; C1; `make
+    check-examples`; the archived rankings and the development set's
+    report byte for byte. Tutorial steps 17 and 18 refreshed.
+- The reference's own gap measured (D98; the language reference's W16, on
+  2026-10-02, beside step 7b). `make delta-p` (`experiments/delta_p.sh` and
+  `delta_p.py`, the report `docs/delta-p-2026-10-02.md`): the reference
+  interpreter at p bits against itself at a higher precision, on the course
+  GPT at `D = 64` on trained weights and eight windows of the Code civil,
+  its loss, logits and gradient each in the form of its budget's gap. δ_p is
+  five to ten units of roundoff at p bits: 3·10⁻³⁸ at 128 bits, 4–9·10⁻⁷⁷
+  at 256, 4–8·10⁻¹⁵⁴ at 512, every ratio δ_p/δ_2p near 2ᵖ, 21 orders of
+  magnitude below binary64's resolution, at which every measured gap is
+  read; the training step's all-`f64` row reads the same at 128, 256, 512
+  and 1000 bits. No compiler code changes. Two defects of the interpreter
+  found and known, left for a later plan since both move the reference's
+  bits (plan §8): the gradient through `gelu` never ends at `--bits` ≥ 1016
+  (`Interp::pi` sums Machin's series to a threshold that underflows in
+  `f64`, where MPFR's constant is in the trait), and `dropout`'s scale
+  1/(1 − r) is computed in binary64 (1.4·10⁻¹⁷ off the equation, at every
+  p).
+- Step 7's follow-up, the user's answers on !47 (D97's addendum). The C
+  export always inlines every kernel (`PRESK_KERNEL`, `always_inline`) and
+  compiles `model.c` on GCC without scheduling before register allocation
+  (`#pragma GCC optimize ("no-schedule-insns")`, skipped by Clang): a
+  product's inner loop under a 4×16 tile is at the edge of the vector
+  registers, and wherever GCC ran short, out of line or after that
+  scheduling, a sum lived on the stack and the product took about 30 %
+  longer; which kernels GCC inlined moved with the program's other
+  kernels. Now the course GPT's gradient takes 822–827 ms under the plans
+  with or without their epilogues, where it took 844 or 959, the threads
+  waiting as the native ones; no bit moves. libgomp's idle threads sleep
+  after about 0.1 ms, the native pool's after about 2 ms (measured;
+  `pool.rs`'s comment corrected): the README names `GOMP_SPINCOUNT=8M` and
+  `OMP_WAIT_POLICY=active`, and `make pytorch-baseline` times every C
+  program both ways (`C_WAIT`), T4 on the second
+  (`docs/pytorch-baseline-0.10.0-step-7-followup.md`): T2 1.01×; T4 1.47×
+  on the forward pass and 1.57× on the step, the kernels' code
+  Cranelift's against GCC's, judged at step 8. `kernel_time.py` reads both
+  kernel declarations.
+- Step 7: the bias as its product's epilogue, and the C flags measured
+  (D97). A ninth layout decision, `"epilogue": true`, on a contraction nest
+  whose value one `add` alone reads, launched by itself and of the
+  product's type (`presk_core::fusion::epilogue`): the product's `let`
+  launches nothing, and the `add`'s launches the product's kernel under its
+  layout (`dot+add`), which adds the operand to each element once its sum
+  is done. Exact: in `f64` and `f32` the operand is added in the register
+  before the store, in `bf16` the stored sum is read back and added to, under
+  a spill in the last block of `K`, in the row-wise form by one more sweep.
+  Unstated, the two nests as before, byte for byte. It is no point of a
+  nest's space, so `presk autotune`'s sweeps and every archived ranking stay
+  as they were; `presk plan` states it wherever it applies, over the layout
+  it chose, and names them; a plan stating it where it does not apply is
+  refused (`E7002`); the C export prints it. Spec question 77. Checked:
+  every point of the products of `tests/plan/epilogue.psk` and of the
+  derivative nests given an operand (7 488) against the product and the
+  `add`, both executors, three types; whole programs and mixed
+  realizations planned; T1 against `main`'s binary on 184 outputs; C1 under
+  plans stating it. `make pytorch-baseline` takes `CFLAGS` and
+  `BASELINE_OUT`. Measured (`docs/pytorch-baseline-0.10.0-step-7.md`): the
+  36 bias launches of a forward pass, about 10 ms on each side; **T2
+  1.02×**; T4 1.16× on the forward pass and 1.305× on the step, at its
+  threshold: the C gradient took 113 ms less, 100 of them from GCC inlining
+  the program's other kernels otherwise (built `-fno-inline`, `main`'s and
+  the branch's take the same time). The flags (`…-o3-native.md`,
+  `…-o3.md`): `-O3` −4 % to +2 %, `-mcpu=native` nothing, C1 under both;
+  `-O2` kept. Found: the C program's OpenMP workers sleep between regions
+  (`OMP_WAIT_POLICY=active`: −18 % on the forward pass, −16 % on the
+  gradient); condition 7 admits a spill under a declared `bf16`
+  accumulation, which the kernels do not honour.
+- Step 6: the native host fixed (D96), in the order step 5 gave, each
+  change measured apart, pinned, against `main`'s binary of the same day
+  (`make host-profile CONFIGS=10`; `PRESK` may name another build). Values
+  share their buffers: a machine buffer's elements are `presk_rt::Elems`,
+  behind a reference count, so reading a value, passing it to a call, a fold
+  or a kernel, putting it in a tuple and projecting it out copy nothing,
+  and a write to shared elements copies them first (the gradient's copies
+  5.2 s → 10 ms). Views: a stacked layer's slice is a view of its stack, a
+  scan's stack its parts, laid out in one buffer only if read whole, a slice
+  set or a gradient scattered its parts in their places (the slices → 0.4
+  ms). Buffers reused: a free list by length (`presk_rt::FreeList`), a
+  launch's output taken from it and not zeroed, since every kernel writes
+  its output before reading it (a debug build poisons it, and `make test`
+  passes); `zeros_like` one shared buffer; glibc's setting not shipped (the
+  gradient's 3.3 million fresh pages a call → none). Dropout masks off the
+  host: a training mask drawn in pieces on the workers, each from its place
+  in the key's ChaCha20 stream, the bits of one stream in order; outside
+  training ones, one buffer per length (the training step's 0.95 s → 0.08).
+  A pool of workers on `std` (`presk_cranelift::Pool`): a divided launch's
+  pieces on persistent workers, the first on the calling thread, a waiting
+  worker spinning about 2 ms while the workers have a core each (the
+  forward pass's threads 38 → 0.6 ms); unpinned, the kernels take 326 ms
+  where they took 755, level with pinned, so the workers are not pinned to
+  cores. The entry's arguments already in their type shared (`adamw.step` 44
+  → 16 ms). Keys left out (0.2 %). Pinned, the forward pass 661 → 332 ms,
+  the gradient 8.2 → 1.32 s, the training step 7.8 → 1.43 s
+  (`docs/host-profile-0.10.0-step-6.md`). `make pytorch-baseline` times the
+  native `loss_grad` and `adamw.step` and judges T4
+  (`docs/pytorch-baseline-0.10.0-step-6.md`): **T4 holds**, the native
+  forward pass 1.16× the C program's, the step like for like 1.17×, `presk
+  train`'s step 1.26× beside; what is left is the kernels' code,
+  Cranelift's against GCC's. T2 1.13×. T1 against `main`'s binary on 114
+  outputs and training runs, C1, `plan-check`.
+- Step 5: the native host measured (D95). `presk bench --host-profile`
+  times the native backend's host by phase, the kernels apart
+  (`presk_kernel::profile`): finding a kernel (its site, its fusion groups,
+  its layout, its key, lowering), buffers (allocated, converted, freed),
+  slices and views, copies (the entry's arguments, a launch's operands out
+  of the environment and again as tensors, a call's arguments, tuples and
+  fields, a fold's arguments and accumulators), the executor's dispatch
+  and a divided launch's threads (`KernelExec::set_profiling`, `overhead`),
+  the dropout masks and the other primitives the host computes, and the
+  interpreter by difference; `--repeat` calls with the timers and as many
+  without, alternated, compared bit for bit, and the minor page faults of a
+  call. `presk train --host-profile` gives a step's table. Only the clock
+  is read: the same bits with the timers and without on both executors, a
+  training run's weights the same bytes. `make host-profile`
+  (`experiments/host_profile.sh`, `.py`; kept as
+  `docs/host-profile-0.10.0-step-5.md`): the course GPT under the frozen
+  profile's plans, ten X925 cores pinned, every core unpinned, and pinned
+  with glibc keeping its pages. Pinned, the forward pass takes 664 ms: its
+  kernels' code 341, the copies of values 213 (6.2 GB a call), the
+  threads' start and join 43, the dropout masks of ones 32, the outputs'
+  allocation 27, finding a kernel 2. The gradient takes 8.3 s: its kernels
+  1.45 s, the copies 5.3 s (73 GB a call, most of it the stored residuals
+  carried in tuples), the slices of stacked layers 0.69, the frees 0.53,
+  the threads 0.13, finding a kernel 0.01; it touches 3.25 million fresh
+  pages a call, and with glibc keeping its pages it takes 5.0 s, its
+  kernels' code 1.32 s, 1.33× the C program's (the forward pass's 1.27×).
+  The training step, 8.0 s, also draws its dropout masks on the host, 0.89
+  s. Recommended order for step 6, for review: values sharing their
+  buffers, views, buffer reuse, dropout masks off the host, the pool, the
+  entry's arguments, keys.
+- Step 4b: the fusion groups kept only where a realization can see them
+  (D94; the user's answers of 2026-09-30 on presk !40). A group computes
+  its members in its root site's arithmetic type and stores only the root,
+  so its partition decides a value's bits under a `bf16` site and under a
+  site typed apart from its function (a `storage` entry), and nowhere else
+  (`Realization::groups_visible`); the user's decision said `bf16`, and
+  a realization mixing `f32` and `f64` by site, as the curve's at 10⁻⁶
+  and 10⁻⁷, needs the groups too (a stored gradient's value otherwise
+  departs from its function's). `presk_core::ad::Options { remat, groups }`:
+  without the groups the dead-code pass holds nothing and the split shares
+  every residual with the function's computation. The commands decide by
+  the realizations they run (`bench` keeps them unless it times its plan
+  alone, `solve --step` always, `calibrate --step` when a realization
+  would or it writes an envelope). In `f32` and `f64` the course GPT's
+  gradient launches 1 012 kernels storing, none dead (1 182, 10), 1 548
+  recomputing (1 616), and its C arena is 2.49 GB (3.04; 0.90 recomputing,
+  1.02); `bf16` is step 4's program. `W0004` names a `.vjp` a realization
+  types where the program stores its gradient, unless the realization
+  names its `.fwd` or `.bwd` too. T1: the same outputs as `main` under both
+  policies, 168 comparisons; the training logs; C1, with a gradient's
+  `bf16` plan dropping the layouts of nests `bf16` computes inside a group.
+  T2 again (kept as `docs/pytorch-baseline-0.10.0-step-4b.md`): the C
+  training step under the plan takes 1.13 s against PyTorch's 1.03 s on the
+  ten X925 cores, 1.10× (1.35× at step 4), and on every core unpinned 0.85×;
+  `presk train` under the plan 8.1 s (9.7 s). The C gradient under its plan
+  takes 205 ms less than `main`'s, holding (1 107–1 118 ms against
+  1 310–1 326), the same bits.
+- The results defect 3f moved, measured again (D93; the user's answer of
+  2026-09-30 on presk !40), under `--remat recompute` so that only the
+  gradient changed since D48–D55. `presk solve` and `presk calibrate` take
+  `--remat`; a step's envelope records the policy it was calibrated under,
+  and `solve --step` refuses one of the other policy; the experiment
+  scripts and the Makefile take `REMAT`. The course GPT at `D = 64` trains
+  to 2.757 in 600 steps where the wrong gradient reached 2.995. On those
+  weights K holds at 2.73·10⁻⁵ (3.23·10⁻⁶) and 3.90·10⁻⁵ held out
+  (1.46·10⁻⁴); D at 1.89·10⁻⁶ (4.48·10⁻⁶); the curve's quality axis is flat
+  within 1.9·10⁻⁴ against a seed spread of 0.092 (1.2·10⁻³, 0.13); in the
+  step table AdamW multiplies an `f32` gradient's error by 545 (340), the
+  recipe is 4.4·10⁻² from the exact step (2.9·10⁻²), and the solver again
+  takes sixteen functions `f32`; J′ holds at 1.95× (1.99×), inside its
+  budget; a run under the solved step ends 5.5·10⁻⁶ from the `f64` run's
+  weights (5.0·10⁻³). In the foil, MLPerf's rule at 99.9 % now refuses
+  `int4` weights, 136 predictions lost of 28 612, where their gap is
+  4.0·10⁻⁴. The condition number buys 28 orders and not the last nine.
+  D48–D55 stay as written; the manual's `precision`, `experiments` and
+  `coverage` chapters, the tutorial and question 60 take the new numbers.
+- Step 4: residuals, `--remat store|recompute` (D92). First, defect 3f of
+  the reference's chapter 5: a scanned fold stacked the first key of its
+  accumulators for every layer, so the backward fold of a stacked module
+  whose key rides the accumulator gave every layer layer 0's dropout masks,
+  a wrong gradient under training, on the interpreter and natively alike
+  (the course GPT's training since 0.5.0 step 1; `presk run` and the
+  exports, which drop nothing, never saw it). A leaf with no axis to stack
+  along is now stacked as the sequence of its values (`tests/data/stack_dropout_grad.psk`,
+  against finite differences on both executors). Then a gradient keeps
+  its forward pass's values (`presk_core::ad::store`, `--remat store`, the
+  default of `presk run`, `export`, `train`, `bench`, `plan`, `autotune`,
+  `reprice` and `dump`): each `.vjp` is split into `f.fwd`, which runs
+  `f`'s body once and returns its value and the residuals its sweep reads,
+  and `f.bwd`, which runs the sweep on them and calls each callee's `.bwd`;
+  a fold stacks its layers' residuals through the scan it had. `f.fwd`'s
+  bindings are `f`'s and `f.bwd`'s the `.vjp`'s, so a sweep's nests keep
+  their numbers (`Linear.apply.bwd/%11`), and what a realization or a plan
+  states of `f/%k` it states of `f.fwd/%k`. Exact in `f64`, `f32` and
+  `bf16`: where the fusion groups of `f` and of its `.vjp`'s copy differ, a
+  residual is computed apart as the copy computed it (in the course GPT,
+  the normalizations' activations, and, because of the launches step 3
+  holds for `bf16`'s groups, attention's core and the feed-forward's first
+  product again). The course GPT's gradient launches 1 182 kernels
+  (1 616), its `dot` and `ein` 150.1 GFLOP (311.9), its arena 3.04 GB
+  (1.02, T5). T1: the same outputs as `main` under both policies on the
+  three executors in three types, the same training logs but for a
+  realization written by function for `.vjp`s, C1. Two copies of the
+  native host that storing made costly go: a slice converted its whole
+  stack, a projection or a field copied its whole tuple or record. T2
+  judged, and holds (kept as `docs/pytorch-baseline-0.10.0-step-4.md`): the
+  C training step under the plan takes 1.36 s against PyTorch's 1.01 s on
+  the ten X925 cores, 1.35× (1.86× at step 3); `presk train` under the plan
+  9.7 s (9.9 s). The launches held for `bf16`'s groups now cost about
+  15 % of the C gradient (3.2 % at step 3). A plan written for a gradient
+  before names `.vjp` nests and is refused (`E7002`); T3's nests are the
+  `.bwd`s'.
+- Step 3: the dead code after differentiation; one call a training step
+  (D91). A lambda applied in a differentiated function is differentiated as
+  itself: the `.vjp` looked the lambda up under the wrong variable, so with
+  one lambda in scope the gradient was refused (`E6001`), and with several
+  it was another lambda's, without a diagnostic (defect 3a of the
+  reference's chapter 5; `tests/data/closure_grad.psk`, against finite
+  differences on the interpreter and natively). A pass after
+  differentiation (`presk_core::ad::prune`), which every command that
+  differentiates runs, removes what a gradient computes and never reads:
+  forward values its sweep does not read (the primal loss, a callee's
+  value only its own `.vjp` needs), cotangents no caller reads (a `.vjp`
+  returns the cotangents its callers read; a backward fold keeps the
+  accumulators someone reads), `sum_to` and `broadcast_like` between equal
+  types, and values read for their shape only (a template reads another
+  value of its type the function computes anyway: the forward feed-forward
+  a block's `dropout_mask` read for its shape goes). Names and binding
+  numbers stay, so nests keep their names. Every fusion group of what the
+  result reads is kept, since a `bf16` group holds its intermediates in
+  `f32`; what would change one is held (68 launches of the course GPT's
+  gradient). PSK-Realize's partition moves into PSK-Core
+  (`presk_core::fusion`, re-exported by `presk-realize`). `presk train`
+  calls the objective's `value_vjp` once a step, the value then every
+  cotangent, where it called the objective and then its `.vjp`; the value
+  is computed as the objective computes it, and a realization or a plan
+  stating the `.vjp`'s or the objective's sites states `value_vjp`'s. The
+  course GPT's gradient launches 1 616 kernels, 12 of them dead, where it
+  launched 2 220, 386 dead; its C program's arena 1.02 GB (1.22). T1:
+  `main`'s binary and this one give the same outputs on the eleven entries
+  of `tests/plan/entries.txt` and the course GPT's gradient on the three
+  executors in `f64`, `f32` and `bf16`, the same training logs, and C1
+  holds. A plan written before for a gradient names nests that are gone
+  and is refused (`E7002`). T2's second reading (kept as
+  `docs/pytorch-baseline-0.10.0-step-3.md`): the C training step under the
+  plan takes 1.88 s against PyTorch's 1.01 s on the ten X925 cores,
+  1.86×, where it took 2.76×; `presk train` under the plan 9.9 s (12.8 s).
+- Step 2: the frozen model on the derivatives of `dot`, T3, RA4's third
+  fresh test (D90). `presk plan` and `presk autotune` take several nests
+  (`--nest` repeated, or names separated by commas), recorded in
+  `sweep.json`, so that one sweep holds a gradient's four derivative nests.
+  A nest launched at several shapes keeps every shape's points in its file,
+  where each launch overwrote the last; no archived sweep had such a nest.
+  `presk rank` counts `dot_vjp_l` and `dot_vjp_r` among the contraction
+  nests of statements O and Q, and names a nest at several shapes with its
+  operands; every earlier report comes back byte for byte. Targets
+  `ra4-t3-dry`, `ra4-t3`, `ra4-t3-day2`, `ra4-t3-rank` and `ra4-t3-check`.
+  Measured on 2026-09-29 on the ten X925 cores: the course GPT's gradient
+  at `B = 16`, `T = 256`, `f32`, its four derivative nests at eight shapes,
+  11 028 points, swept whole twice (3 h 05 min each) and checked on the
+  kernel interpreter between the days (7 h 06 min), priced by the frozen
+  profile unchanged, archived read-only in `~/presk-data/ra4-t3-0.10.0`;
+  the report is `docs/ra4-t3-2026-09-29.md`. **T3 fails.** O holds: the
+  pick within 1.00–1.19× of the best on every nest and shape. Q's
+  candidates hold the best within 1.01× everywhere, but its cost, the whole
+  gradient's static side (its shapes captured, 3.9–5.0 s, and the points
+  costed, 1.1 s) charged to each nest, is 16.4–19.9 % and 9.9–11.9 % of the
+  head's two nests' sweeps, of 30 and 51 s; 0.2–1.7 % on the blocks'. L
+  holds. 88.5 % of 92 279 close pairs are ranked right, attention's figure,
+  98.6 % of those the model decides. Over one gradient, the plan's layouts
+  take the derivative launches within 1.05× of each shape's best, 24×
+  faster than 0.9.0's derivative kernels. The model is not refitted.
+- Step 1: the derivatives of `dot` as contraction nests (D89).
+  `dot_vjp_l` is the builder's NT form. `dot_vjp_r` sums over every leading
+  axis of its operands as one summed slot over several axes, iterated as one
+  loop per axis, so no operand is reshaped; a k-block divides the innermost.
+  Their layouts are accepted by a plan (`E7002` checks them as any
+  contraction's) and stated by `presk plan`, so the plans it gives for a
+  gradient, and `presk train`'s, tile them. At the default layout their
+  kernels are 0.9.0's byte for byte, and on the eleven entries of
+  `tests/plan/entries.txt` in three types `main`'s binary and this one give
+  the same kernels, outputs and exported C programs. Every point of every
+  derivative nest of three gradients is bit-identical to the default on
+  both executors (4 280 points), and C1 holds under the frozen profile's
+  plans, which lay out every derivative kernel of `mse_grad` and
+  `loss_grad`. The pack of `dot_vjp_l` copies a matrix that carries no
+  outer axis. T2's first reading (`make pytorch-baseline`, kept as
+  `docs/pytorch-baseline-0.10.0-step-1.md`): on the ten X925 cores the C
+  training step under the plan takes 2.85 s against PyTorch's 1.03 s,
+  2.76×, where it took 12.2 s, 12.1×. The derivatives take 0.36 s of the
+  gradient's 2.72 s of kernels at 485 GFLOP/s, where they took 9.7 s at
+  18. `presk train` under the plan takes 12.8 s, where it took 22.3 s. The
+  forward products the gradient recomputes are now half its kernel time
+  (steps 3 and 4).
+- Step 0: bookkeeping (D88). The user's five decisions of 2026-09-28, taken
+  as recommended when the plan was merged: 0.10.0 before the CUDA export,
+  steps 0–2 before PLDI's deadline of 12 November; a gradient keeps its
+  forward pass's residuals by default, recomputation kept as an option; in
+  the kernels, the bias as an epilogue and the C flags measured, no fusion;
+  the native pool written on `std`, no `rayon`; the thresholds 2× (T2) and
+  1.3× (T4). The baseline's second run of record kept as
+  `docs/pytorch-baseline-2026-09-28.md`, the version's starting point.
+  Spec question 76, store or recompute; it cites spec §5's `checkpoint e`,
+  an annotation the plan did not cite and the compiler does not parse, and
+  plan §6 is amended to cite it. `experiments/pytorch_baseline.py` titles
+  its report with the version it times, where it wrote 0.9.0. Version
+  `0.10.0-dev`. Nothing else is implemented, and the native backend's code
+  is unchanged.
+
+**The PyTorch baseline at 0.9.0** (D87; the manual's `experiments` §3,
+"Three sides at 0.9.0"). A measurement, not a version. The course GPT at
+`B = 16`, `T = 256` in `f32` is timed on three sides: the native backend,
+the C program the export writes, and PyTorch 2.14 running the exported
+model. There are two workloads, the forward pass and one training step,
+each under the default layout and under the frozen profile's plans. The
+row of record is the ten X925 cores pinned, with ten threads on every side;
+every core unpinned is the second row. Each figure is the median of seven.
+- **The forward pass.** The C program takes 281–285 ms under the plan
+  against PyTorch's 153–156 (1.8–1.9×; 1.13× on every core); the native
+  backend takes 697–710 ms.
+- **A training step.** C takes 12.2 s (the gradient plus `adamw.step`),
+  `presk train` 22.3–23.0 s and `train.py` 1.0 s. At the default layout on
+  every core the native step is still 22× PyTorch's, as on 23 September.
+- **Where the time goes.** Four fifths of the C gradient is the
+  derivatives of `dot`, at 18 GFLOP/s, which the layout space does not
+  reach. Each `.vjp` recomputes its callee's forward pass, so a block's
+  linear products run six times a gradient. On the forward pass four
+  fifths of the native backend's lead over C is its host, Cranelift's code
+  1.3× GCC's. The contraction rate, 14 of D55's 22, is now within 1.3–2×
+  of PyTorch's libraries.
+- **The counts.** 96.93 GFLOP a forward pass and 290.78 a step, exactly as
+  PyTorch's counter gives them; the 266 of 0.4.0 and D55 was 8.5 % low.
+- `make pytorch-baseline` (`experiments/pytorch_baseline.sh` and `.py`)
+  writes `out/pytorch-baseline/report.md`: the times and rates, the
+  distances to the native backend's `f64` logits, the linear products
+  alone on each side, the native kernels' share of a call, and the C
+  program's time kernel by kernel. The last comes from
+  `experiments/kernel_time.py` and `.c`, a copy of `model.c` with every
+  launch timed, the kernels untouched.
+- `experiments/gpt_grad.psk`: the course GPT's gradient, which exports to C
+  at its constants (2 220 launches, an arena of 1.22 GB, C1 holds).
+- `presk bench --warmup N`: calls before the timed ones, not timed.
+  `presk bench --calibrate` prints `-- a call:`, the kernels' share of a
+  call.
+
 ## 0.9.0 — 2026-09-27
 
 A C export (`presk-specs/implementation/presk-plan-0.9.0.md`), in the style

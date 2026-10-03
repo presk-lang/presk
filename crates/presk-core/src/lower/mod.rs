@@ -126,7 +126,10 @@ impl<'p> Lowerer<'p> {
     }
 
     /// The dimension variables a function is generic in: its type parameters,
-    /// implicit dimensions, the module's type parameters and the file's dims.
+    /// implicit dimensions, the module's type parameters and the file's dims,
+    /// and the dimensions its signature's types mention, another file's
+    /// among them (`ctx : idx[m.V][batch: m.B, seq: m.T]`; the reference's
+    /// chapter 5, "dimension parameters", plan 0.10.0 step 7b).
     pub(crate) fn fn_dims(&self, id: FnId) -> Vec<DimVar> {
         let f = self.elab.function(id);
         let mut dims: Vec<DimVar> = f.typarams.iter().chain(&f.implicit_dims).copied().collect();
@@ -134,6 +137,9 @@ impl<'p> Lowerer<'p> {
             dims.extend(self.elab.module(m).typarams.iter().copied());
         }
         dims.extend(self.elab.units[f.unit].dims.values().copied());
+        for t in f.params.iter().filter_map(|p| p.ty.as_ref()).chain(f.ret.as_ref()) {
+            ty_dims(t, &mut dims);
+        }
         dims.sort();
         dims.dedup();
         dims
@@ -192,5 +198,34 @@ impl<'p> Lowerer<'p> {
             map.entry(d).or_insert_with(|| DimExpr::var(d));
         }
         map
+    }
+}
+
+/// The dimension variables a type mentions.
+fn ty_dims(t: &Ty, out: &mut Vec<DimVar>) {
+    fn modref(r: &ModRef, out: &mut Vec<DimVar>) {
+        match r {
+            ModRef::Inst { args, .. } => args.iter().for_each(|a| out.extend(a.vars())),
+            ModRef::Stack { n, inner } => {
+                out.extend(n.vars());
+                modref(inner, out);
+            }
+            ModRef::Compose(parts) => parts.iter().for_each(|p| modref(p, out)),
+        }
+    }
+    match t {
+        Ty::Real(s) => s.axes.iter().for_each(|a| out.extend(a.len.vars())),
+        Ty::Idx { bound, shape } => {
+            out.extend(bound.vars());
+            shape.axes.iter().for_each(|a| out.extend(a.len.vars()));
+        }
+        Ty::Truth(s) => s.axes.iter().for_each(|a| out.extend(a.len.vars())),
+        Ty::Tuple(ts) => ts.iter().for_each(|t| ty_dims(t, out)),
+        Ty::Params(r) | Ty::Module(r) => modref(r, out),
+        Ty::Fn { params, ret } => {
+            params.iter().for_each(|t| ty_dims(t, out));
+            ty_dims(ret, out);
+        }
+        _ => {}
     }
 }

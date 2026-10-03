@@ -9,13 +9,13 @@
 # PRESK_THREADS=WORKERS, the pinned sweep's worker count, so it enumerates
 # the same splits; the sample of EXTRA is drawn from the profile's
 # predictions, so it is the same sample. The configuration variables are
-# ra4.sh's.
+# ra4.sh's, NEST among them.
 #
 #   experiments/ra4_check.sh DIR    commands writing DIR/<config>/shard-<k>/
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-FILE=${FILE:-corpus/nlp/05_gpt.psk}
+FILE=${FILE:-experiments/ra4_attention.psk}
 ENTRY=${ENTRY:-SelfAttention.apply}
 CONSTS=${CONSTS:-}
 SHAPES=${SHAPES:-B=1,T=256 B=16,T=256}
@@ -23,11 +23,13 @@ TYPES=${TYPES:-f32 f64}
 SPACE=${SPACE:-full}
 PROFILE=${PROFILE:-out/profile.json}
 EXTRA=${EXTRA:-}
+NEST=${NEST:-}
 SHARDS=${SHARDS:-40}
 WORKERS=${WORKERS:-10}
 DIR=${1:?usage: experiments/ra4_check.sh DIR}
 common=(--entry "$ENTRY")
 for c in $CONSTS; do common+=(--const "$c"); done
+for n in $NEST; do common+=(--nest "$n"); done
 for shape in $SHAPES; do
   dims=(); for d in ${shape//,/ }; do dims+=(--dim "$d"); done
   for t in $TYPES; do

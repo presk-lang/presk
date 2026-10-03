@@ -41,8 +41,10 @@ fn fail(cmd: &str, m: impl std::fmt::Display) -> ExitCode {
     ExitCode::from(1)
 }
 
-/// Front end, the training functions, and the warmed-up state.
-fn context(cmd: &str, a: &StepArgs) -> Result<Ctx, ExitCode> {
+/// Front end, the training functions, and the warmed-up state; the fusion
+/// groups kept when `groups` (a realization the command runs can see them,
+/// D94).
+fn context(cmd: &str, a: &StepArgs, groups: bool) -> Result<Ctx, ExitCode> {
     let (sm, prog, typed) = typed_front(a.file, a.consts)?;
     if typed.training.is_empty() {
         eprintln!("presk {cmd}: --step needs a `training run`, and {} has none", a.file.display());
@@ -53,30 +55,30 @@ fn context(cmd: &str, a: &StepArgs) -> Result<Ctx, ExitCode> {
     if has_errors(&diags) {
         return Err(ExitCode::from(1));
     }
-    let diags = presk_core::ad::transform(&mut core);
+    let diags = crate::differentiate(&mut core, groups);
     eprint!("{}", render_all(&diags, &sm, color()));
     if has_errors(&diags) {
         return Err(ExitCode::from(1));
     }
-    let fns = presk_train::prepare_training(&mut core, &prog, &typed).map_err(|e| fail(cmd, e.message))?;
+    let fns = presk_train::prepare_training_as(&mut core, &prog, &typed, crate::ad_options(groups)).map_err(|e| fail(cmd, e.message))?;
     let opts = StepOptions { weights: a.weights.to_path_buf(), warmup: a.warmup, data: a.data.map(Path::to_path_buf), from: a.from, samples: a.samples, steps: a.steps, seed: a.seed };
     let setup = {
         let one = Realization::uniform(Dtype::F64);
-        let mut warm = native(&core, &prog, &one, a.seed).map_err(|m| fail(cmd, m))?;
+        let mut warm = native(&core, &prog, &one).map_err(|m| fail(cmd, m))?;
         presk_train::step::setup(&mut warm, &core, &prog, &typed, &fns, &opts).map_err(|e| fail(cmd, e.message))?
     };
     Ok(Ctx { prog, core, setup })
 }
 
-fn native<'p>(core: &'p presk_core::Program, prog: &'p presk_types::elab::ElabProgram, r: &Realization, seed: u64) -> Result<presk_kernel::KernelBackend<'p>, String> {
-    presk_cranelift::native_backend(core, prog, r, seed).map_err(|e| format!("the native backend is unavailable: {}", e.message))
+fn native<'p>(core: &'p presk_core::Program, prog: &'p presk_types::elab::ElabProgram, r: &Realization) -> Result<presk_kernel::KernelBackend<'p>, String> {
+    presk_cranelift::native_backend(core, prog, r).map_err(|e| format!("the native backend is unavailable: {}", e.message))
 }
 
 impl Ctx {
     /// The exact step from the state rounded to `input`, optionally
     /// recording the envelope's measurements on the way.
-    fn exact(&self, input: Dtype, bits: u32, seed: u64, record: bool) -> Result<(StepResult, Option<presk_rt::InterpBackend<'_>>), String> {
-        let mut b = presk_rt::InterpBackend::new(&self.core, &self.prog, bits, seed);
+    fn exact(&self, input: Dtype, bits: u32, record: bool) -> Result<(StepResult, Option<presk_rt::InterpBackend<'_>>), String> {
+        let mut b = presk_rt::InterpBackend::new(&self.core, &self.prog, bits);
         if record {
             b.interp.magnitudes = Some(Default::default());
             b.interp.minima = Some(Default::default());
@@ -89,8 +91,8 @@ impl Ctx {
     }
 
     /// One native step under `r`.
-    fn native_step(&self, r: &Realization, seed: u64, other: bool) -> Result<StepResult, String> {
-        let mut b = native(&self.core, &self.prog, r, seed)?;
+    fn native_step(&self, r: &Realization, other: bool) -> Result<StepResult, String> {
+        let mut b = native(&self.core, &self.prog, r)?;
         if other { self.setup.step_other_batch(&mut b, r) } else { self.setup.step(&mut b, r) }.map_err(|e| e.message)
     }
 }
@@ -100,7 +102,6 @@ impl Ctx {
 struct References<'c> {
     ctx: &'c Ctx,
     bits: u32,
-    seed: u64,
     native: bool,
     by_input: BTreeMap<Dtype, StepResult>,
 }
@@ -110,10 +111,10 @@ impl References<'_> {
         if !self.by_input.contains_key(&d) {
             let r = if self.native {
                 let one = Realization::uniform(Dtype::F64);
-                let mut b = native(&self.ctx.core, &self.ctx.prog, &one, self.seed)?;
+                let mut b = native(&self.ctx.core, &self.ctx.prog, &one)?;
                 self.ctx.setup.step_from(&mut b, &one, d).map_err(|e| e.message)?
             } else {
-                self.ctx.exact(d, self.bits, self.seed, false)?.0
+                self.ctx.exact(d, self.bits, false)?.0
             };
             self.by_input.insert(d, r);
         }
@@ -122,7 +123,7 @@ impl References<'_> {
 
     /// The update and gradient gaps of `r`, natively, against its exact step.
     fn gap(&mut self, r: &Realization) -> Result<presk_train::step::StepGap, String> {
-        let got = self.ctx.native_step(r, self.seed, false)?;
+        let got = self.ctx.native_step(r, false)?;
         let exact = self.get(r.default)?.clone();
         Ok(self.ctx.setup.gap(r, &exact, &got))
     }
@@ -162,7 +163,10 @@ fn describe(s: &StepSetup, a: &StepArgs, cmd: &str) {
 /// `presk calibrate --step`: the envelope of one exact step, the sampling
 /// noise, and the gaps of the realizations asked for.
 pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: Option<&Path>, native_reference: bool) -> ExitCode {
-    let ctx = match context("calibrate", a) {
+    // Its `bf16` rows, or an envelope `presk solve --step` reads, whose menu
+    // is `bf16` too, keep the fusion groups (D94).
+    let groups = out.is_some() || realize.iter().any(|s| s == "recipe" || Realization::parse(s).map_or(true, |r| r.groups_visible()));
+    let ctx = match context("calibrate", a, groups) {
         Ok(c) => c,
         Err(c) => return c,
     };
@@ -171,7 +175,7 @@ pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: 
         return against_f64(&ctx, a, realize, out);
     }
     let started = std::time::Instant::now();
-    let (exact, interp) = match ctx.exact(Dtype::F64, a.bits, a.seed, true) {
+    let (exact, interp) = match ctx.exact(Dtype::F64, a.bits, true) {
         Ok(x) => x,
         Err(m) => return fail("calibrate", m),
     };
@@ -182,7 +186,7 @@ pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: 
     env.consts = a.consts.to_vec();
     env.weights = Some(a.weights.display().to_string());
     env.data = Some(presk_precision::envelope::DataSlice { path: ctx.setup.data.display().to_string(), from: a.from, samples: Some(a.samples) });
-    env.step = Some(presk_precision::envelope::StepSpec { warmup: a.warmup, total: ctx.setup.total, seed: a.seed });
+    env.step = Some(presk_precision::envelope::StepSpec { warmup: a.warmup, total: ctx.setup.total, seed: a.seed, remat: Some(crate::remat().name().to_string()) });
     env.observe(&interp.magnitudes.take().unwrap_or_default());
     env.observe_minima(&interp.minima.take().unwrap_or_default());
     env.observe_elems(&interp.elems.take().unwrap_or_default());
@@ -195,12 +199,12 @@ pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: 
     let gnorm = exact.grad.sum_squares_f64().sqrt();
     println!("  |θ′ − θ|    {step_norm:.4e}   |g| {gnorm:.4e}   |θ| {:.4e}", ctx.setup.theta.sum_squares_f64().sqrt());
     let one = Realization::uniform(Dtype::F64);
-    match (ctx.native_step(&one, a.seed, false), ctx.native_step(&one, a.seed, true)) {
+    match (ctx.native_step(&one, false), ctx.native_step(&one, true)) {
         (Ok(x), Ok(y)) => println!("  noise       {:.4e}   ‖g_B − g_B′‖₂ / ‖g_B‖₂ between two batches of {} (f64): what a rounding error is to be compared with", presk_train::step::sampling_noise(&x, &y), a.samples),
         (Err(m), _) | (_, Err(m)) => return fail("calibrate", m),
     }
     let groups = presk_precision::solve::step_groups(&env, &presk_precision::solve::Menu::default(), machine(profile).as_ref());
-    let mut refs = References { ctx: &ctx, bits: a.bits, seed: a.seed, native: false, by_input: BTreeMap::from([(Dtype::F64, exact)]) };
+    let mut refs = References { ctx: &ctx, bits: a.bits, native: false, by_input: BTreeMap::from([(Dtype::F64, exact)]) };
     if !realize.is_empty() {
         println!("{:<28} {:>12} {:>13} {:>12} {:>14}", "realization", "update gap", "storage floor", "grad gap", if profile.is_some() { "predicted s" } else { "predicted B" });
     }
@@ -210,6 +214,7 @@ pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: 
             Ok(r) => r,
             Err(m) => return fail("calibrate", m),
         };
+        eprint!("{}", render_all(&crate::stored_vjps(&ctx.core, &r), &Default::default(), color()));
         match refs.gap(&r) {
             Ok(g) => println!("{:<28} {:>12.3e} {:>13.3e} {:>12.3e} {:>14.4e}", spec, g.update, g.floor, g.grad, presk_precision::solve::step_cost(&groups, &r)),
             Err(m) => return fail("calibrate", m),
@@ -254,9 +259,9 @@ fn against_f64(ctx: &Ctx, a: &StepArgs, realize: &[String], out: Option<&Path>) 
     }
     // Every function: naming one the step does not run changes nothing.
     let names: Vec<String> = ctx.core.funcs.iter().map(|f| f.name.clone()).collect();
-    let mut refs = References { ctx, bits: a.bits, seed: a.seed, native: true, by_input: BTreeMap::new() };
+    let mut refs = References { ctx, bits: a.bits, native: true, by_input: BTreeMap::new() };
     let one = Realization::uniform(Dtype::F64);
-    match (ctx.native_step(&one, a.seed, false), ctx.native_step(&one, a.seed, true)) {
+    match (ctx.native_step(&one, false), ctx.native_step(&one, true)) {
         (Ok(x), Ok(y)) => println!("  noise       {:.4e}   ‖g_B − g_B′‖₂ / ‖g_B‖₂ between two batches of {} (f64)", presk_train::step::sampling_noise(&x, &y), a.samples),
         (Err(m), _) | (_, Err(m)) => return fail("calibrate", m),
     }
@@ -266,6 +271,7 @@ fn against_f64(ctx: &Ctx, a: &StepArgs, realize: &[String], out: Option<&Path>) 
             Ok(r) => r,
             Err(m) => return fail("calibrate", m),
         };
+        eprint!("{}", render_all(&crate::stored_vjps(&ctx.core, &r), &Default::default(), color()));
         match refs.gap(&r) {
             Ok(g) => println!("{:<28} {:>12.3e} {:>13.3e} {:>12.3e}", spec, g.update, g.floor, g.grad),
             Err(m) => return fail("calibrate", m),
@@ -285,15 +291,25 @@ pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool,
         eprintln!("presk solve: --step needs an envelope written by `presk calibrate --step`, and {} is of an entry", env_path.display());
         return ExitCode::from(2);
     };
+    // The step's functions are the `.fwd`s and `.bwd`s storing and the
+    // `.vjp`s recomputing: the envelope's sites are of one policy. One
+    // written before the policy was recorded says it by its sites' names.
+    let stored = env.sites.keys().any(|s| s.rsplit_once('/').is_some_and(|(f, _)| f.ends_with(".bwd") || f.ends_with(".fwd")));
+    let calibrated = spec.remat.as_deref().unwrap_or(if stored { "store" } else { "recompute" });
+    if calibrated != crate::remat().name() {
+        eprintln!("presk solve: {} was calibrated under --remat {calibrated}: solve it under the same policy", env_path.display());
+        return ExitCode::from(2);
+    }
     let weights = PathBuf::from(weights);
     let data_path = PathBuf::from(&data.path);
     let a = StepArgs { file, consts: &env.consts, weights: &weights, warmup: spec.warmup, data: Some(&data_path), from: data.from, samples: data.samples.unwrap_or(1), steps: Some(spec.total), seed: spec.seed, bits };
-    let ctx = match context("solve", &a) {
+    // Every function is tried in `bf16`: the fusion groups kept (D94).
+    let ctx = match context("solve", &a, true) {
         Ok(c) => c,
         Err(c) => return c,
     };
     describe(&ctx.setup, &a, "solve");
-    let mut refs = References { ctx: &ctx, bits, seed: spec.seed, native: false, by_input: BTreeMap::new() };
+    let mut refs = References { ctx: &ctx, bits, native: false, by_input: BTreeMap::new() };
     if let Err(m) = refs.get(Dtype::F64) {
         return fail("solve", m);
     }

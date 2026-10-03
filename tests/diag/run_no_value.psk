@@ -1,0 +1,7 @@
+-- E7003: an entry a type of whose parameters has no value at the dimensions
+-- given: two indices below `V = 0`.
+--   presk run tests/diag/run_no_value.psk --entry lookup --dim V=0 --dim T=2
+dim V
+dim T
+
+fn lookup(w : ℝ[V, 4], t : idx[V][seq: T]) -> ℝ[seq: T, 4] = embed(w, t)

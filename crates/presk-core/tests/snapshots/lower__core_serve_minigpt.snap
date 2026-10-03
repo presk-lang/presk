@@ -63,7 +63,7 @@ fn mse_grad{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[b
   return %5
 }
 
-fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768] {
+fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T, model: 768], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768] {
   wq : params Linear{768, 768} = θ.wq
   %4 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wq, x)
   q : ℝ[batch: B, heads: 12, seq: T, hd: 64] = split_heads 12x64 %4
@@ -78,16 +78,15 @@ fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T,
   %14 : ℝ[] = real %13
   %15 : ℝ[] = sqrt %14
   s : ℝ[batch: B, heads: 12, seq: T, seq2: T] = div %12, %15
-  %17 : ℝ[batch: B, heads: 12, seq: T, seq2: T] = add s, mask
-  a : ℝ[batch: B, heads: 12, seq: T, seq2: T] = softmax axis seq2 %17
+  a : ℝ[batch: B, heads: 12, seq: T, seq2: T] = softmax axis seq2 s, mask
   o : ℝ[batch: B, heads: 12, seq: T, hd: 64] = ein[batch, heads, seq, hd]([batch, heads, seq, seq2] * [batch, heads, seq2, hd]) a, v
-  %20 : ℝ[batch: B, seq: T, model: 768] = merge_heads 12x64 o
+  %19 : ℝ[batch: B, seq: T, model: 768] = merge_heads 12x64 o
   wo : params Linear{768, 768} = θ.wo
-  %22 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wo, %20)
-  return %22
+  %21 : ℝ[batch: B, seq: T, 768] = call Linear.apply{In = 768, Out = 768}(wo, %19)
+  return %21
 }
 
-fn Block.apply{B T}(θ : params Block, x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768] {
+fn Block.apply{B T}(θ : params Block, x : ℝ[batch: B, seq: T, model: 768], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768] {
   ln1 : params LayerNorm{768} = θ.ln1
   %4 : f64 = 1e-5
   %5 : ℝ[batch: B, seq: T, model: 768] = call LayerNorm.apply{D = 768}(ln1, x, %4)
@@ -114,7 +113,7 @@ fn Embedding.apply{B T}(θ : params Embedding, ids : idx[50257][batch: B, seq: T
 }
 
 fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[50257][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: 50257] {
-  mask : ℝ[seq: T, seq2: T] = causal_mask seq
+  mask : bool[seq: T, seq2: T] = causal_mask seq
   emb : params Embedding = θ.emb
   h0 : ℝ[batch: B, seq: T, model: 768] = call Embedding.apply{B = B, T = T}(emb, ids)
   blocks : params stack{12}(Block) = θ.blocks
@@ -127,13 +126,13 @@ fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[50257][batch: B, seq: T]) -
   return %11
 }
 
-fn next_token{B T}(θ : params MiniGPT, ctx : idx[50257][batch: B, seq: T], temperature : f64) -> idx[50257][batch: B] uses Rand {
+fn next_token{B T}(θ : params MiniGPT, key : key, ctx : idx[50257][batch: B, seq: T], temperature : f64) -> idx[50257][batch: B] uses Rand {
   logits : ℝ[batch: B, seq: T, vocab: 50257] = call MiniGPT.apply{B = B, T = T}(θ, ctx)
   last : ℝ[batch: B, vocab: 50257] = index seq: -1 logits
-  %5 : ℝ[] = real temperature
-  %6 : ℝ[batch: B, vocab: 50257] = div last, %5
-  %7 : idx[50257][batch: B] = sample %6
-  return %7
+  %6 : ℝ[] = real temperature
+  %7 : ℝ[batch: B, vocab: 50257] = div last, %6
+  %8 : idx[50257][batch: B] = sample key, %7
+  return %8
 }
 
 fn LayerNorm.init{D}(key : key) -> params LayerNorm{D} uses Rand {

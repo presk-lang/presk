@@ -266,5 +266,12 @@ impl Form {
 const OPTIMIZER: [(&str, Form); 6] = [("lr", Form::F64), ("betas", Form::F64Pair), ("weight_decay", Form::F64), ("grad_clip", Form::F64), ("schedule", Form::Schedule), ("eps", Form::F64)];
 const TRAINING: [(&str, Form); 7] =
     [("model", Form::Module), ("objective", Form::Name), ("optimizer", Form::Name), ("data", Form::Data), ("epochs", Form::Nat), ("parallel", Form::Parallel), ("precision", Form::Precision)];
-const INFERENCE: [(&str, Form); 6] =
-    [("model", Form::Module), ("weights", Form::Str), ("precision", Form::Precision), ("target", Form::Target), ("batching", Form::Batching), ("cache", Form::Cache)];
+const INFERENCE: [(&str, Form); 7] = [
+    ("model", Form::Module),
+    ("weights", Form::Str),
+    ("precision", Form::Precision),
+    ("target", Form::Target),
+    ("batching", Form::Batching),
+    ("cache", Form::Cache),
+    ("generate", Form::Name),
+];

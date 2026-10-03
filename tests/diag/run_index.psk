@@ -1,0 +1,6 @@
+-- E7003: a selection outside its axis: the last position of an axis of
+-- length 0.
+--   presk run tests/diag/run_index.psk --entry last --dim T=0
+dim T
+
+fn last(x : ℝ[seq: T, model: 4]) -> ℝ[model: 4] = x[seq: -1]

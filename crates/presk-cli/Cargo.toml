@@ -27,6 +27,9 @@ presk-export-c.workspace = true
 presk-opt.workspace = true
 presk-precision.workspace = true
 
+[dev-dependencies]
+insta.workspace = true
+
 [[bin]]
 name = "presk"
 path = "src/main.rs"

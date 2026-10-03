@@ -16,13 +16,41 @@ chapter; `presk train` sequences them.
 for epoch in 1..=epochs:
   for batch in pipeline(epoch):                 -- shuffle re-keyed per epoch, batch(B), take
     t += 1
-    ℓ = objective(θ, batch)
-    g = objective.vjp(θ, batch, 1)              -- the cotangent of θ
+    (ℓ, g, …) = objective.value_vjp(θ, batch, 1) -- the value, the cotangent of θ
     (θ, s) = adamw.step(θ, s, g, t, total)      -- lr(t, total) inside
     log ℓ, lr, ‖g‖;  checkpoint θ every N steps to ckpt/step-<t>.psk.d
 write ckpt/final.psk.d
 ```
 
+- **One call a step** (0.10.0 step 3). `objective.value_vjp` returns the
+  objective's value, then the cotangent of every argument, as
+  `objective.vjp` does, from one forward pass: until 0.10.0 the loop called
+  the objective for the loss it logs, then its `.vjp`, which computed the
+  forward pass again. The value is computed as the objective computes it:
+  every primitive of the objective's own body is computed again for it
+  (the model it calls is not), so that its fusion groups and its sites'
+  types are the objective's, and the logged loss is the objective's value
+  bit for bit, in every realization. What a realization or a plan states of
+  `objective.vjp`'s sites it states of `objective.value_vjp`'s, whose
+  bindings share its numbers up to the end of the reverse sweep, and what it
+  states of the objective's sites, of the primitives computed again: a
+  realization `presk solve --step` gives (it measures the `.vjp`) and a plan
+  made for the gradient mean for the loop what they meant before. Both
+  functions lose their dead code as every gradient does (`language` chapter,
+  "Dead code after differentiation"); `presk solve --step` and `presk
+  calibrate --step` still call `objective.vjp`. This is `--remat
+  recompute`.
+- **One forward pass** (0.10.0 step 4, `--remat store`, the default). The
+  gradient keeps its forward pass's residuals (`language` chapter,
+  "Residuals"): `objective.value_vjp` is `objective.fwd`'s value and
+  `objective.bwd`'s cotangents, and `objective.vjp` is `objective.bwd` after
+  `objective.fwd`; no callee's forward pass runs twice. The logged loss is
+  `objective.fwd`'s, computed as the objective computes it, and bit for bit
+  the same as recomputing, as is every gradient. `objective.fwd`'s sites
+  are the objective's, of the same numbers, so what a realization or a plan
+  states of the objective's sites it states of them; the sweeps are the
+  `.bwd`s, which a realization solved under `store` names (`presk solve
+  --step` measures `objective.vjp`, the same `.fwd` and `.bwd`).
 - `total = epochs × batches per epoch` is the horizon of the schedule; with
   `--steps N` the loop stops after `N` steps and `total = N`.
 - The model's key comes from `--seed`; the shuffle's from its own `seed`.

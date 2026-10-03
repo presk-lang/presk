@@ -583,6 +583,11 @@ fn remove_axis(t: &Ty, axis: &str) -> Ty {
             s.axes.retain(|a| a.name.as_deref() != Some(axis));
             Ty::Idx { bound: bound.clone(), shape: s }
         }
+        Ty::Truth(shape) => {
+            let mut s = shape.clone();
+            s.axes.retain(|a| a.name.as_deref() != Some(axis));
+            Ty::Truth(s)
+        }
         t => t.clone(),
     }
 }

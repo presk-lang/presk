@@ -85,6 +85,10 @@ pub struct Contraction {
     pub i: usize,
     pub j: usize,
     pub k: usize,
+    /// The innermost of the axes `K` runs over, which a k-block divides:
+    /// `k` itself, except in a `dot_vjp_r` summed over several leading axes
+    /// (0.10.0 step 1, D89), where `K` is their product.
+    pub k_inner: usize,
     /// Operand 1 has `K` as its innermost axis.
     pub nt: bool,
     /// The accumulation type is the storage type, so a running sum may be
@@ -108,10 +112,17 @@ pub struct Layout {
     pub split: Option<Split>,
     pub pack: Option<bool>,
     pub passes: Option<usize>,
+    /// The product's kernel adds the operand of the `add` that alone reads
+    /// its value to each output element after its sum, and that `add`
+    /// launches nothing (plan 0.10.0 step 7): a bias as the product's
+    /// epilogue. Unstated, the two nests are launched apart, as before; like
+    /// the split, it stays as stated when the layout is resolved, so no
+    /// point of a nest's space, nor its key, carries it.
+    pub epilogue: Option<bool>,
 }
 
 /// The members of a layout record, in the order they are printed.
-pub const DECISIONS: [&str; 8] = ["form", "tile", "kblock", "order", "lanes", "split", "pack", "passes"];
+pub const DECISIONS: [&str; 9] = ["form", "tile", "kblock", "order", "lanes", "split", "pack", "passes", "epilogue"];
 
 impl Layout {
     /// Whether no decision is stated: every one takes its default.
@@ -121,7 +132,7 @@ impl Layout {
 
     /// The decisions this layout states, by name.
     pub fn stated(&self) -> Vec<&'static str> {
-        let has = [self.form.is_some(), self.tile.is_some(), self.kblock.is_some(), self.order.is_some(), self.lanes.is_some(), self.split.is_some(), self.pack.is_some(), self.passes.is_some()];
+        let has = [self.form.is_some(), self.tile.is_some(), self.kblock.is_some(), self.order.is_some(), self.lanes.is_some(), self.split.is_some(), self.pack.is_some(), self.passes.is_some(), self.epilogue.is_some()];
         DECISIONS.iter().zip(has).filter(|(_, h)| *h).map(|(n, _)| *n).collect()
     }
 
@@ -136,6 +147,7 @@ impl Layout {
             split: self.split.or(base.split),
             pack: self.pack.or(base.pack),
             passes: self.passes.or(base.passes),
+            epilogue: self.epilogue.or(base.epilogue),
         }
     }
 
@@ -155,14 +167,15 @@ impl Layout {
     /// `kind`. The defaults depend on what is stated: without a k-block the
     /// order is `I J`, with one `I J K`; the lanes are the register's width
     /// where it divides the tile's columns and operand 1's `J` is contiguous
-    /// (NN, or packed), one otherwise. The split stays as stated.
+    /// (NN, or packed), one otherwise. The split and the epilogue stay as
+    /// stated.
     pub fn resolve(&self, kind: &NestKind) -> Layout {
         match kind {
             NestKind::Contraction(c) => {
                 let row_wise = c.dot && c.j % 8 != 0 && c.accum_is_storage;
                 let form = self.form.unwrap_or(if row_wise { Form::RowWise } else { Form::Tiled });
                 if form == Form::RowWise {
-                    return Layout { form: Some(form), lanes: Some(self.lanes.unwrap_or(1)), split: self.split, ..Layout::default() };
+                    return Layout { form: Some(form), lanes: Some(self.lanes.unwrap_or(1)), split: self.split, epilogue: self.epilogue, ..Layout::default() };
                 }
                 let tile = self.tile.unwrap_or(if c.dot && c.j % 8 == 0 { (1, 8) } else { (1, 1) });
                 let kblock = self.kblock.unwrap_or(KBlock::None);
@@ -172,7 +185,7 @@ impl Layout {
                 });
                 let pack = self.pack.unwrap_or(false);
                 let lanes = self.lanes.unwrap_or(if tile.1 % c.width == 0 && (!c.nt || pack) { c.width } else { 1 });
-                Layout { form: Some(form), tile: Some(tile), kblock: Some(kblock), order: Some(order), lanes: Some(lanes), split: self.split, pack: Some(pack), passes: None }
+                Layout { form: Some(form), tile: Some(tile), kblock: Some(kblock), order: Some(order), lanes: Some(lanes), split: self.split, pack: Some(pack), passes: None, epilogue: self.epilogue }
             }
             NestKind::Softmax { .. } => Layout { passes: Some(self.passes.unwrap_or(3)), lanes: Some(self.lanes.unwrap_or(1)), split: self.split, ..Layout::default() },
             NestKind::Other => Layout { lanes: Some(self.lanes.unwrap_or(1)), split: self.split, ..Layout::default() },
@@ -182,7 +195,9 @@ impl Layout {
     /// The layout space of a nest (reference §6.3): every well-formed layout,
     /// each stating every decision the kind has. The thread split is left
     /// out: its domain is the executor's (the worker counts of the machine,
-    /// the parallel loops of the kernel). The first point is the default.
+    /// the parallel loops of the kernel). So is the epilogue, a decision on
+    /// two nests whose worth is the second's launch, which a nest timed alone
+    /// does not show (plan 0.10.0 step 7). The first point is the default.
     pub fn space(kind: &NestKind) -> Vec<Layout> {
         let mut points = vec![Layout::default_for(kind)];
         let mut push = |l: Layout| {
@@ -234,7 +249,7 @@ impl Layout {
     /// worker count against the machine, the split's depth against the
     /// kernel) are the executor's. The message names the decision.
     pub fn check(&self, kind: &NestKind) -> Result<(), String> {
-        let contraction_only = [("form", self.form.is_some()), ("tile", self.tile.is_some()), ("kblock", self.kblock.is_some()), ("order", self.order.is_some()), ("pack", self.pack.is_some())];
+        let contraction_only = [("form", self.form.is_some()), ("tile", self.tile.is_some()), ("kblock", self.kblock.is_some()), ("order", self.order.is_some()), ("pack", self.pack.is_some()), ("epilogue", self.epilogue.is_some())];
         match kind {
             NestKind::Contraction(_) => {
                 if self.passes.is_some() {
@@ -264,8 +279,11 @@ impl Layout {
                     }
                     let kb = eff.kblock.unwrap_or(KBlock::None);
                     if let KBlock::Width(b) = kb
-                        && c.k % b != 0
+                        && c.k_inner % b != 0
                     {
+                        if c.k_inner != c.k {
+                            return Err(format!("the k-block {b} does not divide the innermost of the axes K runs over, {} (condition 3)", c.k_inner));
+                        }
                         return Err(format!("the k-block {b} does not divide K = {} (condition 3)", c.k));
                     }
                     // An order stated without the k-block, or a k-block without
@@ -402,6 +420,10 @@ impl Layout {
                     Some(n @ (2 | 3)) => l.passes = Some(n as usize),
                     _ => return Err(bad("3 or 2")),
                 },
+                "epilogue" => match value.as_bool() {
+                    Some(b) => l.epilogue = Some(b),
+                    None => return Err(bad("true or false")),
+                },
                 other => return Err(format!("unknown layout decision `{other}`; the decisions are {}", DECISIONS.join(", "))),
             }
         }
@@ -455,6 +477,9 @@ impl Layout {
         if let Some(n) = self.passes {
             m.insert("passes".into(), n.into());
         }
+        if let Some(e) = self.epilogue {
+            m.insert("epilogue".into(), e.into());
+        }
         Json::Object(m)
     }
 
@@ -486,6 +511,9 @@ impl Layout {
         }
         if let Some(n) = self.passes {
             parts.push(format!("passes={n}"));
+        }
+        if let Some(e) = self.epilogue {
+            parts.push(format!("epilogue={}", if e { "yes" } else { "no" }));
         }
         parts.join(",")
     }
@@ -523,7 +551,7 @@ impl Layout {
                     let (d, w) = value.strip_prefix('(').and_then(|v| v.strip_suffix(')')).and_then(|v| v.split_once(',')).ok_or_else(bad)?;
                     serde_json::json!({ "depth": n(d)?, "workers": n(w)? })
                 }
-                ("pack", "yes" | "no") => Json::Bool(value == "yes"),
+                ("pack" | "epilogue", "yes" | "no") => Json::Bool(value == "yes"),
                 _ => return Err(bad()),
             };
             m.insert(name.to_string(), v);
@@ -532,8 +560,8 @@ impl Layout {
     }
 }
 
-/// `tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split (1, 10), pack`,
-/// or `default` when nothing is stated.
+/// `tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split (1, 10), pack,
+/// epilogue`, or `default` when nothing is stated.
 impl fmt::Display for Layout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts = Vec::new();
@@ -560,6 +588,9 @@ impl fmt::Display for Layout {
         }
         if let Some(n) = self.passes {
             parts.push(format!("passes {n}"));
+        }
+        if let Some(e) = self.epilogue {
+            parts.push(if e { "epilogue".into() } else { "no epilogue".into() });
         }
         if parts.is_empty() { f.write_str("default") } else { f.write_str(&parts.join(", ")) }
     }
@@ -682,9 +713,13 @@ impl Plan {
     }
 
     /// The layout the plan states for a nest; the empty layout, every
-    /// decision at its default, for a nest it does not mention.
+    /// decision at its default, for a nest it does not mention. A nest of
+    /// `g.fwd` it does not mention is `g`'s ([`crate::fwd_base`]).
     pub fn layout_at(&self, nest: &str) -> Layout {
-        self.layout.get(nest).cloned().unwrap_or_default()
+        match self.layout.get(nest) {
+            Some(l) => l.clone(),
+            None => crate::fwd_base(nest).and_then(|b| self.layout.get(&b).cloned()).unwrap_or_default(),
+        }
     }
 }
 
@@ -693,11 +728,11 @@ mod tests {
     use super::*;
 
     fn dot(j: usize, accum_is_storage: bool, width: usize) -> NestKind {
-        NestKind::Contraction(Contraction { dot: true, i: 256, j, k: 384, nt: false, accum_is_storage, width })
+        NestKind::Contraction(Contraction { dot: true, i: 256, j, k: 384, k_inner: 384, nt: false, accum_is_storage, width })
     }
 
     fn scores() -> NestKind {
-        NestKind::Contraction(Contraction { dot: false, i: 256, j: 256, k: 64, nt: true, accum_is_storage: true, width: 4 })
+        NestKind::Contraction(Contraction { dot: false, i: 256, j: 256, k: 64, k_inner: 64, nt: true, accum_is_storage: true, width: 4 })
     }
 
     fn layout(text: &str) -> Result<Layout, String> {
@@ -707,11 +742,11 @@ mod tests {
     #[test]
     fn a_layout_round_trips_and_keys_canonically() {
         let text = r#"{ "passes": 2, "tile": [4, 16], "form": "tiled", "kblock": 32, "order": "JIK", "lanes": 4,
-                        "split": { "workers": 10, "depth": 1 }, "pack": true }"#;
+                        "split": { "workers": 10, "depth": 1 }, "pack": true, "epilogue": true }"#;
         let l = layout(text).unwrap();
         assert_eq!(Layout::from_json(&l.to_json()).unwrap(), l);
-        assert_eq!(l.key(), "form=tiled,tile=4x16,kblock=32,order=JIK,lanes=4,split=(1, 10),pack=yes,passes=2");
-        assert_eq!(l.to_string(), "tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split (1, 10), pack, passes 2");
+        assert_eq!(l.key(), "form=tiled,tile=4x16,kblock=32,order=JIK,lanes=4,split=(1, 10),pack=yes,passes=2,epilogue=yes");
+        assert_eq!(l.to_string(), "tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split (1, 10), pack, passes 2, epilogue");
         assert_eq!(Layout::default().key(), "");
         assert_eq!(Layout::default().to_string(), "default");
         // A key reads back as the layout it is of.
@@ -739,6 +774,7 @@ mod tests {
             r#"{ "form": "row-wise", "tile": [1, 8] }"#,
             r#"{ "kblock": 32, "order": "IJ" }"#,
             r#"{ "kblock": "none", "order": "IKJ" }"#,
+            r#"{ "epilogue": "yes" }"#,
         ] {
             assert!(layout(bad).is_err(), "{bad} was accepted");
         }
@@ -777,7 +813,7 @@ mod tests {
         assert!(ok(&dot(384, true, 4), r#"{ "lanes": 1 }"#).is_ok());
         // Condition 7: a spill, the row-wise form and two passes need storage = accumulation.
         assert!(ok(&scores(), r#"{ "kblock": 32, "order": "IKJ" }"#).is_ok());
-        let narrow = NestKind::Contraction(Contraction { dot: false, i: 256, j: 256, k: 64, nt: true, accum_is_storage: false, width: 1 });
+        let narrow = NestKind::Contraction(Contraction { dot: false, i: 256, j: 256, k: 64, k_inner: 64, nt: true, accum_is_storage: false, width: 1 });
         assert!(ok(&narrow, r#"{ "kblock": 32, "order": "IKJ" }"#).unwrap_err().contains("condition 7"));
         assert!(ok(&narrow, r#"{ "kblock": 32, "order": "IJK" }"#).is_ok());
         assert!(ok(&dot(92, false, 1), r#"{ "form": "row-wise" }"#).unwrap_err().contains("condition 7"));
@@ -788,11 +824,18 @@ mod tests {
         assert!(ok(&NestKind::Other, r#"{ "tile": [1, 8] }"#).is_err());
         assert!(ok(&dot(384, true, 4), r#"{ "passes": 2 }"#).is_err());
         assert!(ok(&NestKind::Other, r#"{ "split": "none" }"#).is_ok());
+        // The epilogue: a contraction's, in either form; never in the space.
+        assert!(ok(&dot(384, true, 4), r#"{ "epilogue": true }"#).is_ok());
+        assert!(ok(&dot(92, true, 4), r#"{ "form": "row-wise", "epilogue": true }"#).is_ok());
+        assert!(ok(&NestKind::Other, r#"{ "epilogue": true }"#).unwrap_err().contains("contraction"));
+        assert!(ok(&NestKind::Softmax { narrow: false }, r#"{ "epilogue": false }"#).is_err());
+        assert_eq!(layout(r#"{ "epilogue": true }"#).unwrap().resolve(&dot(384, true, 4)).epilogue, Some(true));
+        assert!(Layout::space(&dot(384, true, 4)).iter().all(|l| l.epilogue.is_none()));
     }
 
     #[test]
     fn the_space_holds_the_default_and_only_well_formed_points() {
-        let values = NestKind::Contraction(Contraction { dot: false, i: 256, j: 64, k: 256, nt: false, accum_is_storage: true, width: 4 });
+        let values = NestKind::Contraction(Contraction { dot: false, i: 256, j: 64, k: 256, k_inner: 256, nt: false, accum_is_storage: true, width: 4 });
         let space = Layout::space(&values);
         assert_eq!(space[0], Layout::default_for(&values));
         assert!(space.iter().all(|l| l.check(&values).is_ok()));
@@ -800,12 +843,12 @@ mod tests {
         // and the tile (1, 1) by fourteen in one lane; no pack on an NN nest.
         assert_eq!(space.len(), 1 + 9 * 14 * 2 + 14);
         // The NT scores: k-block 128 does not divide 64, and lanes need the pack.
-        let scores = NestKind::Contraction(Contraction { dot: false, i: 256, j: 256, k: 64, nt: true, accum_is_storage: true, width: 4 });
+        let scores = NestKind::Contraction(Contraction { dot: false, i: 256, j: 256, k: 64, k_inner: 64, nt: true, accum_is_storage: true, width: 4 });
         let s = Layout::space(&scores);
         assert_eq!(s.len(), 1 + 10 * 8 * 2 + 9 * 8);
         assert!(s.iter().all(|l| l.lanes == Some(1) || l.pack == Some(true)));
         // bf16: no spill, no row-wise.
-        let narrow = NestKind::Contraction(Contraction { dot: false, i: 256, j: 64, k: 256, nt: false, accum_is_storage: false, width: 1 });
+        let narrow = NestKind::Contraction(Contraction { dot: false, i: 256, j: 64, k: 256, k_inner: 256, nt: false, accum_is_storage: false, width: 1 });
         let n = Layout::space(&narrow);
         assert_eq!(n.len(), 10 * (2 + 2 * 2));
         assert_eq!(Layout::space(&NestKind::Softmax { narrow: false }).len(), 2);

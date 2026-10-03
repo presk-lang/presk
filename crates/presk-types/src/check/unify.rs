@@ -57,6 +57,7 @@ impl Checker<'_> {
             },
             Ty::Real(s) => Ty::Real(self.resolve_shape(s)),
             Ty::Idx { bound, shape } => Ty::Idx { bound: self.resolve_dim(bound), shape: self.resolve_shape(shape) },
+            Ty::Truth(s) => Ty::Truth(self.resolve_shape(s)),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.zonk(t)).collect()),
             Ty::Fn { params, ret } => Ty::Fn { params: params.iter().map(|t| self.zonk(t)).collect(), ret: Box::new(self.zonk(ret)) },
             Ty::Params(m) => Ty::Params(self.zonk_modref(m)),
@@ -79,6 +80,7 @@ impl Checker<'_> {
         match t {
             Ty::Real(s) => Ty::Real(shape(s, from, to)),
             Ty::Idx { bound, shape: s } => Ty::Idx { bound: bound.clone(), shape: shape(s, from, to) },
+            Ty::Truth(s) => Ty::Truth(shape(s, from, to)),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| Self::map_prefix(t, from, to)).collect()),
             Ty::Fn { params, ret } => Ty::Fn { params: params.iter().map(|t| Self::map_prefix(t, from, to)).collect(), ret: Box::new(Self::map_prefix(ret, from, to)) },
             t => t.clone(),
@@ -110,6 +112,7 @@ impl Checker<'_> {
             }
             (Ty::Real(s1), Ty::Real(s2)) => self.unify_shape(s1, s2, span),
             (Ty::Idx { bound: b1, shape: s1 }, Ty::Idx { bound: b2, shape: s2 }) => self.unify_dim(b1, b2, span) & self.unify_shape(s1, s2, span),
+            (Ty::Truth(s1), Ty::Truth(s2)) => self.unify_shape(s1, s2, span),
             (Ty::Nat, Ty::Nat) | (Ty::Int, Ty::Int) | (Ty::Rat, Ty::Rat) | (Ty::F64, Ty::F64) | (Ty::Bool, Ty::Bool) | (Ty::Key, Ty::Key) => true,
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys).fold(true, |ok, (x, y)| self.unify(x, y, span) && ok),
             (Ty::Params(m1), Ty::Params(m2)) | (Ty::Module(m1), Ty::Module(m2)) => self.unify_modref(m1, m2, span),

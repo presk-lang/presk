@@ -23,7 +23,7 @@ dim T <= 4096
 
 type Tokens = idx[V][batch: B, seq: T]
 type Acts   = ℝ[batch: B, seq: T, model: D]
-type Mask   = ℝ[seq: T, seq2: T]
+type Mask   = bool[seq: T, seq2: T]
 
 -- Llama's projections carry no bias.
 module Dense{In Out : dim} {
@@ -76,7 +76,7 @@ module Attention {
     let k  = split(axis kvout, groups: G, hd: HD, x · wk)
     let v  = split(axis kvout, groups: G, hd: HD, x · wv)
     let s  = ein[batch, groups, per, seq, seq2](q * k) / sqrt(HD : ℝ)
-    let a  = softmax(axis seq2, s + mask)
+    let a  = softmax(axis seq2, s, where = mask)
     let o  = ein[batch, seq, groups, per, hd](a * v)
     -- The output projection reads `wo` under the same three axes instead of
     -- flattening `o` back: `merge` leaves the joined axis unnamed (D28), so

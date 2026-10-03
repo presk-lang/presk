@@ -17,7 +17,7 @@ dim T <= 1024
 
 type Tokens = idx[V][batch: B, seq: T]
 type Acts   = ℝ[batch: B, seq: T, model: D]
-type Mask   = ℝ[seq: T, seq2: T]
+type Mask   = bool[seq: T, seq2: T]
 
 -- The accumulator of the block stack. A fold hands every iteration the same
 -- extras, so a key passed as an extra would be one key for all L blocks and
@@ -49,7 +49,7 @@ module SelfAttention {
     let k = split_heads(wk.apply(x))
     let v = split_heads(wv.apply(x))
     let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
-    let a = dropout(0.2, kd, softmax(axis seq2, s + mask))
+    let a = dropout(0.2, kd, softmax(axis seq2, s, where = mask))
     wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
 }
 

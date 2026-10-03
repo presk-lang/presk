@@ -55,9 +55,9 @@ pub mod coverage {}
 pub mod precision {}
 
 /// Experiments: shapes as types, the realization gap of training against the
-/// exact reference, the statements of 0.4.0 to 0.9.0 answered by measurement,
-/// MLPerf's acceptance rule beside a budget, the two tests of RA4, and the C
-/// export's statements.
+/// exact reference, the statements of 0.4.0 to 0.10.0 answered by measurement,
+/// MLPerf's acceptance rule beside a budget, the three tests of RA4, the C
+/// export's statements, and a training step that pays.
 #[doc = include_str!("../manual/experiments.md")]
 pub mod experiments {}
 

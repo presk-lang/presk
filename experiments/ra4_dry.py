@@ -21,7 +21,12 @@ configuration's sweep 3 to 8 % short, and the day's 5 % short (D72).
 F1 (step 6, D73) has two configurations with other constants, and a dry run
 each, its own nest timed: `day` adds their estimates into a day and keeps
 whole the configurations that fit in HOURS, the quickest first; the others
-are swept on a sample."""
+are swept on a sample.
+
+T3 (plan 0.10.0, step 2, D90) is one configuration of the course GPT's
+gradient restricted to four nests, the derivatives of `dot` (ra4.sh's NEST):
+its plans price those nests only, the dry run times the longest of them, and
+`day` sizes the day from that one directory."""
 import glob
 import json
 import os

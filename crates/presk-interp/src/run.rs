@@ -37,7 +37,7 @@ pub struct RunOutput {
 /// Resolve `--entry`, synthesize the inputs, run.
 pub fn run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<RunOutput> {
     let (func, dims, inputs) = prepare_run(prog, elab, opts)?;
-    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
+    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits);
     let args: Vec<Value<Float>> = inputs.iter().map(|(_, v)| v.clone()).collect();
     let result = interp.call(func, dims.clone(), args)?;
     let dims_named: Vec<(String, u64)> = dims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
@@ -56,13 +56,13 @@ pub type PreparedRun = (FuncId, Dims, Inputs);
 pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<PreparedRun> {
     let (func, dims, prefix) = bind_run(prog, elab, opts)?;
     let f = prog.func(func);
-    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
+    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits);
     let master = Key::from_seed(opts.seed);
     let keys = master.split(f.params.len());
     let mut inputs = Vec::new();
     for (i, p) in f.params.iter().enumerate() {
         let default = param_default(prog, elab, func, &p.name);
-        let mut v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
+        let mut v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { code: e.code, message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
         if matches!(f.origin, Origin::Optimizer { .. }) {
             v = optimizer_input(&p.name, v);
         }
@@ -97,12 +97,12 @@ pub type ShapedRun = (FuncId, Dims, Vec<(String, Shaped)>);
 pub fn prepare_shapes(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<ShapedRun> {
     let (func, dims, prefix) = bind_run(prog, elab, opts)?;
     let f = prog.func(func);
-    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits, opts.seed);
+    let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits);
     let keys = Key::from_seed(opts.seed).split(f.params.len());
     let mut inputs = Vec::new();
     for (i, p) in f.params.iter().enumerate() {
         let default = param_default(prog, elab, func, &p.name);
-        let mut s = shaped(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { message: format!("cannot describe `{}`: {}", p.name, e.message), span: e.span })?;
+        let mut s = shaped(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { code: e.code, message: format!("cannot describe `{}`: {}", p.name, e.message), span: e.span })?;
         if matches!(f.origin, Origin::Optimizer { .. })
             && let Shaped::Value(v) = s
         {
@@ -117,6 +117,7 @@ fn shaped(interp: &mut Interp<Float>, ty: &Ty, dims: &Dims, key: &Key, default: 
     match ty {
         Ty::Real(s) => Ok(Shaped::Real(interp.axes_of_with(s, dims, prefix)?)),
         Ty::Idx { bound, shape } => Ok(Shaped::Idx { bound: interp.dim(bound, dims)?, axes: interp.axes_of_with(shape, dims, prefix)? }),
+        Ty::Truth(shape) => Ok(Shaped::Idx { bound: 2, axes: interp.axes_of_with(shape, dims, prefix)? }),
         Ty::Tuple(ts) => {
             let keys = key.split(ts.len());
             Ok(Shaped::Tuple(ts.iter().zip(&keys).map(|(t, k)| shaped(interp, t, dims, k, None, prefix)).collect::<Result<_>>()?))
@@ -138,7 +139,7 @@ fn initializer(interp: &Interp<Float>, r: &presk_types::ty::ModRef, dims: &Dims)
         presk_types::ty::ModRef::Inst { def, args } => (*def, args.clone()),
         _ => return err("cannot synthesize the parameters of a stacked or composed module directly"),
     };
-    let init = interp.prog.find(&format!("{}.init", interp.elab.module(def).name)).ok_or_else(|| RunError { message: "no initializer".into(), span: None })?;
+    let init = interp.prog.find(&format!("{}.init", interp.elab.module(def).name)).ok_or_else(|| RunError { code: None, message: "no initializer".into(), span: None })?;
     let mut idims = dims.clone();
     for (v, e) in interp.elab.module(def).typarams.iter().zip(&args) {
         idims.insert(*v, interp.dim(e, dims)?);
@@ -165,7 +166,9 @@ pub fn param_default(prog: &Program, elab: &ElabProgram, func: FuncId, name: &st
 /// Resolve `--entry` and bind its dimensions (0.8.0 step 1: what
 /// [`prepare_run`] does before synthesizing, for a caller that builds the
 /// inputs itself): the function, its dimensions, and the axes `--dim` gives
-/// the open prefix `...` of its parameters.
+/// the open prefix `...` of its parameters. The dimensions are checked
+/// against the file's facts, then the entry against the conditions of its
+/// operations ([`crate::defined`], `E7003`).
 pub fn bind_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<(FuncId, Dims, Vec<crate::value::Axis>)> {
     let (func, mut dims, _module_dims) = resolve_entry(prog, elab, &opts.entry)?;
     let f = prog.func(func);
@@ -208,6 +211,9 @@ pub fn bind_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result
             }
         }
     }
+    // Then the entry is refused where an operation of its body is undefined
+    // at these dimensions (plan 0.10.0 step 7b).
+    crate::defined::check(prog, elab, func, &dims, Some(&prefix))?;
     Ok((func, dims, prefix))
 }
 
@@ -249,7 +255,7 @@ pub fn resolve_entry(prog: &Program, elab: &ElabProgram, entry: &str) -> Result<
         None => fn_name.to_string(),
         Some(m) => {
             let (mname, args) = match m.split_once('{') {
-                Some((n, rest)) => (n, rest.trim_end_matches('}').split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().parse::<u64>()).collect::<std::result::Result<Vec<_>, _>>().map_err(|_| RunError { message: format!("`{entry}`: module arguments must be natural literals"), span: None })?),
+                Some((n, rest)) => (n, rest.trim_end_matches('}').split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().parse::<u64>()).collect::<std::result::Result<Vec<_>, _>>().map_err(|_| RunError { code: None, message: format!("`{entry}`: module arguments must be natural literals"), span: None })?),
                 None => (m, vec![]),
             };
             // The module definition, in the main unit or its imports.
@@ -306,6 +312,14 @@ fn synthesize(interp: &mut Interp<Float>, ty: &Ty, dims: &Dims, key: &Key, defau
             _ => 1.0,
         })),
         Ty::Bool => Ok(Value::Bool(false)),
+        // A mask allows every position (D99): one drawn at random could empty
+        // a row of a masked softmax, which is an error of the run. At run
+        // time a mask is indices below 2, true 1.
+        Ty::Truth(shape) => {
+            let axes = interp.axes_of_with(shape, dims, prefix)?;
+            let n: usize = axes.iter().map(|a| a.len).product();
+            Ok(Value::Idx { bound: 2, t: Tensor { axes, data: vec![1; n] } })
+        }
         Ty::Key => Ok(Value::Key(key.clone())),
         Ty::Tuple(ts) => {
             let keys = key.split(ts.len());
@@ -342,6 +356,7 @@ pub fn render(v: &Value<Float>, digits: usize, indent: usize) -> String {
             s
         }
         Value::Closure { .. } => "<function>".into(),
+        Value::Stacked(vs) => format!("stacked [{}]", vs.iter().map(|v| render(v, digits, indent)).collect::<Vec<_>>().join(", ")),
     }
 }
 
@@ -395,6 +410,65 @@ pub fn to_json(v: &Value<Float>, digits: usize) -> serde_json::Value {
             J::Object(m)
         }
         Value::Closure { .. } => json!("<function>"),
+        Value::Stacked(vs) => J::Array(vs.iter().map(|v| to_json(v, digits)).collect()),
+    }
+}
+
+// ----- rendering by the static type -----------------------------------------
+//
+// A mask is an index tensor of bound 2 at run time (D99), which the printers
+// above show as `idx[2]` of 0 and 1. `presk run` prints a value whose static
+// type is `bool[S]` as truth values instead (D99's addendum, plan 0.10.0
+// step 8): the entry's signature reaches these, which fall back on the
+// printers above for every other value.
+
+/// A value of static type `bool[S]` held as indices below 2.
+fn truth<'a>(v: &'a Value<Float>, ty: &Ty) -> Option<&'a Tensor<i64>> {
+    match (ty, v) {
+        (Ty::Truth(_), Value::Idx { bound: 2, t }) => Some(t),
+        _ => None,
+    }
+}
+
+/// `render`, with a value of type `bool[S]` as `true` and `false`.
+pub fn render_typed(v: &Value<Float>, ty: &Ty, digits: usize, indent: usize) -> String {
+    if let Some(t) = truth(v, ty) {
+        return render_tensor(t, &|x: &i64| (*x != 0).to_string());
+    }
+    match (ty, v) {
+        (Ty::Tuple(ts), Value::Tuple(vs)) if ts.len() == vs.len() => format!("({})", vs.iter().zip(ts).map(|(v, t)| render_typed(v, t, digits, indent)).collect::<Vec<_>>().join(", ")),
+        _ => render(v, digits, indent),
+    }
+}
+
+/// `describe`, with a value of type `bool[S]` as `bool[…]`.
+pub fn describe_typed(v: &Value<Float>, ty: &Ty) -> String {
+    if let Some(t) = truth(v, ty) {
+        return format!("bool{}", crate::prims::show_axes(&t.axes));
+    }
+    match (ty, v) {
+        (Ty::Tuple(ts), Value::Tuple(vs)) if ts.len() == vs.len() => format!("({})", vs.iter().zip(ts).map(|(v, t)| describe_typed(v, t)).collect::<Vec<_>>().join(", ")),
+        _ => describe(v),
+    }
+}
+
+/// `to_json`, with a value of type `bool[S]` as its axes and JSON booleans,
+/// no `bound`.
+pub fn to_json_typed(v: &Value<Float>, ty: &Ty, digits: usize) -> serde_json::Value {
+    use serde_json::{Value as J, json};
+    fn booleans(t: &Tensor<i64>, level: usize, offset: usize) -> J {
+        if level == t.rank() {
+            return J::Bool(t.data[offset] != 0);
+        }
+        let stride = t.strides()[level];
+        J::Array((0..t.axes[level].len).map(|i| booleans(t, level + 1, offset + i * stride)).collect())
+    }
+    if let Some(t) = truth(v, ty) {
+        return json!({"axes": t.axes.iter().map(|a| json!({"name": a.name, "len": a.len})).collect::<Vec<_>>(), "data": booleans(t, 0, 0)});
+    }
+    match (ty, v) {
+        (Ty::Tuple(ts), Value::Tuple(vs)) if ts.len() == vs.len() => J::Array(vs.iter().zip(ts).map(|(v, t)| to_json_typed(v, t, digits)).collect()),
+        _ => to_json(v, digits),
     }
 }
 

@@ -95,7 +95,7 @@ fn zeros(b: &mut presk_kernel::KernelBackend, realize: &presk_rt::Realization, s
     let size = |axes: &[presk_interp::value::Axis]| axes.iter().map(|a| a.len).product::<usize>();
     Ok(match s {
         Shaped::Real(axes) => Value::Real(Tensor { axes: axes.clone(), data: Buf::zeros(realize.default, size(axes)) }),
-        Shaped::Idx { bound, axes } => Value::Idx { bound: *bound, t: Tensor { axes: axes.clone(), data: Buf::I64(vec![0; size(axes)]) } },
+        Shaped::Idx { bound, axes } => Value::Idx { bound: *bound, t: Tensor { axes: axes.clone(), data: Buf::I64(vec![0; size(axes)].into()) } },
         Shaped::Value(v) => Value::from_interp(v)?,
         Shaped::Tuple(parts) => Value::Tuple(parts.iter().map(|p| zeros(b, realize, p)).collect::<presk_rt::Result<_>>()?),
         Shaped::Params { init, dims, key } => {
@@ -106,29 +106,30 @@ fn zeros(b: &mut presk_kernel::KernelBackend, realize: &presk_rt::Realization, s
 }
 
 /// Runs `entry` once with the kernel backend capturing, natively or on the
-/// host program alone, and returns the launches of the nests `nest` selects
-/// (every nest when `None`).
+/// host program alone, and returns the launches of the nests `nests` names
+/// (every nest when it is empty; several since 0.10.0 step 2).
 #[allow(clippy::too_many_arguments)]
-pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], plan: &presk_rt::Plan, seed: u64, nest: Option<&str>, mode: Capture) -> Result<Captured, ExitCode> {
+pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], plan: &presk_rt::Plan, seed: u64, nests: &[String], mode: Capture) -> Result<Captured, ExitCode> {
     let t0 = Instant::now();
     let dims = parse_dims(dims)?;
     let (sm, prog, mut core) = core(file, consts, false)?;
-    let diags = presk_core::ad::transform(&mut core);
+    let realize = &plan.realization;
+    let mut diags = crate::differentiate(&mut core, realize.groups_visible());
+    diags.extend(crate::stored_vjps(&core, realize));
     eprint!("{}", render_all(&diags, &sm, color()));
     if presk_syntax::diag::has_errors(&diags) {
         return Err(ExitCode::from(1));
     }
-    let realize = &plan.realization;
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits: 64, digits: 12 };
-    let fail = |m: String| {
-        eprint!("{}", render_all(&[presk_syntax::Diagnostic::error("E7001", m)], &sm, color()));
+    let fail = |d: presk_syntax::Diagnostic| {
+        eprint!("{}", render_all(&[d], &sm, color()));
         ExitCode::from(1)
     };
     let mut b = match mode {
-        Capture::Run => presk_cranelift::native_backend(&core, &prog, realize, seed).map_err(|e| fail(e.message))?,
+        Capture::Run => presk_cranelift::native_backend(&core, &prog, realize).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?,
         Capture::Shapes => {
             // The native backend's defaults, its executor aside.
-            let mut b = presk_kernel::KernelBackend::with_exec(&core, &prog, realize, seed, Box::new(NoRun));
+            let mut b = presk_kernel::KernelBackend::with_exec(&core, &prog, realize, Box::new(NoRun));
             b.default_layout.lanes = None;
             b
         }
@@ -136,22 +137,22 @@ pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], pla
     // A realization with integer weights quantizes drawn values; zeros would
     // have no scale.
     let (func, fdims, args) = if mode == Capture::Shapes && realize.quant.is_empty() {
-        let (func, fdims, shaped) = presk_interp::run::prepare_shapes(&core, &prog, &opts).map_err(|e| fail(e.message))?;
-        let args = shaped.iter().map(|(_, s)| zeros(&mut b, realize, s)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| fail(e.message))?;
+        let (func, fdims, shaped) = presk_interp::run::prepare_shapes(&core, &prog, &opts).map_err(|e| fail(crate::interp_diag(e)))?;
+        let args = shaped.iter().map(|(_, s)| zeros(&mut b, realize, s)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
         (func, fdims, args)
     } else {
-        let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).map_err(|e| fail(e.message))?;
-        let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).map(|v| v.realize(realize.default))).collect::<presk_rt::Result<_>>().map_err(|e| fail(e.message))?;
-        realize.quantize_args(&mut args).map_err(|e| fail(e.message))?;
+        let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).map_err(|e| fail(crate::interp_diag(e)))?;
+        let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).map(|v| v.realize(realize.default))).collect::<presk_rt::Result<_>>().map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
+        realize.quantize_args(&mut args).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
         (func, fdims, args)
     };
     b.capture = Some(Vec::new());
-    let p = presk_rt::Backend::prepare(&mut b, func, &fdims, realize).map_err(|e| fail(e.message))?;
-    presk_rt::Backend::call(&mut b, &p, args).map_err(|e| fail(e.message))?;
+    let p = presk_rt::Backend::prepare(&mut b, func, &fdims, realize).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
+    presk_rt::Backend::call(&mut b, &p, args).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
     let mut launches = b.capture.take().unwrap_or_default();
-    if let Some(n) = nest {
-        launches.retain(|l| l.nest == n);
-        if launches.is_empty() {
+    if !nests.is_empty() {
+        launches.retain(|l| nests.contains(&l.nest));
+        if let Some(n) = nests.iter().find(|n| !launches.iter().any(|l| l.nest == **n)) {
             eprintln!("presk: the entry launches no nest `{n}`");
             return Err(ExitCode::from(2));
         }
@@ -270,14 +271,14 @@ fn load_fit(profile: Option<&Path>) -> Result<Option<(LayoutFit, Option<Machine>
 // ----- presk plan -------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-pub fn plan(file: &Path, entry: &str, dims: &[String], consts: &[String], base: &presk_rt::Plan, profile: &Path, nest: Option<&str>, space: Space, cost: bool, out: Option<&Path>, seed: u64) -> ExitCode {
+pub fn plan(file: &Path, entry: &str, dims: &[String], consts: &[String], base: &presk_rt::Plan, profile: &Path, nests: &[String], space: Space, cost: bool, out: Option<&Path>, seed: u64) -> ExitCode {
     let t0 = Instant::now();
     let (fit, stored) = match load_fit(Some(profile)) {
         Ok(Some(x)) => x,
         Ok(None) => unreachable!("a profile was given"),
         Err(c) => return c,
     };
-    let captured = match capture(file, entry, dims, consts, base, seed, nest, Capture::Shapes) {
+    let captured = match capture(file, entry, dims, consts, base, seed, nests, Capture::Shapes) {
         Ok(c) => c,
         Err(c) => return c,
     };
@@ -388,6 +389,26 @@ pub fn plan(file: &Path, entry: &str, dims: &[String], consts: &[String], base: 
             rows.push(line.clone());
         }
     }
+    // The epilogues (plan 0.10.0 step 7): a product whose every launch can
+    // take the `add` that alone reads its value takes it, over the layout
+    // chosen without it. It saves the `add`'s launch and its pass over the
+    // output and adds no arithmetic; the model prices a nest alone, so it
+    // has no term for it, and no prediction moves.
+    let mut epilogues: Vec<String> = Vec::new();
+    for l in &captured.launches {
+        if epilogues.contains(&l.nest) {
+            continue;
+        }
+        let same: Vec<&Launch> = captured.launches.iter().filter(|m| m.nest == l.nest).collect();
+        if !same.iter().all(|m| m.epilogue.is_some()) {
+            continue;
+        }
+        let with = Layout { epilogue: Some(true), ..layout.get(&l.nest).cloned().unwrap_or_default() };
+        if same.iter().all(|m| lower_launch(m, &with, Some(captured.machine.workers)).is_ok()) {
+            layout.insert(l.nest.clone(), with);
+            epilogues.push(l.nest.clone());
+        }
+    }
     let cost_seconds = t_cost.elapsed().as_secs_f64();
     println!("{:<28} {:<24} {:>12} {:>13}  {:>17}  layout", "nest", "operands", "space", "predicted", "undecided");
     for r in &rows {
@@ -396,6 +417,9 @@ pub fn plan(file: &Path, entry: &str, dims: &[String], consts: &[String], base: 
     let all_nests = captured.launches.iter().map(|l| l.nest.as_str()).collect::<BTreeSet<_>>().len();
     let shapes = if all_nests == captured.launches.len() { String::new() } else { format!(" at {} shapes", captured.launches.len()) };
     println!("-- {all_nests} nests{shapes}, {total_points} points costed in {cost_seconds:.3} s, the entry captured in {:.3} s; u = {:.3}", captured.seconds, fit.u);
+    if !epilogues.is_empty() {
+        println!("-- {} product{} the `add` that alone reads {} as {} epilogue: {}", epilogues.len(), if epilogues.len() == 1 { " takes" } else { "s take" }, if epilogues.len() == 1 { "it" } else { "them" }, if epilogues.len() == 1 { "its" } else { "their" }, epilogues.join(", "));
+    }
     if !unpriced.is_empty() {
         let mut names: Vec<String> = Vec::new();
         for l in &unpriced {
@@ -529,7 +553,7 @@ fn op_name(l: &Launch) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn autotune(file: &Path, entry: &str, dims: &[String], consts: &[String], base: &presk_rt::Plan, profile: Option<&Path>, nest: Option<&str>, space: Space, opts: &SweepOpts, out: &Path, seed: u64) -> ExitCode {
+pub fn autotune(file: &Path, entry: &str, dims: &[String], consts: &[String], base: &presk_rt::Plan, profile: Option<&Path>, nests: &[String], space: Space, opts: &SweepOpts, out: &Path, seed: u64) -> ExitCode {
     let t0 = Instant::now();
     let fit = match load_fit(profile) {
         Ok(f) => f,
@@ -539,7 +563,7 @@ pub fn autotune(file: &Path, entry: &str, dims: &[String], consts: &[String], ba
         eprintln!("presk autotune: --top and --random choose by the model's predictions: they need --profile");
         return ExitCode::from(2);
     }
-    let captured = match capture(file, entry, dims, consts, base, seed, nest, Capture::Run) {
+    let captured = match capture(file, entry, dims, consts, base, seed, nests, Capture::Run) {
         Ok(c) => c,
         Err(c) => return c,
     };
@@ -561,6 +585,10 @@ pub fn autotune(file: &Path, entry: &str, dims: &[String], consts: &[String], ba
     let mut next_idx = 0usize;
     let (mut sweep_seconds, mut cost_seconds, mut interp_seconds) = (0.0f64, 0.0f64, 0.0f64);
     let (mut total, mut baselines, mut failures) = (0usize, 0usize, 0usize);
+    // Each nest's lines, every shape it is launched at: a nest's file holds
+    // them all (a nest at several shapes kept only its last before 0.10.0
+    // step 2, which no sweep until then had).
+    let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for l in &captured.launches {
         let tc = Instant::now();
         let pts = points(l, space, workers);
@@ -638,7 +666,9 @@ pub fn autotune(file: &Path, entry: &str, dims: &[String], consts: &[String], ba
         }
         sweep_seconds += ts.elapsed().as_secs_f64();
         let path = out.join(&file_name);
-        if let Err(e) = std::fs::write(&path, lines.join("\n") + "\n") {
+        let nest_lines = files.entry(file_name).or_default();
+        nest_lines.extend(lines);
+        if let Err(e) = std::fs::write(&path, nest_lines.join("\n") + "\n") {
             eprintln!("presk autotune: {}: {e}", path.display());
             return ExitCode::from(2);
         }
@@ -648,13 +678,14 @@ pub fn autotune(file: &Path, entry: &str, dims: &[String], consts: &[String], ba
     // What choosing statically takes to capture the same launches: the host
     // program alone (D65). Statement N's static side is this and the
     // costing; it is timed after the sweep's wall time, which it is not part of.
-    let static_capture = match capture(file, entry, dims, consts, base, seed, nest, Capture::Shapes) {
+    let static_capture = match capture(file, entry, dims, consts, base, seed, nests, Capture::Shapes) {
         Ok(c) => c,
         Err(c) => return c,
     };
     let sample = (opts.top > 0 || opts.random > 0).then(|| json!({ "top": opts.top, "random": opts.random, "seed": seed }));
     let summary = json!({
         "entry": entry, "config": config, "consts": consts, "dims": dims, "realization": base.realization.label(),
+        "nests": if nests.is_empty() { Json::Null } else { json!(nests) },
         "space": if space == Space::Small { "small" } else { "full" }, "repeat": opts.repeat, "timed": opts.repeat > 0,
         "sample": sample, "shard": opts.shard.map(|(k, n)| json!([k, n])),
         "points": total, "baselines": baselines, "sweep_seconds": sweep_seconds - interp_seconds, "cost_seconds": cost_seconds, "interp_seconds": interp_seconds,
@@ -750,7 +781,7 @@ pub fn reprice(file: &Path, entry: &str, day: &Path, profile: &Path, out: &Path,
             Err(e) => return fail(format!("{}: the machine the sweep ran on: {e}", src.join("sweep.json").display())),
         };
         let plan = presk_rt::Plan::from_realization(super::parse_realize(realization));
-        let captured = match capture(file, entry, &dims, &consts, &plan, seed, None, Capture::Shapes) {
+        let captured = match capture(file, entry, &dims, &consts, &plan, seed, &[], Capture::Shapes) {
             Ok(c) => c,
             Err(c) => return c,
         };
@@ -866,7 +897,7 @@ pub fn recost(samples: &[presk_opt::profile::PlannedSample], file: &Path, entry:
             let Some((dtype, [i, k, j])) = product_of(&s.signature) else { return Err(format!("`{}` is not a product's signature", s.signature)) };
             let realize = presk_rt::Realization::parse(&dtype).map_err(|m| format!("`{}`: {m}", s.signature))?;
             let dims = [format!("I={i}"), format!("K={k}"), format!("J={j}")];
-            let captured = capture(file, entry, &dims, &[], &presk_rt::Plan::from_realization(realize), 0, None, Capture::Shapes).map_err(|_| format!("{} could not be captured at {}", file.display(), dims.join(" ")))?;
+            let captured = capture(file, entry, &dims, &[], &presk_rt::Plan::from_realization(realize), 0, &[], Capture::Shapes).map_err(|_| format!("{} could not be captured at {}", file.display(), dims.join(" ")))?;
             let mut products = captured.launches.into_iter().filter(|l| matches!(launch_kind(l), NestKind::Contraction(_)));
             let (Some(l), None) = (products.next(), products.next()) else { return Err(format!("`{entry}` of {} must launch one contraction", file.display())) };
             launches.insert(s.signature.clone(), l);
@@ -1187,6 +1218,9 @@ struct Row {
     config: String,
     op: String,
     nest: String,
+    /// Its operands' shapes, which tell apart the rows of a nest launched at
+    /// several shapes.
+    shape: String,
     dtype: String,
     points: usize,
     tally: Tally,
@@ -1194,6 +1228,27 @@ struct Row {
     speedup: Option<f64>,
     /// Statement Q, on a contraction nest of a configuration swept whole.
     q: Option<Hybrid>,
+}
+
+/// Whether a nest of this primitive is a contraction nest, as statements O
+/// and Q count them: the builder's `dot` and `ein`, and since 0.10.0 step 2
+/// the derivatives of `dot` (plan 0.10.0's T3). M stays the `ein`s'.
+fn contraction(op: &str) -> bool {
+    matches!(op, "ein" | "dot" | "dot_vjp_l" | "dot_vjp_r")
+}
+
+/// A nest as the report names it: its name, and its operands when the day
+/// holds it at several shapes in one configuration and type, as the
+/// derivatives of a linear layer's product in a gradient (0.10.0 step 2),
+/// which the name alone would not tell apart.
+fn label(rows: &[Row], nest: &str, shape: &str, config: &str, dtype: &str) -> String {
+    if rows.iter().filter(|r| r.nest == nest && r.config == config && r.dtype == dtype).count() > 1 { format!("`{nest}` at {shape}") } else { format!("`{nest}`") }
+}
+
+impl Row {
+    fn label(&self, rows: &[Row]) -> String {
+        label(rows, &self.nest, &self.shape, &self.config, &self.dtype)
+    }
 }
 
 fn verdict(holds: bool) -> &'static str {
@@ -1235,7 +1290,7 @@ pub fn rank(day1: &Path, day2: &Path, out: &Path, opts: &RankOpts) -> ExitCode {
     md.push_str(&format!(" *Right*: the model orders it as the measurement does; a pair it predicts equal (*tied*) is not ranked, so not right (question 70). *Decided*: its predicted ratio lies outside 1 ± u, u = {u:.3}. The model's pick is `presk plan`'s: the best prediction, a tie broken by the space's order. Times are the mean of the two days' medians. *vs 0.6.0*: 0.6.0's default layout, its split left to the executor, over the best point measured.\n\n"));
     md.push_str("| nest | config | operands | type | points | close pairs | distinguished | right | right, decided | undecided | tied | Spearman | top-1 regret | top-k regret (k) | vs 0.6.0 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut classes: BTreeMap<String, Tally> = BTreeMap::new();
-    let mut per_nest_classes: Vec<(String, String, String, BTreeMap<String, Tally>)> = Vec::new();
+    let mut per_nest_classes: Vec<(String, String, String, String, BTreeMap<String, Tally>)> = Vec::new();
     let mut all = Tally::default();
     let mut rows: Vec<Row> = Vec::new();
     for ((nest, shape, dtype), n1) in &d1 {
@@ -1292,7 +1347,7 @@ pub fn rank(day1: &Path, day2: &Path, out: &Path, opts: &RankOpts) -> ExitCode {
         let topk = kept.iter().map(|i| meas[*i]).fold(f64::INFINITY, f64::min) / best;
         let config = (n1.entry.clone(), n1.config.clone(), dtype.clone());
         let q = match (t1.get(&config), t2.get(&config)) {
-            (Some(a), Some(b)) if !a.sampled && !b.sampled && (n1.op == "ein" || n1.op == "dot") => Some(Hybrid::new(&keys, &kept, topk, &[(a, p1), (b, p2)][..if one_day { 1 } else { 2 }])),
+            (Some(a), Some(b)) if !a.sampled && !b.sampled && contraction(&n1.op) => Some(Hybrid::new(&keys, &kept, topk, &[(a, p1), (b, p2)][..if one_day { 1 } else { 2 }])),
             _ => None,
         };
         let speedup = match (&n1.baseline, &n2.baseline) {
@@ -1301,8 +1356,8 @@ pub fn rank(day1: &Path, day2: &Path, out: &Path, opts: &RankOpts) -> ExitCode {
         };
         let vs = speedup.map_or("—".to_string(), |s| format!("{s:.2}×"));
         md.push_str(&format!("| `{nest}` | {} | {shape} | {dtype} | {} | {} | {rho:.3} | {top1:.2} | {topk:.2} ({}) | {vs} |\n", n1.config, keys.len(), total.cells(), kept.len()));
-        per_nest_classes.push((nest.clone(), n1.config.clone(), dtype.clone(), nest_classes));
-        rows.push(Row { entry: n1.entry.clone(), config: n1.config.clone(), op: n1.op.clone(), nest: nest.clone(), dtype: dtype.clone(), points: keys.len(), tally: total, top1, speedup, q });
+        per_nest_classes.push((nest.clone(), shape.clone(), n1.config.clone(), dtype.clone(), nest_classes));
+        rows.push(Row { entry: n1.entry.clone(), config: n1.config.clone(), op: n1.op.clone(), nest: nest.clone(), shape: shape.clone(), dtype: dtype.clone(), points: keys.len(), tally: total, top1, speedup, q });
     }
     md.push_str(&format!("| **all** | | | | | {} | | | | |\n\n", all.cells()));
     md.push_str(&statements(opts, &rows, &d1, &s1, &s2, check.as_ref(), one_day, shapes || opts.statement_q));
@@ -1311,9 +1366,10 @@ pub fn rank(day1: &Path, day2: &Path, out: &Path, opts: &RankOpts) -> ExitCode {
         md.push_str(&format!("| {c} | {} |\n", t.cells()));
     }
     md.push_str("\n## Per nest and class\n\n| nest | config | type | class | close pairs | distinguished | right | right, decided | undecided | tied |\n|---|---|---|---|---|---|---|---|---|---|\n");
-    for (nest, config, dtype, cs) in &per_nest_classes {
+    for (nest, shape, config, dtype, cs) in &per_nest_classes {
+        let name = label(&rows, nest, shape, config, dtype);
         for (c, t) in cs {
-            md.push_str(&format!("| `{nest}` | {config} | {dtype} | {c} | {} |\n", t.cells()));
+            md.push_str(&format!("| {name} | {config} | {dtype} | {c} | {} |\n", t.cells()));
         }
     }
     if shapes {
@@ -1396,7 +1452,7 @@ fn statements(opts: &RankOpts, rows: &[Row], d1: &Day, s1: &[Sweep], s2: &[Sweep
     } else {
         "inconclusive: fewer than 10³ distinguished pairs".to_string()
     };
-    let m_cells: Vec<String> = eins.iter().map(|r| format!("`{}` {} of {}{}", r.nest, r.tally.accuracy().map_or("—".to_string(), |a| format!("{:.1} %", 100.0 * a)), r.tally.distinguished, mark)).collect();
+    let m_cells: Vec<String> = eins.iter().map(|r| format!("{} {} of {}{}", r.label(rows), r.tally.accuracy().map_or("—".to_string(), |a| format!("{:.1} %", 100.0 * a)), r.tally.distinguished, mark)).collect();
     md.push_str(&format!("| M | more than 90 % of the distinguished close pairs ranked right, each `ein` of `{}` at {}, {} | {} | {m} |\n", opts.entry, opts.at, opts.dtype, m_cells.join("; ")));
     // N: every configuration of the entry swept whole, on each day.
     let whole: Vec<&Sweep> = s1.iter().chain(if one_day { &[][..] } else { s2 }).filter(|s| s.entry == opts.entry && !s.sampled).collect();
@@ -1405,9 +1461,9 @@ fn statements(opts: &RankOpts, rows: &[Row], d1: &Day, s1: &[Sweep], s2: &[Sweep
     let n_cells: Vec<String> = whole.iter().map(|s| format!("{} {} {:.0}×{}", s.config, s.realization, ratio(s), s.run_static_seconds.map_or(String::new(), |r| format!(" ({:.0}× with the entry run)", s.exhaustive_seconds / r.max(1e-9))))).collect();
     md.push_str(&format!("| N | choosing statically at least 10³× cheaper than the exhaustive sweep of the same points, `{}` | {} | {n} |\n", opts.entry, n_cells.join("; ")));
     // O: every contraction nest of the entry at the configuration.
-    let contractions: Vec<&Row> = rows.iter().filter(at).filter(|r| r.op == "ein" || r.op == "dot").collect();
+    let contractions: Vec<&Row> = rows.iter().filter(at).filter(|r| contraction(&r.op)).collect();
     let o = if contractions.is_empty() { "not measured".to_string() } else { verdict(contractions.iter().all(|r| r.top1 <= 1.25)).to_string() };
-    let o_cells: Vec<String> = contractions.iter().map(|r| format!("`{}` {:.2}{mark}", r.nest, r.top1)).collect();
+    let o_cells: Vec<String> = contractions.iter().map(|r| format!("{} {:.2}{mark}", r.label(rows), r.top1)).collect();
     md.push_str(&format!("| O | the model's pick within 1.25× of the best measured, every contraction nest of `{}` at {}, {} | {} | {o} |\n", opts.entry, opts.at, opts.dtype, o_cells.join("; ")));
     // P: the GEMM's best point against 0.6.0's.
     let gemm: Vec<&Row> = rows.iter().filter(|r| r.entry == opts.gemm && r.config == opts.gemm_at && r.dtype == "f32" && r.op == "dot").collect();
@@ -1427,7 +1483,7 @@ fn statements(opts: &RankOpts, rows: &[Row], d1: &Day, s1: &[Sweep], s2: &[Sweep
 /// its table per contraction nest.
 fn statement_q(rows: &[Row], one_day: bool) -> String {
     let nests: Vec<(&Row, &Hybrid)> = rows.iter().filter_map(|r| r.q.as_ref().map(|h| (r, h))).collect();
-    let name = |r: &Row| format!("`{}` {} {}", r.nest, r.config, r.dtype);
+    let name = |r: &Row| format!("{} {} {}", r.label(rows), r.config, r.dtype);
     let worst = |f: &dyn Fn(&Hybrid) -> f64| nests.iter().max_by(|a, b| f(a.1).total_cmp(&f(b.1)));
     let (measured, q) = match (worst(&|h| h.regret), worst(&Hybrid::cost), worst(&Hybrid::share)) {
         (Some((r1, h1)), Some((r2, h2)), Some((r3, h3))) => (
@@ -1441,8 +1497,8 @@ fn statement_q(rows: &[Row], one_day: bool) -> String {
     for (r, h) in &nests {
         let join = |f: &dyn Fn(&HybridDay) -> String| h.days.iter().map(f).collect::<Vec<_>>().join(" / ");
         md.push_str(&format!(
-            "| `{}` | {} | {} | {} | {} | {:.2} | {} | {} | {} | {} |\n",
-            r.nest,
+            "| {} | {} | {} | {} | {} | {:.2} | {} | {} | {} | {} |\n",
+            r.label(rows),
             r.config,
             r.dtype,
             r.points,
@@ -1483,7 +1539,7 @@ mod tests {
     #[test]
     fn a_layout_is_lowered_once_for_all_its_splits() {
         let dims = ["B=2".to_string(), "T=16".to_string()];
-        let captured = capture(&tutorial(), "attend", &dims, &[], &f32_plan(), 0, None, Capture::Shapes).unwrap();
+        let captured = capture(&tutorial(), "attend", &dims, &[], &f32_plan(), 0, &[], Capture::Shapes).unwrap();
         let workers = 10;
         let mut compared = 0;
         for l in &captured.launches {
@@ -1531,8 +1587,8 @@ mod tests {
             let (dims, consts) = (pick("--dim"), pick("--const"));
             for t in ["f32", "f64", "bf16"] {
                 let plan = presk_rt::Plan::from_realization(presk_rt::Realization::parse(t).unwrap());
-                let run = capture(&root.join(file), entry, &dims, &consts, &plan, 0, None, Capture::Run).unwrap();
-                let shapes = capture(&root.join(file), entry, &dims, &consts, &plan, 0, None, Capture::Shapes).unwrap();
+                let run = capture(&root.join(file), entry, &dims, &consts, &plan, 0, &[], Capture::Run).unwrap();
+                let shapes = capture(&root.join(file), entry, &dims, &consts, &plan, 0, &[], Capture::Shapes).unwrap();
                 assert_eq!(shapes.launches.iter().map(sig).collect::<Vec<_>>(), run.launches.iter().map(sig).collect::<Vec<_>>(), "{entry} in {t}");
                 launches += run.launches.len();
             }
@@ -1563,7 +1619,7 @@ mod tests {
         let day = dir.join("day");
         let dims = ["B=2".to_string(), "T=16".to_string()];
         let opts = SweepOpts { repeat: 1, interp: false, top: 0, random: 0, shard: None };
-        assert_eq!(autotune(&tutorial(), "attend", &dims, &[], &f32_plan(), Some(&p1), None, Space::Small, &opts, &day.join("B2_T16_f32"), 0), ExitCode::SUCCESS);
+        assert_eq!(autotune(&tutorial(), "attend", &dims, &[], &f32_plan(), Some(&p1), &[], Space::Small, &opts, &day.join("B2_T16_f32"), 0), ExitCode::SUCCESS);
         std::fs::write(day.join("day.txt"), "a day\n").unwrap();
         let (same, other) = (dir.join("same"), dir.join("other"));
         assert_eq!(reprice(&tutorial(), "attend", &day, &p1, &same, 0), ExitCode::SUCCESS);
@@ -1829,7 +1885,7 @@ mod tests {
         let mut samples = Vec::new();
         for (t, lanes) in [("f32", 4), ("f64", 2)] {
             let plan = presk_rt::Plan::from_realization(presk_rt::Realization::parse(t).unwrap());
-            let captured = capture(&file, "matmul", &["I=8".into(), "K=64".into(), "J=32".into()], &[], &plan, 0, None, Capture::Shapes).unwrap();
+            let captured = capture(&file, "matmul", &["I=8".into(), "K=64".into(), "J=32".into()], &[], &plan, 0, &[], Capture::Shapes).unwrap();
             let l = captured.launches.iter().find(|l| matches!(launch_kind(l), NestKind::Contraction(_))).unwrap();
             for key in keys.iter().flat_map(|k| [k.to_string(), k.replace("lanes=1", &format!("lanes={lanes}"))]) {
                 let layout = Layout::from_key(&key).unwrap();
@@ -1866,7 +1922,7 @@ mod tests {
         let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
         let consts: Vec<String> = consts.iter().map(|s| s.to_string()).collect();
         let base = presk_rt::Plan::from_realization(presk_rt::Realization::parse(realize).unwrap());
-        let code = plan(&root().join(file), entry, &dims, &consts, &base, &p, None, Space::Full, false, Some(&out), 0);
+        let code = plan(&root().join(file), entry, &dims, &consts, &base, &p, &[], Space::Full, false, Some(&out), 0);
         let written = out.exists().then(|| presk_rt::Plan::parse(&format!("@{}", out.display())).unwrap());
         (code, written)
     }
@@ -1882,11 +1938,15 @@ mod tests {
         assert_eq!(code, ExitCode::SUCCESS);
         let written = written.expect("a plan is written");
         let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
-        let captured = capture(&root().join(file), "mse_grad", &dims, &[], &f32_plan(), 0, None, Capture::Shapes).unwrap();
+        let captured = capture(&root().join(file), "mse_grad", &dims, &[], &f32_plan(), 0, &[], Capture::Shapes).unwrap();
         let workers = captured.machine.workers;
         let shapes: Vec<&Launch> = captured.launches.iter().filter(|l| l.nest == "Linear.apply/%3").collect();
         assert_eq!(shapes.len(), 2, "Linear.apply/%3 at two shapes");
-        assert_eq!(shapes.iter().map(|l| l.count).collect::<Vec<_>>(), [3, 3], "each launched three times (twice by the forward pass the gradient recomputes)");
+        // Once each, by `MLP.apply.fwd`, the forward pass whose residuals the
+        // gradient keeps (0.10.0 step 4). Recomputing, the first layer's ran
+        // again in `MLP.apply.vjp`, which needs its product for `gelu'`; and
+        // before the dead code after AD went (step 3), each ran three times.
+        assert_eq!(shapes.iter().map(|l| l.count).collect::<Vec<_>>(), [1, 1], "each layer launched once");
         // The first shape's own best does not lower at the second.
         let d = scratch("plan-shapes-fit");
         profile(&d.join("p.json"), 1.0, 0.2);
@@ -1909,6 +1969,41 @@ mod tests {
         }
     }
 
+    /// 0.10.0 step 2 (D90): `presk autotune --nest` takes several nests and
+    /// records them in sweep.json; a nest launched at several shapes keeps
+    /// every shape's points in its file, where it kept its last; and `presk
+    /// rank` counts the derivatives of `dot` among the contraction nests of
+    /// statements O and Q, and not among M's.
+    #[test]
+    fn a_sweep_of_several_nests_keeps_every_shape_and_ranks_the_derivatives() {
+        let dir = scratch("nests");
+        profile(&dir.join("p.json"), 1.0, 0.2);
+        let (file, dims) = (root().join("tests/examples/mlp/mlp.psk"), ["D=4".to_string(), "B=2".to_string()]);
+        let captured = capture(&file, "mse_grad", &dims, &[], &f32_plan(), 0, &[], Capture::Shapes).unwrap();
+        let derivatives: Vec<&Launch> = captured.launches.iter().filter(|l| matches!(op_name(l).as_str(), "dot_vjp_l" | "dot_vjp_r")).collect();
+        let nests: Vec<String> = derivatives.iter().map(|l| l.nest.clone()).collect::<BTreeSet<_>>().into_iter().collect();
+        assert!(nests.len() >= 2 && derivatives.len() > nests.len(), "derivative nests at several shapes: {nests:?}");
+        let day = dir.join("day");
+        let opts = SweepOpts { repeat: 1, interp: false, top: 0, random: 0, shard: None };
+        assert_eq!(autotune(&file, "mse_grad", &dims, &[], &f32_plan(), Some(&dir.join("p.json")), &nests, Space::Small, &opts, &day, 0), ExitCode::SUCCESS);
+        let sweep: Json = serde_json::from_str(&std::fs::read_to_string(day.join("sweep.json")).unwrap()).unwrap();
+        assert_eq!(sweep["nests"], json!(nests));
+        let (d, _) = read_day(&day).unwrap();
+        assert_eq!(d.len(), derivatives.len(), "the nests named, at each of their shapes, and no other");
+        for l in &derivatives {
+            let n = &d[&(l.nest.clone(), shape(l), "f32".to_string())];
+            assert_eq!(n.points.len(), points(l, Space::Small, captured.machine.workers).len(), "{} at {}", l.nest, shape(l));
+        }
+        let out = dir.join("ra4.md");
+        assert_eq!(rank(&day, &day, &out, &RankOpts { entry: "mse_grad".into(), at: "D=4,B=2".into(), ..RankOpts::default() }), ExitCode::SUCCESS);
+        let md = std::fs::read_to_string(&out).unwrap();
+        let row = |s: &str| md.lines().find(|l| l.starts_with(&format!("| {s} |"))).unwrap_or_default().to_string();
+        assert!(row("M").ends_with("|  | not measured |"), "{md}");
+        assert!(nests.iter().all(|n| row("O").contains(&format!("`{n}` "))) && !row("O").ends_with("not measured |"), "{md}");
+        assert!(row("Q").contains(&format!("| {} contraction nests: ", derivatives.len())), "{md}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// 0.9.0 (D82): a type the profile was not calibrated in is refused, and
     /// no plan is written, where `presk plan` wrote an empty plan; a
     /// realization with sites of such a type leaves them to the default.
@@ -1926,7 +2021,7 @@ mod tests {
         let base = presk_rt::Plan::from_realization(presk_rt::Realization::parse(&mixed).unwrap());
         let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
         let consts: Vec<String> = minigpt.iter().map(|s| s.to_string()).collect();
-        let captured = capture(&root().join("tests/examples/minigpt/minigpt.psk"), "MiniGPT.apply", &dims, &consts, &base, 0, None, Capture::Shapes).unwrap();
+        let captured = capture(&root().join("tests/examples/minigpt/minigpt.psk"), "MiniGPT.apply", &dims, &consts, &base, 0, &[], Capture::Shapes).unwrap();
         let other: BTreeSet<&str> = captured.launches.iter().filter(|l| l.dtype != presk_rt::Dtype::F32).map(|l| l.nest.as_str()).collect();
         assert!(!other.is_empty(), "the mixed realization has sites of other types");
         for n in &other {

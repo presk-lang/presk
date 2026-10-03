@@ -4,13 +4,13 @@
 import "minigpt.psk" as m
 
 -- ── Sampling one token ───────────────────────────────────────────────────────────
--- argmax and sample return an idx[V] (class Disc). sample carries the Rand effect and takes
--- no key yet: the compiler draws it from a stream seeded by the run's seed (§2.2, §10).
-fn next_token(θ : params m.MiniGPT, ctx : idx[m.V][batch: B, seq: T],
-              temperature : f64 = 0.8) -> idx[m.V][batch: B] uses Rand =
+-- argmax and sample return an idx[V] (class Disc). sample carries the Rand effect and draws
+-- from its key, as dropout does; the serving loop gives a key per token (§2.2).
+fn next_token(θ : params m.MiniGPT, key : key, ctx : idx[m.V][batch: m.B, seq: m.T],
+              temperature : f64 = 0.8) -> idx[m.V][batch: m.B] uses Rand =
   let logits = m.MiniGPT.apply(θ, ctx)            -- ℝ[batch, seq, vocab: V]
   let last   = logits[seq: -1]                    -- ℝ[batch, vocab: V]: last position
-  sample(last / real(temperature))               -- idx[V] per batch element
+  sample(key, last / real(temperature))          -- idx[V] per batch element
 
 -- ── Serving configuration ────────────────────────────────────────────────────────
 inference serve {

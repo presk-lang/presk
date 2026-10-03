@@ -32,10 +32,13 @@ Saturation runs under limits (30 iterations, 20 000 nodes, 2 s per
 function). The cheapest term of the result's class is then extracted and
 written back as fresh ANF, source names and spans preserved where a class
 still holds an original definition. A definition that is not in the result's
-term is not written back: dead code, including the forward recomputation
-that automatic differentiation leaves in every adjoint, disappears without a
-dedicated pass. Every rewritten function is verified; one that would not
-verify is left as it was and reported.
+term is not written back: dead code disappears without a dedicated pass.
+Since 0.10.0 step 3 automatic differentiation removes its own (the forward
+values an adjoint recomputes and nothing reads, the cotangents no caller
+reads: the `language` chapter, "Dead code after differentiation"), and it
+does so keeping every fusion group, which `--opt` does not. Every rewritten
+function is verified; one that would not verify is left as it was and
+reported.
 
 ## The rules
 
@@ -117,16 +120,24 @@ Every rewrite must reproduce the interpreter's goldens, and it does
 
 | Program | Functions rewritten | `let`s | Cost (counts) |
 |---|---|---|---|
-| `mlp.psk` (after AD) | 6 of 12 | 89 → 71 | 129 → 101 |
-| `train_minigpt.psk` (after AD, before `prepare_training`) | 14 of 28 | 308 → 276 | 407 → 353 |
+| `mlp.psk` (after AD) | 5 of 19 | 105 → 94 | 82.4 → 75.4 |
+| `train_minigpt.psk` (after AD, before `prepare_training`) | 13 of 35 | 324 → 299 | 361 → 328 |
 
-The adjoints are where the rules bite. `Linear.apply.vjp` goes from 14 to 7
-`let`s: the forward `dot` and `add` recomputed by AD are dead and vanish,
-`sum_to ct, %4` between equal types is the identity, and the two
+(Since 0.10.0 step 4 a gradient is its `.fwd`s and `.bwd`s, the `.vjp`s
+calling them: more functions and `let`s in the program, fewer run. Under
+`--remat recompute`, as at step 3: 5 of 12, 77 → 65, 72.2 → 65.2; 13 of
+28, 296 → 270, 351 → 318.)
+
+The adjoints are where the rules bite, though less since AD removes its
+dead code itself (before 0.10.0 step 3: 89 → 71 `let`s and 129 → 101 on
+`mlp.psk`, `Linear.apply.vjp` 14 → 7). The sweep of `Linear.apply`,
+`Linear.apply.bwd` since the gradient keeps its residuals (0.10.0 step 4;
+`Linear.apply.vjp` recomputing), goes from 11 to 7 `let`s: the two
 `set_field … (zeros_like θ)` summed together become one record `{w = …, b =
-…}` with no addition of zeros. `MLP.apply.vjp` (19 → 14) and `mse.vjp` (17 →
-14) shrink the same way; the forward passes (`SelfAttention.apply`,
-`LayerNorm.apply`) are already minimal for these rules and keep their size.
+…}` with no addition of zeros. `MLP.apply.bwd` (17 → 13) and `mse.bwd` (13
+→ 12) shrink the same way; the forward passes
+(`SelfAttention.apply`, `LayerNorm.apply`) are already minimal for these
+rules and keep their size.
 `adamw.step` hits the node limit (its long sums under associativity and
 commutativity do not saturate) and is extracted from the partial e-graph,
 cost 139 → 113.

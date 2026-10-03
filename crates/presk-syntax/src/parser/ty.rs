@@ -46,6 +46,13 @@ impl Parser {
                 p.expect_op(Op::RParen)?;
                 Ok(Ty::Tuple { elems, span: start.to(p.prev_span()) })
             }),
+            // `bool` followed by axes: a tensor of truth values. `bool` is a
+            // contextual word; alone it is the hyperparameter type, a path.
+            TokKind::Ident(name) if name == "bool" && self.peek_nth(1).kind == TokKind::Op(Op::LBracket) => {
+                self.bump();
+                let axes = self.axes()?;
+                Ok(Ty::Bool { axes, span: start.to(self.prev_span()) })
+            }
             TokKind::Ident(_) => {
                 let path = self.path()?;
                 let args = if self.at_op(Op::LBrace) { self.dim_args()? } else { vec![] };

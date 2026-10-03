@@ -228,6 +228,7 @@ fn strip_batch(t: &Ty) -> Result<Ty, String> {
     match t {
         Ty::Real(s) => Ok(Ty::Real(strip_shape(s)?)),
         Ty::Idx { bound, shape } => Ok(Ty::Idx { bound: bound.clone(), shape: strip_shape(shape)? }),
+        Ty::Truth(s) => Ok(Ty::Truth(strip_shape(s)?)),
         Ty::Tuple(ts) => Ok(Ty::Tuple(ts.iter().map(strip_batch).collect::<Result<_, _>>()?)),
         _ => Err("the batch must be a tensor or a tuple of tensors".into()),
     }
@@ -248,7 +249,7 @@ fn strip_shape(s: &Shape) -> Result<Shape, String> {
 /// The lengths of the `batch` axes of every leaf.
 fn batch_axis_lens(t: &Ty) -> Vec<DimExpr> {
     match t {
-        Ty::Real(s) | Ty::Idx { shape: s, .. } => s.axes.iter().filter(|a| a.name.as_deref() == Some("batch")).map(|a| a.len.clone()).collect(),
+        Ty::Real(s) | Ty::Idx { shape: s, .. } | Ty::Truth(s) => s.axes.iter().filter(|a| a.name.as_deref() == Some("batch")).map(|a| a.len.clone()).collect(),
         Ty::Tuple(ts) => ts.iter().flat_map(batch_axis_lens).collect(),
         _ => vec![],
     }
@@ -299,6 +300,9 @@ fn match_layout(t: &Ty, l: &presk_data::Layout, dims: &mut BTreeMap<DimVar, u64>
             }
             match_shape(s, shape, dims, &names)
         }
+        // A mask is stored as indices below 2, false 0 and true 1 (D99).
+        (Ty::Truth(s), Layout::Leaf(Leaf::Idx { bound: b, shape })) if *b <= 2 => match_shape(s, shape, dims, &names),
+        (Ty::Truth(_), _) => Err("a mask expected, stored as indices below 2".into()),
         (Ty::Real(_), Layout::Leaf(Leaf::Idx { .. })) => Err("reals expected, the file holds indices".into()),
         (Ty::Idx { .. }, Layout::Leaf(Leaf::Real { .. })) => Err("indices expected, the file holds reals".into()),
         (Ty::Tuple(_), _) => Err("a tuple expected, the file holds one tensor".into()),

@@ -174,6 +174,10 @@ pub enum Ty {
     Real { axes: Vec<AxisSpec>, span: Span },
     /// `idx[N][axes]`
     Idx { bound: Box<Expr>, axes: Vec<AxisSpec>, span: Span },
+    /// `bool[axes]`: a tensor of truth values (plan 0.10.0 step 7b; `bool`
+    /// is a contextual word, and without axes the hyperparameter type, a
+    /// [`Ty::Named`]).
+    Bool { axes: Vec<AxisSpec>, span: Span },
     /// `param ty`
     Param { inner: Box<Ty>, span: Span },
     /// `params path`
@@ -188,6 +192,7 @@ impl Ty {
         match self {
             Ty::Real { span, .. }
             | Ty::Idx { span, .. }
+            | Ty::Bool { span, .. }
             | Ty::Param { span, .. }
             | Ty::Params { span, .. }
             | Ty::Named { span, .. }

@@ -2,4 +2,4 @@
 source: crates/presk-interp/tests/run.rs
 expression: text
 ---
-idx[64][batch: 2] = [batch: 2] [19, 55]
+idx[64][batch: 2] = [batch: 2] [14, 24]

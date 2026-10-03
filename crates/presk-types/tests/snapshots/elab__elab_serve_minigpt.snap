@@ -37,20 +37,20 @@ dim B
 dim T <= 1024
 type Tokens = idx[50257][batch: B, seq: T]
 type Acts = ℝ[batch: B, seq: T, model: 768]
-type Mask = ℝ[seq: T, seq2: T]
+type Mask = bool[seq: T, seq2: T]
 module SelfAttention {
   use wq : Linear{768, 768}
   use wk : Linear{768, 768}
   use wv : Linear{768, 768}
   use wo : Linear{768, 768}
-  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
+  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
 }
 module Block {
   use attn : SelfAttention
   use mlp : MLP{768, 3072}
   use ln1 : LayerNorm{768}
   use ln2 : LayerNorm{768}
-  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
+  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
 }
 module Embedding {
   param tok : ℝ[50257, 768]  init
@@ -67,9 +67,9 @@ module MiniGPT {
 static assert #1: discharged
 == tests/examples/minigpt/serve_minigpt.psk (main)
 import m = tests/examples/minigpt/minigpt.psk
-fn next_token(θ : params MiniGPT, ctx : idx[50257][batch: B, seq: T], temperature : f64 = …) -> idx[50257][batch: B] uses Rand   -- implicit dims: B, T
+fn next_token(θ : params MiniGPT, key : key, ctx : idx[50257][batch: B, seq: T], temperature : f64 = …) -> idx[50257][batch: B] uses Rand
 inference serve (6 items)
-== implicit dimensions: B, T
+== implicit dimensions: B
 == instances
 Linear{D, hidden}:
   w : ℝ[D, hidden]
@@ -164,21 +164,3 @@ MiniGPT:
     | 
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
-[W0001] Warning: implicit dimension `B`
-   ,-[ tests/examples/minigpt/serve_minigpt.psk:9:59 ]
-   |
- 9 | fn next_token(θ : params m.MiniGPT, ctx : idx[m.V][batch: B, seq: T],
-   |                                                           |  
-   |                                                           `-- not declared; taken as a dimension of this function
-   | 
-   | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
----'
-[W0001] Warning: implicit dimension `T`
-   ,-[ tests/examples/minigpt/serve_minigpt.psk:9:67 ]
-   |
- 9 | fn next_token(θ : params m.MiniGPT, ctx : idx[m.V][batch: B, seq: T],
-   |                                                                   |  
-   |                                                                   `-- not declared; taken as a dimension of this function
-   | 
-   | Help: declare it with `dim T` at file level or as a type parameter `{T : dim}`
----'

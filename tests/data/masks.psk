@@ -1,0 +1,11 @@
+-- masks.psk — how `presk run` prints a value whose static type is
+-- `bool[S]` (D99's addendum, plan 0.10.0 step 8): as truth values, from
+-- the entry's signature, in its text and its `--json`, a result's leaves
+-- and the inputs it shows; at run time a mask stays indices below 2
+-- (`crates/presk-cli/tests/masks.rs`).
+dim T
+
+fn causal() -> bool[seq: T, seq2: T] = causal_mask(seq: T)
+
+fn masked(m : bool[seq: T, seq2: T], x : ℝ[seq: T, seq2: T]) -> (bool[seq: T, seq2: T], ℝ[seq: T, seq2: T]) =
+  (m, softmax(axis seq2, x, where = m))

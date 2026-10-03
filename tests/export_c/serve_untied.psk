@@ -7,9 +7,9 @@ module Bigram {
   param w : ℝ[V, V]
   fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
 }
-fn next(θ : params Bigram, ctx : idx[V][batch: B, seq: T]) -> idx[V][batch: B] uses Rand =
+fn next(θ : params Bigram, key : key, ctx : idx[V][batch: B, seq: T]) -> idx[V][batch: B] uses Rand =
   let logits = Bigram.apply(θ, ctx)
-  sample(logits[seq: -1])
+  sample(key, logits[seq: -1])
 inference serve {
   model   = Bigram
   weights = "ckpt/final"

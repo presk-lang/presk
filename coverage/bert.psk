@@ -97,3 +97,17 @@ type Feature = (Tokens, idx[S][batch: B, seq: T], ℝ[batch: B, seq2: T])
 fn squad(θ : params BertSquad, f : Feature) -> ℝ[batch: B, seq: T, ends: 2] =
   let (ids, types, mask) = f
   BertSquad.apply(θ, ids, types, mask)
+
+-- The SQuAD fine-tuning loss, as Google's run_squad.py computes it: the start
+-- logits over the sequence's positions against the answer's first position,
+-- the end logits against its last, each a cross-entropy averaged over the
+-- batch, and the mean of the two. It is here to give `presk solve` a scalar:
+-- the solver ranks the sites by the sensitivity ∂L/∂v of the entry's value,
+-- and `squad` returns the logits (D101). A labeled feature is a feature and
+-- its answer's span, `ends: 2` = (start, end) as positions of the sequence.
+type LabeledFeature = (Tokens, idx[S][batch: B, seq: T], ℝ[batch: B, seq2: T], idx[T][batch: B, ends: 2])
+
+fn squad_loss(θ : params BertSquad, f : LabeledFeature) -> ℝ[] =
+  let (ids, types, mask, answer) = f
+  let logits = BertSquad.apply(θ, ids, types, mask)
+  mean(cross_entropy(ein[batch, ends, seq](logits), answer))   -- seq, the class axis, last

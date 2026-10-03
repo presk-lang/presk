@@ -8,11 +8,11 @@ Linear.apply : [θ C∞, x C∞] uses none
 MLP.apply : [θ C∞, x C∞] uses none
 mse : [θ C∞, x C∞, y C∞] uses none
 mse_grad : [θ C∞, x C∞, y C∞] uses none
-SelfAttention.apply : [θ C∞, x C∞, mask C∞] uses none
-Block.apply : [θ C∞, x C∞, mask C∞] uses none
+SelfAttention.apply : [θ C∞, x C∞, mask Disc] uses none
+Block.apply : [θ C∞, x C∞, mask Disc] uses none
 Embedding.apply : [θ C∞, ids Disc] uses none
 MiniGPT.apply : [θ C∞, ids Disc] uses none
-next_token : [θ Disc, ctx Disc, temperature Disc] uses Rand
+next_token : [θ Disc, key Disc, ctx Disc, temperature Disc] uses Rand
 LayerNorm.init : [key C∞] uses Rand
 RMSNorm.init : [key C∞] uses Rand
 Linear.init : [key C∞] uses Rand

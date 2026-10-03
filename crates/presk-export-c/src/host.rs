@@ -15,7 +15,9 @@
 //!   OpenMP region whose threads each call it on their piece
 //!   ([`crate::launch`]). The split belongs to the launch, not to the
 //!   kernel's text: a kernel under the executor's default and the same kernel
-//!   stated on one worker print alike.
+//!   stated on one worker print alike. Every kernel is always inlined into
+//!   the host, and on GCC `model.c` is compiled without its scheduling
+//!   before register allocation (`MODEL_HEAD`, D97's addendum).
 //! - A view is a pointer at an offset; a slice of a stacked tree too.
 //! - A buffer converted at a kernel's edge, a stack, a slice written back are
 //!   `presk_convert`s; a fill (`zeros_like`, a dropout mask outside training)
@@ -26,10 +28,12 @@
 //!   `double`, as `Value::scalar_f64` reads it.
 //! - The straight-line host releases nothing: its arena holds the inputs and
 //!   every buffer, its size the sum of them, stated in `model.h`.
-//! - `sample` (step 6, D83) is `presk_sample` on the program's stream, which
-//!   the entry takes after the arena when it draws; an `f64` argument of the
-//!   entry is a `double` of its `_in` struct, which `main` sets to the value
-//!   it was exported with.
+//! - `sample` (step 6, D83) is `presk_sample` drawing from a key argument of
+//!   the entry (plan 0.10.0 step 7b, D99), a `presk_key` of its `_in` struct
+//!   which `main` derives from `-s SEED` as `presk run --seed` does; a key
+//!   nothing draws from is no field. An `f64` argument of the entry is a
+//!   `double` of its `_in` struct, which `main` sets to the value it was
+//!   exported with.
 //! - With `--serve` ([`export_serve`]), the program holds a generation
 //!   function and its greedy copy, two entries on the same structs, and
 //!   `generate.c`, `presk serve`'s loop over them.
@@ -51,6 +55,28 @@ use crate::structure::{self, EntryIo, Structured};
 use crate::{CFLAGS, OPENMP, RUNTIME, WARNINGS, kernel_fn, launch, ranged, workers};
 
 type Result<T> = std::result::Result<T, String>;
+
+/// How a kernel of `kernels.c` is declared (plan 0.10.0 step 7's follow-up,
+/// D97's addendum): a static function always inlined where the host
+/// launches it. Left to choose, GCC inlined some of a program's products and
+/// not others, and its choice moved with the program's other kernels.
+const KERNEL_DECL: &str = "/* Every kernel is inlined where the host launches it (presk D97). */\n#if defined(__GNUC__)\n#define PRESK_KERNEL static inline __attribute__((always_inline))\n#else\n#define PRESK_KERNEL static inline\n#endif\n\n";
+
+/// The head of `model.c`, before `model.h`: on GCC, every function of the
+/// file compiled without the scheduling that runs before register
+/// allocation. A product's inner loop under a 4×16 tile holds sixteen
+/// accumulators, four rows and four scalars, at the edge of the 32 vector
+/// registers; that scheduling hoisted the sixteen products ahead of their
+/// sums, and wherever the allocator then ran short an accumulator lived on
+/// the stack, read and written at every iteration, the product about 30 %
+/// slower (D97's addendum). Out of line it ran short in every case measured;
+/// inlined, in some. No rounding moves: scheduling reorders instructions
+/// that do not depend on one another, and the program's bits are the
+/// native backend's either way (C1).
+const MODEL_HEAD: &str = "#if defined(__GNUC__) && !defined(__clang__)\n/* GCC: no scheduling before register allocation, which spilled the\n * accumulators of a product's inner loop (presk D97). */\n#pragma GCC optimize (\"no-schedule-insns\")\n#endif\n\n";
+
+/// How `model.c` includes the kernels.
+const INCLUDE_KERNELS: &str = "/* The kernels are static and always inlined into the host's functions:\n * included here rather than compiled apart. */\n#include \"kernels.c\"\n";
 
 /// What the program is exported from, for the README and the comments.
 #[derive(Clone, Debug, Default)]
@@ -188,9 +214,13 @@ pub fn live_launches(rec: &Recording) -> Vec<usize> {
                     bufs[src.buf] = true;
                 }
             }
-            // A draw advances the stream whether its token is read or not:
-            // what the later draws give depends on it.
-            Op::Sample { src, .. } => bufs[src.buf] = true,
+            // A draw is a function of its key and its logits (plan 0.10.0
+            // step 7b): read when its tokens are.
+            Op::Sample { out, src, .. } => {
+                if bufs[*out] {
+                    bufs[src.buf] = true;
+                }
+            }
             Op::Fill { .. } => {}
         }
     }
@@ -453,8 +483,8 @@ impl KernelTable {
     }
 }
 
-/// Whether a recording draws from the stream (`sample`, step 6): its C
-/// function then takes the program's `presk_rng`.
+/// Whether a recording draws (`sample`, step 6) from a key of its
+/// arguments.
 pub fn samples(rec: &Recording) -> bool {
     rec.ops.iter().any(|o| matches!(o, Op::Sample { .. }))
 }
@@ -507,8 +537,9 @@ pub struct Serve {
     pub vocab: u64,
     pub seq_dim: String,
     pub window: u64,
-    /// The entry's arguments that are the context and the temperature, by
-    /// position.
+    /// The entry's arguments that are the key (plan 0.10.0 step 7b), the
+    /// context and the temperature, by position.
+    pub key: Option<usize>,
     pub ctx: usize,
     pub temperature: Option<usize>,
     /// The temperature when none is given: the function's default, or 1,
@@ -595,19 +626,32 @@ struct Dbl {
     arg: usize,
 }
 
+/// A key argument `sample` draws from (plan 0.10.0 step 7b): a `presk_key`
+/// of the `_in` struct, the recording's key argument `n`, which `main`
+/// derives from the seed as `presk run` does.
+struct KeyIn {
+    field: String,
+    path: String,
+    n: usize,
+    arg: usize,
+}
+
 /// The entry's arguments as the program takes them.
 struct Fields {
     ins: Vec<In>,
     dbls: Vec<Dbl>,
+    keys: Vec<KeyIn>,
     /// Constants fixed at export: `(path, what)`.
     fixed: Vec<(String, String)>,
     /// The `_in` struct's members, in the order of the leaves.
     decl: Vec<String>,
 }
 
-fn fields_of(rec: &Recording, args: &[Arg], quant: &std::collections::BTreeMap<String, String>) -> Result<Fields> {
+/// `sampled`, by the recording's key arguments: whether an entry of the
+/// program draws from it, which makes it a field.
+fn fields_of(rec: &Recording, args: &[Arg], quant: &std::collections::BTreeMap<String, String>, sampled: &[bool]) -> Result<Fields> {
     let mut names = Names::default();
-    let mut f = Fields { ins: Vec::new(), dbls: Vec::new(), fixed: Vec::new(), decl: Vec::new() };
+    let mut f = Fields { ins: Vec::new(), dbls: Vec::new(), keys: Vec::new(), fixed: Vec::new(), decl: Vec::new() };
     for (i, (arg, sym)) in args.iter().zip(&rec.args).enumerate() {
         let mut ps = Vec::new();
         paths(sym, &arg.name, &mut ps);
@@ -648,7 +692,12 @@ fn fields_of(rec: &Recording, args: &[Arg], quant: &std::collections::BTreeMap<S
                 Sym::Int(n) => f.fixed.push((path, format!("{n} (int)"))),
                 Sym::F64(Scalar::Const(x)) => f.fixed.push((path, format!("{x:?} (f64)"))),
                 Sym::Bool(b) => f.fixed.push((path, format!("{b} (bool)"))),
-                Sym::Key => f.fixed.push((path, "a key, dropped: nothing the program runs reads it".into())),
+                Sym::Key(Some(n)) if sampled.get(n).copied().unwrap_or(false) => {
+                    let field = names.fresh(c_ident(&path));
+                    f.decl.push(format!("    presk_key {field}; /* {} : key */", path.replace("*/", "* /")));
+                    f.keys.push(KeyIn { field, path, n, arg: i });
+                }
+                Sym::Key(_) => f.fixed.push((path, "a key, dropped: nothing the program runs draws from it".into())),
                 other => return Err(format!("argument `{path}` is {other:?}")),
             }
         }
@@ -677,10 +726,10 @@ fn out_decl(rec: &Recording, outs: &[(String, View)]) -> Vec<String> {
     outs.iter().map(|(f, v)| format!("    const {} *{f}; /* {} */", ctype(rec.bufs[v.buf].store), leaf_type(v))).collect()
 }
 
-/// The declaration of an entry's C function: the arena, the stream when it
-/// samples, the entry's `_in` and `_out` structs, `types` their prefix.
-fn signature(func: &str, types: &str, rng: bool) -> String {
-    format!("void {func}(presk_arena *arena, {}const {types}_in *in, {types}_out *out)", if rng { "presk_rng *rng, " } else { "" })
+/// The declaration of an entry's C function: the arena, the entry's `_in`
+/// and `_out` structs, `types` their prefix.
+fn signature(func: &str, types: &str) -> String {
+    format!("void {func}(presk_arena *arena, const {types}_in *in, {types}_out *out)")
 }
 
 /// Step 3's straight-line function of an entry: every operation of `rec`
@@ -813,16 +862,17 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
                     let _ = writeln!(body, "    (void)s{out};");
                 }
             }
-            Op::Sample { out, src, rows, vocab } => {
+            Op::Sample { out, src, rows, vocab, key } => {
                 alloc(*out, &mut made, &mut body);
-                let _ = writeln!(body, "    presk_sample({}, {}, {}, {rows}, {vocab}, rng);", bufnames[*out], view(src, &bufnames), cdtype(rec.bufs[src.buf].store));
+                let field = f.keys.iter().find(|k| k.n == *key).map_or("", |k| k.field.as_str());
+                let _ = writeln!(body, "    presk_sample({}, {}, {}, {rows}, {vocab}, &in->{field});", bufnames[*out], view(src, &bufnames), cdtype(rec.bufs[src.buf].store));
             }
         }
     }
     for (fld, v) in outs {
         let _ = writeln!(body, "    out->{fld} = {};", view(v, &bufnames));
     }
-    let unread = !f.ins.iter().any(|i| read_bufs[i.buf]) && f.dbls.is_empty();
+    let unread = !f.ins.iter().any(|i| read_bufs[i.buf]) && f.dbls.is_empty() && !samples(rec);
     format!("{sig}\n{{\n{}{body}}}\n", if unread { "    (void)in;\n" } else { "" })
 }
 
@@ -836,6 +886,15 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     let func = funcs[0].clone();
     let dead = rec.ops.iter().filter(|o| matches!(o, Op::Launch { .. })).count() - live_launches(rec).len();
     let sampling: Vec<bool> = recs.iter().map(|r| samples(r)).collect();
+    // A key argument is a field when an entry draws from it.
+    let mut sampled = vec![false; rec.key_args.len()];
+    for op in recs.iter().flat_map(|r| &r.ops) {
+        if let Op::Sample { key, .. } = op
+            && let Some(x) = sampled.get_mut(*key)
+        {
+            *x = true;
+        }
+    }
 
     // ----- kernels, deduplicated by text ---------------------------------
     let t = kernel_table(kernels, &recs, meta.threads)?;
@@ -844,23 +903,23 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     let max_workers = t.workers.values().copied().max().unwrap_or(1);
     let names_list = entries.iter().map(|(e, _)| format!("`{e}`")).collect::<Vec<_>>().join(" and ");
     let mut kernels_c = format!(
-        "/* kernels.c: the kernels of {} ({}), one C function each, deduplicated,\n * each under its PSK-Kernel text (presk dump --stage kernel). Included by\n * model.c. Printed by presk-export-c (plan 0.9.0 §3.2, presk D77). */\n\n",
+        "/* kernels.c: the kernels of {} ({}), one C function each, deduplicated,\n * each under its PSK-Kernel text (presk dump --stage kernel). Included by\n * model.c. Printed by presk-export-c (plan 0.9.0 §3.2, presk D77). */\n\n{KERNEL_DECL}",
         names_list, meta.file
     );
     for (n, text) in t.text.iter().enumerate() {
-        kernels_c.push_str(&text.replace("static void KERNEL(", &format!("static void k{n}(")));
+        kernels_c.push_str(&text.replace("static void KERNEL(", &format!("PRESK_KERNEL void k{n}(")));
         kernels_c.push('\n');
     }
 
     // ----- the arguments and the result, the same for every entry -------
-    let fields: Vec<Fields> = recs.iter().map(|r| fields_of(r, args, &meta.quant)).collect::<Result<_>>()?;
+    let fields: Vec<Fields> = recs.iter().map(|r| fields_of(r, args, &meta.quant, &sampled)).collect::<Result<_>>()?;
     let outs: Vec<Vec<(String, View)>> = recs.iter().map(|r| outs_of(r)).collect::<Result<_>>()?;
     for k in 1..entries.len() {
         if fields[k].decl != fields[0].decl || out_decl(recs[k], &outs[k]) != out_decl(rec, &outs[0]) {
             return Err(format!("`{}` takes or returns other types than `{}`", entries[k].0, entries[0].0));
         }
     }
-    let Fields { ins, dbls, fixed, decl } = &fields[0];
+    let Fields { ins, dbls, keys, fixed, decl } = &fields[0];
     let outs_named = &outs[0];
 
     // ----- model.h ------------------------------------------------------
@@ -895,8 +954,9 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     }
     let _ = writeln!(h, "#define PRESK_{upper}_ARENA ((size_t){arena})\n");
     let scalars = if dbls.is_empty() { "" } else { " An f64 argument is a\n * double, which the caller sets (plan 0.9.0 step 6)." };
+    let keyed = if keys.is_empty() { "" } else { " A key `sample` draws\n * from is a presk_key, which the caller sets (plan 0.10.0 step 7b)." };
     let integers = if ins.iter().any(|i| i.quant.is_some()) { " Integer weights are a presk_q8 or a\n * presk_q4, their integers and their scales (plan 0.9.0 step 7)." } else { "" };
-    let _ = writeln!(h, "/* The entry's arguments, leaf by leaf, each tensor in the type the\n * realization stores it in.{integers}{scalars} */\ntypedef struct {{");
+    let _ = writeln!(h, "/* The entry's arguments, leaf by leaf, each tensor in the type the\n * realization stores it in.{integers}{scalars}{keyed} */\ntypedef struct {{");
     for d in decl {
         let _ = writeln!(h, "{d}");
     }
@@ -909,17 +969,17 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     }
     let _ = writeln!(h, "}} {func}_out;\n");
     if sampling[0] {
-        let _ = writeln!(h, "/* One call of `{}`: every launch of the native backend's host, in order,\n * each buffer bump-allocated from `arena`. Its `sample` draws from `rng`,\n * the program's stream, which presk_rng_init seeds and each draw advances:\n * seeded as the native backend seeds its own, with the run's seed, it gives\n * the native backend's tokens, call after call (plan 0.9.0 step 6). */", meta.entry);
+        let _ = writeln!(h, "/* One call of `{}`: every launch of the native backend's host, in order,\n * each buffer bump-allocated from `arena`. Its `sample` draws from a key of\n * `in`, one uniform per row: given the key the native backend is given, it\n * draws its tokens (plan 0.10.0 step 7b). */", meta.entry);
     } else {
         let _ = writeln!(h, "/* One call of `{}`: every launch of the native backend's host, in order,\n * each buffer bump-allocated from `arena`. */", meta.entry);
     }
-    let _ = writeln!(h, "{};", signature(&func, &func, sampling[0]));
+    let _ = writeln!(h, "{};", signature(&func, &func));
     for k in 1..entries.len() {
         let what = match serve {
             Some(s) if entries[k].0 == s.greedy => format!("`{}` with every `sample` an `argmax`, the function `presk serve`\n * calls at temperature 0 (with temperature 1)", entries[0].0),
             _ => "another entry".to_string(),
         };
-        let _ = writeln!(h, "\n/* `{}`: {what}. The same arguments and result. */\n{};", entries[k].0, signature(&funcs[k], &func, sampling[k]));
+        let _ = writeln!(h, "\n/* `{}`: {what}. The same arguments and result. */\n{};", entries[k].0, signature(&funcs[k], &func));
     }
     let _ = writeln!(h, "\n#endif");
 
@@ -931,12 +991,12 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
             let _ = writeln!(model_c, " * operation of the native backend's host in order, {launches} launches of {} kernels.", t.text.len());
             let _ = writeln!(model_c, " * A comment names the site of the operations below it, \"<function>/%<let>\".");
             let _ = writeln!(model_c, " * Generated by presk {}; do not edit. */\n", meta.version);
-            let _ = writeln!(model_c, "#include \"model.h\"\n\n/* The kernels are static, so that each call can be inlined: included\n * here rather than compiled apart. */\n#include \"kernels.c\"\n");
+            let _ = writeln!(model_c, "{MODEL_HEAD}#include \"model.h\"\n\n{INCLUDE_KERNELS}");
             for (k, r) in recs.iter().enumerate() {
                 if k > 0 {
                     model_c.push('\n');
                 }
-                model_c.push_str(&flat_fn(&signature(&funcs[k], &func, sampling[k]), r, &fields[k], &outs[k], &t));
+                model_c.push_str(&flat_fn(&signature(&funcs[k], &func), r, &fields[k], &outs[k], &t));
             }
         }
         Some(s) => {
@@ -947,11 +1007,12 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
             let _ = writeln!(model_c, " * below it, \"<function>/%<let>\". Every function releases what it allocated");
             let _ = writeln!(model_c, " * when it returns; what it returns is written into buffers its caller");
             let _ = writeln!(model_c, " * allocated. Generated by presk {}; do not edit. */\n", meta.version);
-            let _ = writeln!(model_c, "#include \"model.h\"\n\n/* The kernels are static, so that each call can be inlined: included\n * here rather than compiled apart. */\n#include \"kernels.c\"\n");
+            let _ = writeln!(model_c, "{MODEL_HEAD}#include \"model.h\"\n\n{INCLUDE_KERNELS}");
             let in_fields: Vec<String> = ins.iter().map(|i| i.field.clone()).collect();
             let in_doubles: Vec<String> = dbls.iter().map(|d| d.field.clone()).collect();
             let out_fields: Vec<String> = outs_named.iter().map(|(f, _)| f.clone()).collect();
-            let ios: Vec<EntryIo> = funcs.iter().zip(&sampling).map(|(f, rng)| EntryIo { func: f, types: &func, in_fields: &in_fields, in_doubles: &in_doubles, out_fields: &out_fields, rng: *rng }).collect();
+            let in_keys: Vec<Option<String>> = (0..rec.key_args.len()).map(|n| keys.iter().find(|k| k.n == n).map(|k| k.field.clone())).collect();
+            let ios: Vec<EntryIo> = funcs.iter().map(|f| EntryIo { func: f, types: &func, in_fields: &in_fields, in_doubles: &in_doubles, out_fields: &out_fields, in_keys: &in_keys }).collect();
             model_c.push_str(&s.print(&ios));
         }
     }
@@ -978,12 +1039,12 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         files_args.push(("INPUTS", "inputs"));
     }
     let usage = files_args.iter().map(|(u, _)| format!("{u}.psk.d")).chain(std::iter::once("OUT.psk.d".to_string())).collect::<Vec<_>>().join(" ");
-    let opts = if sampling[0] { "[-r R] [-s SEED]" } else { "[-r R]" };
+    let opts = if keys.is_empty() { "[-r R]" } else { "[-r R] [-s SEED]" };
     let mut m = String::new();
-    let seeded = if sampling[0] {
-        format!(" Its draws come from the\n * stream of the seed given with -s, {} by default, the one it was exported\n * with (plan 0.9.0 step 6); each call of -r starts it again, so that every\n * call computes the same outputs.", meta.seed)
-    } else {
+    let seeded = if keys.is_empty() {
         String::new()
+    } else {
+        format!(" Its draws come from the\n * keys of its arguments, which it derives from the seed given with -s, {} by\n * default, the one it was exported with, as presk run --seed does (plan\n * 0.10.0 step 7b): every call computes the same outputs.", meta.seed)
     };
     let _ = writeln!(m, "/* main.c: reads the inputs of `{}`, runs it and writes its outputs, as\n * .psk.d files (presk-data's format). With -r R, runs it R times, the arena\n * released between calls, and prints the median and the best wall time on\n * stderr (plan 0.9.0 step 5); the outputs written are the last call's.{seeded}\n * Generated by presk {}; do not edit.\n *\n *   usage: model {opts} {usage}\n */\n", meta.entry, meta.version);
     let _ = writeln!(m, "#include \"model.h\"\n\n#include <stdlib.h>\n#include <time.h>\n");
@@ -1008,11 +1069,11 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     tables(&mut m, true);
     let _ = writeln!(m, "int main(int argc, char **argv)\n{{");
     let _ = writeln!(m, "    long repeat = 1;\n    int timed = 0;");
-    if sampling[0] {
+    if !keys.is_empty() {
         let _ = writeln!(m, "    uint64_t seed = {};", meta.seed);
     }
     let _ = writeln!(m, "    int a = 1;\n    for (; a + 1 < argc; a += 2) {{\n        if (strcmp(argv[a], \"-r\") == 0) {{\n            repeat = strtol(argv[a + 1], NULL, 10);\n            timed = 1;");
-    if sampling[0] {
+    if !keys.is_empty() {
         let _ = writeln!(m, "        }} else if (strcmp(argv[a], \"-s\") == 0) {{\n            seed = strtoull(argv[a + 1], NULL, 10);");
     }
     let _ = writeln!(m, "        }} else\n            break;\n    }}");
@@ -1025,20 +1086,16 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     for d in dbls {
         let _ = writeln!(m, "    in.{} = {}; /* {}, as exported */", d.field, c_real(d.value), d.path.replace("*/", "* /"));
     }
+    for k in keys {
+        m.push_str(&key_c(k, &rec.key_args[k.n], args.len()));
+    }
     for (k, (u, _)) in files_args.iter().enumerate() {
         let group: &[&In] = if *u == "WEIGHTS" { &weights } else { &others };
         m.push_str(&load_c(group, rec, &u.to_lowercase(), u, &format!("argv[a + {k}]")));
     }
     let _ = writeln!(m, "    double *ms = malloc((size_t)repeat * sizeof *ms);\n    if (!ms) {{\n        fprintf(stderr, \"-r %ld: not that much memory\\n\", repeat);\n        return 1;\n    }}");
-    if sampling[0] {
-        let _ = writeln!(m, "    presk_rng rng;");
-    }
     let _ = writeln!(m, "    {func}_out out;\n    size_t mark = presk_mark(&arena);\n    for (long r = 0; r < repeat; r++) {{\n        presk_release(&arena, mark);");
-    if sampling[0] {
-        let _ = writeln!(m, "        presk_rng_init(&rng, seed);\n        double t0 = now_ms();\n        {func}(&arena, &rng, &in, &out);");
-    } else {
-        let _ = writeln!(m, "        double t0 = now_ms();\n        {func}(&arena, &in, &out);");
-    }
+    let _ = writeln!(m, "        double t0 = now_ms();\n        {func}(&arena, &in, &out);");
     let _ = writeln!(m, "        ms[r] = now_ms() - t0;\n    }}");
     let _ = writeln!(m, "    if (timed) {{\n        qsort(ms, (size_t)repeat, sizeof *ms, ascending);\n        fprintf(stderr, \"{func}: %ld call%s, median %.3f ms, best %.3f ms\\n\", repeat, repeat == 1 ? \"\" : \"s\", ms[repeat / 2], ms[0]);\n    }}\n    free(ms);");
     let _ = writeln!(m, "    const void *outputs[] = {{{}}};", outs_named.iter().map(|(f, _)| format!("out.{f}")).collect::<Vec<_>>().join(", "));
@@ -1051,7 +1108,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         Some(s) => {
             let mut g = String::new();
             tables(&mut g, false);
-            Some(generate_c(meta, s, &funcs, &func, &upper, ins, dbls, &weights, rec, &g)?)
+            Some(generate_c(meta, s, &funcs, &func, &upper, ins, dbls, keys, &weights, rec, &g)?)
         }
         None => None,
     };
@@ -1184,10 +1241,28 @@ fn load_c(group: &[&In], rec: &Recording, bufs: &str, u: &str, path: &str) -> St
     m
 }
 
+/// The C of `main` that sets the key field `k` as `presk run --seed`
+/// synthesizes it (plan 0.10.0 step 7b): the key the seed names, split
+/// among the entry's `nargs` arguments, then down the argument's tuples.
+fn key_c(k: &KeyIn, a: &presk_kernel::record::KeyArg, nargs: usize) -> String {
+    let mut m = String::new();
+    let _ = writeln!(m, "    /* {}: the key presk run --seed synthesizes, argument {} of {nargs}. */
+    {{
+        presk_key k;
+        presk_key_from_seed(&k, seed);
+        presk_key_split(&k, {}, &k);", k.path.replace("*/", "* /"), a.arg + 1, a.arg);
+    for (_, pos) in &a.path {
+        let _ = writeln!(m, "        presk_key_split(&k, {pos}, &k);");
+    }
+    let _ = writeln!(m, "        in.{} = k;
+    }}", k.field);
+    m
+}
+
 /// `generate.c` (step 6): `presk serve`'s loop over the exported entry and
 /// its greedy copy, its output `presk serve`'s, `--json` included.
 #[allow(clippy::too_many_arguments)]
-fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str, ins: &[In], dbls: &[Dbl], weights: &[&In], rec: &Recording, tables: &str) -> Result<String> {
+fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str, ins: &[In], dbls: &[Dbl], keys: &[KeyIn], weights: &[&In], rec: &Recording, tables: &str) -> Result<String> {
     let Some(ctx) = ins.iter().find(|i| i.arg == s.ctx && !i.weights) else { return Err("the context is not an input of the entry".into()) };
     if rec.bufs[ctx.buf].len as u64 != s.window || ctx.bound != s.vocab {
         return Err(format!("the context `{}` is not {} tokens below {}", ctx.path, s.window, s.vocab));
@@ -1202,11 +1277,19 @@ fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str
     if dbls.iter().any(|d| Some(d.arg) != s.temperature) {
         return Err("the entry takes an f64 besides its temperature".into());
     }
+    // The key a token is given, when the function draws from one.
+    let key = match s.key {
+        Some(a) => keys.iter().find(|k| k.arg == a),
+        None => None,
+    };
+    if keys.iter().any(|k| Some(k.arg) != s.key) {
+        return Err("the entry draws from a key besides the one presk serve gives it".into());
+    }
     let (sampled, greedy) = (&funcs[0], &funcs[1]);
     let mut g = String::new();
     let _ = writeln!(
         g,
-        "/* generate.c: the generation loop of `presk serve` over `{entry}`\n * ({file}; plan 0.9.0 step 6, presk D83). The context is the last {w}\n * tokens, the window {model}'s parameters fix; each step computes one token\n * from it, appends it, and moves the window on. At temperature 0 the step\n * is {greedy}, the argmax copy, at temperature 1, as presk serve's\n * greedy path; above it, {sampled}, whose draws come from one stream,\n * seeded once with the seed and carried from step to step, as presk\n * serve's backend carries its own. Its output is presk serve's: the tokens\n * on one line, or with --json the same JSON document. Generated by presk\n * {version}; do not edit.\n *\n *   usage: generate --weights W.psk.d --prompt \"t1 t2 ...\" [--tokens N]\n *                   [--temperature X] [--seed S] [--json]\n */\n",
+        "/* generate.c: the generation loop of `presk serve` over `{entry}`\n * ({file}; plan 0.9.0 step 6, presk D83). The context is the last {w}\n * tokens, the window {model}'s parameters fix; each step computes one token\n * from it, appends it, and moves the window on. At temperature 0 the step\n * is {greedy}, the argmax copy, at temperature 1, as presk serve's\n * greedy path; above it, {sampled}, which draws from the key it is given:\n * token i (from 1) is given the child i of the key the seed names, as\n * presk serve gives it (plan 0.10.0 step 7b, presk D99). Its output is\n * presk serve's: the tokens on one line, or with --json the same JSON\n * document. Generated by presk {version}; do not edit.\n *\n *   usage: generate --weights W.psk.d --prompt \"t1 t2 ...\" [--tokens N]\n *                   [--temperature X] [--seed S] [--json]\n */\n",
         entry = meta.entry,
         file = meta.file,
         w = s.window,
@@ -1233,7 +1316,16 @@ fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str
         g.push_str(&load_c(weights, rec, "weights_bufs", "WEIGHTS", "weights"));
     }
     let _ = writeln!(g, "    int64_t *ctx = presk_alloc(&arena, WINDOW * sizeof(int64_t));\n    in.{} = ctx;", ctx.field);
-    let _ = writeln!(g, "    presk_rng rng;\n    presk_rng_init(&rng, seed);\n    {types}_out out;\n    size_t mark = presk_mark(&arena);\n    for (uint64_t step = 0; step < tokens; step++) {{\n        for (size_t i = 0; i < WINDOW; i++)\n            ctx[i] = (int64_t)toks[len - WINDOW + i];\n        presk_release(&arena, mark);\n        if (greedy) {{");
+    if key.is_some() {
+        let _ = writeln!(g, "    /* The serve's key: the one the seed names. */\n    presk_key serve_key;\n    presk_key_from_seed(&serve_key, seed);");
+    } else {
+        let _ = writeln!(g, "    (void)seed;");
+    }
+    let _ = writeln!(g, "    {types}_out out;\n    size_t mark = presk_mark(&arena);\n    for (uint64_t step = 0; step < tokens; step++) {{\n        for (size_t i = 0; i < WINDOW; i++)\n            ctx[i] = (int64_t)toks[len - WINDOW + i];\n        presk_release(&arena, mark);");
+    if let Some(k) = key {
+        let _ = writeln!(g, "        presk_key_child(&serve_key, step + 1, &in.{});", k.field);
+    }
+    let _ = writeln!(g, "        if (greedy) {{");
     if let Some(d) = temp {
         let _ = writeln!(g, "            in.{} = 1.0;", d.field);
     }
@@ -1241,7 +1333,7 @@ fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str
     if let Some(d) = temp {
         let _ = writeln!(g, "            in.{} = temperature;", d.field);
     }
-    let _ = writeln!(g, "            {sampled}(&arena, &rng, &in, &out);\n        }}\n        toks[len++] = (uint64_t)out.{}[0];\n    }}", outs_first(rec)?);
+    let _ = writeln!(g, "            {sampled}(&arena, &in, &out);\n        }}\n        toks[len++] = (uint64_t)out.{}[0];\n    }}", outs_first(rec)?);
     let _ = writeln!(
         g,
         "    if (json) {{\n        printf(\"{{\\n\");\n        json_list(\"generated\", toks + prompt_len, len - prompt_len, 0);\n        printf(\"  \\\"greedy\\\": %s,\\n\", greedy ? \"true\" : \"false\");\n        printf(\"  \\\"model\\\": %s,\\n\", {model});\n        json_list(\"prompt\", toks, prompt_len, 0);\n        printf(\"  \\\"vocab\\\": %d,\\n  \\\"weights\\\": \", VOCAB);\n        json_string(weights);\n        printf(\",\\n  \\\"window\\\": %d\\n}}\\n\", WINDOW);\n    }} else {{\n        fprintf(stderr, \"generate: {m} from %s, prompt of %zu tokens, %zu generated, %s, context window %d\\n\", weights, prompt_len, len - prompt_len, greedy ? \"greedy\" : \"sampled\", WINDOW);\n        for (size_t i = prompt_len; i < len; i++)\n            printf(\"%s%llu\", i > prompt_len ? \" \" : \"\", (unsigned long long)toks[i]);\n        printf(\"\\n\");\n    }}\n    free(toks);\n    presk_arena_free(&arena);\n    return 0;\n}}",
@@ -1308,7 +1400,7 @@ struct Doc<'a> {
     weights: Option<&'a DataFile>,
     inputs: Option<&'a DataFile>,
     outputs: &'a DataFile,
-    /// The entry draws from the stream.
+    /// The entry draws from a key of its arguments.
     samples: bool,
     /// The other entries: `(Presk name, C function, launches)`.
     others: Vec<(String, String, usize)>,
@@ -1337,7 +1429,7 @@ fn readme(meta: &Meta, d: &Doc) -> String {
         None => "the default layout of every nest".to_string(),
     };
     let _ = writeln!(r, "- **Realization:** `{}`, {layout}. Every buffer is stored in that type, indices as `int64_t`, `bf16` as `uint16_t` computed in `float`.", meta.realize);
-    let _ = writeln!(r, "- **Seed:** {} (the inputs `presk run --seed {}` synthesizes, in `conformance/`{}).", meta.seed, meta.seed, if *samples { ", and the stream `sample` draws from" } else { "" });
+    let _ = writeln!(r, "- **Seed:** {} (the inputs `presk run --seed {}` synthesizes, in `conformance/`{}).", meta.seed, meta.seed, if *samples { ", and the keys `sample` draws from" } else { "" });
     if !fixed.is_empty() {
         let _ = writeln!(r, "- **Fixed at export**, as `presk run` synthesizes them: {}. A `.psk.d` holds no scalar, so they are constants of the program, like the dimensions.", fixed.iter().map(|(p, v)| format!("`{p}` = {v}")).collect::<Vec<_>>().join("; "));
     }
@@ -1371,21 +1463,22 @@ fn readme(meta: &Meta, d: &Doc) -> String {
     if serve.is_some() {
         let _ = writeln!(r, "| `generate.c` | the generation loop of `presk serve` over the entry and its greedy copy |");
     }
-    let _ = writeln!(r, "| `presk_rt.h`, `presk_rt.c` | the runtime: conversions between machine types, the `.psk.d` reader and writer, the arena{} |", if *samples { ", the stream `sample` draws from and `sample` itself" } else { "" });
+    let _ = writeln!(r, "| `presk_rt.h`, `presk_rt.c` | the runtime: conversions between machine types, the `.psk.d` reader and writer, the arena{} |", if *samples { ", the keys `sample` draws from and `sample` itself" } else { "" });
     let _ = writeln!(r, "| `presk_libm.c` | the transcendental functions, musl 1.1.22's, those of the native backend |");
     let _ = writeln!(r, "| `conformance/` | the inputs as `.psk.d`, the native backend's outputs (`native.psk.d`), {}and `check.sh` |\n", if meta.exact { "the exact reference's (`exact.psk.d`, rounded to `f64`), " } else { "" });
     let _ = writeln!(r, "## Build and run\n\n```sh\nmake\n./model {usage}\nmake check    # C1: ./model {} conformance/out.psk.d, compared with conformance/native.psk.d\n```\n", run_args.join(" "));
     let _ = writeln!(r, "**The flags that must not change** (`STRICT` in the `Makefile`): `-std=c11 -ffp-contract=off`. The kernels round every product before they add it, as the native backend does; a compiler allowed to contract `a + b*c` into one fused multiply-add changes the bits, and GCC does by default in its GNU modes. Never build with `-ffast-math` or any of its parts. On x86, the program needs SSE arithmetic (any x86-64), not the x87.\n");
+    let _ = writeln!(r, "**The kernels are inlined** into the host's functions, always (`PRESK_KERNEL` in `kernels.c`), and on GCC `model.c` is compiled without the scheduling that runs before register allocation (the `#pragma GCC optimize` at its head). A product's inner loop holds about as many values as the machine has vector registers; kept out of line, or scheduled so, it can put one of its sums on the stack, and the product then takes about 30 % longer (presk D97). Neither changes a bit.\n");
     let _ = writeln!(r, "**Timing:** `./model -r R {}` runs the entry `R` times, the arena released between calls, prints the median and the best wall time on standard error, and writes the last call's outputs.\n", run_args.iter().map(|s| s.as_str()).chain(std::iter::once("OUT.psk.d")).collect::<Vec<_>>().join(" "));
     if *samples {
         let _ = writeln!(r, "## Randomness\n");
-        let _ = writeln!(r, "`sample` draws a token per row of its logits from a stream, not from a key: in Presk it takes none, and the native backend draws from its own stream, seeded by the run's seed. The program's stream is a `presk_rng` (`presk_rt.h`): ChaCha20, as `rand_chacha`'s `ChaCha20Rng`, seeded by `presk_rng_init(&rng, seed)` as the native backend seeds its own (`seed_from_u64(seed ^ 0x5a5a5a5a)`), each draw the top 53 bits of the next 64 over 2^53. It is the program's state, which `{func}` takes and advances: seeded once, it gives the native backend's tokens call after call, as `presk serve` makes one call per token on one backend.\n");
+        let _ = writeln!(r, "`sample(key, logits)` draws a token per row of its logits from its key, which is an argument of the entry: a `presk_key` of `{func}_in` (`presk_rt.h`), 32 bytes, set by the caller. The row of rank `p` draws the uniform `p` of the key: the 64-bit word `p` of its keystream, ChaCha20 as `rand_chacha`'s `ChaCha20Rng` seeded with the key, its top 53 bits over 2^53 (presk D99). Given the key the native backend is given, the program draws its tokens; a function of its arguments, it computes the same outputs at every call.\n");
         let _ = writeln!(r, "- **The draw** is the native backend's, in `f64`: the row's largest logit `m`, `e_i = exp(x_i − m)`, their sum `z` in order, and the first token whose running sum of `e_i / z` exceeds the draw. `exp` is `presk_exp`, musl's, the function the native kernels call, so the tokens do not depend on the C library.");
-        let _ = writeln!(r, "- **`main`** seeds the stream with `-s SEED`, {} by default, the seed the program was exported with and `conformance/native.psk.d` was computed with; under `-r R` it seeds it again before each call, so that every call computes the same outputs.\n", meta.seed);
+        let _ = writeln!(r, "- **`main`** sets each key as `presk run --seed` synthesizes it from `-s SEED`, {} by default, the seed the program was exported with and `conformance/native.psk.d` was computed with: the key the seed names (`presk_key_from_seed`), split among the entry's arguments (`presk_key_split`). A key nothing draws from is no field of `{func}_in`.\n", meta.seed);
     }
     if let Some(s) = serve {
         let _ = writeln!(r, "## Generation\n");
-        let _ = writeln!(r, "`generate` (`generate.c`) is the loop of `presk serve` over this program: the context is the last {} tokens, the window `{}`'s parameters fix; each step computes one token from it, appends it and moves the window on. At temperature 0 a step calls the greedy copy with temperature 1, as `presk serve` does; above 0 it calls `{func}`, all its draws from one stream, seeded once with `--seed`. Its output is `presk serve`'s: the tokens on one line, or with `--json` the same document, byte for byte (statement C5 of plan 0.9.0).\n", s.window, s.model);
+        let _ = writeln!(r, "`generate` (`generate.c`) is the loop of `presk serve` over this program: the context is the last {} tokens, the window `{}`'s parameters fix; each step computes one token from it, appends it and moves the window on. At temperature 0 a step calls the greedy copy with temperature 1, as `presk serve` does; above 0 it calls `{func}`{}. Its output is `presk serve`'s: the tokens on one line, or with `--json` the same document, byte for byte (statement C5 of plan 0.9.0).\n", s.window, s.model, if s.key.is_some() { ", token `i` (from 1) given the child `i` of the key `--seed` names (`presk_key_child`), as `presk serve` gives it" } else { "" });
         let _ = writeln!(r, "```sh\nmake generate\n./generate --weights {} --prompt \"{}\" --tokens 8 --temperature 0 --json\n./generate --weights {} --prompt \"{}\" --tokens 8 --seed 1\n```\n", run_args.first().map(|s| s.as_str()).unwrap_or("W.psk.d"), (1..=s.window).map(|t| (t % s.vocab).to_string()).collect::<Vec<_>>().join(" "), run_args.first().map(|s| s.as_str()).unwrap_or("W.psk.d"), (1..=s.window).map(|t| (t % s.vocab).to_string()).collect::<Vec<_>>().join(" "));
         let _ = writeln!(r, "The defaults are `presk serve`'s: 16 tokens, the temperature {:?} (the function's default), and the seed {} (the export's). The prompt has at least {} tokens, each below {}.\n", s.default_temperature, meta.seed, s.window, s.vocab);
     }
@@ -1397,7 +1490,8 @@ fn readme(meta: &Meta, d: &Doc) -> String {
         let _ = writeln!(r, "{split} of the {launches} launches are divided among up to {max_workers} threads, as the native backend divides them: where the plan states a split, among its workers, and elsewhere by the native backend's rule, resolved when the program was exported with {threads} (`presk export --threads`): the outermost parallel loop of a kernel above its threshold of work, among every worker. Each such launch is one OpenMP region in `model.c`, whose threads each call the kernel on their piece of the divided loop, the pieces the native backend computes.\n");
         let _ = writeln!(r, "- **The team** of a region is its workers, at most the threads OpenMP would use: `OMP_NUM_THREADS` lowers it and never raises it (`presk_team` in `presk_rt.h`), and `OMP_NUM_THREADS=1 ./model …` runs on one thread. A `num_threads` clause alone would override `OMP_NUM_THREADS`.");
         let _ = writeln!(r, "- **The bits do not depend on the team.** Every element of a divided loop is computed by one thread, by the same loops in the same order as on one thread, so any team, one thread included, computes the same outputs.");
-        let _ = writeln!(r, "- **Without OpenMP** (`make OPENMP=`, or a compiler without it), each region is one call over the whole loop: one thread, the same bits.\n");
+        let _ = writeln!(r, "- **Without OpenMP** (`make OPENMP=`, or a compiler without it), each region is one call over the whole loop: one thread, the same bits.");
+        let _ = writeln!(r, "- **How the threads wait** between regions is the OpenMP runtime's setting, not the program's. An idle worker spins a while, then sleeps, and a sleeping one takes a few hundred microseconds to wake. GCC's libgomp spins 300 000 times by default, about 0.1 ms on the Arm cores it was measured on, less than the host often runs undivided kernels between two regions; the native backend's workers spin about 2 ms. To wait as they do, run with `GOMP_SPINCOUNT=8M` (libgomp: about 2 ms there), or with `OMP_WAIT_POLICY=active`, which every OpenMP runtime reads and which keeps the workers spinning on their cores: the course GPT's forward pass and gradient take about 15 % less time either way (presk D97). The bits are the same.\n");
     }
     let _ = writeln!(r, "## Inputs and outputs\n");
     if let Some(w) = weights {

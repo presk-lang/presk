@@ -52,7 +52,10 @@ fn prepare(rel: &str, consts: &[(&str, u64)]) -> (ElabProgram, presk_core::Progr
     (prog, core)
 }
 
-/// The largest absolute difference over the leaves of two values.
+/// The largest absolute difference over the leaves of two values; +∞ when
+/// a difference is not finite, as `presk`'s gap is since 0.10.0 step 8 (it
+/// left such an element out, and matched two infinities of the additive
+/// mask, which no tensor holds since step 7b).
 fn gap(reference: &IValue, got: &Value) -> f64 {
     match (reference, got) {
         (IValue::Real(t), Value::Real(g)) => {
@@ -61,10 +64,9 @@ fn gap(reference: &IValue, got: &Value) -> f64 {
                 .iter()
                 .zip(&gd)
                 .map(|(x, y)| {
-                    let xf = x.to_f64();
-                    if xf.is_infinite() && y.is_infinite() { 0.0 } else { (xf - y).abs() }
+                    let d = (x.to_f64() - y).abs();
+                    if d.is_finite() { d } else { f64::INFINITY }
                 })
-                .filter(|d| d.is_finite())
                 .fold(0.0, f64::max)
         }
         (IValue::Tuple(xs), Value::Tuple(ys)) => xs.iter().zip(ys).map(|(x, y)| gap(x, y)).fold(0.0, f64::max),
@@ -89,7 +91,7 @@ fn measure_all(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     // The exact run, recording the magnitudes the bound will be conditional on.
     let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let args: Vec<IValue> = inputs.iter().map(|(_, v)| v.clone()).collect();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     interp.magnitudes = Some(Default::default());
     interp.minima = Some(Default::default());
     interp.terms = Some(Default::default());
@@ -100,7 +102,7 @@ fn measure_all(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     env.observe_terms(&interp.terms.take().unwrap());
 
     // The same entry on the kernel backend, in this realization.
-    let mut backend = KernelBackend::new(&core, &prog, r, 0);
+    let mut backend = KernelBackend::new(&core, &prog, r);
     let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(r.default)).collect();
     let p = presk_rt::Backend::prepare(&mut backend, func, &fdims, r).unwrap();
     let got = presk_rt::Backend::call(&mut backend, &p, rargs).unwrap();
@@ -223,7 +225,7 @@ fn sensitivities_come_off_one_reverse_sweep() {
     let (_, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let mut args: Vec<IValue> = inputs.iter().map(|(_, v)| v.clone()).collect();
     args.push(IValue::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(128, 1)] }));
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     interp.sums = Some(Default::default());
     interp.call(vjp, fdims, args).unwrap();
     let s = sensitivity::from_run(&core, entry, &adjoints, &interp.sums.take().unwrap());
@@ -256,7 +258,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
     let args: Vec<IValue> = inputs.iter().map(|(_, v)| v.clone()).collect();
 
     // Magnitudes, element counts and the exact value.
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     interp.magnitudes = Some(Default::default());
     interp.minima = Some(Default::default());
     interp.elems = Some(Default::default());
@@ -268,7 +270,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
 
     // Sensitivities, from one reverse sweep.
     let (vjp, adjoints, _) = presk_core::ad::vjp_with_adjoints(&mut core, entry);
-    let mut sb: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let mut sb: Interp<Float> = Interp::new(&core, &prog, 128);
     sb.sums = Some(Default::default());
     let mut vargs = args.clone();
     vargs.push(IValue::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(128, 1)] }));
@@ -280,7 +282,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
     let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap()).collect();
     for budget in [1e-3, 1e-6] {
         let mut measure = |r: &Realization| -> f64 {
-            let mut b = KernelBackend::new(&core, &prog, r, 0);
+            let mut b = KernelBackend::new(&core, &prog, r);
             let a: Vec<Value> = rargs.iter().map(|v| v.realize(r.default)).collect();
             let p = presk_rt::Backend::prepare(&mut b, entry, &fdims, r).unwrap();
             gap(&reference, &presk_rt::Backend::call(&mut b, &p, a).unwrap())
@@ -322,11 +324,11 @@ fn an_interleaved_order_reassociates_and_says_so() {
     let opts = RunOptions { entry: "mse".into(), dims: vec![("D".into(), 32), ("B".into(), 4)], seed: 0, bits: 256, digits: 17 };
     let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let args: Vec<IValue> = inputs.iter().map(|(_, v)| v.clone()).collect();
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let reference = interp.call(func, fdims.clone(), args.clone()).unwrap();
 
     let run = |r: &Realization| -> (f64, Vec<f64>) {
-        let mut b = KernelBackend::new(&core, &prog, r, 0);
+        let mut b = KernelBackend::new(&core, &prog, r);
         let a: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(r.default)).collect();
         let p = presk_rt::Backend::prepare(&mut b, func, &fdims, r).unwrap();
         let out = presk_rt::Backend::call(&mut b, &p, a).unwrap();
@@ -368,7 +370,7 @@ fn a_contraction_records_its_sums_of_terms() {
     let (prog, core) = prepare("tests/data/terms.psk", &[]);
     let (f, _, _) = presk_interp::run::resolve_entry(&core, &prog, "f").unwrap();
     let t = |xs: &[f64]| IValue::Real(presk_interp::Tensor { axes: vec![presk_interp::value::Axis { name: None, len: xs.len() }], data: xs.iter().map(|x| Float::with_val(128, *x)).collect() });
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     interp.magnitudes = Some(Default::default());
     interp.terms = Some(Default::default());
     interp.call(f, Default::default(), vec![t(&[1.0, -2.0]), t(&[3.0, 1.0])]).unwrap();

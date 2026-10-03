@@ -1,8 +1,9 @@
 /* presk_rt.c: the runtime of Presk's C export (plan 0.9.0 §3.3, §3.4; presk
  * D78): the conversion of a buffer between machine types, the .psk.d reader
  * and writer, the quantization of integer weights (step 7, presk D84), the
- * arena, and the stream `sample` draws from with `sample` itself (step 6,
- * presk D83). Build it as the kernels are built (presk_rt.h).
+ * arena, and the keys `sample` draws from with `sample` itself (step 6,
+ * presk D83; plan 0.10.0 step 7b, D99). Build it as the kernels are built
+ * (presk_rt.h).
  *
  * The .psk.d format is presk-data's (its module comment):
  *
@@ -559,7 +560,7 @@ void *presk_release_keep(presk_arena *a, size_t mark, const void *keep, size_t b
 }
 
 /* ------------------------------------------------------------------------
- * The sampling stream (plan 0.9.0 step 6, presk D83)
+ * Keys and their draws (plan 0.9.0 step 6, presk D83; plan 0.10.0 step 7b)
  * ------------------------------------------------------------------------ */
 
 #define PRESK_ROTL(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
@@ -671,13 +672,49 @@ double presk_uniform01(presk_rng *r)
     return (double)(presk_rng_next_u64(r) >> 11) / 9007199254740992.0;
 }
 
-void presk_rng_init(presk_rng *r, uint64_t seed)
+/* The next 32 bytes of the keystream, a word at a time, the low byte first
+ * (rand_core's fill_bytes from a fresh generator, or one read by words). */
+static void keystream32(presk_rng *r, uint8_t out[32])
 {
-    presk_rng_seed_u64(r, seed ^ UINT64_C(0x5a5a5a5a));
+    for (int i = 0; i < 8; i++) {
+        uint32_t w = presk_rng_next_u32(r);
+        for (int j = 0; j < 4; j++)
+            out[4 * i + j] = (uint8_t)(w >> (8 * j));
+    }
 }
 
-void presk_sample(int64_t *out, const void *logits, presk_dtype from, size_t rows, size_t vocab, presk_rng *r)
+void presk_key_from_seed(presk_key *out, uint64_t seed)
 {
+    presk_rng r;
+    presk_rng_seed_u64(&r, seed);
+    keystream32(&r, out->b);
+}
+
+void presk_key_split(const presk_key *k, uint64_t l, presk_key *out)
+{
+    presk_rng r;
+    presk_rng_from_seed(&r, k->b);
+    uint8_t part[32];
+    for (uint64_t i = 0; i <= l; i++)
+        keystream32(&r, part);
+    memcpy(out->b, part, 32);
+}
+
+void presk_key_child(const presk_key *k, uint64_t t, presk_key *out)
+{
+    uint8_t seed[32];
+    memcpy(seed, k->b, 32);
+    for (int j = 0; j < 8; j++)
+        seed[j] ^= (uint8_t)(t >> (8 * j));
+    presk_rng r;
+    presk_rng_from_seed(&r, seed);
+    keystream32(&r, out->b);
+}
+
+void presk_sample(int64_t *out, const void *logits, presk_dtype from, size_t rows, size_t vocab, const presk_key *key)
+{
+    presk_rng r;
+    presk_rng_from_seed(&r, key->b);
     for (size_t p = 0; p < rows; p++) {
         uint64_t row = (uint64_t)(p * vocab);
         /* The largest, from -inf: a NaN is passed over, as f64::max passes
@@ -691,7 +728,7 @@ void presk_sample(int64_t *out, const void *logits, presk_dtype from, size_t row
         double z = 0.0;
         for (size_t i = 0; i < vocab; i++)
             z += presk_exp(load_real(logits, from, row + i) - m);
-        double u = presk_uniform01(r);
+        double u = presk_uniform01(&r);
         double acc = 0.0;
         int64_t pick = (int64_t)vocab - 1;
         for (size_t i = 0; i < vocab; i++) {

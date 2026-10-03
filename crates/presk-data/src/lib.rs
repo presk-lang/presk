@@ -132,12 +132,15 @@ impl Layout {
                 }
                 Ok(Layout::Leaf(Leaf::Idx { bound, shape: Self::shape(axes, text)? }))
             }
+            // A mask is stored as indices below 2, false 0 and true 1 (plan
+            // 0.10.0 step 7b, D99).
+            ast::Ty::Bool { axes, .. } => Ok(Layout::Leaf(Leaf::Idx { bound: 2, shape: Self::shape(axes, text)? })),
             ast::Ty::Param { inner, .. } => Self::from_ast(inner, text),
             ast::Ty::Tuple { elems, .. } => Ok(Layout::Tuple(elems.iter().map(|t| Self::from_ast(t, text)).collect::<Result<_>>()?)),
             ast::Ty::Params { module, .. } => {
                 err("E9001", format!("`{text}`: the layout of `params {}` needs the program (open the file from `presk train`)", module.dotted()))
             }
-            ast::Ty::Named { path, .. } => err("E9001", format!("`{text}`: `{}` is not a data type (only `ℝ[…]`, `idx[N][…]` and tuples of them, with literal dimensions)", path.dotted())),
+            ast::Ty::Named { path, .. } => err("E9001", format!("`{text}`: `{}` is not a data type (only `ℝ[…]`, `idx[N][…]`, `bool[…]` and tuples of them, with literal dimensions)", path.dotted())),
         }
     }
 

@@ -1,16 +1,17 @@
-//! The sampling stream of the C export, `c/presk_rt.c` (plan 0.9.0 step 6,
-//! D83), against the Rust it stands for:
+//! The keys of the C export and their draws, `c/presk_rt.c` (plan 0.9.0 step
+//! 6, D83; plan 0.10.0 step 7b, D99), against the Rust they stand for:
 //! - `presk_rng_seed_u64` and `presk_rng_next_u64` against rand_chacha's
 //!   `ChaCha20Rng::seed_from_u64` and `next_u64`, 10⁶ draws over 10³ seeds
-//!   (special values, the backends' seeds `s ^ 0x5a5a5a5a`, drawn ones),
-//!   each seed read across fifteen refills; `presk_uniform01` against
-//!   `presk_interp::key::uniform01` and `presk_rng_init` against the
-//!   backends' stream on the same seeds;
+//!   (special values, drawn ones), each seed read across fifteen refills;
+//!   `presk_uniform01` against `presk_interp::key::uniform01` on the same
+//!   seeds;
 //! - `presk_rng_from_seed` on drawn 32-byte seeds, read by a drawn mix of
 //!   `next_u32` and `next_u64`, so that a `u64` straddles two refills;
+//! - `presk_key_from_seed`, `presk_key_split` and `presk_key_child` against
+//!   `presk_interp::key::Key`'s `from_seed`, `split` and `child`;
 //! - `presk_sample` against the native backend's `sample` (the host of
-//!   `presk-kernel`), row by row from the same stream, on logits in `f64`,
-//!   `f32` and `bf16`: drawn at several scales, ties, infinities and NaNs,
+//!   `presk-kernel`), from the same key, on logits in `f64`, `f32` and
+//!   `bf16`: drawn at several scales, ties, infinities and NaNs,
 //!   vocabularies of one to a thousand tokens.
 
 mod cexec;
@@ -22,6 +23,7 @@ use std::time::Instant;
 
 use cexec::{So, workdir};
 use presk_core::PrimOp;
+use presk_interp::key::Key;
 use presk_rt::{Axis, Buf, Dtype, Realization, Tensor, Value};
 use presk_syntax::SourceMap;
 use presk_syntax::diag::render_all;
@@ -59,8 +61,10 @@ struct Stream {
     next_u32: unsafe extern "C" fn(*mut CRng) -> u32,
     next_u64: unsafe extern "C" fn(*mut CRng) -> u64,
     uniform01: unsafe extern "C" fn(*mut CRng) -> f64,
-    init: unsafe extern "C" fn(*mut CRng, u64),
-    sample: unsafe extern "C" fn(*mut i64, *const c_void, i32, usize, usize, *mut CRng),
+    key_from_seed: unsafe extern "C" fn(*mut [u8; 32], u64),
+    key_split: unsafe extern "C" fn(*const [u8; 32], u64, *mut [u8; 32]),
+    key_child: unsafe extern "C" fn(*const [u8; 32], u64, *mut [u8; 32]),
+    sample: unsafe extern "C" fn(*mut i64, *const c_void, i32, usize, usize, *const [u8; 32]),
 }
 
 fn sym<T: Copy>(so: &So, name: &str) -> T {
@@ -79,7 +83,9 @@ impl Stream {
             next_u32: sym(&so, "presk_rng_next_u32"),
             next_u64: sym(&so, "presk_rng_next_u64"),
             uniform01: sym(&so, "presk_uniform01"),
-            init: sym(&so, "presk_rng_init"),
+            key_from_seed: sym(&so, "presk_key_from_seed"),
+            key_split: sym(&so, "presk_key_split"),
+            key_child: sym(&so, "presk_key_child"),
             sample: sym(&so, "presk_sample"),
             _so: so,
         }
@@ -103,13 +109,10 @@ impl Mix {
     }
 }
 
-/// The salt the backends xor a run's seed with for their sampling stream.
-const SALT: u64 = 0x5a5a_5a5a;
-
-/// 10³ seeds: special values, the backends' seeds of small runs, and drawn.
+/// 10³ seeds: special values, small ones, and drawn.
 fn seeds() -> Vec<u64> {
-    let mut s = vec![0, 1, 2, u64::MAX, u64::MAX - 1, 1 << 63, SALT, 0x5a5a_5a5a_5a5a_5a5a, 0xffff_ffff, 1 << 32];
-    s.extend((0..40).map(|i| i ^ SALT));
+    let mut s = vec![0, 1, 2, u64::MAX, u64::MAX - 1, 1 << 63, 0x5a5a_5a5a, 0x5a5a_5a5a_5a5a_5a5a, 0xffff_ffff, 1 << 32];
+    s.extend(3..43);
     let mut m = Mix(7);
     while s.len() < 1000 {
         s.push(m.next());
@@ -133,10 +136,10 @@ fn the_stream_is_rand_chachas_on_a_million_draws() {
             draws += 1;
         }
         refills += got.counter / 4;
-        // uniform01, and the backends' stream of the seed.
-        let mut want = ChaCha20Rng::seed_from_u64(seed ^ SALT);
+        // uniform01 on the same seed.
+        let mut want = ChaCha20Rng::seed_from_u64(seed);
         let mut got = CRng::new();
-        unsafe { (c.init)(&mut got, seed) };
+        unsafe { (c.seed_u64)(&mut got, seed) };
         for i in 0..100 {
             let (w, g) = (presk_interp::key::uniform01(&mut want), unsafe { (c.uniform01)(&mut got) });
             assert_eq!(g.to_bits(), w.to_bits(), "seed {seed:#x}, uniform01 {i}: {g}, presk-interp {w}");
@@ -169,6 +172,35 @@ fn a_seed_of_32_bytes_read_by_words_and_pairs_is_rand_chachas() {
         }
     }
     assert!(straddled > 100, "only {straddled} u64s straddled two refills");
+}
+
+#[test]
+fn keys_are_presk_interps() {
+    let c = Stream::build("rng-keys");
+    let mut m = Mix(17);
+    let (mut splits, mut children) = (0, 0);
+    for seed in seeds() {
+        let want = Key::from_seed(seed);
+        let mut k = [0u8; 32];
+        unsafe { (c.key_from_seed)(&mut k, seed) };
+        assert_eq!(k, want.0, "seed {seed:#x}: the key it names");
+        // Split: key l of split_key n, every l of n up to 9.
+        let n = 1 + (m.next() % 9) as usize;
+        for (l, w) in want.split(n).iter().enumerate() {
+            let mut g = [0u8; 32];
+            unsafe { (c.key_split)(&k, l as u64, &mut g) };
+            assert_eq!(g, w.0, "seed {seed:#x}: key {l} of split {n}");
+            splits += 1;
+        }
+        // Children: the first steps, special numbers, drawn ones.
+        for t in [0, 1, 2, 3, 255, 256, u64::MAX, 1 << 63, m.next(), m.next()] {
+            let mut g = [0u8; 32];
+            unsafe { (c.key_child)(&k, t, &mut g) };
+            assert_eq!(g, want.child(t).0, "seed {seed:#x}: child {t}");
+            children += 1;
+        }
+    }
+    eprintln!("1000 keys of seeds, {splits} splits, {children} children: presk-interp's, byte for byte");
 }
 
 fn chdir_root() {
@@ -234,31 +266,32 @@ fn sample_draws_the_native_backends_tokens() {
     for dtype in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
         for seed in [0u64, 1, 42, 0xdead_beef] {
             let r = Realization::uniform(dtype);
-            let mut b = presk_cranelift::native_backend(&core, &prog, &r, seed).unwrap();
-            let mut got = CRng::new();
-            unsafe { (c.init)(&mut got, seed) };
-            for _ in 0..400 {
+            let mut b = presk_cranelift::native_backend(&core, &prog, &r).unwrap();
+            for call in 0..400u64 {
+                // A key per call, as a serve gives a token: each draws its
+                // rows from the key's first uniforms.
+                let key = Key::from_seed(seed).child(call);
                 let vocab = [1, 2, 3, 7, 64, 92, 1000][(m.next() % 7) as usize];
                 let rows = 1 + (m.next() % 4) as usize;
                 let logits: Vec<f64> = (0..rows).flat_map(|_| row(&mut m, vocab)).collect();
                 special += logits.iter().filter(|x| !x.is_finite()).count();
                 let data = Buf::of(dtype, &logits);
                 let t = Tensor { axes: vec![Axis { name: Some("batch".into()), len: rows }, Axis { name: Some("vocab".into()), len: vocab }], data: data.clone() };
-                let want = match b.prim(&PrimOp::Sample, &[Value::Real(t)], &presk_types::ty::Ty::F64, &Default::default()).unwrap() {
+                let want = match b.prim(&PrimOp::Sample, &[Value::Key(key.clone()), Value::Real(t)], &presk_types::ty::Ty::F64, &Default::default()).unwrap() {
                     Value::Idx { t, .. } => match t.data {
-                        Buf::I64(v) => v,
+                        Buf::I64(v) => v.to_vec(),
                         other => panic!("sample gave a {} buffer", other.dtype()),
                     },
                     other => panic!("sample gave a {}", other.kind()),
                 };
                 let mut out = vec![-1i64; rows];
                 let (ptr, dt) = raw(&data);
-                unsafe { (c.sample)(out.as_mut_ptr(), ptr, dt, rows, vocab, &mut got) };
+                unsafe { (c.sample)(out.as_mut_ptr(), ptr, dt, rows, vocab, &key.0) };
                 assert_eq!(out, want, "{dtype} seed {seed}, {rows} rows of {vocab}: {logits:?}");
                 rows_drawn += rows;
             }
         }
     }
     assert!(special > 100);
-    eprintln!("{rows_drawn} rows sampled in f64, f32 and bf16, the native backend's tokens ({:.2} s)", t0.elapsed().as_secs_f64());
+    eprintln!("{rows_drawn} rows sampled in f64, f32 and bf16 from 4800 keys, the native backend's tokens ({:.2} s)", t0.elapsed().as_secs_f64());
 }

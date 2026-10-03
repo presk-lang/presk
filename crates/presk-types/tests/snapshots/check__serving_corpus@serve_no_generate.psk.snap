@@ -46,7 +46,7 @@ input_file: tests/diag/serve_no_generate.psk
     : :   
  13 | |-> }
     | |       
-    | `------- no top-level `fn (θ : params M, ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]` in this file
+    | `------- no top-level `fn (θ : params M, [key : key,] ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]` in this file
     |     
     |     Help: `presk serve` needs `--entry FN` to name the function that produces the next token
 ----'

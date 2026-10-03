@@ -54,9 +54,9 @@ fn tol(r: &Realization) -> (f64, f64) {
     let (eps, a) = match r.default {
         Dtype::F64 => (2f64.powi(-40), 2f64.powi(-50)),
         Dtype::F32 => (2f64.powi(-15), 2f64.powi(-20)),
-        // bf16 keeps eight bits of significand, so `u = 2⁻⁹`, and a value of
-        // order one carries an absolute error of about `2⁻¹⁰` before anything
-        // has happened to it. The floor `a` is what makes the band mean
+        // bf16 keeps eight bits of significand, so `u = 2⁻⁸`, and a value of
+        // order one carries an absolute error of up to `2⁻⁸` before anything
+        // has happened to it (the comment said `2⁻⁹` until 0.10.0 step 8). The floor `a` is what makes the band mean
         // something: without it a result near a cancellation has unbounded
         // *relative* error, which says nothing about the kernel. Measured
         // worst over the examples: 3.2e-2 (0.7.0 step 2). The programs of
@@ -103,7 +103,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     let (prog, core) = prepare(rel, consts);
     let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
     let reference = presk_interp::run(&core, &prog, &opts).unwrap_or_else(|e| panic!("{entry}: {}", e.message));
-    let mut backend = KernelBackend::new(&core, &prog, realize, 0);
+    let mut backend = KernelBackend::new(&core, &prog, realize);
     let out = presk_rt::run_with(&mut backend, &core, &prog, &opts, realize).unwrap_or_else(|e| panic!("{entry} on the kernel backend: {}", e.message));
     let got = Value::from_interp(&out.result).unwrap();
     let (eps, a) = tol(realize);
@@ -229,7 +229,7 @@ fn examples_with_their_zeros_drawn() {
         let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
         let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
         draw_zeros(&mut args);
-        let mut exact = presk_rt::InterpBackend::new(&core, &prog, 256, 0);
+        let mut exact = presk_rt::InterpBackend::new(&core, &prog, 256);
         let f64r = Realization::uniform(Dtype::F64);
         let p = presk_rt::Backend::prepare(&mut exact, func, &fdims, &f64r).unwrap();
         let reference = presk_rt::Backend::call(&mut exact, &p, args.clone()).unwrap().to_interp(256);
@@ -237,7 +237,7 @@ fn examples_with_their_zeros_drawn() {
         for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
             let r = Realization::uniform(d);
             let (eps, a) = tol(&r);
-            let mut b = KernelBackend::new(&core, &prog, &r, 0);
+            let mut b = KernelBackend::new(&core, &prog, &r);
             let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
             let got = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
             let mut w = (0.0, String::new());
@@ -260,7 +260,7 @@ fn examples_with_their_zeros_drawn() {
 fn primitives_conform() {
     use presk_core::PrimOp;
     let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let ax = |name: Option<&str>, len: usize| presk_interp::value::Axis { name: name.map(String::from), len };
     let real = |axes: Vec<presk_interp::value::Axis>, seed: u64| -> IValue {
         let n: usize = axes.iter().map(|a| a.len).product();
@@ -336,7 +336,7 @@ fn primitives_conform() {
     ];
     for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::Bf16)] {
         let (eps, a) = tol(&realize);
-        let mut backend = KernelBackend::new(&core, &prog, &realize, 0);
+        let mut backend = KernelBackend::new(&core, &prog, &realize);
         for (op, args) in &cases {
             let reference = interp.prim_public(op, args).unwrap_or_else(|e| panic!("{}: {}", op.name(), e.message));
             let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(realize.default)).collect();
@@ -353,7 +353,7 @@ fn primitives_conform() {
 fn kernel_dump_snapshot() {
     let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{3, 2}.apply".into(), dims: vec![("batch".into(), 4)], seed: 0, bits: 64, digits: 12 };
-    let mut backend = KernelBackend::new(&core, &prog, &Realization::uniform(Dtype::F32), 0);
+    let mut backend = KernelBackend::new(&core, &prog, &Realization::uniform(Dtype::F32));
     presk_rt::run_with(&mut backend, &core, &prog, &opts, &Realization::uniform(Dtype::F32)).unwrap();
     let text: String = backend.kernels.iter().map(|k| k.to_string()).collect();
     insta::assert_snapshot!("linear_kernels", text);
@@ -385,7 +385,7 @@ fn a_vector_kernel_is_bit_identical_to_the_scalar_one() {
             let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
             let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(d)).collect();
             let run = |lanes: usize| -> Vec<u64> {
-                let mut b = KernelBackend::new(&core, &prog, &r, 0);
+                let mut b = KernelBackend::new(&core, &prog, &r);
                 b.set_default_lanes(lanes);
                 let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
                 let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();

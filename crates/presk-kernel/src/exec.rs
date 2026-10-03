@@ -287,13 +287,27 @@ pub fn run_kernel(k: &Kernel, inputs: &[&Buf], out: &mut Buf) {
     }
 }
 
-/// A fresh output buffer for a kernel.
+/// A fresh output buffer for a kernel, of zeros: what `presk autotune` times
+/// a point's launches on, as it always has.
 pub fn output_buf(k: &Kernel) -> Buf {
     let n = k.output.numel();
     match (k.output.kind, k.dtype) {
-        (BufKind::Idx, _) => Buf::I64(vec![0; n]),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n]),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n]),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n]),
+        (BufKind::Idx, _) => Buf::I64(vec![0; n].into()),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n].into()),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n].into()),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n].into()),
+    }
+}
+
+/// An output buffer for a launch of the host (plan 0.10.0 step 6): one of
+/// the free list's of its length, whatever it holds, or a new one; the
+/// kernel writes every element before it reads any (`presk_rt::elems`).
+pub fn launch_buf(k: &Kernel) -> Buf {
+    let n = k.output.numel();
+    match (k.output.kind, k.dtype) {
+        (BufKind::Idx, _) => Buf::I64(presk_rt::Elems::fresh(n)),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F64) => Buf::F64(presk_rt::Elems::fresh(n)),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F32) => Buf::F32(presk_rt::Elems::fresh(n)),
+        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::Bf16) => Buf::Bf16(presk_rt::Elems::fresh(n)),
     }
 }

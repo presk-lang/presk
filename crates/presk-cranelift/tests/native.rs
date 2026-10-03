@@ -9,7 +9,7 @@ use std::sync::Once;
 use presk_interp::{Interp, RunOptions};
 use presk_cranelift::native_backend;
 use presk_rt::layout::Split;
-use presk_rt::{Dtype, Realization, Value};
+use presk_rt::{Backend, Dtype, Realization, Value};
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
 use presk_types::check;
@@ -55,9 +55,9 @@ fn tol(r: &Realization) -> (f64, f64) {
     let (eps, a) = match r.default {
         Dtype::F64 => (2f64.powi(-40), 2f64.powi(-50)),
         Dtype::F32 => (2f64.powi(-15), 2f64.powi(-20)),
-        // bf16 keeps eight bits of significand, so `u = 2⁻⁹`, and a value of
-        // order one carries an absolute error of about `2⁻¹⁰` before anything
-        // has happened to it. The floor `a` is what makes the band mean
+        // bf16 keeps eight bits of significand, so `u = 2⁻⁸`, and a value of
+        // order one carries an absolute error of up to `2⁻⁸` before anything
+        // has happened to it (the comment said `2⁻⁹` until 0.10.0 step 8). The floor `a` is what makes the band mean
         // something: without it a result near a cancellation has unbounded
         // *relative* error, which says nothing about the kernel. Measured
         // worst over the examples: 3.2e-2 (0.7.0 step 2). The programs of
@@ -104,7 +104,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     let (prog, core) = prepare(rel, consts);
     let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 256, digits: 17 };
     let reference = presk_interp::run(&core, &prog, &opts).unwrap_or_else(|e| panic!("{entry}: {}", e.message));
-    let mut backend = native_backend(&core, &prog, realize, 0).unwrap();
+    let mut backend = native_backend(&core, &prog, realize).unwrap();
     let out = presk_rt::run_with(&mut backend, &core, &prog, &opts, realize).unwrap_or_else(|e| panic!("{entry} on the kernel backend: {}", e.message));
     let got = Value::from_interp(&out.result).unwrap();
     let (eps, a) = tol(realize);
@@ -159,7 +159,7 @@ fn examples_conform() {
 fn primitives_conform() {
     use presk_core::PrimOp;
     let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
-    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256, 0);
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let ax = |name: Option<&str>, len: usize| presk_interp::value::Axis { name: name.map(String::from), len };
     let real = |axes: Vec<presk_interp::value::Axis>, seed: u64| -> IValue {
         let n: usize = axes.iter().map(|a| a.len).product();
@@ -235,7 +235,7 @@ fn primitives_conform() {
     ];
     for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::Bf16)] {
         let (eps, a) = tol(&realize);
-        let mut backend = native_backend(&core, &prog, &realize, 0).unwrap();
+        let mut backend = native_backend(&core, &prog, &realize).unwrap();
         for (op, args) in &cases {
             let reference = interp.prim_public(op, args).unwrap_or_else(|e| panic!("{}: {}", op.name(), e.message));
             let rargs: Vec<Value> = args.iter().map(|v| Value::from_interp(v).unwrap().realize(realize.default)).collect();
@@ -252,7 +252,7 @@ fn primitives_conform() {
 fn kernel_dump_snapshot() {
     let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{3, 2}.apply".into(), dims: vec![("batch".into(), 4)], seed: 0, bits: 64, digits: 12 };
-    let mut backend = native_backend(&core, &prog, &Realization::uniform(Dtype::F32), 0).unwrap();
+    let mut backend = native_backend(&core, &prog, &Realization::uniform(Dtype::F32)).unwrap();
     presk_rt::run_with(&mut backend, &core, &prog, &opts, &Realization::uniform(Dtype::F32)).unwrap();
     let text: String = backend.kernels.iter().map(|k| k.to_string()).collect();
     assert!(text.contains("kernel dot"));
@@ -274,10 +274,10 @@ fn native_training_matches_reference() {
     presk_core::ad::transform(&mut core);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
-    let reference = train(&mut presk_rt::InterpBackend::new(&core, &prog, 256, 0), &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
+    let reference = train(&mut presk_rt::InterpBackend::new(&core, &prog, 256), &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     for (realize, bound) in [(Realization::uniform(Dtype::F64), 1e-9), (Realization::uniform(Dtype::F32), 1e-3)] {
         let o = TrainOptions { realize: realize.clone(), ..opts.clone() };
-        let native = train(&mut native_backend(&core, &prog, &realize, 0).unwrap(), &core, &prog, &typed, &fns, &o, |_| {}).unwrap();
+        let native = train(&mut native_backend(&core, &prog, &realize).unwrap(), &core, &prog, &typed, &fns, &o, |_| {}).unwrap();
         assert_eq!(native.batches, reference.batches, "same batches from the same seed");
         let (mut w, _) = (0.0f64, ());
         let mut leaves_ref = Vec::new();
@@ -319,7 +319,7 @@ fn threads_do_not_change_a_single_bit() {
             // `split`: the backend's default split for every nest, applied where
             // the nest's loop at that depth is parallel (0.7.0 step 3).
             let run = |threads: usize, split: Option<Split>| -> (Vec<f64>, usize) {
-                let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, &realize, 0, threads).unwrap();
+                let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, &realize, threads).unwrap();
                 b.default_layout.split = split;
                 let p = presk_rt::Backend::prepare(&mut b, func, &dims, &realize).unwrap();
                 let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
@@ -379,7 +379,7 @@ fn gemm_row(n: usize, realize: &Realization) -> Vec<f64> {
     let (prog, core) = prepare("tests/data/gemm_exact.psk", &[("K", k as u64), ("N", n as u64)]);
     let f = core.find("gemm").unwrap();
     let dims: presk_interp::eval::Dims = core.func(f).dims.iter().map(|d| (*d, 1)).collect();
-    let mut back = presk_cranelift::native_backend(&core, &prog, realize, 0).unwrap();
+    let mut back = presk_cranelift::native_backend(&core, &prog, realize).unwrap();
     let mk = |axes: Vec<Axis>, data: Vec<f64>| Value::Real(Tensor { axes, data: Buf::of(realize.default, &data) });
     let args = vec![
         mk(vec![Axis { name: Some("row".into()), len: 1 }, Axis { name: None, len: k }], a),
@@ -413,7 +413,7 @@ fn the_emitted_vector_kernel_is_bit_identical() {
             let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
             let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(d)).collect();
             let run = |n: usize| -> Vec<u64> {
-                let mut b = presk_cranelift::native_backend(&core, &prog, &r, 0).unwrap();
+                let mut b = presk_cranelift::native_backend(&core, &prog, &r).unwrap();
                 b.set_default_lanes(n);
                 let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
                 let out = presk_rt::Backend::call(&mut b, &p, args.clone()).unwrap();
@@ -421,6 +421,81 @@ fn the_emitted_vector_kernel_is_bit_identical() {
             };
             assert_eq!(run(1), run(lanes), "{rel} {entry} ({d}, {lanes} lanes): the emitted vector kernel must be bit-identical");
         }
+    }
+}
+
+/// A closure applied inside a differentiated function, natively (0.10.0 step
+/// 3, defect 3a of the reference's chapter 5; `presk-interp`'s
+/// `ad_through_applied_closures_matches_finite_differences` checks the
+/// reference): each gradient of `tests/data/closure_grad.psk` in `f64`
+/// agrees with central finite differences of its primal, both run
+/// natively, h = 2^-12, to 2^-30 relative.
+#[test]
+fn applied_closures_differentiate_natively() {
+    let rel = "tests/data/closure_grad.psk";
+    let (prog, core) = prepare(rel, &[]);
+    let realize = Realization::uniform(Dtype::F64);
+    let mut backend = native_backend(&core, &prog, &realize).unwrap();
+    let h = 2f64.powi(-12);
+    for (entry, primal) in [("d_two", "two"), ("d_one", "one"), ("d_captured", "captured")] {
+        let opts = RunOptions { entry: entry.into(), dims: vec![], seed: 0, bits: 256, digits: 17 };
+        let out = presk_rt::run_with(&mut backend, &core, &prog, &opts, &realize).unwrap_or_else(|e| panic!("{entry}: {}", e.message));
+        let (Value::Real(g), Value::Real(x)) = (Value::from_interp(&out.result).unwrap(), Value::from_interp(&out.inputs[0].1).unwrap()) else { panic!("{entry}: tensors") };
+        let (g, x0) = (g.data.to_f64(), x.data.to_f64());
+        let y = Value::from_interp(&out.inputs[1].1).unwrap();
+        let p = backend.prepare(core.find(primal).unwrap(), &Default::default(), &realize).unwrap();
+        for i in 0..x0.len() {
+            let mut at = |d: f64| {
+                let mut xs = x0.clone();
+                xs[i] += d;
+                let arg = Value::Real(presk_rt::Tensor { axes: x.axes.clone(), data: presk_rt::Buf::F64(xs.into()) });
+                let Value::Real(t) = backend.call(&p, vec![arg, y.clone()]).unwrap() else { panic!("{primal}: a scalar") };
+                t.data.to_f64()[0]
+            };
+            let fd = (at(h) - at(-h)) / (2.0 * h);
+            assert!((fd - g[i]).abs() <= 2f64.powi(-30) * g[i].abs().max(1.0), "{entry}[{i}]: native ad = {}, fd = {fd}", g[i]);
+        }
+    }
+}
+
+/// The gradient of a stacked module that drops, training on, natively (0.10.0
+/// step 4, defect 3f of the reference's chapter 5; `presk-interp`'s
+/// `ad_through_stacked_dropout_matches_finite_differences` checks the
+/// reference): `tests/data/stack_dropout_grad.psk`'s gradient in `f64`
+/// agrees with central finite differences of its loss, both run natively
+/// with the same key, h = 2^-20, to 2^-24 relative. The kernel host kept the
+/// first key of the stacked accumulators for every layer, as the
+/// interpreter did: 77 % off at layer 1.
+#[test]
+fn stacked_dropout_differentiates_natively() {
+    let rel = "tests/data/stack_dropout_grad.psk";
+    let (prog, core) = prepare(rel, &[]);
+    let realize = Realization::uniform(Dtype::F64);
+    let mut backend = native_backend(&core, &prog, &realize).unwrap();
+    backend.set_training(true);
+    let opts = RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 8)], seed: 0, bits: 256, digits: 17 };
+    let out = presk_rt::run_with(&mut backend, &core, &prog, &opts, &realize).unwrap_or_else(|e| panic!("loss_grad: {}", e.message));
+    let args: Vec<Value> = out.inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(Dtype::F64)).collect();
+    let grad = Value::from_interp(&out.result).unwrap();
+    let Some(Value::Real(g)) = grad.field("blocks").and_then(|b| b.field("γ")) else { panic!("the gradient of blocks.γ") };
+    let Some(Value::Real(t)) = args[0].field("blocks").and_then(|b| b.field("γ")) else { panic!("blocks.γ") };
+    let (g, t0) = (g.data.to_f64(), t.data.to_f64());
+    let lopts = RunOptions { entry: "loss".into(), dims: vec![("B".into(), 8)], seed: 0, bits: 256, digits: 17 };
+    let (lf, dims, _) = presk_interp::run::prepare_run(&core, &prog, &lopts).unwrap();
+    let p = backend.prepare(lf, &dims, &realize).unwrap();
+    let h = 2f64.powi(-20);
+    let mut at = |i: usize, d: f64| {
+        let mut xs = t0.clone();
+        xs[i] += d;
+        let gamma = Value::Real(presk_rt::Tensor { axes: t.axes.clone(), data: presk_rt::Buf::F64(xs.into()) });
+        let theta = Value::Record(vec![("blocks".into(), Value::Record(vec![("γ".into(), gamma)]))]);
+        let Value::Real(l) = backend.call(&p, vec![theta, args[1].clone(), args[2].clone()]).unwrap() else { panic!("loss: a scalar") };
+        l.data.to_f64()[0]
+    };
+    assert_eq!(g.len(), 3 * 4, "every element of the three layers");
+    for i in 0..g.len() {
+        let fd = (at(i, h) - at(i, -h)) / (2.0 * h);
+        assert!((fd - g[i]).abs() <= 2f64.powi(-24) * g[i].abs().max(1.0), "γ[{i}]: native ad = {}, fd = {fd}", g[i]);
     }
 }
 
@@ -480,7 +555,7 @@ fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[
             let ints = with(quantized_leaves(&args[0].realize(d), &qs));
             let floats = with(dequantize_params(&args[0].realize(d), &qs));
             let reference = |n: usize| {
-                let mut b = presk_cranelift::native_backend(&core, &prog, &Realization::uniform(d), 0).unwrap();
+                let mut b = presk_cranelift::native_backend(&core, &prog, &Realization::uniform(d)).unwrap();
                 b.set_default_lanes(n);
                 let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &Realization::uniform(d)).unwrap();
                 leaf_bits(&presk_rt::Backend::call(&mut b, &p, floats.clone()).unwrap())
@@ -488,16 +563,106 @@ fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[
             let expected = reference(1);
             assert_eq!(expected, reference(d.natural_lanes()), "{d}: the float path itself is lane-exact");
             for n in [1, d.natural_lanes()] {
-                let mut b = presk_cranelift::native_backend(&core, &prog, &r, 0).unwrap();
+                let mut b = presk_cranelift::native_backend(&core, &prog, &r).unwrap();
                 b.set_default_lanes(n);
                 let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
                 let got = leaf_bits(&presk_rt::Backend::call(&mut b, &p, ints.clone()).unwrap());
                 assert!(b.kernels.iter().any(|k| k.inputs.iter().any(|s| s.kind == presk_kernel::ir::BufKind::Quant { bits, over })), "{rel} int{bits}: no kernel loaded integers");
                 assert_eq!(got, expected, "int{bits} {scheme:?} {d}, {n} lane(s): native on integers against native on f32(q·s)");
             }
-            let mut b = presk_kernel::KernelBackend::new(&core, &prog, &r, 0);
+            let mut b = presk_kernel::KernelBackend::new(&core, &prog, &r);
             let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
             assert_eq!(leaf_bits(&presk_rt::Backend::call(&mut b, &p, ints.clone()).unwrap()), expected, "int{bits} {scheme:?} {d}: the kernel interpreter on integers");
+        }
+    }
+}
+
+/// `presk bench --host-profile` (plan 0.10.0 step 5) only reads the clock: a
+/// call with the host's timers gives the bits a call without them gives, on
+/// both executors and with launches divided among threads, for a forward
+/// pass, a gradient and an optimizer's step over a tree; and the profile
+/// accounts for the call: every launch counted, the phases within the call's
+/// time.
+#[test]
+fn the_host_profile_reads_only_the_clock() {
+    use presk_kernel::profile::{HostProfile, Phase, same_bits};
+    let minigpt: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
+    type Case = (&'static str, &'static [(&'static str, u64)], &'static str);
+    let cases: &[Case] = &[
+        ("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 2)], "GPT.apply"),
+        ("tests/plan/minigpt_grad.psk", minigpt, "loss_grad"),
+        ("tests/examples/minigpt/train_minigpt.psk", minigpt, "adamw.step"),
+    ];
+    let realize = Realization::uniform(Dtype::F32);
+    for (rel, consts, entry) in cases {
+        let (prog, core) = prepare(rel, consts);
+        let opts = presk_interp::RunOptions { entry: entry.to_string(), dims: vec![("B".into(), 2), ("T".into(), 8)], seed: 0, bits: 64, digits: 12 };
+        let (func, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+        let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(Dtype::F32)).collect();
+        for native in [true, false] {
+            let mut b = if native {
+                let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, &realize, 4).unwrap();
+                // Every nest whose outer loop is parallel divided among two.
+                b.default_layout.split = Some(Split::At { depth: 0, workers: 2 });
+                b
+            } else {
+                presk_kernel::KernelBackend::new(&core, &prog, &realize)
+            };
+            let p = b.prepare(func, &dims, &realize).unwrap();
+            let without = b.call(&p, args.clone()).unwrap();
+            let profile = HostProfile::shared();
+            b.set_host_profile(Some(profile.clone()));
+            let before = b.launches;
+            let t0 = std::time::Instant::now();
+            let with = b.call(&p, args.clone()).unwrap();
+            let elapsed = t0.elapsed().as_secs_f64();
+            let launched = b.launches - before;
+            b.set_host_profile(None);
+            let what = format!("{rel} {entry} on the {} executor", if native { "native" } else { "kernel" });
+            assert!(same_bits(&without, &with), "{what}: a call with the timers gives other bits");
+            assert!(same_bits(&b.call(&p, args.clone()).unwrap(), &with), "{what}: a call after the profile gives other bits");
+            let prof = profile.borrow();
+            assert_eq!(prof.launches, launched, "{what}: every launch timed");
+            assert!(prof.launches > 0 && prof.seconds(Phase::Kernel) > 0.0, "{what}: no kernel timed");
+            assert!(prof.total() <= elapsed, "{what}: the phases take {} s of a {elapsed} s call", prof.total());
+            assert_eq!(prof.seconds(Phase::Lower), 0.0, "{what}: the second call compiled");
+            if native {
+                assert!(prof.divided > 0 && prof.threads >= 2 * prof.divided, "{what}: no launch divided ({} of {})", prof.divided, prof.launches);
+            } else {
+                assert_eq!((prof.divided, prof.seconds(Phase::Threads)), (0, 0.0), "{what}: the kernel interpreter runs every kernel on one thread");
+            }
+        }
+    }
+}
+
+/// A training dropout mask drawn in pieces on the workers (plan 0.10.0 step
+/// 6, D96) is the mask one stream drawn in order gives, bit for bit, in the
+/// three types, at lengths that divide unevenly among the pieces; outside
+/// training it is ones.
+#[test]
+fn a_dropout_mask_drawn_apart_is_drawn_in_order() {
+    use presk_core::PrimOp;
+    use presk_interp::key::{Key, uniform01};
+    use presk_rt::{Axis, Buf, Tensor};
+    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    for dtype in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        let r = Realization::uniform(dtype);
+        for (n, rate, seed) in [(10usize, 0.5, 1u64), ((1 << 17) + 3, 0.2, 7), (10 * (1 << 16) + 11, 0.1, 42), ((1 << 20) - 1, 0.25, 0xdead)] {
+            let key = Key::from_seed(seed);
+            // One stream in order, as the host drew it before step 6.
+            let mut rng = key.rng();
+            let want = Buf::of(dtype, &(0..n).map(|_| if uniform01(&mut rng) < 1.0 - rate { 1.0 / (1.0 - rate) } else { 0.0 }).collect::<Vec<_>>());
+            let x = Value::Real(Tensor { axes: vec![Axis { name: None, len: n }], data: Buf::zeros(dtype, n) });
+            let args = [Value::F64(rate), Value::Key(key.clone()), x.clone()];
+            for threads in [1, 3, 10] {
+                let mut b = presk_cranelift::native_backend_with_threads(&core, &prog, &r, threads).unwrap();
+                b.set_training(true);
+                let Value::Real(got) = b.prim(&PrimOp::DropoutMask, &args, &presk_types::ty::Ty::F64, &Default::default()).unwrap() else { panic!("a mask") };
+                assert!(got.data == want && got.data.dtype() == want.dtype(), "{dtype} n = {n} on {threads} threads");
+                b.set_training(false);
+                let Value::Real(ones) = b.prim(&PrimOp::DropoutMask, &args, &presk_types::ty::Ty::F64, &Default::default()).unwrap() else { panic!("a mask") };
+                assert!(ones.data == Buf::of(dtype, &vec![1.0; n]), "{dtype} n = {n}: ones outside training");
+            }
         }
     }
 }

@@ -113,6 +113,7 @@ fn training_and_graph_files() {
         ctor_dims: vec!["T".into()],
         main_stem: "serve_minigpt".into(),
         generate: Some("next_token".into()),
+        key: true,
         temperature: Some("0.8".into()),
         seq_dim: Some("T".into()),
         weights: Some("ckpt/final".into()),

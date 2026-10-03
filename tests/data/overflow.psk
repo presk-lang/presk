@@ -1,0 +1,7 @@
+-- overflow.psk — a realization that overflows where the reference does not
+-- (plan 0.10.0 step 8; `crates/presk-cli/tests/gap.rs`): `exp(120·x)`
+-- passes `f32`'s range on the synthesized inputs, its mean is +∞ in `f32`
+-- and 1.2·10⁴⁰ exactly. The gap is then +∞, as the reference's is; until
+-- step 8 the element was left out, the gap read 0, and `presk solve`
+-- accepted `f32`.
+fn f(x : ℝ[8]) -> ℝ[] = mean(exp(x * real(120)))

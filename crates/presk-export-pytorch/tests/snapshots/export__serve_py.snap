@@ -6,9 +6,11 @@ expression: "sfiles[1].content"
 # The `inference serve` of the source as a PyTorch generation loop: the model
 # `MiniGPT` with the weights of `final.pt` (train.py) or of a `params MiniGPT`
 # .psk.d checkpoint (presk train), the prompt as token indices, then
-# `--tokens` steps of the generation function `next_token` (sampling, with a
-# seeded generator) or of argmax over the model's last position when
-# `--temperature 0` (greedy, the path `presk serve` compares bit for bit).
+# `--tokens` steps of the generation function `next_token` (sampling from
+# PyTorch's generator seeded by --seed, not from the Presk key, which is passed
+# as None: other tokens than `presk serve`'s) or of argmax over the model's last
+# position when `--temperature 0` (greedy, the path `presk serve` compares bit
+# for bit).
 # When the parameters fix the context length (`--dim T=N`, default the
 # prompt's length), the model sees the last N tokens: a sliding window.
 # Fields of the block without effect here, as in `presk serve`: precision, target, batching, cache.
@@ -62,7 +64,7 @@ def main():
             raise SystemExit(f"the prompt has {len(prompt)} tokens but the model's context length is {SEQ_DIM} = {window}")
     model = load_weights(make_model(dims).to(dtype), args.weights).eval()
     theta = dict(model.named_parameters())
-    gen = torch.Generator().manual_seed(args.seed)
+    torch.manual_seed(args.seed)
     tokens = list(prompt)
     generated = []
     with torch.no_grad():
@@ -71,7 +73,7 @@ def main():
             if args.temperature == 0:
                 nxt = model(ctx)[:, -1].argmax(-1)
             else:
-                nxt = next_token(theta, ctx, args.temperature, generator=gen)
+                nxt = next_token(theta, None, ctx, args.temperature)
             tok = int(nxt.reshape(-1)[0])
             generated.append(tok)
             tokens.append(tok)

@@ -9,11 +9,13 @@
 //! of the native backend's run of an entry becomes `model.c`, straight-line
 //! (step 3, D79) or structured as C functions and loops ([`structure`], step
 //! 4, D80), with `main.c`, a Makefile, a README and the conformance script.
-//! Step 6 (D83) adds the stream `sample` draws from (`presk_rng`, ChaCha20
-//! as `rand_chacha`'s, and `presk_sample` in `presk_rt.c`), the entry's `f64`
-//! arguments as `double`s, and with `--serve` a generation function and its
-//! greedy copy in one program with `generate.c`, `presk serve`'s loop
-//! ([`host::export_serve`]). Step 8 (D85) is the SCoP mode ([`scop`]): each
+//! Step 6 (D83) adds the generator `sample` draws from (`presk_rng`,
+//! ChaCha20 as `rand_chacha`'s, and `presk_sample` in `presk_rt.c`), the
+//! entry's `f64` arguments as `double`s, and with `--serve` a generation
+//! function and its greedy copy in one program with `generate.c`, `presk
+//! serve`'s loop ([`host::export_serve`]); since plan 0.10.0 step 7b
+//! (D99) `sample` draws from a key (`presk_key`), an argument of the entry
+//! the `_in` struct holds, and `generate.c` gives each token its own. Step 8 (D85) is the SCoP mode ([`scop`]): each
 //! nest of an entry at point zero as a standalone C function between
 //! `#pragma scop` and `#pragma endscop`, in arrays of literal dimensions,
 //! the input a polyhedral tool reads, with a driver that times it and checks
@@ -66,7 +68,7 @@ use presk_kernel::ir::{BinOp, BufKind, BufSpec, CmpOp, Dtype, Expr, Kernel, Stmt
 pub const PRESK_RT_H: &str = include_str!("../c/presk_rt.h");
 
 /// The runtime: the `.psk.d` reader and writer, the arena (§3.3, §3.4), and
-/// the stream `sample` draws from (step 6).
+/// the keys `sample` draws from (step 6; plan 0.10.0 step 7b).
 pub const PRESK_RT_C: &str = include_str!("../c/presk_rt.c");
 
 /// The transcendental functions the kernels call, `presk_exp`, …: musl's,

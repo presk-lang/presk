@@ -261,8 +261,8 @@ fn check(bytes: &[u8], kind: Kind, seed: u64) -> Result<(), TestCaseError> {
     let report = presk_opt::optimize(&mut opt, &prog, &presk_opt::Options::default());
     presk_core::verify(&opt).map_err(|errs| TestCaseError::fail(errs.join("\n")))?;
     let args = inputs(seed);
-    let mut i0: Interp<Float> = Interp::new(&core, &prog, 128, 0);
-    let mut i1: Interp<Float> = Interp::new(&opt, &prog, 128, 0);
+    let mut i0: Interp<Float> = Interp::new(&core, &prog, 128);
+    let mut i1: Interp<Float> = Interp::new(&opt, &prog, 128);
     let r0 = i0.call(fid, dims.clone(), args.clone()).map_err(|e| TestCaseError::fail(e.message))?;
     let r1 = i1.call(fid, dims, args).map_err(|e| TestCaseError::fail(format!("optimized program fails: {}\n{}", e.message, presk_core::pretty::pretty_func(opt.func(fid), &opt, &prog))))?;
     close(&r0, &r1).map_err(|why| {

@@ -1,0 +1,23 @@
+-- stack_none.psk — a stack of no layer (D99's addendum, plan 0.10.0 step
+-- 8; `crates/presk-cli/tests/stack_none.rs`): the parameters of
+-- `stack{0}(Layer)` built from their type, every leaf with a leading axis
+-- of length 0; the fold of count 0 over them gives its initial value, and
+-- its gradient's scan stacks the accumulators of no iteration.
+const L : nat = 0
+dim T
+
+module Layer {
+  param w : ℝ[model: 4]  init = xavier_uniform
+  param g : ℝ[model: 4]  init = ones
+  fn apply(x : ℝ[seq: T, model: 4]) -> ℝ[seq: T, model: 4] = tanh(x * w) * g
+}
+
+module Tower {
+  use layers : stack{L}(Layer)
+  param out : ℝ[model: 4]  init = xavier_uniform
+  fn apply(x : ℝ[seq: T, model: 4]) -> ℝ[seq: T, model: 4] = layers.apply(x) * out
+}
+
+fn loss(θ : params Tower, x : ℝ[seq: T, model: 4]) -> ℝ[] = mean(Tower.apply(θ, x) * Tower.apply(θ, x))
+
+fn loss_grad(θ : params Tower, x : ℝ[seq: T, model: 4]) -> params Tower = grad(λ t. loss(t, x))(θ)

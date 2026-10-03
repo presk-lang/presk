@@ -1,0 +1,23 @@
+-- masked_softmax.psk — the masked softmax against the additive mask it
+-- replaces (plan 0.10.0 step 7b, D99; `presk-cranelift/tests/masked.rs`):
+-- on every row a mask leaves non-empty, `softmax(axis a, x, where = m)` is
+-- the softmax of `x` with `−∞` at every position `m` refuses. A mask of the
+-- scores' last two axes (a causal one, say) and one of the keys alone (a
+-- padding mask, broadcast over the queries); their gradients.
+dim B
+dim T
+
+fn masked(x : ℝ[batch: B, seq: T, seq2: T], m : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, seq2: T] =
+  softmax(axis seq2, x, where = m)
+fn additive(x : ℝ[batch: B, seq: T, seq2: T], a : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, seq2: T] =
+  softmax(axis seq2, x + a)
+
+fn masked_keys(x : ℝ[batch: B, seq: T, seq2: T], m : bool[seq2: T]) -> ℝ[batch: B, seq: T, seq2: T] =
+  softmax(axis seq2, x, where = m)
+fn additive_keys(x : ℝ[batch: B, seq: T, seq2: T], a : ℝ[seq2: T]) -> ℝ[batch: B, seq: T, seq2: T] =
+  softmax(axis seq2, x + a)
+
+fn masked_grad(x : ℝ[batch: B, seq: T, seq2: T], m : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, seq2: T] =
+  grad(λ y. mean(masked(y, m) * y))(x)
+fn additive_grad(x : ℝ[batch: B, seq: T, seq2: T], a : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, seq2: T] =
+  grad(λ y. mean(additive(y, a) * y))(x)

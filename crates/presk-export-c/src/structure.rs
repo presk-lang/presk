@@ -27,9 +27,11 @@
 //! - **The arena** is sized at its peak: the inputs, the entry's outputs,
 //!   and the deepest chain of frames, each function's allocations plus its
 //!   callee's frame at each call ([`Structured::arena`]).
-//! - **The stream** (step 6, D83): a function that draws (`sample`), or
-//!   calls one that does, takes the program's `presk_rng *rng` after the
-//!   arena. The entry's `f64` arguments are `double`s of its `_in` struct.
+//! - **The keys** (step 6, D83; plan 0.10.0 step 7b, D99): a function that
+//!   draws (`sample`), or calls one that does, takes the entry's keys after
+//!   the arena, `const presk_key *const *keys`, which the entry points at
+//!   the keys of its `_in` struct; `sample` reads the key argument it draws
+//!   from. The entry's `f64` arguments are `double`s of its `_in` struct.
 //! - **Several entries** (step 6): a generation function and its greedy
 //!   copy are recorded on one backend and share their functions; each has
 //!   its root ([`Structured::root`], [`Structured::others`]).
@@ -158,8 +160,9 @@ pub enum Stmt {
     /// A result that a fold left in its own buffers, copied to output `out`.
     CopyOut { out: usize, src: Ref, store: Store, n: usize },
     /// `sample` (step 6): `rows` rows of `vocab` logits of type `from` at
-    /// `src`, a token each into `out`, from the program's stream.
-    Sample { out: Ref, src: Ref, from: Store, rows: usize, vocab: usize, site: String },
+    /// `src`, a token each into `out`, from the entry's key argument `key`
+    /// (plan 0.10.0 step 7b).
+    Sample { out: Ref, src: Ref, from: Store, rows: usize, vocab: usize, key: usize, site: String },
     /// Everything allocated since the function's start released: only a
     /// mutation of the tests puts one anywhere but at the end.
     Release,
@@ -338,7 +341,7 @@ struct Scope {
     used: HashSet<String>,
 }
 
-const WORDS: &[&str] = &["arena", "mark", "l", "i", "memcpy", "t", "w", "rng"];
+const WORDS: &[&str] = &["arena", "mark", "l", "i", "memcpy", "t", "w", "keys"];
 
 fn numbered(s: &str, p: char) -> bool {
     s.len() > 1 && s.starts_with(p) && s[1..].bytes().all(|b| b.is_ascii_digit())
@@ -718,10 +721,10 @@ impl Builder<'_> {
                 fr.form.body.push(Stmt::Read { out: v, src: s, store: rec.bufs[src.buf].store });
                 fr.defvar(*out, v);
             }
-            Op::Sample { out, src, rows, vocab } => {
+            Op::Sample { out, src, rows, vocab, key } => {
                 let s = fr.r(src)?;
                 let loc = fr.define(rec, *out, None)?;
-                fr.form.body.push(Stmt::Sample { out: Ref { loc, off: Aff::default() }, src: s, from: rec.bufs[src.buf].store, rows: *rows, vocab: *vocab, site: rec.bufs[*out].site.clone() });
+                fr.form.body.push(Stmt::Sample { out: Ref { loc, off: Aff::default() }, src: s, from: rec.bufs[src.buf].store, rows: *rows, vocab: *vocab, key: *key, site: rec.bufs[*out].site.clone() });
             }
         }
         Ok(())
@@ -845,10 +848,11 @@ impl Builder<'_> {
             vars.push(AccVar { leaf: k, kind, name, init: Some(a) });
         }
         // The scan's stack: allocated before the fold, a slot written at the
-        // start of each iteration.
+        // start of each iteration. A scan of no iteration has its stack of
+        // none made before it, in the caller's body (D99's addendum).
         let mut stacks: Vec<Option<(Ref, usize, Store)>> = vec![None; init.len()];
         let mut stack_bufs: HashMap<usize, usize> = HashMap::new();
-        if f.scan {
+        if f.scan && !f.iterations.is_empty() {
             let Some(Sym::Tuple(parts)) = &f.result else { return Err("a scan without its stack".into()) };
             for (k, leaf) in leaves(&parts[1]).iter().enumerate() {
                 if let Sym::Tensor(v) = leaf
@@ -1226,8 +1230,8 @@ struct Uses {
     params: Vec<bool>,
     index: bool,
     arena: bool,
-    /// It draws from the stream, or calls what does.
-    rng: bool,
+    /// It draws from a key, or calls what does.
+    keys: bool,
     /// Variables read.
     vars: HashSet<usize>,
     /// Accumulator variables read, `(fold, var)`.
@@ -1239,11 +1243,11 @@ struct Uses {
 struct Analysis {
     params: Vec<Vec<bool>>,
     arena: Vec<bool>,
-    rng: Vec<bool>,
+    keys: Vec<bool>,
 }
 
 fn uses(f: &Form, an: &Analysis) -> Uses {
-    let mut u = Uses { params: vec![false; f.params.len()], index: false, arena: false, rng: false, vars: HashSet::new(), accs: HashSet::new() };
+    let mut u = Uses { params: vec![false; f.params.len()], index: false, arena: false, keys: false, vars: HashSet::new(), accs: HashSet::new() };
     fn r(u: &mut Uses, x: &Ref) {
         match x.loc {
             Loc::Param(k) => u.params[k] = true,
@@ -1298,12 +1302,12 @@ fn uses(f: &Form, an: &Analysis) -> Uses {
             Stmt::Sample { out, src, .. } => {
                 r(&mut u, out);
                 r(&mut u, src);
-                u.rng = true;
+                u.keys = true;
             }
             Stmt::SetVar { x, .. } => s(&mut u, x),
             Stmt::Call { f: g, args, outs, .. } => {
                 u.arena |= an.arena[*g];
-                u.rng |= an.rng[*g];
+                u.keys |= an.keys[*g];
                 for (k, a) in args.iter().enumerate() {
                     if an.params[*g][k] {
                         arg(&mut u, a);
@@ -1324,7 +1328,7 @@ fn uses(f: &Form, an: &Analysis) -> Uses {
                     Feed::Index | Feed::Fixed => {}
                 };
                 for run in &fs.runs {
-                    u.rng |= an.rng[run.f];
+                    u.keys |= an.keys[run.f];
                     for m in 0..fs.feed.len() {
                         if an.params[run.f].get(m).copied().unwrap_or(false) {
                             feed(&mut u, m, &run.ins);
@@ -1359,12 +1363,12 @@ fn uses(f: &Form, an: &Analysis) -> Uses {
 
 impl Structured {
     fn analysis(&self) -> Analysis {
-        let mut an = Analysis { params: Vec::new(), arena: Vec::new(), rng: Vec::new() };
+        let mut an = Analysis { params: Vec::new(), arena: Vec::new(), keys: Vec::new() };
         for func in &self.funcs {
             let u = uses(&func.form, &an);
             an.params.push(u.params.iter().zip(&func.form.params).map(|(used, k)| *used || (*k == PKind::Index && u.index)).collect());
             an.arena.push(u.arena);
-            an.rng.push(u.rng);
+            an.keys.push(u.keys);
         }
         an
     }
@@ -1447,14 +1451,15 @@ impl Structured {
 /// `in` of each tensor parameter of the root, in order, of each `double`
 /// parameter (an `f64` argument, step 6), and of `out` of each tensor leaf
 /// of its result. `types` names its structs (`<types>_in`), which several
-/// entries share; `rng`: it draws from the stream (step 6).
+/// entries share; `in_keys`, by the recording's key arguments, the field of
+/// `in` of each that `sample` draws from (plan 0.10.0 step 7b).
 pub struct EntryIo<'a> {
     pub func: &'a str,
     pub types: &'a str,
     pub in_fields: &'a [String],
     pub in_doubles: &'a [String],
     pub out_fields: &'a [String],
-    pub rng: bool,
+    pub in_keys: &'a [Option<String>],
 }
 
 /// An offset in C: `a`, `i * b`, `a + i * b`.
@@ -1649,8 +1654,8 @@ impl Printer<'_> {
                 if self.an.arena[*f] {
                     a.push("arena".to_string());
                 }
-                if self.an.rng[*f] {
-                    a.push("rng".to_string());
+                if self.an.keys[*f] {
+                    a.push("keys".to_string());
                 }
                 for (k, x) in args.iter().enumerate() {
                     if used[k] {
@@ -1668,9 +1673,9 @@ impl Printer<'_> {
             Stmt::CopyOut { out, src, store, n } => {
                 let _ = writeln!(self.out, "{ind}memcpy({}, {}, {n} * sizeof({}));", self.outs[*out], self.r(src), ctype(*store));
             }
-            Stmt::Sample { out, src, from, rows, vocab, site } => {
+            Stmt::Sample { out, src, from, rows, vocab, key, site } => {
                 self.comment(site, ind);
-                let _ = writeln!(self.out, "{ind}presk_sample({}, {}, {}, {rows}, {vocab}, rng);", self.r(out), self.r(src), cdtype(*from));
+                let _ = writeln!(self.out, "{ind}presk_sample({}, {}, {}, {rows}, {vocab}, keys[{key}]);", self.r(out), self.r(src), cdtype(*from));
             }
             Stmt::Release => {
                 let _ = writeln!(self.out, "{ind}presk_release(arena, mark);");
@@ -1792,8 +1797,8 @@ impl Printer<'_> {
             if self.an.arena[run.f] {
                 a.push("arena".to_string());
             }
-            if self.an.rng[run.f] {
-                a.push("rng".to_string());
+            if self.an.keys[run.f] {
+                a.push("keys".to_string());
             }
             for m in 0..fs.feed.len() {
                 if used.get(m).copied().unwrap_or(false) {
@@ -1847,8 +1852,8 @@ impl Structured {
         if an.arena[g] {
             ps.push("presk_arena *arena".to_string());
         }
-        if an.rng[g] {
-            ps.push("presk_rng *rng".to_string());
+        if an.keys[g] {
+            ps.push("const presk_key *const *keys".to_string());
         }
         for (k, kind) in f.params.iter().enumerate() {
             if !used[k] {
@@ -1920,9 +1925,14 @@ impl Structured {
     fn print_entry(&self, f: &Form, io: &EntryIo, an: &Analysis) -> String {
         let mut out = String::new();
         let uses = uses(f, an);
-        let rng = if io.rng { "presk_rng *rng, " } else { "" };
-        let _ = writeln!(out, "void {}(presk_arena *arena, {rng}const {}_in *in, {}_out *out)\n{{", io.func, io.types, io.types);
+        let _ = writeln!(out, "void {}(presk_arena *arena, const {}_in *in, {}_out *out)\n{{", io.func, io.types, io.types);
         let mut body = String::new();
+        if uses.keys {
+            // The keys `sample` draws from, by the recording's key arguments;
+            // one nothing draws from is no field of `in`.
+            let ks: Vec<String> = io.in_keys.iter().map(|k| k.as_ref().map_or("NULL".to_string(), |f| format!("&in->{f}"))).collect();
+            let _ = writeln!(body, "    const presk_key *const keys[] = {{{}}};", ks.join(", "));
+        }
         let mut params = f.param_names.clone();
         let (mut field, mut double) = (io.in_fields.iter(), io.in_doubles.iter());
         for (k, kind) in f.params.iter().enumerate() {

@@ -38,8 +38,9 @@
 //!   sampled at several temperatures and seeds, in the three types, through
 //!   both hosts: the same `--json` document, byte for byte. The check is
 //!   itself checked by three mutations of `generate.c`, each of which
-//!   changes the tokens: a draw skipped, the stream seeded again at each
-//!   step, the window one token behind.
+//!   changes the tokens: each token given the key of the token before (plan
+//!   0.10.0 step 7b), every token given the first one's, the window one
+//!   token behind.
 //! - Integer weights (step 7, D84): C1 on `tests/quant/odd.psk` in `int8`
 //!   and `int4`, `absmax` and `pow2`, in the three types; on MiniGPT's
 //!   forward pass and `next_token` with the head, the embeddings and every
@@ -600,6 +601,51 @@ fn launches_divided_among_threads_compute_the_native_backends_bits() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// The epilogue (plan 0.10.0 step 7): C1 and C2 under plans stating that a
+/// product adds the operand of the `add` that alone reads it, in each of its
+/// forms: the row-wise form's last sweep, lanes reading the bias in vectors,
+/// `bf16`'s sum stored and read back, a spill whose last block of `K` adds,
+/// the blocks of `K` outermost, an operand constant along `J`, a packed NT
+/// product, and a split. The kernels hold the epilogue (`dot+add`, `ein[…]+add`).
+#[test]
+fn a_product_and_its_epilogue_compute_the_native_backends_bits() {
+    let t0 = Instant::now();
+    let base = scratch("epilogue");
+    std::fs::create_dir_all(&base).unwrap();
+    let minigpt = ["--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2", "--dim", "B=2", "--dim", "T=8"];
+    // (what, file, entry, args, realization, the product's layout, extra flags)
+    type Case7<'a> = (&'a str, &'a str, &'a str, Vec<&'a str>, &'a str, &'a str, Vec<&'a str>);
+    let cases: Vec<Case7> = vec![
+        ("mse_grad f64, row-wise", "tests/examples/mlp/mlp.psk", "mse_grad", vec!["--dim", "D=4", "--dim", "B=2"], "f64", r#""Linear.apply/%3": { "form": "row-wise", "epilogue": true }"#, vec![]),
+        ("loss_grad f32, lanes", "tests/plan/minigpt_grad.psk", "loss_grad", minigpt.to_vec(), "f32", r#""Linear.apply/%3": { "tile": [2, 16], "lanes": 4, "epilogue": true }"#, vec![]),
+        ("MiniGPT.apply bf16, the sum stored and read back", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", minigpt.to_vec(), "bf16", r#""Linear.apply/%3": { "tile": [2, 8], "lanes": 1, "epilogue": true }"#, vec![]),
+        ("linear f32, a spill", "tests/plan/epilogue.psk", "linear", vec![], "f32", r#""linear/%3": { "tile": [4, 16], "kblock": 32, "order": "IKJ", "lanes": 4, "epilogue": true }"#, vec![]),
+        ("bias_first f64, the blocks of K outermost", "tests/plan/epilogue.psk", "bias_first", vec![], "f64", r#""bias_first/%3": { "tile": [2, 8], "kblock": 32, "order": "KJI", "lanes": 2, "epilogue": true }"#, vec![]),
+        ("rows f32, an operand constant along J", "tests/plan/epilogue.psk", "rows", vec![], "f32", r#""rows/%3": { "tile": [1, 16], "lanes": 4, "epilogue": true }"#, vec![]),
+        ("scores bf16, packed", "tests/plan/epilogue.psk", "scores", vec![], "bf16", r#""scores/%3": { "tile": [2, 16], "pack": true, "lanes": 1, "epilogue": true }"#, vec![]),
+        ("values f32, split", "tests/plan/epilogue.psk", "values", vec![], "f32", r#""values/%3": { "tile": [4, 8], "lanes": 4, "split": { "depth": 1, "workers": 4 }, "epilogue": true }"#, vec!["--threads", "4"]),
+    ];
+    let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
+    for (n, (what, file, entry, args, realize, layout, extra)) in cases.into_iter().enumerate() {
+        let dir = base.join(format!("case{n}"));
+        let plan = base.join(format!("case{n}.plan.json"));
+        std::fs::write(&plan, format!("{{ \"realization\": \"{realize}\", \"layout\": {{ {layout} }} }}")).unwrap();
+        jobs.push(Box::new(move || {
+            let case = Case { file: file.into(), entry: entry.into(), args: args.iter().map(|s| s.to_string()).collect() };
+            let rows = both_weights(what, &case, &planned(&plan, realize), &extra, &dir);
+            let kernels = std::fs::read_to_string(dir.join("kernels.c")).unwrap();
+            assert!(kernels.contains("+add ("), "{what}: no kernel holds an epilogue");
+            rows
+        }));
+    }
+    let rows: Vec<Checked> = parallel(jobs).into_iter().flatten().collect();
+    report(&rows);
+    eprintln!("{} programs in {:.1} s", rows.len(), t0.elapsed().as_secs_f64());
+    assert_c1_c2(&rows);
+    assert!(rows.iter().any(|r| r.divided), "no launch is divided among threads");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// The frozen model's profile, which `presk plan` plans with (0.8.0, D71).
 fn frozen_profile() -> PathBuf {
     let p = std::env::var("RA4_FROZEN").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join("presk-data/ra4-model-0.8.0/profile.json"));
@@ -612,7 +658,10 @@ fn frozen_profile() -> PathBuf {
 /// calibrated in `f32` and `f64` alone. So the `bf16` plan is the `f32` one
 /// in `bf16`, each nest's lanes one and its softmax passes the default, which
 /// `bf16` refuses (conditions 4 and 7): the same tiles, orders, k-blocks,
-/// packs and splits.
+/// packs and splits. Since 0.10.0 step 4b a gradient keeps its fusion groups
+/// in `bf16` and not in `f32` (D94), so the `f32` plan may lay out a nest the
+/// `bf16` program computes inside a group, a residual `LayerNorm.apply.fwd`
+/// shares in `f32`: that layout goes, as each refusal (`E7002`) names it.
 fn plan_of(file: &str, entry: &str, args: &[String], realize: &str, out: &Path) {
     let planned = if realize == "bf16" { "f32" } else { realize };
     let mut all: Vec<String> = ["plan", file, "--entry", entry, "--realize", planned, "--profile"].iter().map(|s| s.to_string()).collect();
@@ -636,7 +685,43 @@ fn plan_of(file: &str, entry: &str, args: &[String], realize: &str, out: &Path) 
             l.remove("passes");
         }
         std::fs::write(out, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        let spec = format!("@{}", out.display());
+        loop {
+            let mut all: Vec<&str> = vec!["dump", "--stage", "kernel", file, "--entry", entry, "--plan", &spec];
+            all.extend(args.iter().map(|s| s.as_str()));
+            let r = presk(&all);
+            if r.status.success() {
+                break;
+            }
+            let e = stderr(&r);
+            let nest = e.split("the plan's layout of `").nth(1).and_then(|t| t.split('`').next()).unwrap_or_else(|| panic!("presk dump {entry} (bf16): {e}"));
+            assert!(e.contains("inside the fusion group") && json["layout"].as_object_mut().unwrap().remove(nest).is_some(), "presk dump {entry} (bf16): {e}");
+            std::fs::write(out, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        }
     }
+}
+
+/// The kernels of an entry's derivatives of `dot`, as `presk dump --stage
+/// kernel` prints them under `how` (`--realize R` or `--plan @P`).
+fn derivative_kernels(case: &Case, how: &[&str]) -> Vec<String> {
+    let mut all: Vec<&str> = vec!["dump", "--stage", "kernel", &case.file, "--entry", &case.entry];
+    all.extend(case.args.iter().map(|s| s.as_str()));
+    all.extend(how);
+    let r = presk(&all);
+    assert!(r.status.success(), "presk dump {}: {}", case.entry, stderr(&r));
+    let text = String::from_utf8_lossy(&r.stdout).into_owned();
+    let mut kernels: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with("kernel ") {
+            kernels.push(String::new());
+        }
+        if let Some(k) = kernels.last_mut() {
+            k.push_str(line);
+            k.push('\n');
+        }
+    }
+    kernels.retain(|k| k.starts_with("kernel dot_vjp"));
+    kernels
 }
 
 /// C1 and C2 under the plan `presk plan` gives with the frozen profile, on
@@ -646,6 +731,9 @@ fn plan_of(file: &str, entry: &str, args: &[String], realize: &str, out: &Path) 
 /// with their zeros drawn, through both hosts. At these sizes the plans
 /// state tiles, lanes and packs, and no split. Each plan runs as `presk
 /// plan` wrote it: until D82 the MLP's was refused by `presk run` itself.
+/// Since 0.10.0 step 1 the plans of the two gradients, `mse_grad` and
+/// `loss_grad`, state layouts of the derivatives of `dot`, and at least one
+/// of their kernels is not its default: C1 under a plan that tiles them.
 /// `make c-conformance`.
 #[test]
 #[ignore]
@@ -666,6 +754,13 @@ fn every_entry_under_its_plan_computes_the_native_backends_bits() {
             jobs.push(Box::new(move || {
                 let plan = dir.with_extension("plan.json");
                 plan_of(&case.file, &case.entry, &case.args, realize, &plan);
+                if case.entry.ends_with("_grad") && realize != MIXED {
+                    let (bare, tiled) = (derivative_kernels(&case, &["--realize", realize]), derivative_kernels(&case, &["--plan", &format!("@{}", plan.display())]));
+                    assert!(!bare.is_empty() && bare.len() == tiled.len(), "{} {label}: {} derivative kernels bare, {} planned", case.entry, bare.len(), tiled.len());
+                    let moved = bare.iter().zip(&tiled).filter(|(a, b)| a != b).count();
+                    assert!(moved > 0, "{} {label}: the plan leaves every derivative of `dot` at its default", case.entry);
+                    eprintln!("{} {label}: the plan lays out {moved} of {} derivative kernels", case.entry, bare.len());
+                }
                 let band = if realize == MIXED { "bf16" } else { realize };
                 both_weights(&format!("{} {label}, planned", case.entry), &case, &planned(&plan, band), &[], &dir)
             }));
@@ -873,8 +968,8 @@ fn generate_gives_presk_serves_tokens() {
     // Mutations of generate.c, on the f64 program: each changes the tokens
     // of the settings it concerns, and a draw leaves the greedy tokens.
     let mutations: [(&str, &str, &str, bool); 3] = [
-        ("a draw skipped at the second step", "        if (greedy) {", "        if (step == 1)\n            (void)presk_uniform01(&rng);\n        if (greedy) {", false),
-        ("the stream seeded again at each step", "        presk_release(&arena, mark);\n", "        presk_release(&arena, mark);\n        presk_rng_init(&rng, seed);\n", false),
+        ("each token given the key of the token before", "presk_key_child(&serve_key, step + 1, ", "presk_key_child(&serve_key, step, ", false),
+        ("every token given the first one's key", "presk_key_child(&serve_key, step + 1, ", "presk_key_child(&serve_key, 1, ", false),
         ("the window one token behind", "toks[len - WINDOW + i]", "toks[len - WINDOW - 1 + i]", true),
     ];
     for (k, (what, from, to, greedy_too)) in mutations.iter().enumerate() {
@@ -906,7 +1001,7 @@ fn generate_gives_presk_serves_tokens() {
 /// train-examples`), in the three types, through both hosts; and C1 on
 /// `next_token` with it, at the test set's `B = 2`, `T = 8`. The trained
 /// logits are nearly flat (about 10⁻⁴), so the tokens hardly depend on the
-/// temperature, but the draws are the stream's. `make c-conformance`.
+/// temperature, but the draws are the keys'. `make c-conformance`.
 #[test]
 #[ignore]
 fn the_trained_minigpt_generates_presk_serves_tokens() {

@@ -21,6 +21,8 @@
 #   make step-table       one training step under each realization against the exact step (0.6.0 step 7b)
 #   make j-step           statement J′: the solved step at course scale, time and update gap
 #   make step-train       600 steps from scratch under the solved step, against the seeds
+#   make delta-p          δ_p, the reference's own gap: the interpreter at 128, 256 and 512 bits against itself at 1024 on the course GPT's loss, logits and gradient (W16, D98; about half an hour)
+#   make compile-times    the time presk check, calibrate, solve and the exact reference take per model, into docs/compile-times-<date>.md (the paper's setup table; a quiet machine)
 #   make foil             MLPerf's accuracy rule and a budget on one model (0.6.0 step 8)
 #   make bert             BERT-large inference at MLPerf's constants (about five hours; L=2 for minutes)
 #   make experiment       exact versus almost: the realization gap of float32/float64 training (manual, `experiments`)
@@ -29,6 +31,8 @@
 #   make plan-check       a default plan lowers every example entry to the same kernels (0.7.0 step 1)
 #   make c-conformance    the C export: every entry of the plan-check set and the course GPT exported, built, run, bit for bit, under the default layout and under plans, on GCC, Clang and for x86-64; presk serve's tokens from the exported generation loop; integer weights on the trained checkpoints; every nest in the SCoP mode against Polly (0.9.0 steps 3–8)
 #   make c-speed          statement C4: the exported course GPT's forward at B = 16 against the native backend's, one thread and every thread (0.9.0 step 5; a quiet machine)
+#   make pytorch-baseline the course GPT's forward pass and training step on three sides, native, C and PyTorch, into out/pytorch-baseline/report.md (D87; a quiet machine, about forty minutes)
+#   make host-profile     the native host's time by phase on the course GPT's forward pass, gradient and training step, into out/host-profile/report.md (0.10.0 step 5, D95; a quiet machine)
 #   make zig              zig from PyPI in .venv-zig: the Clang and the x86-64 cross-compiler of statement C3 (0.9.0 step 5)
 #   make llvm             LLVM's release for Linux on aarch64 in .llvm: the clang with Polly the SCoP mode's nests are checked with (0.9.0 step 8)
 #   make calibrate-ra4    the layout cost model's calibration on a GEMM and two thin products, pinned to the RA4 cores (0.7.0 step 4, 0.8.0 steps 3–4)
@@ -49,6 +53,10 @@
 #   make ra4-f1           F1, day one: new shapes (F1a, F1b) on the X925 cores, priced by the frozen profile, from a committed tree descending from the tag
 #   make ra4-f1-check     statement L on F1 apart, on the kernel interpreter, sharded over every core (hours)
 #   make ra4-f1-day2      F1, day two (RA4_SAME_DATE=1: on day one's date), then ra4-f1-rank: presk rank --frozen twice, into out/ra4-f1a.md and out/ra4-f1b.md
+#   make ra4-t3-dry       T3's dry run: the derivatives of `dot` in the course GPT's gradient, the nest the model predicts longest swept on the X925 cores, a day sized from it (0.10.0 step 2)
+#   make ra4-t3           T3, day one: the four derivative nests swept whole, priced by the frozen profile, from a committed tree descending from the tag
+#   make ra4-t3-check     statement L on T3 apart, on the kernel interpreter, sharded over every core (hours)
+#   make ra4-t3-day2      T3, day two (RA4_SAME_DATE=1: on day one's date), then ra4-t3-rank: presk rank --frozen into out/ra4-t3.md, O and Q on the derivative nests
 #   make realize          the fusion groups of the corpus GPT and the launches they remove (was `make sched`)
 #   make bench            presk bench on the tiny MiniGPT (forward, loss, optimizer step)
 #   make sync-examples    re-copy tests/examples from presk-specs and show the diff
@@ -68,13 +76,18 @@ RA4_CORES ?= 5-9,15-19
 # which gets its own calibration (plan 0.8.0 §3.5, D63).
 RA4_CORES_SMALL ?= 0-4,10-14
 
+# What a gradient does with its forward pass's values in the training runs of
+# the experiments (`--remat`, 0.10.0 step 4): `store`, the default, or
+# `recompute`, the policy of the runs D48–D55 recorded (D93).
+REMAT ?= store
+
 EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/layernorm/layernorm.psk \
            tests/examples/minigpt/minigpt.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: c-conformance c-speed zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: delta-p compile-times c-conformance c-speed pytorch-baseline host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -266,7 +279,7 @@ experiment-gpt: build
 	$(PRESK) data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
 	$(PRESK) export corpus/nlp/05_gpt.psk --target pytorch --mode readable --train -o out/gpt_pt
 	(cd out/gpt_pt && ../../.venv/bin/python train.py --steps $(GPT_STEPS) --log-every 1 --threads $(GPT_THREADS))
-	./target/release/presk train corpus/nlp/05_gpt.psk --steps $(GPT_STEPS) --log-every 1 --backend native --realize f32 --threads $(GPT_THREADS) --ckpt out/gpt_course
+	./target/release/presk train corpus/nlp/05_gpt.psk --steps $(GPT_STEPS) --log-every 1 --backend native --realize f32 --threads $(GPT_THREADS) --remat $(REMAT) --ckpt out/gpt_course
 
 experiment: build
 	$(PRESK) export tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
@@ -332,7 +345,7 @@ corpus: build
 # The epsilon-to-quality curve (0.5.0 step 8): one program, one parameter
 # varying, every point verified by measurement against the exact reference.
 curve: build
-	./experiments/curve.sh out/curve.md
+	REMAT=$(REMAT) ./experiments/curve.sh out/curve.md
 
 # The gap of every realization split into representation and arithmetic, and
 # statement K (plan 0.6.0 step 5d). Needs trained weights: `make gpt-trained`.
@@ -360,19 +373,37 @@ bert:
 # the solved step against D50's seeds (needs `make curve`'s runs).
 step-table:
 	$(CARGO) build --release -p presk
-	./experiments/step_table.sh out/step_table.md
+	REMAT=$(REMAT) ./experiments/step_table.sh out/step_table.md
 j-step:
 	$(CARGO) build --release -p presk
-	./experiments/j_step.sh out/j_step.md
+	REMAT=$(REMAT) ./experiments/j_step.sh out/j_step.md
 step-train:
 	$(CARGO) build --release -p presk
-	./experiments/step_train.sh out/step_train.md
+	REMAT=$(REMAT) ./experiments/step_train.sh out/step_train.md
+
+# δ_p, the gap of the reference interpreter itself (the reference's chapter 4,
+# W16, D98): the course GPT's loss, logits and gradient at 128, 256 and 512
+# bits against 1024 (1000 for the gradient), each printed at 330 digits and
+# compared exactly, into out/delta_p/report.md (needs `make gpt-trained`;
+# about half an hour, single-threaded, a value and not a time: any machine).
+delta-p:
+	$(CARGO) build --release -p presk
+	./experiments/delta_p.sh
+
+# The time the compiler's commands take per model, for the paper's setup
+# table (presk-paper-001): `presk check`, `presk calibrate --precision`,
+# `presk solve --budget 1e-3` and the exact reference on one sample, on the
+# course GPT at both constants, the tiny MiniGPT and BERT-large's L = 2
+# variant. A timing: a quiet machine, like j-step. MODELS= selects a subset.
+compile-times:
+	$(CARGO) build --release -p presk
+	./experiments/compile_times.sh
 
 # The corpus GPT trained for 600 steps at D = 64, the weights statement K and
 # the quantisation table are measured on (a few minutes natively).
 gpt-trained: build
 	$(PRESK) train corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
-	    --steps 600 --epochs 3 --log-every 100 --backend native --realize f32 --ckpt out/gpt_trained
+	    --steps 600 --epochs 3 --log-every 100 --backend native --realize f32 --remat $(REMAT) --ckpt out/gpt_trained
 
 # The magnitude envelope a precision bound is conditional on (0.5.0 step 3),
 # and the property the whole analysis rests on: two disjoint sets of samples
@@ -620,7 +651,7 @@ ra4-ablation:
 # start beside another presk process.
 RA4_PROFILE_SMALL ?= out/profile-a725.json
 RA4_F2_DIR ?= out/ra4-f2
-RA4_F2_RUN ?= FILE=corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES="f32 f64" SPACE=full
+RA4_F2_RUN ?= FILE=experiments/ra4_attention.psk ENTRY=SelfAttention.apply TYPES="f32 f64" SPACE=full
 RA4_F2_SHAPES ?= B=1,T=256:4 B=16,T=256:40
 RA4_TAG ?= ra4-model-0.8.0
 RA4_TRIAL ?=
@@ -680,7 +711,7 @@ ra4-f2-check:
 # RA4_F1_RUN, RA4_F1A and RA4_F1B.
 RA4_F1_DIR ?= out/ra4-f1
 RA4_F1_PROFILE ?= $(RA4_FROZEN)
-RA4_F1_RUN ?= FILE=corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=full
+RA4_F1_RUN ?= FILE=experiments/ra4_attention.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=full
 RA4_F1A ?= D=1024,H=16:B=1,T=384
 RA4_F1B ?= D=1024,H=8:B=2,T=512
 RA4_F1A_SAMPLE ?=
@@ -726,6 +757,75 @@ ra4-f1-check:
 	@{ $(foreach c,B A,$(call RA4_F1,$(c)) EXTRA="$(RA4_F1$(c)_SAMPLE)" SHARDS=$(RA4_F1$(c)_SHARDS) \
 	   experiments/ra4_check.sh $(RA4_F1_DIR)/check;) } | xargs -d '\n' -n 1 -P $(RA4_JOBS) bash -c
 	@echo "-- statement L: every shard of $(RA4_F1_DIR)/check bit-identical to point 0, natively and on the kernel interpreter"
+
+# 0.10.0 step 2: T3, RA4's third fresh test (plan 0.10.0 §3.5, D90). The
+# derivatives of `dot` in the course GPT's gradient, contraction nests since
+# 0.10.0 step 1 that the frozen model has never seen, swept on the ten X925
+# cores at the course constants and priced by the frozen profile itself
+# (RA4_T3_PROFILE), unchanged and not refitted. The configuration is
+# RA4_T3_ENTRY of RA4_T3_FILE at RA4_T3_SHAPE (after the constants
+# RA4_T3_CONSTS, none by default) in RA4_T3_TYPE, and a day is one sweep of
+# the nests RA4_T3_NESTS (ra4.sh's NEST): `dot_vjp_l` and `dot_vjp_r` of
+# Linear.apply at three shapes each, and of the head. `ra4-t3-dry` prices
+# them and sweeps the nest the model predicts longest (experiments/ra4_dry.sh)
+# into RA4_T3_DIR/dry, then sizes a day of RA4_T3_BUDGET hours into
+# RA4_T3_DIR/dry/day.md; a day that does not fit is swept on a sample,
+# RA4_T3_SAMPLE (ra4.sh's EXTRA), only once the user decides it, since Q is
+# then undecided. `ra4-t3`, `ra4-t3-day2` and `ra4-t3-check` are F2's, the
+# check in RA4_T3_SHARDS shards; `ra4-t3-rank` ranks the two days with
+# `presk rank --frozen` into RA4_T3_DIR.md: statements O and Q on the
+# derivative nests (M is the `ein`s', and the sweep holds none), L with the
+# check, N on the configuration. RA4_TRIAL=1 as for F2, with another
+# RA4_T3_DIR and a tiny configuration: RA4_T3_CONSTS="D=32 H=2"
+# RA4_T3_SHAPE=B=2,T=16 RA4_T3_SPACE=small.
+RA4_T3_DIR ?= out/ra4-t3
+RA4_T3_PROFILE ?= $(RA4_FROZEN)
+RA4_T3_FILE ?= experiments/gpt_grad.psk
+RA4_T3_ENTRY ?= loss_grad
+RA4_T3_CONSTS ?=
+RA4_T3_SHAPE ?= B=16,T=256
+RA4_T3_TYPE ?= f32
+RA4_T3_SPACE ?= full
+# The nests are the `.bwd`s' since 0.10.0 step 4 (D92): a gradient keeps its
+# residuals, and each sweep is its function's `.bwd`, numbered as the `.vjp`
+# was. T3's days (D90, archived) name them `.vjp`, the program
+# `--remat recompute` differentiates: re-price them with that.
+RA4_T3_NESTS ?= Linear.apply.bwd/%11 Linear.apply.bwd/%12 GPT.apply.bwd/%28 GPT.apply.bwd/%29
+RA4_T3_SAMPLE ?=
+RA4_T3_SHARDS ?= 80
+RA4_T3_BUDGET ?= 8
+empty :=
+space := $(empty) $(empty)
+RA4_T3 = RA4_CORES=$(RA4_CORES) PROFILE=$(RA4_T3_PROFILE) FILE=$(RA4_T3_FILE) ENTRY=$(RA4_T3_ENTRY) CONSTS="$(RA4_T3_CONSTS)" \
+  SHAPES=$(RA4_T3_SHAPE) TYPES=$(RA4_T3_TYPE) SPACE=$(RA4_T3_SPACE) NEST="$(RA4_T3_NESTS)" EXTRA="$(RA4_T3_SAMPLE)"
+
+ra4-t3-dry:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@$(RA4_T3) experiments/ra4_dry.sh $(RA4_T3_DIR)/dry
+	@python3 experiments/ra4_dry.py day 7 $(RA4_T3_BUDGET) $(RA4_T3_DIR)/dry > $(RA4_T3_DIR)/dry/day.md
+	@cat $(RA4_T3_DIR)/dry/day.md
+
+ra4-t3 ra4-t3-day2:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@d=$(RA4_T3_DIR)/$(if $(filter ra4-t3-day2,$@),day2,day1); \
+	TAG=$(RA4_TAG) TRIAL=$(RA4_TRIAL) SAME_DATE=$(RA4_SAME_DATE) experiments/ra4_fresh.sh $$d $(if $(filter ra4-t3-day2,$@),$(RA4_T3_DIR)/day1) && \
+	$(RA4_T3) INTERP=0 experiments/ra4.sh $$d
+	@if [ $@ = ra4-t3-day2 ]; then $(MAKE) --no-print-directory ra4-t3-rank; fi
+
+ra4-t3-rank:
+	@./target/release/presk rank $(RA4_T3_DIR)/day1 $(RA4_T3_DIR)/day2 --out $(RA4_T3_DIR).md \
+	  --entry $(RA4_T3_ENTRY) --at $(subst $(space),$(comma),$(strip $(RA4_T3_CONSTS) $(RA4_T3_SHAPE))) --type $(RA4_T3_TYPE) \
+	  $(if $(RA4_TRIAL),,--frozen $(RA4_TAG)) $$([ -d $(RA4_T3_DIR)/check ] && echo --check $(RA4_T3_DIR)/check) > /dev/null || exit 1
+	@echo "-- the two days ranked into $(RA4_T3_DIR).md"; grep '^| [LMNOQ] |' $(RA4_T3_DIR).md
+
+ra4-t3-check:
+	$(CARGO) build --release -p presk
+	@$(QUIET)
+	@[ ! -e $(RA4_T3_DIR)/check ] || { echo "-- $(RA4_T3_DIR)/check exists: move it aside first"; exit 1; }
+	@$(RA4_T3) SHARDS=$(RA4_T3_SHARDS) experiments/ra4_check.sh $(RA4_T3_DIR)/check | xargs -d '\n' -n 1 -P $(RA4_JOBS) bash -c
+	@echo "-- statement L: every shard of $(RA4_T3_DIR)/check bit-identical to point 0, natively and on the kernel interpreter"
 
 # 0.7.0 step 1: a plan with the default layout lowers every entry of
 # tests/plan/entries.txt to the kernels it has without one, byte for byte
@@ -798,6 +898,38 @@ zig: .venv-zig/bin/python
 c-speed:
 	$(CARGO) build --release -p presk
 	PROFILE=$(RA4_FROZEN) experiments/c_speed.sh out/c-speed
+
+# The PyTorch baseline at 0.9.0 (D87; the manual's `experiments` §3): the
+# course GPT at B = 16, T = 256 in f32, with the checkpoint C4 uses, its
+# forward pass and one training step timed on three sides — the native
+# backend, the C export and PyTorch (the model `presk export --target
+# pytorch` writes, in .venv) — under the default layout and under the plans
+# the frozen profile gives, on the ten X925 cores pinned (RA4_CORES) and on
+# every core; the distances to the native backend's f64 logits, the
+# operations counted, the linear products alone, and where the C program's
+# time goes kernel by kernel. Into out/pytorch-baseline/report.md. Needs
+# corpus/nlp/data/civil_T256.psk.d (make experiment-gpt) and a quiet machine.
+# Since 0.10.0 step 7: CFLAGS builds the C programs with those flags in place
+# of their Makefiles' -O2 (`make pytorch-baseline CFLAGS="-O3 -mcpu=native"
+# BASELINE_OUT=out/pytorch-baseline-o3`), C1 checked on each.
+# (CFLAGS is kept from cargo, whose build scripts would build GMP with it.)
+# Since step 7's follow-up: each C program timed twice, under OpenMP's
+# default waiting and under C_WAIT, the native pool's (T4's row of record).
+BASELINE_OUT ?= out/pytorch-baseline
+C_WAIT ?= GOMP_SPINCOUNT=8M
+pytorch-baseline:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) CFLAGS="$(CFLAGS)" C_WAIT="$(C_WAIT)" experiments/pytorch_baseline.sh $(BASELINE_OUT)
+
+# The native host measured (plan 0.10.0 step 5, D95): `presk bench
+# --host-profile` and `presk train --host-profile` on the course GPT under
+# the frozen profile's plans, ten X925 cores pinned and every core unpinned.
+# Into out/host-profile/report.md. Needs what pytorch-baseline needs, not
+# PyTorch, and a quiet machine. CONFIGS=10 runs the pinned configuration
+# alone (step 6, each fix measured apart).
+host-profile:
+	$(CARGO) build --release -p presk
+	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) CONFIGS="$(CONFIGS)" experiments/host_profile.sh out/host-profile
 
 sync-examples:
 	rsync -a --delete --exclude PROVENANCE.md $(PRESK_SPECS_DIR)/examples/ tests/examples/

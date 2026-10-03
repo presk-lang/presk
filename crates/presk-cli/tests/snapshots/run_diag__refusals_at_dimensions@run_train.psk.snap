@@ -1,0 +1,14 @@
+---
+source: crates/presk-cli/tests/run_diag.rs
+assertion_line: 74
+expression: snap
+input_file: tests/diag/run_train.psk
+---
+$ presk train tests/diag/run_train.psk --const K=0 --steps 1 --ckpt $OUT/ckpt
+[E7003] Error: `loss` is refused at the dimensions given: in `Reg.apply`, `mean axis hidden` averages over the axis `hidden`, of length 0
+    ,-[ tests/diag/run_train.psk:10:49 ]
+    |
+ 10 |   fn apply(x : ℝ[batch: B, 2]) -> ℝ[batch: B] = mean(axis hidden, x · w)
+    |                                                 ^^^^^^^^^^^^|^^^^^^^^^^^  
+    |                                                             `------------- undefined at the dimensions given
+----'

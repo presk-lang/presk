@@ -79,13 +79,13 @@ fn prepare(rel: &str, consts: &[(&str, u64)]) -> (ElabProgram, presk_core::Progr
 /// A kernel backend over the C, laid out as the native backend is: lanes
 /// unstated, each kernel at its type's natural width, unless `lanes` says.
 fn c_backend<'p>(core: &'p presk_core::Program, prog: &'p ElabProgram, r: &Realization, lib: &Arc<CLib>, partition: cexec::Partition, lanes: Option<usize>) -> KernelBackend<'p> {
-    let mut b = KernelBackend::with_exec(core, prog, r, 0, Box::new(CExec::new(lib.clone(), partition, WORKERS)));
+    let mut b = KernelBackend::with_exec(core, prog, r, Box::new(CExec::new(lib.clone(), partition, WORKERS)));
     b.default_layout.lanes = lanes;
     b
 }
 
 fn native_backend<'p>(core: &'p presk_core::Program, prog: &'p ElabProgram, r: &Realization, lanes: Option<usize>) -> KernelBackend<'p> {
-    let mut b = presk_cranelift::native_backend_with_threads(core, prog, r, 0, WORKERS).unwrap();
+    let mut b = presk_cranelift::native_backend_with_threads(core, prog, r, WORKERS).unwrap();
     b.default_layout.lanes = lanes;
     b
 }
@@ -311,7 +311,7 @@ fn the_primitives_as_scops_are_bit_identical_to_the_native_backend() {
             .into_iter()
             .map(|d| match d {
                 scop::Drawn::Real(v) => presk_rt::Buf::of(k.dtype, &v),
-                scop::Drawn::Idx(v) => presk_rt::Buf::I64(v),
+                scop::Drawn::Idx(v) => presk_rt::Buf::I64(v.into()),
             })
             .collect();
         let refs: Vec<&presk_rt::Buf> = inputs.iter().collect();
@@ -373,7 +373,7 @@ fn contraction_moves_bits_in_gccs_gnu_mode() {
 /// `int4`, so that both schemes reach the kernels.
 fn quantized(v: &Value, bits: u8, over: usize) -> Value {
     let Value::Real(t) = v else { panic!("a real operand") };
-    let t64 = presk_rt::Tensor { axes: t.axes.clone(), data: presk_rt::Buf::F64(t.data.to_f64()) };
+    let t64 = presk_rt::Tensor { axes: t.axes.clone(), data: presk_rt::Buf::F64(t.data.to_f64().into()) };
     let scheme = if bits == 8 { presk_rt::QuantScheme::Absmax } else { presk_rt::QuantScheme::Pow2 };
     let q = presk_rt::QTensor::quantize(&t64, &presk_rt::Quant { bits, over: presk_rt::AxisRef::Pos(over as i64), scheme }).unwrap();
     Value::Real(q.to_tensor())
@@ -663,8 +663,8 @@ fn hand_written_kernels_are_bit_identical_to_the_native_backend() {
     let xs = [0.3, -1e300, f64::NAN, 0.1, 1e18];
     let cases: Vec<(Kernel, Vec<Buf>)> = vec![
         (shift, vec![Buf::F32((0..16).map(|i| i as f32 * 0.37 - 2.0).collect())]),
-        (ints, vec![Buf::F64(xs.to_vec()), Buf::I64(vec![11, 12, 13, 14, 15])]),
-        (edges, vec![Buf::F32(vec![0.3, -2.0, f32::NAN, 1e-20, 3e38])]),
+        (ints, vec![Buf::F64(xs.to_vec().into()), Buf::I64(vec![11, 12, 13, 14, 15].into())]),
+        (edges, vec![Buf::F32(vec![0.3, -2.0, f32::NAN, 1e-20, 3e38].into())]),
     ];
     let lib = Arc::new(CLib::build("hand", cases.iter().map(|(k, _)| k)));
     let mut native = presk_cranelift::NativeExec::new().unwrap();

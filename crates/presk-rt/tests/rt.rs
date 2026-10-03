@@ -24,8 +24,8 @@ fn realizations_round_once() {
     let v = Value::Real(Tensor { axes: vec![], data: Buf::Exact(vec![x]) });
     let Value::Real(t64) = v.realize(Dtype::F64) else { panic!() };
     let Value::Real(t32) = v.realize(Dtype::F32) else { panic!() };
-    assert_eq!(t64.data, Buf::F64(vec![1.0 / 3.0]));
-    assert_eq!(t32.data, Buf::F32(vec![1.0f32 / 3.0]));
+    assert_eq!(t64.data, Buf::F64(vec![1.0 / 3.0].into()));
+    assert_eq!(t32.data, Buf::F32(vec![1.0f32 / 3.0].into()));
     assert_eq!(v.scalar_f64(), 1.0 / 3.0);
     let tree = Value::Tuple(vec![v.clone(), Value::Real(Tensor::scalar_f64(2.0))]);
     assert!((tree.sum_squares_f64() - (1.0 / 9.0 + 4.0)).abs() < 1e-15);
@@ -86,6 +86,39 @@ fn a_realization_survives_its_file_form() {
     assert!(!back.is_uniform());
     assert!(ReductionOrder::Blocked { width: 8 }.is_exact(), "blocking keeps the order (D32)");
     assert!(!ReductionOrder::Interleaved { partials: 8 }.is_exact(), "partials reassociate (D31)");
+}
+
+/// When a fusion group can change a bit (plan 0.10.0 step 4b, D94): a
+/// `bf16` site anywhere, or a site typed apart from its function; not a
+/// uniform `f32` or `f64` realization, nor one by function, nor a site
+/// named with the type it would have anyway.
+#[test]
+fn a_realization_sees_the_groups_under_bf16_or_a_site_apart() {
+    use presk_rt::{AxisRef, Dtype, Quant, QuantScheme, Realization};
+    assert!(!Realization::uniform(Dtype::F64).groups_visible());
+    assert!(!Realization::uniform(Dtype::F32).groups_visible());
+    assert!(Realization::uniform(Dtype::Bf16).groups_visible());
+    let mut f = Realization::uniform(Dtype::F64);
+    f.functions.insert("Linear.apply.vjp".into(), Dtype::F32);
+    f.functions.insert("adamw.step".into(), Dtype::F32);
+    assert!(!f.groups_visible(), "by function, every site of a function has its type");
+    let mut same = f.clone();
+    same.storage.insert("Linear.apply.vjp/%3".into(), Dtype::F32);
+    same.storage.insert("loss/%5".into(), Dtype::F64);
+    assert!(!same.groups_visible(), "a site named with the type it has anyway");
+    let mut apart = f.clone();
+    apart.storage.insert("Linear.apply.vjp/%3".into(), Dtype::F64);
+    assert!(apart.groups_visible(), "a site typed apart from its function");
+    let mut fwd = Realization::uniform(Dtype::F32);
+    fwd.storage.insert("Block.apply/%7".into(), Dtype::F64);
+    assert!(fwd.groups_visible(), "a forward site apart, which `Block.apply.fwd/%7` takes too");
+    let mut b = f.clone();
+    b.functions.insert("adamw.lr".into(), Dtype::Bf16);
+    assert!(b.groups_visible());
+    let mut q = Realization::uniform(Dtype::F32);
+    q.quant.insert("blocks.ff.up.w".into(), Quant { bits: 8, over: AxisRef::Pos(-2), scheme: QuantScheme::Absmax });
+    q.accum.insert("loss/%3".into(), Dtype::F64);
+    assert!(!q.groups_visible(), "integer weights and accumulators are the contractions'");
 }
 
 /// `bf16` is a prefix of `f32`, so widening is exact and narrowing is one

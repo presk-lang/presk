@@ -1,4 +1,4 @@
 -- E4001: `sample` uses the effect Rand, which the function does not declare.
 dim B
-fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
-  sample(logits)
+fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+  sample(key, logits)

@@ -8,7 +8,7 @@ import "minigpt.psk" as m
 -- y = target tokens shifted by one. cross_entropy is differentiable in the logits
 -- (gather of log-softmax, stabilized at compile time), Disc in y (§3.5).
 fn loss(θ : params m.MiniGPT,
-        batch : (idx[m.V][batch: B, seq: T], idx[m.V][batch: B, seq: T])) -> ℝ[] =
+        batch : (idx[m.V][batch: m.B, seq: m.T], idx[m.V][batch: m.B, seq: m.T])) -> ℝ[] =
   let (x, y) = batch
   let logits = m.MiniGPT.apply(θ, x)          -- ℝ[batch, seq, vocab: V]
   mean(cross_entropy(logits, y))              -- mean over batch × seq

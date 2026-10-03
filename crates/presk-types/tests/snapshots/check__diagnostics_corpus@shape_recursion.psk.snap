@@ -1,0 +1,26 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_recursion.psk
+---
+[E2016] Error: `f` calls itself
+   ,-[ tests/diag/shape_recursion.psk:3:26 ]
+   |
+ 3 | fn f(x : ℝ[4]) -> ℝ[4] = f(x)
+   |                          ^^|^  
+   |                            `--- `f` calls `f` here
+   | 
+   | Note: a function may not call itself, directly or through other functions: iteration is `stack{N}(M)`
+---'
+[E2016] Error: `g` calls itself through `h`
+   ,-[ tests/diag/shape_recursion.psk:4:26 ]
+   |
+ 4 | fn g(x : ℝ[4]) -> ℝ[4] = h(x) + x
+   |                          ^^|^  
+   |                            `--- `g` calls `h` here
+ 5 | fn h(x : ℝ[4]) -> ℝ[4] = g(x)
+   |                          ^^|^  
+   |                            `--- `h` calls `g` here
+   | 
+   | Note: a function may not call itself, directly or through other functions: iteration is `stack{N}(M)`
+---'

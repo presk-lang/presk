@@ -1,0 +1,14 @@
+---
+source: crates/presk-cli/tests/run_diag.rs
+assertion_line: 74
+expression: snap
+input_file: tests/diag/run_serve.psk
+---
+$ presk serve tests/diag/run_serve.psk --weights $OUT/w/conformance/weights.psk.d --prompt 1 --tokens 2 --temperature 0
+[E7003] Error: `next` is refused at the dimensions given: `[seq: -2]` selects position -2 of the axis `seq`, of length 1 (`T` = 1)
+    ,-[ tests/diag/run_serve.psk:17:10 ]
+    |
+ 17 |   argmax(Toy.apply(θ, ctx)[seq: -2])
+    |          ^^^^^^^^^^^^^|^^^^^^^^^^^^  
+    |                       `-------------- undefined at the dimensions given
+----'

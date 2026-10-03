@@ -18,7 +18,6 @@ pub trait Real: Clone + Debug + PartialEq {
     fn from_f64(x: f64, prec: u32) -> Self;
     /// A decimal literal, rounded once at `prec` bits.
     fn from_decimal(s: &str, prec: u32) -> Option<Self>;
-    fn neg_infinity(prec: u32) -> Self;
     fn prec(&self) -> u32;
 
     fn add(&self, o: &Self) -> Self;
@@ -62,9 +61,6 @@ impl Real for Float {
     }
     fn from_decimal(s: &str, prec: u32) -> Option<Self> {
         Float::parse(s).ok().map(|p| Float::with_val(prec, p))
-    }
-    fn neg_infinity(prec: u32) -> Self {
-        Float::with_val(prec, f64::NEG_INFINITY)
     }
     fn prec(&self) -> u32 {
         Float::prec(self)

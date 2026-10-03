@@ -1,0 +1,40 @@
+-- ra4_attention.psk — the course GPT's attention as the RA4 sweeps measured
+-- it: `SelfAttention.apply` of `corpus/nlp/05_gpt.psk` up to plan 0.10.0
+-- step 7, frozen here (step 7b, D99). There the mask was a real tensor added
+-- to the scores, 0 or −∞, its `add` a nest of its own (`%19`); since step 7b
+-- the course GPT's mask is a tensor of truth values read by the softmax, and
+-- its later bindings are numbered one lower. The archived days of 0.7.0's
+-- sweep (the development set of 0.8.0), F1 and F2 name this program's nests,
+-- so `presk reprice` and the RA4 scripts read it, and every archived day is
+-- priced again byte for byte. A real mask added to the scores is still a
+-- legal program; the entry takes it as an argument.
+const V  : nat = 92        -- characters of data/civil_vocab.json
+const D  : nat = 384       -- model width
+const H  : nat = 6         -- attention heads
+const HD : nat = D / H
+const L  : nat = 6         -- blocks
+static assert D % H == 0
+
+dim B
+dim T <= 1024
+
+type Acts   = ℝ[batch: B, seq: T, model: D]
+type Mask   = ℝ[seq: T, seq2: T]
+
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] = x · w + b
+}
+
+module SelfAttention {
+  use wq, wk, wv, wo : Linear{D, D}
+
+  fn apply(x : Acts, mask : Mask, kd : key) -> Acts uses Rand =
+    let q = split_heads(wq.apply(x))
+    let k = split_heads(wk.apply(x))
+    let v = split_heads(wv.apply(x))
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = dropout(0.2, kd, softmax(axis seq2, s + mask))
+    wo.apply(merge_heads(ein[batch, heads, seq, hd](a * v)))
+}

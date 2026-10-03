@@ -1,0 +1,7 @@
+-- logits.psk — an entry that returns a tensor (D101;
+-- `crates/presk-cli/tests/solve_scalar.rs`): `presk calibrate` takes it,
+-- `presk solve` refuses it before computing anything, since it ranks the
+-- sites by `∂L/∂v` for a scalar `L`. Until then the refusal came from the
+-- reverse sweep's first `.vjp`, after its forward half: 39 minutes on
+-- BERT-large's `squad` at `L = 2`.
+fn logits(x : ℝ[8]) -> ℝ[8] = exp(x * real(2))

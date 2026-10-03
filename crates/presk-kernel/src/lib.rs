@@ -9,7 +9,9 @@ pub mod host;
 pub mod ir;
 pub mod lower;
 pub mod plan;
+pub mod profile;
 pub mod record;
 
-pub use host::{InterpExec, KernelBackend, KernelExec, Launch, LaunchOp};
+pub use host::{EpilogueAt, InterpExec, KernelBackend, KernelExec, Launch, LaunchOp};
+pub use profile::{HostProfile, Overhead, Phase};
 pub use ir::{BufKind, Dtype, Kernel, Threads};

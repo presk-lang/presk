@@ -29,9 +29,11 @@ The `Linear`/`MLP` and `LayerNorm` modules are imported from [`../mlp/`](../mlp/
   training, `budget(abs_error=…) | quantize(int8, …)` for inference. A budget is
   discharged by measuring the distance to the exact denotation on the envelope's inputs,
   and it covers only those inputs (§8.3).
-- **Sampling** (§2.2): unlike `dropout(rate, key, x)`, `sample` does not take a key yet;
-  the compiler draws it from a stream seeded by the run's seed, which holds only as long
-  as sampling is not differentiated (§10, open question no. 9).
+- **Sampling** (§2.2): like `dropout(rate, key, x)`, `sample(key, logits)` draws from its
+  key and from nothing else; `next_token` takes a key, and the serving loop gives it one
+  per token.
+- **The causal mask** is a tensor of truth values, `bool[seq, seq2]`, which `softmax`
+  reads (`where = mask`): no tensor holds `−∞`.
 - **Third-party build** (§8.5): the target is a separate `.pskt` file; `presk build`
   produces a `.pskb` bundle.
 

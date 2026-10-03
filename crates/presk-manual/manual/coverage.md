@@ -105,7 +105,11 @@ MLPerf's harness builds them: `[CLS]`, the question, `[SEP]`, the context,
 `[SEP]`, then padding to 384, which the additive mask sets to −10 000
 (`experiments/bert_features.py`; the feature measured has 18 question tokens,
 320 of context and 43 of padding). The file gained one entry, `squad`, which
-takes a feature as one tuple so that a data file can supply it.
+takes a feature as one tuple so that a data file can supply it. A second,
+`squad_loss`, is BERT's SQuAD fine-tuning loss as Google's `run_squad.py`
+computes it, the mean of the start and end cross-entropies against an answer's
+span (`bert_features.py --span`): a scalar, which `presk solve` needs to rank
+its sites, and on which `make compile-times` times BERT (D101).
 
 What it is not, before any number. The weights are the program's own
 initialization, not the fine-tuned checkpoint MLPerf distributes, and the
@@ -151,7 +155,8 @@ scheme), relative to the largest exact logit:
 
 On two blocks the weights' rounding is the whole of a quantised gap, and the
 kernels add less than 10⁻⁶. The same `int8` scheme that statement K measured at
-3.23·10⁻⁶ on the GPT's loss is 5.7·10⁻² here, outside a 10⁻² budget. A loss
+2.73·10⁻⁵ on the GPT's loss (D93; 3.23·10⁻⁶ in D49) is 5.7·10⁻² here,
+outside a 10⁻² budget. A loss
 averages its errors over 512 positions and ends in one number, where each of
 768 logits is an output in its own right; and this model is sixteen times
 wider.
@@ -252,21 +257,27 @@ predictions (`make foil`; the whole table is in the `experiments` chapter,
 
 | realization | gap to the exact loss | of which the weights' | correct predictions |
 |---|---|---|---|
-| `f32`, the FP32 reference | 2.2·10⁻⁷ | 0 | 18 615 |
-| `bf16` | 3.0·10⁻³ | 0 | 18 614 |
-| `int8` weights, `f32` arithmetic | 1.5·10⁻⁴ | 1.5·10⁻⁴ | 18 615 |
-| `int4` weights, `f32` arithmetic | 1.0·10⁻³ | 1.0·10⁻³ | 18 608 |
-| solved at 10⁻³, statement D's | 2.4·10⁻⁷ | 0 | 18 615 |
+| `f32`, the FP32 reference | 4.7·10⁻⁸ | 0 | 28 612 |
+| `bf16` | 1.7·10⁻³ | 0 | 28 610 |
+| `int8` weights, `f32` arithmetic | 3.9·10⁻⁵ | 3.9·10⁻⁵ | 28 618 |
+| `int4` weights, `f32` arithmetic | 4.0·10⁻⁴ | 4.0·10⁻⁴ | 28 476 |
+| solved at 10⁻³, statement D's | 4.7·10⁻⁸ | 0 | 28 612 |
+
+(D93's measurement, on a checkpoint trained with the right gradient. D53's,
+on one trained with the gradient defect 3f of D92 made wrong, had the FP32
+reference right on 18 615 predictions and every realization within seven of
+it; the rules' behaviour below is on the new one.)
 
 The accuracy rule's four properties, and a budget's answer to each, with the
 numbers:
 
 - **The constant is negotiated, not derived.** 99 % is a number a working
   group agreed; ε is declared by the program. On this model the accuracy rule
-  admits every realization, at 99.9 % as at 99 % — seven predictions in
-  118 016 is the largest change — so here it separates nothing. Nor is it
-  monotone: `int4 pow2`, further from the exact loss than `int4`, loses one
-  prediction where `int4` loses seven. The budget orders the same
+  admits every realization at 99 %, and at 99.9 % every one but `int4`
+  weights, which lose 136 predictions in 118 016 (0.48 % of the reference's)
+  with a gap of 4.0·10⁻⁴ to the exact loss, inside a budget of 10⁻³. Nor is
+  it monotone: `int4 pow2`, twice as far from the exact loss as `int4`, gains
+  115 predictions where `int4` loses 136. The budget orders the same
   realizations over four orders of magnitude, and `f64` eight more below them.
   Where the accuracy rule does bind, its constant has in practice chosen a
   precision: for BERT, "FP16 was required to meet the highest accuracy
@@ -294,18 +305,18 @@ numbers:
   budget is portable and a realization is not (question 59): what carries to
   another checkpoint or scale is the realization, keyed by function, and its
   gap is measured again there. Statement D's realization, solved on one
-  checkpoint, is 2.4·10⁻⁷ from the exact loss on the held-out one, against
-  4.48·10⁻⁶ where it was solved; J′'s, solved at `D = 64`, is inside its budget
-  at course scale too. The number never transfers; the measurement does.
+  checkpoint, is 4.7·10⁻⁸ from the exact loss on the held-out one, against
+  1.89·10⁻⁶ where it was solved (D93; 2.4·10⁻⁷ and 4.48·10⁻⁶ in D53); J′'s,
+  solved at `D = 64`, is inside its budget at course scale too. The number never transfers; the measurement does.
 
 **What holds, each result as what it is.**
 
 | | measured | what it is | what it is not |
 |---|---|---|---|
-| D | 4.48·10⁻⁶ against 10⁻³ (D50) | a budget declared on an entry, discharged by measurement against the exact denotation, with 2.12× less traffic | independent evidence of the solver, which widens until the measurement passes; a speedup (J: 1.06×, then 1.13×) |
-| K | `int8` weights, 3.23·10⁻⁶ against 10⁻²; 1.46·10⁻⁴ on held-out windows | inside a budget on a *loss*, a scalar averaged over 512 positions | a speed claim (the GPT forward is level with `f32`); a claim about outputs: on BERT-large's logits the same scheme is 5.7·10⁻², outside 10⁻² |
-| the split | 3.86·10⁻⁶ of weights, 6.32·10⁻⁷ of arithmetic (K's windows) | a quantised gap attributed to the weights or to the kernels | exclusive to an exact reference: `f64` would approximate it wherever its own gap is known to be small, and knowing that is the exact reference's work |
-| J′ | 1.99× per training step against all-`f64`, inside its 10⁻³ update budget (D52) | the budget licensing the move off `f64` by measurement, and the time objective refusing `bf16` where it does not pay | faster than FP32 — all-`f32` runs at 31.0 s a step against the solved step's 30.0 s, inside the run-to-run noise, and FP32 is MLPerf's reference; an inference result |
+| D | 1.89·10⁻⁶ against 10⁻³ (D93; 4.48·10⁻⁶ in D50) | a budget declared on an entry, discharged by measurement against the exact denotation, with 2.08× less traffic | independent evidence of the solver, which widens until the measurement passes; a speedup (J: 1.06×, then 1.13×) |
+| K | `int8` weights, 2.73·10⁻⁵ against 10⁻²; 3.90·10⁻⁵ on held-out windows (D93; 3.23·10⁻⁶ and 1.46·10⁻⁴ in D53) | inside a budget on a *loss*, a scalar averaged over 512 positions | a speed claim (the GPT forward is level with `f32`); a claim about outputs: on BERT-large's logits the same scheme is 5.7·10⁻², outside 10⁻² |
+| the split | 2.77·10⁻⁵ of weights, 3.73·10⁻⁷ of arithmetic (K's windows, D93) | a quantised gap attributed to the weights or to the kernels | exclusive to an exact reference: `f64` would approximate it wherever its own gap is known to be small, and knowing that is the exact reference's work |
+| J′ | 1.99× per training step against all-`f64`, inside its 10⁻³ update budget (D52); 1.95× measured again on the corrected gradient (D93) | the budget licensing the move off `f64` by measurement, and the time objective refusing `bf16` where it does not pay | faster than FP32 — all-`f32` runs at 23.4 s a step against the solved step's 22.7 s (D93; 31.0 and 30.0 in D52), inside the run-to-run noise, and FP32 is MLPerf's reference; an inference result |
 
 **On the benchmark's own model.** `int8` weights are the first realization in this project
 faster than FP32 on a model — 2.2× on BERT-large at MLPerf's constants — and

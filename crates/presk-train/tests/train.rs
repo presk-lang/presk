@@ -52,7 +52,7 @@ fn regression_converges_and_checkpoints_round_trip() {
     let ckpt = tmp("reg");
     let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt.clone()), checkpoints: true };
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
-    let mut backend = InterpBackend::new(&core, &prog, 256, 0);
+    let mut backend = InterpBackend::new(&core, &prog, 256);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     assert_eq!(out.logs.len(), 200);
     assert_eq!(out.total, 200);
@@ -93,7 +93,7 @@ fn minigpt_twenty_steps() {
     let ckpt = tmp("minigpt");
     let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt.clone()), checkpoints: true };
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
-    let mut backend = InterpBackend::new(&core, &prog, 64, 0);
+    let mut backend = InterpBackend::new(&core, &prog, 64);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     assert_eq!(out.logs.len(), 20);
     assert!(out.logs[19].loss < out.logs[0].loss);
@@ -115,7 +115,7 @@ fn dropout_trains_from_a_per_step_key() {
     let opts = TrainOptions { data: None, steps: Some(120), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
     let run = |seed: u64| {
         let o = TrainOptions { seed, ..opts.clone() };
-        let mut backend = InterpBackend::new(&core, &prog, 256, seed);
+        let mut backend = InterpBackend::new(&core, &prog, 256);
         train(&mut backend, &core, &prog, &typed, &fns, &o, |_| {}).unwrap()
     };
     let a = run(0);
@@ -146,7 +146,7 @@ fn a_quantised_realization_runs_on_dequantised_weights() {
     }
     let opts = presk_interp::RunOptions { entry: "loss".into(), dims: vec![("B".into(), 4)], seed: 3, bits: 128, digits: 17 };
     let run = |realize: &Realization| {
-        let mut b = InterpBackend::new(&core, &prog, 128, 3);
+        let mut b = InterpBackend::new(&core, &prog, 128);
         Value::from_interp(&presk_rt::run_with(&mut b, &core, &prog, &opts, realize).unwrap().result).unwrap()
     };
     let exact = run(&Realization::uniform(Dtype::F64));
@@ -158,7 +158,7 @@ fn a_quantised_realization_runs_on_dequantised_weights() {
     let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
     args[0] = r.quantized_params(&args[0]).unwrap();
-    let mut b = InterpBackend::new(&core, &prog, 128, 3);
+    let mut b = InterpBackend::new(&core, &prog, 128);
     let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
     let by_hand = presk_rt::Backend::call(&mut b, &p, args).unwrap();
     assert_eq!(by_hand, quantised);
@@ -166,12 +166,12 @@ fn a_quantised_realization_runs_on_dequantised_weights() {
     // A misspelt parameter is refused rather than ignored.
     let mut bad = r.clone();
     bad.quant.insert("l3.w".into(), Quant { bits: 8, over: AxisRef::Pos(-2), scheme: QuantScheme::Absmax });
-    let mut b = InterpBackend::new(&core, &prog, 128, 3);
+    let mut b = InterpBackend::new(&core, &prog, 128);
     let Err(e) = presk_rt::run_with(&mut b, &core, &prog, &opts, &bad) else { panic!("a misspelt parameter ran") };
     assert_eq!(e.code, "E7001");
 
     let topts = TrainOptions { data: None, steps: Some(1), epochs: None, seed: 0, bits: 64, realize: r, ckpt: None, checkpoints: false };
-    let mut b = InterpBackend::new(&core, &prog, 64, 0);
+    let mut b = InterpBackend::new(&core, &prog, 64);
     let e = train(&mut b, &core, &prog, &typed, &fns, &topts, |_| {}).unwrap_err();
     assert!(e.message.contains("trained weights"), "{}", e.message);
 }

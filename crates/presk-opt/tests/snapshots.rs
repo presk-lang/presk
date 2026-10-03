@@ -24,23 +24,27 @@ fn self_attention_apply() {
     insta::assert_snapshot!("opt_self_attention_apply", text);
 }
 
+/// The reverse sweeps, since 0.10.0 step 4 in the `.bwd`s: a `.vjp` is its
+/// `.bwd` after its `.fwd`.
 #[test]
 fn mse_vjp_and_mlp_adjoints() {
     let (prog, _, mut core) = prepare("tests/examples/mlp/mlp.psk", &[]);
     let lets = |core: &presk_core::Program, name: &str| core.func(core.find(name).unwrap()).body.lets.len();
-    let before: Vec<usize> = ["mse.vjp", "MLP.apply.vjp", "Linear.apply.vjp"].iter().map(|n| lets(&core, n)).collect();
+    let sweeps = ["mse.bwd", "MLP.apply.bwd", "Linear.apply.bwd"];
+    let before: Vec<usize> = sweeps.iter().map(|n| lets(&core, n)).collect();
     let report = optimize(&mut core, &prog);
-    let after: Vec<usize> = ["mse.vjp", "MLP.apply.vjp", "Linear.apply.vjp"].iter().map(|n| lets(&core, n)).collect();
-    for (i, name) in ["mse.vjp", "MLP.apply.vjp", "Linear.apply.vjp"].iter().enumerate() {
+    let after: Vec<usize> = sweeps.iter().map(|n| lets(&core, n)).collect();
+    for (i, name) in sweeps.iter().enumerate() {
         assert!(after[i] < before[i], "{name}: {} → {} lets\n{}", before[i], after[i], report.summary());
     }
     // The adjoint of `Linear.apply` is one record, with no zeros to add.
-    let lin = core.func(core.find("Linear.apply.vjp").unwrap());
+    let lin = core.func(core.find("Linear.apply.bwd").unwrap());
     assert!(lin.body.lets.iter().any(|l| matches!(l.rhs, Rhs::Record(_))));
-    assert!(!lin.body.lets.iter().any(|l| matches!(l.rhs, Rhs::Prim { op: PrimOp::ZerosLike | PrimOp::SetField { .. } | PrimOp::Add, .. })), "{}", func_text(&core, &prog, "Linear.apply.vjp"));
-    // The dead forward recomputation (`dot`, `add`) of the adjoint is gone.
+    assert!(!lin.body.lets.iter().any(|l| matches!(l.rhs, Rhs::Prim { op: PrimOp::ZerosLike | PrimOp::SetField { .. } | PrimOp::Add, .. })), "{}", func_text(&core, &prog, "Linear.apply.bwd"));
+    // No forward product: the sweep reads the one its `.fwd` made, or here
+    // its operands, `Linear.apply`'s parameters.
     assert!(!lin.body.lets.iter().any(|l| matches!(l.rhs, Rhs::Prim { op: PrimOp::Dot, .. })));
-    let text = [func_text(&core, &prog, "mse.vjp"), func_text(&core, &prog, "MLP.apply.vjp"), func_text(&core, &prog, "Linear.apply.vjp")].join("\n");
+    let text = sweeps.iter().map(|n| func_text(&core, &prog, n)).collect::<Vec<_>>().join("\n");
     insta::assert_snapshot!("opt_mlp_adjoints", text);
 }
 

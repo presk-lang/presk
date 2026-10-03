@@ -4,21 +4,26 @@
 //! ```text
 //! θ = load(weights, shaped like M.init(key))
 //! ctx = prompt
-//! repeat N times:
-//!   next = generate(θ, ctx[-window:], temperature)     -- the file's generation function
+//! k = key(seed)
+//! repeat N times, i = 1, 2, …:
+//!   next = generate(θ, child(k, i), ctx[-window:], temperature)   -- the file's generation function
 //!   ctx = ctx ++ [next]
 //! ```
 //!
 //! The generation function is the file's function of signature
-//! `(θ : params M, ctx : idx[V][batch: B, seq: T], … defaults) -> idx[V][batch: B]`
-//! (resolved by the checker, or named with `--entry`). Two forms of the loop:
+//! `(θ : params M, [key : key,] ctx : idx[V][batch: B, seq: T], … defaults)
+//! -> idx[V][batch: B]` (resolved by the checker, or named with `--entry`).
+//! When it takes a key, token `i` is given the child `i` of the serve's key,
+//! the key `--seed` names, as a training run gives step `t` the child `t` of
+//! its own (the reference's definition "Generation", plan 0.10.0 step 7b);
+//! its `sample` draws from that key, so every backend draws alike. Two forms
+//! of the loop:
 //!
-//! - **sampling** (`temperature > 0`): the function is called as written; its
-//!   `sample` draws from the backend's stream seeded by `--seed`, so two
-//!   backends need not agree (question 41);
+//! - **sampling** (`temperature > 0`): the function is called as written;
 //! - **greedy** (`temperature = 0`): a copy of the function with every
-//!   `sample` replaced by `argmax` is called (with temperature `1`, so the
-//!   division is harmless). Every backend agrees on this path up to ties.
+//!   `sample(key, x)` replaced by `argmax(x)` is called (with temperature
+//!   `1`, so the division is harmless). Every backend agrees on this path up
+//!   to ties.
 //!
 //! When the model's parameters depend on the context length (`pos : ℝ[T, D]`,
 //! question 43), `T` is fixed by the checkpoint: it is given by `--dim T=N`
@@ -67,6 +72,8 @@ pub struct ServeFns {
     pub generate: FuncId,
     /// Its greedy copy (`sample` → `argmax`).
     pub greedy: FuncId,
+    /// Whether the generation function takes a key before the context.
+    pub key: bool,
     /// Whether the generation function takes a temperature after the context.
     pub temperature: bool,
     /// The temperature's default, when it is a literal.
@@ -114,9 +121,12 @@ pub fn prepare_serve(core: &mut Program, elab: &ElabProgram, typed: &TypedProgra
         None => serve.generate.ok_or_else(|| te("E7001", "this `inference serve` has no generation function (W0003): name one with `--entry FN`"))?,
     };
     let sig = elab.function(fid);
-    // The signature, checked again for an `--entry`.
-    let (Some(Ty::Idx { shape, .. }), Some(Ty::Params(_))) = (sig.params.get(1).and_then(|p| p.ty.as_ref()), sig.params.first().and_then(|p| p.ty.as_ref())) else {
-        return err("E7001", format!("`{}` is not a generation function: expected `(θ : params {model}, ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]`", sig.name));
+    // The signature, checked again for an `--entry`: the context is the
+    // third parameter when a key comes second.
+    let key = matches!(sig.params.get(1).and_then(|p| p.ty.as_ref()), Some(Ty::Key));
+    let c = if key { 2 } else { 1 };
+    let (Some(Ty::Idx { shape, .. }), Some(Ty::Params(_))) = (sig.params.get(c).and_then(|p| p.ty.as_ref()), sig.params.first().and_then(|p| p.ty.as_ref())) else {
+        return err("E7001", format!("`{}` is not a generation function: expected `(θ : params {model}, [key : key,] ctx : idx[V][batch: B, seq: T], …) -> idx[V][batch: B]`", sig.name));
     };
     let dim_name = |n: &str| -> Result<String> {
         let a = shape.axes.iter().find(|a| a.name.as_deref() == Some(n)).ok_or_else(|| te("E7001", format!("`{}`: the context has no axis named `{n}`", sig.name)))?;
@@ -128,31 +138,30 @@ pub fn prepare_serve(core: &mut Program, elab: &ElabProgram, typed: &TypedProgra
         }
     };
     let (batch_dim, seq_dim) = (dim_name("batch")?, dim_name("seq")?);
-    let temperature = sig.params.len() > 2;
-    if sig.params.len() > 3 || (temperature && !matches!(sig.params[2].ty, Some(Ty::F64) | Some(Ty::Rat))) {
+    let temperature = sig.params.len() > c + 1;
+    if sig.params.len() > c + 2 || (temperature && !matches!(sig.params[c + 1].ty, Some(Ty::F64) | Some(Ty::Rat))) {
         return err("E7001", format!("`{}`: after the context, at most one `f64` parameter (the temperature) is supported", sig.name));
     }
-    let default_temperature = sig.params.get(2).and_then(|p| p.default.as_ref()).and_then(|e| match e {
+    let default_temperature = sig.params.get(c + 1).and_then(|p| p.default.as_ref()).and_then(|e| match e {
         Expr::Lit { lit: Lit::Float(f), .. } | Expr::Lit { lit: Lit::Nat(f), .. } => f.parse().ok(),
         _ => None,
     });
     let generate = core.funcs.iter().position(|f| matches!(f.origin, Origin::Source(id) if id == fid)).map(|i| FuncId(i as u32)).ok_or_else(|| te("E7001", "generation function not lowered"))?;
-    // The greedy copy: every `sample` becomes an `argmax`.
+    // The greedy copy: every `sample(key, x)` becomes an `argmax(x)`; the
+    // copy keeps the function's parameters, its key read by nothing.
     let mut g = core.func(generate).clone();
     g.name = format!("{}.greedy", g.name);
     g.origin = Origin::Lambda { parent: generate };
     g.effects.retain(|e| e != "Rand");
     for l in &mut g.body.lets {
-        if let Rhs::Prim { op: PrimOp::Sample, .. } = &l.rhs
-            && let Rhs::Prim { op, .. } = &mut l.rhs
-        {
-            *op = PrimOp::Argmax;
+        if let Rhs::Prim { op: PrimOp::Sample, args } = &l.rhs {
+            l.rhs = Rhs::Prim { op: PrimOp::Argmax, args: vec![args[1]] };
         }
     }
     core.funcs.push(g);
     let greedy = FuncId(core.funcs.len() as u32 - 1);
     presk_core::verify(core).map_err(|e| te("E7001", format!("internal error in the greedy copy: {}", e.join("; "))))?;
-    Ok(ServeFns { model, init, generate, greedy, temperature, default_temperature, batch_dim, seq_dim, ctx_ty: sig.params[1].ty.clone().unwrap(), weights: serve.weights_path.clone() })
+    Ok(ServeFns { model, init, generate, greedy, key, temperature, default_temperature, batch_dim, seq_dim, ctx_ty: sig.params[c].ty.clone().unwrap(), weights: serve.weights_path.clone() })
 }
 
 /// Runs the generation loop over `backend`.
@@ -210,6 +219,8 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
     // The context type's vocabulary.
     let Ty::Idx { bound, shape } = &fns.ctx_ty else { return err("E7001", "the context is not an index tensor") };
     let f = if greedy { fns.greedy } else { fns.generate };
+    // The serve's key: token `step` is given its child `step`.
+    let serve_key = Key::from_seed(opts.seed);
     let mut tokens = opts.prompt.clone();
     let mut generated = Vec::new();
     let mut prepared: BTreeMap<u64, presk_rt::Prepared> = BTreeMap::new();
@@ -236,7 +247,11 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
         }
         let axes = axes_of(shape, &dims)?;
         let ctx_v = Value::Idx { bound: v, t: presk_rt::Tensor { axes, data: Buf::I64(ctx.iter().map(|t| *t as i64).collect()) } };
-        let mut args = vec![theta.clone(), ctx_v];
+        let mut args = vec![theta.clone()];
+        if fns.key {
+            args.push(Value::Key(serve_key.child(step)));
+        }
+        args.push(ctx_v);
         if fns.temperature {
             args.push(Value::F64(if greedy { 1.0 } else { temperature }));
         }

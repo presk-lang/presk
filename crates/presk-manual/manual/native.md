@@ -47,10 +47,15 @@ record answers both (D34):
   one loop nest with one set of buffers, so it is the smallest place a type
   is a decision rather than a conversion.
 - **`accum`** is the type a contraction sums in. It defaults to the
-  *arithmetic* type of the storage, so `bf16` storage accumulates in `f32`
-  unless something says otherwise. Only the error analysis reads it: the
-  kernels sum in the arithmetic type of their storage whatever the file
-  states (found in 0.7.0 step 0, D56).
+  *arithmetic* type of the storage, so `bf16` storage accumulates in `f32`.
+  Only the error analysis reads it: the kernels sum in the arithmetic type
+  of their storage (found in 0.7.0 step 0, D56), so on the kernel and
+  native backends a realization that declares any other accumulation type
+  (`bf16` over `bf16`, `f64` over `f32`) is refused before anything runs
+  (`E7002`, since 0.10.0 step 8; until then it was run as if absent, and
+  condition 7, which reads it, admitted layouts whose bits differ from the
+  default's, D97). The reference interpreter, which reads no realization,
+  runs it. Kernels that honour it are question 67's.
 - **`order`** is `sequential`, `blocked(width)` or `interleaved(partials)`.
   The first two are bit-identical — register blocking keeps every addition in
   index order (D32) — and the third reassociates, which is a different
@@ -68,7 +73,15 @@ is bit-for-bit the value the reference path substitutes (D45).
 
 `bf16` is **storage only**: buffers hold sixteen bits, arithmetic is `f32`,
 and conversion is a shift on the way in and one round to nearest even on the
-way out (D38). It halves the traffic of the memory-bound sweeps — `adamw.step`
+way out (D38). A value reaches `bf16` through `f32`: an input or a weight
+given in `f64` is rounded to `f32`, then to `bf16`, two roundings, as the
+`export_c` chapter's table says and the language reference states as the
+rule (its chapter 4). And a `bf16` nest holds its interior values in `f32`:
+a fusion group computes every member in its root's arithmetic type and
+stores only the root, so a value's bits depend on the partition of its
+function into groups, which is why a gradient keeps its forward pass's
+groups wherever a realization can see them (D92, D94; the `language`
+chapter, "Residuals"). It halves the traffic of the memory-bound sweeps — `adamw.step`
 is a dozen passes over every parameter — while contractions keep their
 accuracy. There is no `f16`.
 
@@ -96,7 +109,13 @@ Reductions and contractions accumulate in the arithmetic type of their
 storage (the default accumulator type; see `accum` above), indices are
 `i64`, hyperparameters and `nat` values are converted at their injection.
 `gelu` is the exact `x·Φ(x)` through `erf`; `softmax` and `cross_entropy`
-subtract the row maximum (a value-preserving rewrite over ℝ). Where a site
+subtract the row maximum (a value-preserving rewrite over ℝ). A mask
+(`bool[…]`, `causal_mask`, 0.10.0 step 7b) is an index buffer of 0 and 1,
+exact in every realization: the masked softmax reads it in selections, its
+maximum from the first allowed position and its sum over the allowed ones,
+0 where it refuses, a row it empties giving zeros (the interpreter refuses
+such a row), so that its bits are the softmax's of the scores with `−∞` at
+the refused positions, the additive mask's until then. Where a site
 hands a buffer to a kernel of another type, the conversion happens at the
 kernel's edge, which is where the cost of a mixed assignment actually is.
 The interpreter ignores the realization and computes at `--bits`.
@@ -401,7 +420,9 @@ Since 0.7.0 step 2 both are points of one **layout space**, and one builder
 lowers every point, for a `dot` whose right operand has rank two and for an
 `ein` of attention's pattern alike (the language reference's *contraction
 nest*: the output is the outer axes, then `I`, then `J`, over one contracted
-axis `K`). A realization plan (`realize` chapter) chooses, per nest:
+axis `K`), and since 0.10.0 step 1 for the two derivatives of such a `dot`,
+`dot_vjp_r` summing over several leading axes as one `K` (`realize`
+chapter). A realization plan (`realize` chapter) chooses, per nest:
 
 - the **form**: row-wise, or tiled;
 - the **register tile** `[m_i, n_j]`: `m_i` rows by `n_j` columns of the
@@ -411,13 +432,24 @@ axis `K`). A realization plan (`realize` chapter) chooses, per nest:
   within-block loop inside it;
 - the **loop order** of the block loops, outermost first (`IJ`, `JI`, or with
   a k-block a permutation of `IJK`);
-- the **lanes**: one, or the register's width across the tile's columns.
+- the **lanes**: one, or the register's width across the tile's columns;
+- since 0.10.0 step 7, the **epilogue**: where one `add` alone reads the
+  product's value (a linear layer's bias), the product's kernel adds the
+  `add`'s other operand to each output element once its sum is done, and
+  the `add` launches nothing. In `f64` and `f32` the operand is added to the
+  sum in its register before the store; in `bf16` the sum is stored, which
+  rounds it, read back, added to and stored again, as the `add`'s own kernel
+  would; under a spill, in the last block of `K` only. So it computes the two
+  nests' bits (`realize` chapter, "The bias as an epilogue").
 
 The default is 0.6.0's kernel. A `dot` whose `J` is a multiple of eight is
 tiled `[1, 8]`, its text character for character what 0.6.0 printed. Any
 other `dot` is row-wise. An `ein` is the tile `[1, 1]`, one accumulator per
 output element, which is the naive nest 0.6.0 emitted less a multiplication by
-one it carried (exact, so no bit moved). One default changed, on purpose: a
+one it carried (exact, so no bit moved). The derivatives of a `dot` are the
+tile `[1, 1]` too, and their text at the default is 0.9.0's, character for
+character, since a one-element tile of theirs reads its operand 0 inside the
+product (0.10.0 step 1, D89). One default changed, on purpose: a
 `bf16` `dot` whose `J` is not a multiple of eight is now tiled `[1, 1]` and no
 longer row-wise, because the row-wise form keeps its partial sums in the
 `bf16` output and so accumulated in `bf16` where the realization says `f32`
@@ -438,8 +470,8 @@ accumulation type, so a plan cannot state it for `bf16`, nor the row-wise
 form. Lanes run across the tile's columns and never across `k`, and need
 operand 1 to be contiguous along `J`. On an NT contraction such as
 attention's scores `ein`, whose operand 1 has `K` innermost, lanes need a
-**pack**: operand 1 copied, in its own type, to a panel with the axes (outer…,
-`K`, `J`), which the contraction then reads as NN. The copy is a kernel of its
+**pack**: operand 1 copied, in its own type, to a panel with the axes (the
+outer axes it carries…, `K`, `J`), which the contraction then reads as NN. The copy is a kernel of its
 own, launched just before the contraction's (`pack` in `dump --stage
 kernel`); both launches are the nest's (since 0.7.0 step 3).
 
@@ -547,6 +579,26 @@ calibrated on a GEMM, so it is not a test; the fresh sweeps are
 scalar sequential kernel. Packing both operands, as BLAS libraries do, is not in the space
 (`docs/kernels-roadmap.md`).
 
+## The host's values (0.10.0 step 6)
+
+The host passes values between launches without copying them (D96). A
+tensor's elements are shared by every value that reads them: an operand
+taken from the environment, a call's argument, a tuple's component, a
+projection, a fold's accumulator (`presk_rt::Elems`, behind a reference
+count). A stacked layer's slice is a view of its stack, as the C program
+passes `w + l · chunk`, and a scan's stack is its parts laid end to end,
+which a fold reads layer by layer without a copy; they are laid out in one
+buffer only if something reads the stack whole. Nothing writes elements
+another value sees: a kernel writes only its output, and a write to shared
+elements copies them first. A launch's output comes from a free list of the
+buffers freed before, by length, so after the first call no page is
+touched for the first time; it is not zeroed, since every kernel writes its
+output before reading it (a debug build fills it with NaN, which the tests
+would see). A training dropout mask is drawn in pieces on the workers, each
+from its place in the key's stream, the bits of one stream drawn in order;
+outside training the mask is ones, one buffer per length, drawn nowhere.
+`presk bench --host-profile` times each of these (`cli` chapter).
+
 ## Threads: `--threads N`
 
 Since 0.4.0 a kernel whose outermost loop is *parallel* is split across
@@ -567,6 +619,19 @@ workers costs tens of microseconds, which a small kernel never earns back, so
 the elementwise kernels stay sequential and the contractions parallelize.
 `--threads N` sets the count on `run`, `train` and `bench`; the default is the
 machine's cores, and `--threads 1` turns the split off.
+
+**A pool of workers** (0.10.0 step 6, D96). Until then a divided launch
+started a thread for each of its pieces and joined them, about 210 µs a
+launch of ten threads, and the scheduler placed each new thread afresh,
+often on the slower cores. The executor now keeps `N − 1` workers for its
+life (`presk_cranelift::Pool`, on the standard library): a launch posts
+piece `t` to worker `t`, runs piece 0 on the calling thread and waits for
+the others, about two microseconds beyond its longest piece. The pieces are
+the ones the threads ran, so the bits are. A waiting worker spins about two
+milliseconds before it parks, as OpenMP's runtime does, and a few
+microseconds when the process's workers outnumber its cores. The workers
+are not pinned to cores: they run where the process may (`taskset`), and a
+persistent worker stays on a fast core, which is what pinning was for.
 
 **A split at a depth** (0.7.0 step 3). A realization plan may state a split
 per nest, `{ "depth": d, "workers": p }` (`realize` chapter): the loop at

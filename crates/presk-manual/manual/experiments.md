@@ -4,13 +4,15 @@ What the tool can show about the approach, with numbers, and what it cannot.
 §1 and §2 are the first two experiments: `make experiment` runs both (after
 `make venv`), with the script `experiments/exact_vs_almost.py`, which takes
 any output directory of `presk export … --conformance-entry train:K`. §3 is
-0.4.0's decisive experiment against PyTorch (`make experiment-gpt`), §4 the
+0.4.0's decisive experiment against PyTorch (`make experiment-gpt`), taken
+again on three sides at 0.9.0 (`make pytorch-baseline`), §4 the
 statements of 0.5.0, §5 MLPerf's acceptance rule set beside a budget on one
 model (`make foil`), §6 the statements of 0.6.0, §7 those of 0.7.0, the
 first test of the research programme's hypothesis RA4 (`make ra4`), §8
 those of 0.8.0, its second, with a model frozen before two fresh sweeps
-(`make ra4-f2`, `make ra4-f1`), and §9 those of 0.9.0, a C export
-(`make c-conformance`, `make c-speed`). Each
+(`make ra4-f2`, `make ra4-f1`), §9 those of 0.9.0, a C export
+(`make c-conformance`, `make c-speed`), and §10 those of 0.10.0, a training
+step that pays (`make pytorch-baseline`, `make ra4-t3`). Each
 version named its statements before it began, with what would count as
 failure, and each section reports them as measured.
 
@@ -153,7 +155,9 @@ Two things make this comparison fairer than 0.4.0's. Both sides now **drop**:
 its dropout at the expectation while `presk train` dropped, so PyTorch was
 doing less work (D54). The masks differ — PyTorch draws its own, presk
 derives its from the step's key — so the **losses are comparable to about
-four digits and no further** (4.507609 against 4.507878 after six steps),
+four digits and no further** (4.507609 against 4.507883 after six steps,
+measured again in D93 with the right gradient; 4.507878 in D55, whose presk
+side trained with the gradient defect 3f of D92 made wrong),
 while the timings are of the same computation. And both sides are timed per
 step, the first step excluded, rather than by total wall time, so neither
 pays for the other's warm-up (the native backend compiles its kernels on the
@@ -208,6 +212,176 @@ said 1.14×. The model is right about what it is asked; it is asked very
 little, because the rule set offers few decisions that turn on size
 (`optimization` chapter).
 
+### Three sides at 0.9.0, 28 September 2026
+
+23 September's comparison is the native backend at its default layout.
+0.7.0 has since added layout plans and 0.9.0 a C export, so the course GPT
+was timed again at `B = 16`, `T = 256` in `f32` (`make pytorch-baseline`,
+D87). There are three sides: the native backend, the C program `presk
+export --target c` writes, and PyTorch 2.14 running the model `presk export
+--target pytorch` writes. There are two workloads: the forward pass, in eval
+mode on PyTorch's side, and one training step, where the C program's is its
+gradient plus `adamw.step`. Each runs under the default layout and under the
+plans the frozen profile gives. The runs use the ten X925 cores, pinned,
+with ten threads on every side, since the plans divide among ten workers.
+Each figure is the median of seven calls or steps; the native backend's
+first call, which compiles, is left out, and PyTorch's first too. The two
+runs, in ms, and the factor over PyTorch:
+
+| side | forward pass | one training step |
+|---|---|---|
+| PyTorch 2.14 `float32` | 156, 153 (621–634 GFLOP/s) | 1 016, 1 013 (286–287 GFLOP/s) |
+| C program, under the plan | 281, 285: **1.8–1.9×** | 12 235, 12 247: **12.0–12.1×** |
+| native, under the plan | 697, 710: 4.5–4.6× | 23 025, 22 292: 22.0–22.7× |
+| C program, default layout | 894, 880: 5.7–5.8× | 16 129, 16 392: 15.9–16.2× |
+| native, default layout | 1 728, 1 807: 11.1–11.8× | 30 249, 29 895: 29.5–29.8× |
+
+The counts are 96.93 GFLOP a forward pass and 290.78 a step, the
+contractions counted in full, a multiply and an add each. PyTorch's own
+counter gives the same, and the 266 GFLOP of 0.4.0, used above, was 8.5 %
+low. On every core unpinned, 23 September's setting, the native step at the
+default layout is 22.3× and 22.8× PyTorch's, against 22.4× then: at the
+default layout a training step has not moved. The C program's forward pass
+there is 1.13× PyTorch's: PyTorch loses 1.6× on the slower cores, while the
+plan's launches stay on ten threads. Every layout and thread count gives
+the same `f32` logits and gradient, bit for bit. Against the native
+backend's `f64` logits, PyTorch's `float32` is at a relative distance of
+1.6·10⁻⁷ and the native backend's, which is the C program's, at 3.3·10⁻⁷.
+presk's sums run in sequence, as the realization declares, and a blocked
+library's run in shorter chains. PyTorch's `float64` is at 6.5·10⁻¹⁶, which
+checks that the sides run the same model. The checkpoint is C4's, a probe a
+few steps from the initialization, not a trained model.
+
+**Where the gap is now.**
+- **The contraction rate**, fourteen of the 22 on 23 September, is now the
+  smallest factor. The model's linear products alone run at 713–1 070
+  GFLOP/s under PyTorch, which reaches the wheel's OpenBLAS for them and
+  oneDNN over Arm Compute Library for attention's. The C program runs them
+  under the plan's layout at 510–568 GFLOP/s, and at 567 inside its
+  forward pass. The C program's remaining 1.8× is that factor and the
+  kernels that are not contractions.
+- **The native backend's host.** Under the plan, the host takes 335–348 of
+  the native backend's 697–710 ms; the C program's host takes 7–17 of
+  281–285. The kernels themselves, as Cranelift compiles them, take 1.3×
+  the C program's. So about four fifths of the native backend's lead over
+  C is its host, the share C4 left unmeasured (§9). What in the host
+  takes the time is not measured apart.
+- **The training step: the derivatives of `dot`.** They take 9.7 s, 80 % of
+  the C gradient's kernels under the plan, at 18 GFLOP/s. They keep their
+  own lowering, scalar loops outside the layout space (`realize` chapter),
+  so a plan buys 1.3× on a step where it buys 2.5–3.2× on a forward pass.
+- **Then recomputation.** Each `.vjp` recomputes its callee's forward
+  pass, at every level of calls, so a block's linear products run six
+  times a gradient: a gradient executes 590 GFLOP of forward-type
+  contractions where the forward pass is 97. PyTorch keeps its
+  activations.
+
+By arithmetic, not measured: at the rate the planned products reach, the
+derivatives would take about 0.35 s and the C step about 2.9 s. The shape
+of §3's result has changed. The contraction rate is no longer the
+distance: the exported program is within 2× of PyTorch on inference. On a
+training step, one lowering the layout space does not reach yet is most of
+the distance.
+
+### Addendum: the native host by phase (0.10.0 step 5)
+
+The host's share, which this section left unmeasured, is measured by
+`presk bench --host-profile` (`cli` chapter) and `make host-profile` (D95,
+`docs/host-profile-0.10.0-step-5.md`), the course GPT under the frozen
+profile's plans, the ten X925 cores pinned. Of the forward pass's 664 ms,
+the kernels' own code is 341 ms; of the rest, the host copies values for
+213 ms, 6.2 GB a call: each launch's operands are copied out of its
+environment and copied again as tensors. The threads' start and join take
+43 ms, the dropout masks of ones the host draws outside training 32,
+the outputs' allocation 27, and finding each kernel by its key 2. On the
+gradient (no dropout, as the C program's), the copies are 5.3 of 8.3 s,
+73 GB a call, most of them the stored residuals carried in tuples, and the
+gradient touches 3.25 million fresh pages a call. With glibc told to keep
+its pages it takes 5.0 s, and its kernels' code 1.32 s, 1.33× the C
+program's 0.99, as the forward pass's is 1.27×. On every core unpinned the
+native forward pass's kernels take 2.2× their pinned time while the C
+program loses nothing, and its threads' start is still 4.7 % of it: the
+loss is in the kernels, perhaps where each fresh thread is placed, which
+step 6's pool of workers will tell. Step 6 takes the fixes in an order
+from these measurements.
+
+### Addendum: the native host fixed, T4 (0.10.0 step 6)
+
+Step 6 fixed the host in that order, each change measured apart (D96,
+`docs/host-profile-0.10.0-step-6.md`). Values share their buffers, so a
+launch's operands, a call's arguments and a tuple's components are no
+longer copied; a stacked layer's slice is a view of its stack and a scan's
+stack its parts; a launch's output comes from a free list of the buffers
+freed before; the training dropout masks are drawn on the workers, bit for
+bit, and outside training not drawn at all; a pool of persistent workers
+runs a divided launch's pieces; the entry's arguments already in their
+type are not converted. Pinned, the forward pass takes 332 ms where it took
+661, its host 4 ms where it took 323, and touches no fresh page; the
+gradient 1.32 s where it took 8.2; a training step 1.43 s where it took
+7.8. On every core unpinned the times are the same: the forward pass's
+kernels take 326 ms there against 755 before the pool, so the loss above
+was where fresh threads ran. **T4 holds** (`docs/pytorch-baseline-0.10.0-step-6.md`):
+under the plans, the native forward pass takes 1.16× the C program's (329.9
+ms against 284.5), and the step compared like for like, the native
+`loss_grad` and `adamw.step` against the C program's, 1.17× (1 335.5 ms
+against 1 137.8); `presk train`'s step, which draws its masks, 1.26×. What is
+left between the two is the kernels' code, Cranelift's against GCC's:
+1.24× on the forward pass, 1.30× on the gradient. T2 again: the C step
+1.13× PyTorch's.
+
+### Addendum: the bias as an epilogue, the C flags (0.10.0 step 7)
+
+Step 7 adds a linear layer's bias in its product's kernel (D97; the
+`realize` chapter's "The bias as an epilogue"), which `presk plan` now
+states, and measures the C programs' flags
+(`docs/pytorch-baseline-0.10.0-step-7.md`, and `…-o3-native.md`, `…-o3.md`
+beside it). Against `main`'s programs, interleaved on the same cores, the
+epilogue saves the 36 bias launches of a forward pass, about 10 ms of it on
+both sides (the C forward pass 286.2 → 277.8 ms, the native 336.6 →
+325.8), and the C gradient takes 1 011 ms where it took 1 124. Of those
+113 ms, the bias kernels were 15; the rest is GCC compiling the same
+products and `dot_vjp_l`s about 25 % faster once the program holds no
+`add` kernels: it inlines most kernels into the host, and the program's
+other kernels changed its choices (built `-fno-inline`, the two take the
+same time). **T2: the C training step 1.02× PyTorch's** (1 017.0 ms against
+994.8). **T4** holds on the forward pass, 1.16×, and on the step reads
+1.305× in the run of record, 1.30× and 1.29× in the flags' runs: at its
+threshold, by the C side's 100 ms of inlining, the native step 9 ms faster
+than at step 6. `-O3` moves a C program by −4 % to +2 % and `-mcpu=native`
+adds nothing to it, so `-O2` stays the default; C1 holds under each. And
+the C program's OpenMP workers sleep between its regions by libgomp's
+default: with `OMP_WAIT_POLICY=active` the forward pass takes 229 ms and
+the gradient 836, the same bits. The baseline keeps the default.
+
+### Addendum: the C program made deterministic, its threads waiting as the native ones (0.10.0 step 7's follow-up)
+
+The user decided on step 7's findings (D97's addendum): T4 is judged at
+step 8 on the final measurement; the C program's inlining made
+deterministic; OpenMP's waiting matched to the native pool in the
+measurement. Measured first: the 100 ms GCC's inlining moved were the
+register allocator's margin. A product's inner loop under a 4×16 tile
+holds about as many values as there are vector registers, and wherever
+GCC ran short (a kernel out of line, or inlined after the scheduling that
+runs before allocation) one sum lived on the stack and the product took
+about 30 % longer. The export now always inlines every kernel and, on
+GCC, compiles `model.c` without that scheduling (the `export_c` chapter):
+the course GPT's gradient under the plans with and without their
+epilogues then takes 827 and 822 ms, where today's programs took 844 and
+959, and the forward pass 222 and 228 ms (230, 234), with the threads
+waiting as below; no bit moves. libgomp's idle workers spin about 0.1 ms
+before they sleep, the native ones about 2 ms; `GOMP_SPINCOUNT=8M` makes
+libgomp's spin as long, and `make pytorch-baseline` times every C program
+both ways (`docs/pytorch-baseline-0.10.0-step-7-followup.md`, the run of
+record). **T2: the C training step 1.01× PyTorch's** (1 006.9 ms against
+1 000.1, both at their runtime's default; 0.85× with the threads waiting
+as the native ones). **T4**, in its row of record, the C program's threads
+waiting as the native backend's: 1.47× on the forward pass (323.4 ms
+against 219.9) and 1.57× on the step (1 340.6 against 852.8), both over
+1.3; by OpenMP's default 1.21× and 1.33×. What is left between the two
+sides is the kernels' code: 323.5 ms of native kernels on the forward pass
+against GCC's 207.8, 1.56×, which decision 2 leaves for later. T4 is
+judged at step 8, on the final measurement.
+
 ## 4. Precision as a resource: the four statements of 0.5.0
 
 Version 0.5.0 named four falsifiable statements before it began
@@ -216,7 +390,7 @@ used. One holds, two fail, and one cannot be asked of anything that exists.
 
 | # | Statement | Asked | Measured | |
 |---|---|---|---|---|
-| D | the solved realization's **measured** gap is inside a 1e-3 budget | ≤ 4.52e-3 | **1.05e-7** | holds |
+| D | the solved realization's **measured** gap is inside a 1e-3 budget | ≤ 4.52e-3 | **1.05e-7** (0.5.0, D41; since D93, on the weights of the corrected gradient, **1.89·10⁻⁶** with 2.08× less traffic) | holds |
 | E | the solved realization is faster per step than all-`f64` | ≥ 1.5× | **0.96×** | fails |
 | F | the propagated bound is within 10³ of the measured gap on half the entries | ≥ 11 of 21 | **10 of 21**, median 1.8e3 | fails |
 | G | the vectorized GEMM's gap is inside its declared order's bound | — | — | not askable |
@@ -224,7 +398,9 @@ used. One holds, two fail, and one cannot be asked of anything that exists.
 **D holds, and it is the one that matters most.** A budget declared in the
 program becomes an assignment whose distance from the exact denotation is
 *measured*, not asserted, and the measurement is inside the budget by four
-orders of magnitude. No other compiler can run this check, because no other
+orders of magnitude at 0.5.0, and by more than three at D93's
+re-measurement (1.89·10⁻⁶ under the same relative budget of 10⁻³, on a loss
+of about 2.8). No other compiler can run this check, because no other
 compiler keeps the exact denotation to measure against.
 
 **E fails, and the reason is the version's own finding turned against it.**
@@ -286,50 +462,55 @@ is held out.
 
 | realization | gap to the exact loss | representation | arithmetic | check (s) | accuracy | vs `f32` | 99 % | 99.9 % | loss vs `f32` | pass (s) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `f64` | 8.81·10⁻¹⁶ | 0 | 8.81·10⁻¹⁶ | 0.11 | 0.157733 | 0 | yes | yes | 0 | 11.1 |
-| `f32` | 2.24·10⁻⁷ | 0 | 2.24·10⁻⁷ | 0.09 | 0.157733 | — | yes | yes | — | 4.6 |
-| `bf16` | 2.96·10⁻³ | 0 | 2.96·10⁻³ | 0.12 | 0.157724 | −5.4·10⁻⁵ | yes | yes | +6.6·10⁻⁵ | 3.7 |
-| `int8`, `f32` elsewhere | 1.46·10⁻⁴ | 1.46·10⁻⁴ | 4.92·10⁻⁸ | 0.08 | 0.157733 | 0 | yes | yes | +1.5·10⁻⁶ | 4.4 |
-| `int8` `pow2` | 1.14·10⁻⁴ | 1.14·10⁻⁴ | 4.09·10⁻⁷ | 0.08 | 0.157724 | −5.4·10⁻⁵ | yes | yes | −4.0·10⁻⁶ | 4.9 |
-| `int4`, `f32` elsewhere | 1.02·10⁻³ | 1.02·10⁻³ | 1.72·10⁻⁸ | 0.08 | 0.157674 | −3.8·10⁻⁴ | yes | yes | −9.0·10⁻⁵ | 4.8 |
-| `int4` `pow2` | 1.56·10⁻³ | 1.56·10⁻³ | 2.92·10⁻⁷ | 0.10 | 0.157724 | −5.4·10⁻⁵ | yes | yes | +9.1·10⁻⁴ | 4.5 |
-| solved at 10⁻³ (statement D's) | 2.41·10⁻⁷ | 0 | 2.41·10⁻⁷ | 0.09 | 0.157733 | 0 | yes | yes | +5.3·10⁻⁹ | 8.8 |
+| `f64` | 3.18·10⁻¹⁶ | 0 | 3.18·10⁻¹⁶ | 0.10 | 0.242442 | 0 | yes | yes | +7.2·10⁻¹⁰ | 11.7 |
+| `f32` | 4.68·10⁻⁸ | 0 | 4.68·10⁻⁸ | 0.07 | 0.242442 | — | yes | yes | — | 4.8 |
+| `bf16` | 1.71·10⁻³ | 0 | 1.71·10⁻³ | 0.10 | 0.242425 | −7.0·10⁻⁵ | yes | yes | +2.3·10⁻⁵ | 3.8 |
+| `int8`, `f32` elsewhere | 3.90·10⁻⁵ | 3.89·10⁻⁵ | 6.56·10⁻⁸ | 0.08 | 0.242493 | +2.1·10⁻⁴ | yes | yes | +2.1·10⁻⁵ | 5.0 |
+| `int8` `pow2` | 2.97·10⁻⁵ | 3.00·10⁻⁵ | 2.98·10⁻⁷ | 0.08 | 0.242348 | −3.8·10⁻⁴ | yes | yes | −2.5·10⁻⁵ | 4.7 |
+| `int4`, `f32` elsewhere | 3.99·10⁻⁴ | 3.99·10⁻⁴ | 2.67·10⁻⁷ | 0.07 | 0.241289 | −4.8·10⁻³ | yes | **no** | +2.3·10⁻⁴ | 4.5 |
+| `int4` `pow2` | 8.66·10⁻⁴ | 8.66·10⁻⁴ | 4.65·10⁻⁷ | 0.08 | 0.243416 | +4.0·10⁻³ | yes | yes | +1.2·10⁻³ | 5.2 |
+| solved at 10⁻³ (statement D's) | 4.68·10⁻⁸ | 0 | 4.68·10⁻⁸ | 0.11 | 0.242442 | 0 | yes | yes | −2.3·10⁻⁸ | 8.7 |
 
-The exact loss of the two windows, 3.0245777, takes 7.5 s at 128 bits, once.
+The exact loss of the two windows, 2.7921108, takes 7.6 s at 128 bits, once.
 A check is one native run of those windows in the realization; a pass is one
 run of the accuracy entry over the 461 held-out windows. Both are wall times
-of one `presk run`, start-up included. One prediction is 5.4·10⁻⁵ of `f32`'s
-18 615 correct ones.
+of one `presk run`, start-up included. One prediction is 3.5·10⁻⁵ of `f32`'s
+28 612 correct ones. (This table is D93's, on the all-`f64` run of the curve
+trained with the right gradient; D53's, on a checkpoint defect 3f trained
+wrong (D92), had `f32` right on 18 615 predictions and every realization
+within seven of it.)
 
-- **The accuracy rule admits all eight**, at 99.9 % as at 99 %. The largest
-  change is seven predictions in 118 016. The budget separates the same
-  realizations over twelve orders of magnitude, four of them between `f32` and
-  `bf16`, from two windows.
-- **The accuracy is not monotone in the gap.** `int4 pow2` is further from
-  the exact loss than `int4` and loses one prediction where `int4` loses seven.
-  A thresholded metric reads the computation coarsely and with noise, which
-  is what it is designed to do: it asks whether the task survived, not how
-  far the arithmetic went.
+- **The accuracy rule admits seven of the eight at 99.9 %, and all eight at
+  99 %.** `int4` weights lose 136 predictions in 118 016, 0.48 % of `f32`'s
+  correct ones, where their gap to the exact loss is 3.99·10⁻⁴, inside a
+  budget of 10⁻³; the other six change by at most eleven. The budget
+  separates the same realizations over thirteen orders of magnitude, four
+  and a half of them between `f32` and `bf16`, from two windows.
+- **The accuracy is not monotone in the gap.** `int4 pow2` is twice as far
+  from the exact loss as `int4` and gains 115 predictions where `int4` loses
+  136; `int8` gains six. A thresholded metric reads the computation coarsely
+  and with noise, which is what it is designed to do: it asks whether the
+  task survived, not how far the arithmetic went.
 - **Attribution.** Every quantised gap is the weights' and not the kernels':
-  the representation part is 10² to 10⁵ times the arithmetic part. The
-  accuracy rule has no way to say so, because it has a reference score and no
-  reference computation.
+  the representation part is a hundred to two thousand times the arithmetic
+  part. The accuracy rule has no way to say so, because it has a reference
+  score and no reference computation.
 - **Cost.** Per realization a check takes about 0.1 s and a pass about 4 s;
   the exact reference, paid once per checkpoint and sample, costs about two
   passes. On BERT-large the same accounting is in hours (`coverage` chapter).
 - **Statement K, on other windows.** On this checkpoint and these two held-out
-  windows `int8` weights are 1.46·10⁻⁴ from the exact loss, where K measured
-  3.23·10⁻⁶ on `make gpt-trained`'s weights and two training windows. That is
-  forty-five times more, and still seventy times inside 10⁻². The error of a
-  quantised loss is a signed sum of many terms (D49), and on K's windows it
-  cancelled well: K holds, and its margin of three thousand was one
-  favourable measurement. The same holds for `int4`, 1.02·10⁻³ here against
-  8.32·10⁻⁵ there.
-- **`bf16` on a loss entry.** Most of its 2.96·10⁻³ is the output's own
-  rounding: the exact loss is 2.2·10⁻³ from the nearest `bf16` number. A budget
-  binds what the entry returns, and this entry returns one number stored in
-  eight bits. With the metric in `f64`, the `bf16` model's loss is 6.6·10⁻⁵
-  from `f32`'s.
+  windows `int8` weights are 3.90·10⁻⁵ from the exact loss, where K measured
+  2.73·10⁻⁵ on `make gpt-trained`'s weights and two training windows: 1.4
+  times more, and 256 times inside 10⁻². The error of a quantised loss is a
+  signed sum of many terms (D49), and a measurement of it on two windows is
+  one draw: on 0.6.0's weights K's windows had cancelled well, 3.23·10⁻⁶
+  against 1.46·10⁻⁴ held out (D53). `int4` is 3.99·10⁻⁴ here against
+  4.73·10⁻⁴ there.
+- **`bf16` on a loss entry.** All of its 1.71·10⁻³ is the output's own
+  rounding: the exact loss, 2.7921, is 1.71·10⁻³ from the nearest `bf16`
+  number, 2.796875. A budget binds what the entry returns, and this entry
+  returns one number stored in eight bits. With the metric in `f64`, the
+  `bf16` model's loss is 2.3·10⁻⁵ from `f32`'s.
 
 ## 6. Make it pay: the statements of 0.6.0
 
@@ -343,8 +524,8 @@ what J was really asking. Three hold and two fail.
 | H | the vector kernel is **bit-identical** to the scalar blocked one, in `f32` and `f64` | every bit | every bit, on both executors, integer weights included | holds |
 | I | a 1024³ `f32` matmul at 3× the scalar figure of 0.4.0 (47–56 GFLOP/s) | ≥ 3× | lanes **1.15–1.25×** over scalar (before D46); on falicon after it 41–46 GFLOP/s, below 1× | fails, retired |
 | J | the solved realization at a 10⁻³ budget faster per training step than all-`f64`, on the corpus GPT | ≥ 1.3× | **1.06×** at `D = 64`, **1.13×** at course scale | fails |
-| J′ | the same, with the budget binding the training step's **update** and the solver free over the whole step, at course scale | ≥ 1.3×, inside 10⁻³ | **1.99×**, 2.02× re-measured; 2.2·10⁻⁴ | holds |
-| K | `int8` weights, per channel, inside a 10⁻² budget on the corpus GPT's loss, with trained weights | ≤ 10⁻² | **3.23·10⁻⁶**; 1.46·10⁻⁴ on held-out windows | holds |
+| J′ | the same, with the budget binding the training step's **update** and the solver free over the whole step, at course scale | ≥ 1.3×, inside 10⁻³ | **1.99×**, 2.02× re-measured; 2.2·10⁻⁴; on the corrected gradient (D93) **1.95×**, 3.0·10⁻⁴ | holds |
+| K | `int8` weights, per channel, inside a 10⁻² budget on the corpus GPT's loss, with trained weights | ≤ 10⁻² | **3.23·10⁻⁶**; 1.46·10⁻⁴ on held-out windows; on weights trained with the corrected gradient (D93) **2.73·10⁻⁵**, 3.90·10⁻⁵ held out | holds |
 
 **H holds, and it is the claim the design supports.** 0.5.0's G asked for a
 vector kernel's measured gap to fall inside its declared order's bound. D42
@@ -382,7 +563,12 @@ course scale, from the difference of a one- and a four-step run: all-`f64`
 (D52), and 61.1, 30.3, 30.8 and 35.2 s re-measured at the end of the
 version: **1.99×**, then 2.02×. It is inside its budget by measurement, 2.2·10⁻⁴
 against the exact step at `D = 64` and 6.7·10⁻⁵ against a native `f64` step at
-course scale. Two limits, stated in D53. The solved step is level with
+course scale. Measured again in 0.10.0 (D93), after defect 3f of D92 was
+found to have made every training of this model use a wrong gradient under
+dropout since 0.5.0: the step solved on weights trained right, and with
+the right gradient, is again sixteen functions `f32`, 1.95× faster per step
+than all-`f64` (44.2 s against 22.7, every step faster than in 0.6.0), and
+3.0·10⁻⁴ and 6.8·10⁻⁵ from the exact and the `f64` step. Two limits, stated in D53. The solved step is level with
 all-`f32`: the budget licenses leaving `f64` and the time objective refuses
 `bf16`, which the profile predicts slower, so J′ is faster than `f64` and not
 than FP32, MLPerf's reference. And at course scale the discharge is against
@@ -392,8 +578,11 @@ than FP32, MLPerf's reference. And at course scale the discharge is against
 gpt-trained`'s weights and two training windows, every matrix in `int8` and
 `f32` elsewhere is 3.23·10⁻⁶ from the exact loss, three thousand times inside
 10⁻². On D50's checkpoint and two held-out windows it is 1.46·10⁻⁴, seventy
-times inside (§5): the error of a quantised loss is a signed sum of many
-terms (D49), and on K's windows it cancelled well. K is a claim about a
+times inside: the error of a quantised loss is a signed sum of many
+terms (D49), and on K's windows it cancelled well. On weights trained with
+the right gradient (D93) the two measurements agree better, 2.73·10⁻⁵ on
+the training windows and 3.90·10⁻⁵ held out (§5), 366 and 256 times
+inside. K is a claim about a
 loss, a scalar averaged over 512 positions. On BERT-large's logits, at its
 initialization, the same scheme is 5.7·10⁻², outside 10⁻² (`coverage`
 chapter). There `int8` weights are also 2.2× faster than `f32`, the first
@@ -711,6 +900,59 @@ one-row tile, the order of pairs within `u`, the cost of costing a point) is
 recorded in `docs/kernels-roadmap.md`, for a model to be frozen and tested
 again on a sweep it was not designed on.
 
+### Addendum: RA4's third fresh test, T3 (0.10.0 step 2)
+
+0.10.0 step 1 made the derivatives of `dot` contraction nests of the layout
+space (`dot_vjp_l`, the builder's `nt` form; `dot_vjp_r`, a sum over every
+leading axis). They are the first nests the frozen model has never seen:
+it was fitted on a GEMM and tested on attention. Plan 0.10.0 asks O and Q
+of them, as stated above, on the course GPT's gradient at `B = 16`, `T =
+256`, `f32`, on the ten X925 cores, priced by the frozen profile, neither
+changed nor refitted (statement T3, D90). The gradient launches four
+derivative nests at eight shapes: `Linear.apply.vjp/%11` (`dot_vjp_l`) and
+`%12` (`dot_vjp_r`) at the blocks' three product shapes, and the head's
+`GPT.apply.vjp/%28` and `%29`, 11 028 points. They were swept whole twice on
+2026-09-29 (3 h 05 min each, within 0.3 % of each other), every point
+checked on the kernel interpreter in between (7 h 06 min on every core),
+and ranked by `presk rank --frozen`; the report is
+`docs/ra4-t3-2026-09-29.md`, and the measurements are archived read-only in
+`~/presk-data/ra4-t3-0.10.0`.
+
+| # | Statement | Asked | Measured | |
+|---|---|---|---|---|
+| O | the model's pick within reach of the best measured point, every derivative nest and shape | ≤ 1.25× | 1.00–**1.19** | holds |
+| Q | the candidates, the points predicted within `1 + u` of the model's best, hold a point within reach of the best, at a fraction of the nest's sweep | ≤ 1.05×, ≤ 10 % | within **1.01×** on all eight; cost 0.2–1.7 % on the blocks' six, **16.4–19.9 %** and **9.9–11.9 %** on the head's two | fails |
+| L | every point bit-identical to point 0, natively and on the kernel interpreter | every bit | 11 036 of 11 036 points checked, none differing | holds |
+| — | close pairs ranked right, reported with no threshold (M's 90 % was set for attention's `ein`s) | reported | **88.5 %** of 92 279, 85.2–95.4 % per nest; 98.6 % of those the model decides | — |
+
+**T3 fails, on Q's cost alone.** On every nest the candidates, 2 to 24
+points, hold the best within 1.01×, and measuring them takes 0.03–3.1 s.
+But Q's cost charges each nest the whole configuration's static side
+(question 72), and choosing statically for a gradient means capturing the
+shapes of the whole gradient, 147 nests at 179 shapes, 3.9–5.0 s, before
+costing four of them in 1.1 s. The head's two nests sweep whole in 30 and 51
+s, so that side alone is 16–20 % and 10–12 % of their sweep. The blocks'
+nests, 6 to 49 minutes a sweep, cost 0.2–1.7 %. The rule was not changed
+after the fact, and the model was not refitted.
+
+**The model carried over to the derivatives.** 88.5 % of the pairs right
+is attention's figure (F1 87.6 %, F2 90.4 %, the development set 88.5 %),
+and the classes fall as they did: the thread split 98.4 %, the lanes
+99.1 %, the register tile 90.3 %, the loop order 73.2 %, the pack 73.4 %,
+the k-block 53.9 %. 92.4 % of the misses are pairs the model predicts
+within `u` of each other. The pick is 1.19× off at worst, on the head's
+`dot_vjp_r`. There, and on one of the blocks' shapes (1.17×), it loses by
+decisions the model predicts within 7 % and 2 % of the best. On the square
+`dot_vjp_r` (1.16×) the pick's launches alternate between two speeds on
+both days, and the point best on average, the order `IKJ`, is a decided
+miss: predicted 1.75× slower than the pick through its L3 and memory
+terms, it measures faster.
+
+**What the space buys the gradient.** Over one gradient's derivative
+launches, the layouts `presk plan` states (one per nest over its three
+shapes) take 479 ms natively on the captured buffers, 1.05× the best point
+of each shape, where 0.9.0's derivative kernels take 11.0 s, 24× the best.
+
 ## 9. A C program: the statements of 0.9.0
 
 0.9.0 is not a test of a hypothesis of the research programme. It gives an
@@ -779,15 +1021,105 @@ verdict) carry over to it unchanged. The polyhedral comparison the SCoP
 mode prepares, a tool's transformation of the same nests against RA4's
 ranking, comes after 0.9.0.
 
+## 10. A training step that pays: the statements of 0.10.0
+
+0.10.0 took the causes the PyTorch baseline at 0.9.0 found (§3, "Three
+sides at 0.9.0", D87) in order. The derivatives of `dot`, nine tenths of
+the C gradient at the default layout and outside the layout space, became
+nests of it (step 1), which the frozen model ranks (step 2); a gradient
+stopped recomputing its forward pass, keeping its residuals instead
+(`--remat store`, steps 3, 4 and 4b); the native host was measured, then
+fixed (steps 5 and 6); the bias of a linear layer became its product's
+epilogue (step 7); and, at the user's request, the language's four
+decisions of 2026-09-29 went in (step 7b). Its six statements were fixed
+before the version began, the sixth with step 7b
+(`presk-specs/implementation/presk-plan-0.10.0.md` §3.5). Every gap the
+version measured is against the exact reference, and the reference's own
+gap was measured too (D98, `make delta-p`): five to ten units of roundoff
+at the reference's precision, 3·10⁻³⁸ at 128 bits, 21 orders of magnitude
+below the resolution of binary64 at which every gap is read (the
+`precision` chapter, "The reference's own gap"). Three hold, two fail, one
+decides nothing.
+
+| # | Statement | Asked | Measured | |
+|---|---|---|---|---|
+| T1 | every change of 0.10.0 is exact: the derivative nests at every point of their spaces, the gradients under `--remat store` and `recompute` and without their dead code, bit-identical to 0.9.0's native outputs on the test set in `f64`, `f32` and `bf16`; C1 keeps holding | every bit | at each step against `main`'s binary, on the test set's eleven entries on the three executors in the three types and under plans, the course GPT's forward pass and gradient, and training runs (87 to 184 comparisons a step; 154 at step 8); every point of the derivative nests' spaces (4 280) and of the products with their epilogues; C1 on the test set and the course GPT: no bit moved but by design (the gradient defects 3a and 3f fixed, D91, D92) | holds |
+| T2 | the course GPT's training step at `B = 16`, `T = 256`, `f32`, in C under the frozen profile's plans, within 2× of PyTorch's, ten X925 cores pinned, the median of seven | ≤ 2× | 995.4 ms against 1 008.6: **0.99×** (12× at 0.9.0); 0.83× with the C program's threads waiting as the native ones; every core unpinned 0.76× | holds |
+| T3 | on each derivative nest of the course GPT's gradient, 0.8.0's statements O and Q, the frozen model on nests it has never seen | its pick ≤ 1.25× the best; its candidates within 1.05× at ≤ 10 % of the sweep's time | O holds, 1.00–1.19×; Q fails on the head's two nests (16.4/19.9 % and 9.9/11.9 % of their sweeps' time), by its static side, the whole gradient's capture charged to nests that sweep in 30 to 51 s; the blocks' nests 0.2–1.7 % (§8's addendum, D90) | fails |
+| T4 | the native backend's forward pass and training step under the plans within 1.3× of the C program's, same plans and cores, the step like for like, the C program's threads waiting as the native ones | ≤ 1.3× on both | the forward pass 340.4 ms against 223.5, **1.52×**; the step 1 340.6 against 836.8, **1.60×**; by OpenMP's default waiting 1.25× and 1.35× | fails |
+| T5 | the gradient's peak memory under `store` and `recompute`: the C program's arena, the course GPT's gradient at `B = 16`, `T = 256`, `f32` | reported | 2.49 GB storing, 0.91 GB recomputing (2 486 774 208 and 905 256 128 bytes) | — |
+| T6 | the language's four decisions change no value: every output without a draw of `sample` bit-identical to the additive mask's, three types, C1, the amended examples checked | every bit | 147 comparisons identical, only `next_token`'s draws moving, now its key's (D99) | holds |
+
+**How it was measured.** `make pytorch-baseline`, at every step that
+could move T2 or T4 and once more on the version's committed tree (D100,
+`docs/pytorch-baseline-0.10.0.md`, the run of record): the course GPT on
+three sides, presk's native backend, the C program `presk export --target
+c` writes, and PyTorch 2.14 running the model the PyTorch export writes,
+ten X925 cores pinned, the median of seven, the C program timed under
+OpenMP's default waiting and with its workers spinning as the native
+pool's. T3 by two days of `presk autotune` on the derivative nests and
+`presk rank --frozen` (`make ra4-t3`, archived in
+`~/presk-data/ra4-t3-0.10.0`). T1 and T6 against `main`'s binary at each
+step, on outputs, byte for byte.
+
+**What the compiler itself takes.** Beside the reference's own gap, the
+time of the compiler's commands was measured on the version's tree (D101,
+`make compile-times`, the report `docs/compile-times-2026-10-02.md`):
+`presk check`, `presk calibrate --precision` on two samples, `presk solve
+--budget 1e-3` and the exact reference on one sample, wall seconds on one
+X925 core, on the course GPT at its course and reduced constants, the tiny
+MiniGPT, and two of BERT-large's blocks. The front end is milliseconds
+(7 ms on the course GPT). The rest is the reference interpreter at 128
+bits: on the course GPT at its course constants, 3 minutes for the
+reference on one window, 25 to calibrate on two, 45 to solve (a reverse
+sweep, the reference and the proposal's measurement, each on two
+windows); on BERT-large's two blocks, on their SQuAD loss, 10 minutes for
+the reference, 85 to calibrate and 2 h 54 min to solve, which puts their 63
+sites away from `f64` (59 in `f32`, 4 in `bf16`) and measures 5.1·10⁻⁷
+under a budget of 6.3·10⁻³. `presk solve` takes a scalar entry, a loss,
+and refuses any other at once since D101. BERT's `squad`, which returns its
+logits, was refused that way, so its row is measured on `squad_loss`, the
+loss `run_squad.py` trains it on (the `coverage` chapter).
+
+**What T2 says.** A training step of the course GPT in C is level with
+PyTorch's on these cores, where 0.9.0 left it 12× behind. In order of what
+each bought on the C step: the derivatives of `dot` in the layout space
+(12.2 s → 2.85 s, step 1), the dead code after differentiation (1.88 s,
+step 3), the residuals stored (1.36 s, step 4), the fusion groups kept only
+where a realization can see them (1.13 s, step 4b), the bias as an
+epilogue and the C program's kernels always inlined (1.01 s, step 7 and its
+follow-up), each measured on the run of its step. Under the plan the
+derivatives of `dot` run at 633 GFLOP/s, faster than the gradient's other
+contractions (539), and the gradient's contractions are 70 % of its
+kernels' time. Every change was a layout or the same operations in the
+same order, so the step that is level with PyTorch computes 0.9.0's bits.
+
+**What T4 says.** The native backend's host, which step 5 found to be most
+of its lead over the C program (copies of values and the fresh pages they
+touch), is gone: under the plan its forward pass is 340.4 ms of kernels and
+0.6 ms of host. What is left is the kernels' code, Cranelift's against
+GCC's on the same kernels, 1.61× on the forward pass (339.9 ms against
+211.7), wider than at step 6 (1.24×) since GCC's kernels lost their
+spills (§3's addendum). Plan 0.10.0's decision 2 kept the kernels to the
+epilogue and the C flags, so the version could not close it; it is
+reported as it fell (`docs/kernels-roadmap.md`, the last section).
+
+**What T3 says.** §8's addendum: the frozen model picks within 1.19× of
+the best on nests it was never shown, and fails Q only by what it charges
+for deciding, the whole gradient's capture, on nests whose sweep is short.
+
 ## What these experiments do not show
 
-- **Speed against a mature stack.** §3's comparison, redone on falicon on
-  23 September 2026, is 22× a training step, 14 of it the contraction.
-  0.7.0 and 0.8.0 did not redo it: the best GEMM point is within 1.6× of
-  PyTorch's product (§7), and 0.8.0's model picks a point within 1.05× of
-  the best on attention's contractions (§8), but a training step's largest
-  contractions, the derivatives of `dot`, are not in the layout space yet
-  (`realize` chapter).
+- **Speed against a mature stack, beyond one model on one machine.** §3's
+  comparison, redone on falicon on 23 September 2026, was 22× a training
+  step, 14 of it the contraction; redone on three sides at 0.9.0 (D87), 12×
+  for the C program under a plan, four fifths of it the derivatives of
+  `dot`; at 0.10.0 the C program's training step is level with PyTorch's
+  (0.99×, §10) and its forward pass 1.86× behind, on the course GPT at its
+  course constants, in `f32`, on ten X925 cores of one machine, against
+  PyTorch on the CPU (OpenBLAS and oneDNN). A GPU, a larger model, another
+  machine, and the native backend's own kernels (1.6× GCC's) are not
+  shown.
 - **A static choice as good as measuring.** RA4, the programme's first
   thesis, was tested twice on the attention of one model family, on one
   machine's two kinds of core. 0.7.0's model failed it for a named cause
@@ -805,8 +1137,8 @@ ranking, comes after 0.9.0.
   where the interpreter reaches: BERT-large's inference, not a course-scale
   training step, where J′ was measured against `f64` (question 62).
 - **Quality beyond this scale.** The ε curve's quality axis is flat after
-  600 steps of a `D = 64` GPT, within 1.2·10⁻³ against a seed spread of 0.13
-  (D50). There is no trained BERT, no SQuAD and no F1 here, so MLPerf's own
+  600 steps of a `D = 64` GPT, within 1.9·10⁻⁴ against a seed spread of
+  0.092 (D93; 1.2·10⁻³ and 0.13 in D50, on a gradient defect 3f made wrong). There is no trained BERT, no SQuAD and no F1 here, so MLPerf's own
   threshold on its own benchmark was not applied; §5 applies the rule to the
   corpus GPT instead.
 - **Verified transformations** (the KV cache), **parallelism** beyond threads

@@ -282,8 +282,10 @@ impl Parser {
                 }
                 TokKind::Op(Op::Colon) => {
                     // `name: expr` is a named axis, except `name : ℝ` and the
-                    // other type keywords, which ascribe (`sqrt(HD : ℝ)`).
-                    let is_ascription = matches!(self.peek_nth(2).kind, TokKind::Kw(Kw::Real | Kw::Idx | Kw::Param | Kw::Params));
+                    // other type keywords, which ascribe (`sqrt(HD : ℝ)`), and
+                    // `name : bool[…]`, a tensor of truth values.
+                    let is_ascription = matches!(self.peek_nth(2).kind, TokKind::Kw(Kw::Real | Kw::Idx | Kw::Param | Kw::Params))
+                        || (matches!(&self.peek_nth(2).kind, TokKind::Ident(b) if b == "bool") && self.peek_nth(3).kind == TokKind::Op(Op::LBracket));
                     if !is_ascription {
                         let name = self.expect_ident("a name")?;
                         self.bump(); // `:`

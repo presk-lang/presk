@@ -6,7 +6,7 @@
     "LayerNorm.apply/%10": "bf16",
     "Linear.apply/%3": "bf16",
     "SelfAttention.apply/%14": "f64",
-    "SelfAttention.apply/%19": "bf16",
+    "SelfAttention.apply/%18": "bf16",
     "MLP.apply/%4": "f64",
     "MiniGPT.apply/%11": "f64"
   }

@@ -8,6 +8,10 @@
 //! for the others (D76).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub mod pool;
+pub use pool::Pool;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Type, Value as CV, types};
@@ -17,7 +21,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use presk_core::Program;
 use presk_kernel::ir::{BinOp, BufKind, CmpOp, Dtype, Expr, Kernel, Stmt, Threads, UnOp};
-use presk_kernel::{KernelBackend, KernelExec};
+use presk_kernel::{KernelBackend, KernelExec, Overhead};
 use presk_rt::{Buf, Realization, RtError};
 use presk_types::elab::ElabProgram;
 
@@ -46,6 +50,8 @@ impl Ptrs {
 }
 // SAFETY: see `Ptrs`.
 unsafe impl Send for Ptrs {}
+// SAFETY: see `Ptrs`; the pool's workers share the table, each reading it.
+unsafe impl Sync for Ptrs {}
 
 /// Below this many weighted operations a kernel runs on one thread by default
 /// (`presk_kernel::cost::PARALLEL_MIN_WORK`, which the cost model reads too).
@@ -63,6 +69,13 @@ pub struct NativeExec {
     compiled: Vec<Option<KernelFn>>,
     libm: HashMap<String, FuncId>,
     pub compiled_count: usize,
+    /// Whether the host profiles (`presk bench --host-profile`): each launch
+    /// then times its compilation, its dispatch and its threads into `last`.
+    profiling: bool,
+    last: Overhead,
+    /// The workers beside the calling thread, `threads − 1`, made at the
+    /// first divided launch (plan 0.10.0 step 6).
+    pool: Option<Pool>,
 }
 
 impl NativeExec {
@@ -95,7 +108,17 @@ impl NativeExec {
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
             .unwrap_or(1)
             .max(1);
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0 })
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None })
+    }
+
+    /// The pool, of `threads − 1` workers: made, or made again when
+    /// `threads` changed since.
+    fn pool(&mut self) -> &mut Pool {
+        let n = self.threads.saturating_sub(1);
+        if self.pool.as_ref().is_none_or(|p| p.len() != n) {
+            self.pool = Some(Pool::new(n));
+        }
+        self.pool.as_mut().expect("just made")
     }
 
     fn libm_fn(&mut self, name: &str, ty: Type) -> Result<FuncId> {
@@ -751,14 +774,41 @@ impl KernelExec for NativeExec {
         Some(self.threads)
     }
 
+    fn set_profiling(&mut self, on: bool) {
+        self.profiling = on;
+    }
+
+    fn overhead(&self) -> Overhead {
+        self.last
+    }
+
+    /// The host's own work in pieces (a training dropout mask, plan 0.10.0
+    /// step 6), on the pool, the first piece on the calling thread.
+    fn parallel(&mut self, n: usize, f: &(dyn Fn(usize) + Sync)) {
+        if n <= 1 || self.threads <= 1 {
+            (0..n).for_each(f);
+            return;
+        }
+        self.pool().run(n, f);
+    }
+
     fn run(&mut self, idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()> {
+        // When the host profiles, the clock is read around the compilation,
+        // before the kernel's code starts, and on each worker; nothing else
+        // differs (plan 0.10.0 step 5).
+        let t_in = self.profiling.then(std::time::Instant::now);
+        let mut compile = 0.0;
         if self.compiled.len() <= idx {
             self.compiled.resize(idx + 1, None);
         }
         let f = match self.compiled[idx] {
             Some(f) => f,
             None => {
+                let t = self.profiling.then(std::time::Instant::now);
                 let f = self.compile(idx, k)?;
+                if let Some(t) = t {
+                    compile = t.elapsed().as_secs_f64();
+                }
                 self.compiled[idx] = Some(f);
                 f
             }
@@ -796,27 +846,48 @@ impl KernelExec for NativeExec {
             Threads::One => 1,
             Threads::At { workers, .. } => workers.min(total).max(1),
         };
+        let t_go = self.profiling.then(std::time::Instant::now);
+        let dispatch = match (t_in, t_go) {
+            (Some(a), Some(b)) => (b.duration_since(a).as_secs_f64() - compile).max(0.0),
+            _ => 0.0,
+        };
         // SAFETY: the kernel's loop bounds are the buffers' dimensions (checked by the
         // lowering and exercised by the kernel interpreter); inputs are never written.
         if workers <= 1 {
             unsafe { f(ptrs.as_ptr(), 0, total as i64) };
+            self.last = Overhead { compile, dispatch, threads: 0.0, workers: 1 };
             return Ok(());
         }
         let total = total as i64;
         let p = Ptrs(ptrs.as_ptr());
         self.threaded += 1;
-        std::thread::scope(|s| {
-            for t in 0..workers as i64 {
-                let lo = total * t / workers as i64;
-                let hi = total * (t + 1) / workers as i64;
-                if lo == hi {
-                    continue;
-                }
-                // SAFETY: the workers share read-only inputs and write disjoint
-                // slices of the output (`Kernel::parallel_at`).
-                s.spawn(move || unsafe { f(p.get(), lo, hi) });
+        // Piece `t` of `workers`, on the pool's worker `t`, the first on
+        // this thread (plan 0.10.0 step 6): the pieces the scoped threads of
+        // 0.4.0 to 0.10.0 step 5 ran, each by the same code.
+        let piece = move |t: usize| {
+            let lo = total * t as i64 / workers as i64;
+            let hi = total * (t as i64 + 1) / workers as i64;
+            // SAFETY: the workers share read-only inputs and write disjoint
+            // slices of the output (`Kernel::parallel_at`).
+            if lo != hi {
+                unsafe { f(p.get(), lo, hi) };
             }
-        });
+        };
+        if let Some(t_go) = t_go {
+            // Each piece timed: what the launch takes beyond its longest is
+            // its workers' wake, their join, and the stagger of their starts.
+            let spans: Vec<AtomicU64> = (0..workers).map(|_| AtomicU64::new(0)).collect();
+            self.pool().run(workers, &|t| {
+                let a = std::time::Instant::now();
+                piece(t);
+                spans[t].store(a.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            });
+            let elapsed = t_go.elapsed().as_secs_f64();
+            let longest = spans.iter().map(|s| s.load(Ordering::Relaxed)).max().unwrap_or(0) as f64 * 1e-9;
+            self.last = Overhead { compile, dispatch, threads: (elapsed - longest).max(0.0), workers };
+            return Ok(());
+        }
+        self.pool().run(workers, &piece);
         Ok(())
     }
 }
@@ -832,8 +903,8 @@ fn ranged(k: &Kernel) -> Option<(usize, usize)> {
 }
 
 /// A kernel backend whose kernels are JIT-compiled by Cranelift.
-pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64) -> Result<KernelBackend<'p>> {
-    let mut b = KernelBackend::with_exec(prog, elab, realize, seed, Box::new(NativeExec::new()?));
+pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization) -> Result<KernelBackend<'p>> {
+    let mut b = KernelBackend::with_exec(prog, elab, realize, Box::new(NativeExec::new()?));
     // Lanes unstated: each kernel takes its natural width (below).
     b.default_layout.lanes = None;
     Ok(b)
@@ -856,10 +927,10 @@ pub fn natural_lanes(d: Dtype) -> usize {
 
 /// The same backend with an explicit number of workers, so a caller can pin it
 /// (the tests compare one thread against many, which must agree exactly).
-pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, seed: u64, threads: usize) -> Result<KernelBackend<'p>> {
+pub fn native_backend_with_threads<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization, threads: usize) -> Result<KernelBackend<'p>> {
     let mut exec = NativeExec::new()?;
     exec.threads = threads.max(1);
-    let mut b = KernelBackend::with_exec(prog, elab, realize, seed, Box::new(exec));
+    let mut b = KernelBackend::with_exec(prog, elab, realize, Box::new(exec));
     b.default_layout.lanes = None;
     Ok(b)
 }

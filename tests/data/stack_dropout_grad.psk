@@ -1,0 +1,36 @@
+-- The gradient of a stacked module that drops, training on (0.10.0 step 4,
+-- defect 3f of the reference's chapter 5). The key rides the fold's
+-- accumulator (question 51's idiom, `stack_keys.psk`), so every layer draws
+-- its own mask. The backward fold reads the accumulators the forward fold
+-- stacked, the keys among them: both executors kept the first key for every
+-- layer, and each layer's `.vjp` then drew layer 0's mask. With a residual
+-- block, the course GPT's shape, a dropped position of `tanh(x · γ)` is no
+-- exact zero of what flows on, and the gradient of γ was off from central
+-- finite differences by up to 9 %, 77 % and 76 % at layers 0, 1 and 2, on the
+-- interpreter and natively alike (`tanh(dropout(x · γ))` stacked hid it).
+const D : nat = 4
+const L : nat = 3
+dim B
+
+type Acc = (ℝ[batch: B, model: D], key)
+
+module Chained {
+  param γ : ℝ[model: D]  init = normal(std = 0.5)
+  fn apply(s : Acc) -> Acc uses Rand =
+    let (x, k) = s
+    let (k1, k2) = split_key(k)
+    (x + dropout(0.2, k1, tanh(x * γ)), k2)
+}
+
+module NetChained {
+  use blocks : stack{L}(Chained)
+  fn apply(x : ℝ[batch: B, model: D], k : key) -> ℝ[batch: B, model: D] uses Rand =
+    let (y, _) = blocks.apply((x, k))
+    y
+}
+
+fn loss(θ : params NetChained, x : ℝ[batch: B, model: D], k : key) -> ℝ[] uses Rand =
+  mean(NetChained.apply(θ, x, k)^2)
+
+fn loss_grad(θ : params NetChained, x : ℝ[batch: B, model: D], k : key) -> params NetChained uses Rand =
+  grad(λ θ. loss(θ, x, k))(θ)

@@ -1,7 +1,8 @@
-"""SQuAD-shaped features for the `squad` entry of coverage/bert.psk.
+"""SQuAD-shaped features for the `squad` and `squad_loss` entries of coverage/bert.psk.
 
-Usage: bert_features.py V T N SEED > features.txt, then
-presk data pack --type '(idx[V][seq: T], idx[2][seq: T], ℝ[seq2: T])'.
+Usage: bert_features.py V T N SEED [--span] > features.txt, then
+presk data pack --type '(idx[V][seq: T], idx[2][seq: T], ℝ[seq2: T])'
+(with --span: '(idx[V][seq: T], idx[2][seq: T], ℝ[seq2: T], idx[T][ends: 2])').
 
 One line per feature: the token ids, the segment ids and the additive mask,
 laid out as MLPerf's harness builds a SQuAD feature (max_seq_length 384):
@@ -10,14 +11,21 @@ laid out as MLPerf's harness builds a SQuAD feature (max_seq_length 384):
 the reference implementation adds. The token ids are random over WordPiece's
 ordinary range (from 1996): there is no tokenizer here, and a model at its
 initialization does not care which words they are (0.6.0 step 8, D53).
+
+--span appends the answer's span, its first and last positions in the
+sequence, for the `squad_loss` entry (D101): inside the context, start <= end,
+at most 30 tokens long (run_squad.py's max_answer_length). It is drawn from a
+generator of its own, so the other fields are the same with and without it.
 """
 import random
 import sys
 
 V, T, N, SEED = (int(a) for a in sys.argv[1:5])
+SPAN = "--span" in sys.argv[5:]
 CLS, SEP, PAD = 101 % V, 102 % V, 0
 LO = 1996 if V > 1996 else 3
 rng = random.Random(SEED)
+spans = random.Random(SEED + 1)
 for _ in range(N):
     q = rng.randint(max(1, T // 32), max(1, T // 16))      # question tokens
     real = rng.randint(T * 3 // 4, T - 1)                  # tokens before the padding
@@ -29,4 +37,9 @@ for _ in range(N):
     ids += [PAD] * pad
     types += [0] * pad
     mask = ["0"] * (T - pad) + ["-10000"] * pad
-    print(" ".join(map(str, ids + types)) + " " + " ".join(mask))
+    line = " ".join(map(str, ids + types)) + " " + " ".join(mask)
+    if SPAN:
+        n = spans.randint(1, min(30, c))                   # answer tokens
+        start = spans.randint(q + 2, q + 2 + c - n)        # the context is [q + 2, q + 2 + c)
+        line += f" {start} {start + n - 1}"
+    print(line)

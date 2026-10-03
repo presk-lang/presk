@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.9.0 prints (timings vary from one run and one machine
+shown is what version 0.10.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.9.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)
+Presk compiler (0.10.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)
 
 Usage: presk <COMMAND>
 
@@ -367,7 +367,7 @@ fn scores(q : Q, k : Q) -> ℝ[batch: B, heads: H, seq: T, seq2: T] =
 
 fn attend(q : Q, k : Q, v : Q) -> Q =
   let s = scores(q, k)
-  let a = softmax(axis seq2, s + causal_mask(seq: T))
+  let a = softmax(axis seq2, s, where = causal_mask(seq: T))
   ein[batch, heads, seq, hd](a * v)
 ```
 
@@ -383,8 +383,11 @@ fn attend(q : Q, k : Q, v : Q) -> Q =
   the output axes are named, the others are summed. `q` and `k` both have a
   `seq` axis; the checker relabels the right operand's `seq` to the output's
   `seq2`, of equal length, so `scores` is the `seq × seq2` matrix per head.
-- `sqrt(HD : ℝ)` injects the constant into `ℝ`; `causal_mask(seq: T)` is 0
-  on `j ≤ i` and −∞ elsewhere.
+- `sqrt(HD : ℝ)` injects the constant into `ℝ`; `causal_mask(seq: T)` is a
+  mask, a tensor of truth values `bool[seq: T, seq2: T]`, true where `j ≤ i`,
+  and `softmax(…, where = mask)` normalizes over the positions it allows,
+  giving 0 at the others (0.10.0 step 7b: it was a real tensor of 0 and −∞
+  added to the scores).
 
 ```sh
 presk check tutorial/03_attention.psk --summary
@@ -548,30 +551,31 @@ The error names the primitive responsible, even through a call, and the
 `tutorial/05_sample.psk`:
 
 ```text
--- 05_sample.psk — randomness is an effect.
+-- 05_sample.psk — randomness is an effect, and a draw a function of its key.
 dim B
 
-fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
-  sample(logits)
+fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
+  sample(key, logits)
 ```
 
 - **`idx[8][batch: B]`** is a tensor of *indices* in `[0, 8)`, not of reals:
   tokens, labels and sampled classes have this type, and mixing them with
   reals without `real(…)` is an error (`E2009`).
-- **`sample`** draws from the softmax of the logits: it *uses* the `Rand`
-  effect, which the function must declare with `uses Rand`. Without the
-  clause:
+- **`sample(key, logits)`** draws from the softmax of the logits, a token
+  per position from the key's uniform draw of that position: a function of
+  its key, as `dropout` is. It *uses* the `Rand` effect, which the function
+  must declare with `uses Rand`. Without the clause:
 
 ```text
 [E4001] Error: `pick` uses the effect `Rand` without declaring it
    ,-[ bad_rand.psk:3:3 ]
    |
- 2 | ,-> fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
- 3 | |->   sample(logits)
-   | |     ^^^^^^^|^^^^^^
-   | |            `--------- this uses `Rand`
+ 2 | ,-> fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+ 3 | |->   sample(key, logits)
+   | |     ^^^^^^^^^|^^^^^^^^^
+   | |              `------------ this uses `Rand`
    | |
-   | `---------------------- declared without `uses`
+   | `--------------------------- declared without `uses`
    |
    |     Help: add `uses Rand` to the signature of `pick`
 ---'
@@ -579,8 +583,9 @@ fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
 
 Effects are inferred and checked against the declaration, transitively
 through calls. Initializers are implicitly `uses Rand` (the `Linear.init`
-line of the summaries above). The interpreter draws from a stream seeded by
-`--seed`:
+line of the summaries above). `presk run` synthesizes the key as it
+synthesizes every argument, from `--seed`, and `sample` draws from it (until
+0.10.0 step 7b it took no key and drew from a stream seeded by `--seed`):
 
 ```sh
 presk run tutorial/05_sample.psk --entry pick --dim B=5
@@ -588,8 +593,8 @@ presk run tutorial/05_sample.psk --entry pick --dim B=5 --seed 3
 ```
 
 ```text
-idx[8][batch: 5] = [batch: 5] [1, 5, 0, 7, 7]
-idx[8][batch: 5] = [batch: 5] [4, 5, 5, 2, 6]
+idx[8][batch: 5] = [batch: 5] [3, 3, 5, 1, 7]
+idx[8][batch: 5] = [batch: 5] [4, 5, 3, 3, 4]
 ```
 
 ## 6. Composition: imports, sub-modules, stacks
@@ -716,14 +721,28 @@ fn loss{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1
 fn loss_grad{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1]) -> params Linear{D, 1} {
 fn Linear.init{In Out}(key : key) -> params Linear{In, Out} uses Rand {
 fn loss_grad.lambda0{D B}(x : ℝ[batch: B, D], y : ℝ[batch: B, 1], θ : params Linear{D, 1}) -> ℝ[] {
-fn loss_grad.lambda0.vjp{D B}(…, ct : ℝ[]) -> (ℝ[batch: B, D], ℝ[batch: B, 1], params Linear{D, 1}) {
-fn loss.vjp{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1], ct : ℝ[]) -> (params Linear{D, 1}, ℝ[batch: B, D], ℝ[batch: B, 1]) {
-fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out]) -> (params Linear{In, Out}, ℝ[..., In]) {
+fn loss_grad.lambda0.vjp{D B}(…, ct : ℝ[]) -> (params Linear{D, 1}) {
+fn loss.vjp{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1], ct : ℝ[]) -> (params Linear{D, 1}) {
+fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out]) -> (params Linear{In, Out}) {
 fn loss_grad.lambda0.grad{D B}(x : ℝ[batch: B, D], y : ℝ[batch: B, 1], θ : params Linear{D, 1}) -> params Linear{D, 1} {
+fn Linear.apply.bwd{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out]) -> (params Linear{In, Out}) {
+fn loss.bwd{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], residuals : (ℝ[batch: B, 1], ℝ[batch: B, 1]), ct : ℝ[]) -> (params Linear{D, 1}) {
+fn loss.fwd{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1]) -> ((ℝ[batch: B, 1], ℝ[batch: B, 1])) {
+fn loss_grad.lambda0.bwd{D B}(…, ct : ℝ[]) -> (params Linear{D, 1}) {
+fn loss_grad.lambda0.fwd{D B}(x : ℝ[batch: B, D], y : ℝ[batch: B, 1], θ : params Linear{D, 1}) -> (((ℝ[batch: B, 1], ℝ[batch: B, 1]))) {
 ```
 
-Each `f.vjp` takes a cotangent `ct` and returns the adjoints of all the
-arguments; `f.grad` calls it with `ct = 1` and projects on `θ`. The
+Each `f.vjp` takes a cotangent `ct` and returns the adjoints of the
+arguments its callers read; `f.grad` calls it with `ct = 1` and projects on
+`θ`, so here each returns `θ`'s alone: the adjoints of the data `x` and `y`
+are not computed, and the forward values nothing reads are not recomputed
+(the `language` chapter, "Dead code after differentiation"). A `.vjp` is
+its `.bwd` after its `.fwd`: `loss.fwd` runs the loss's forward pass once
+and returns what its reverse sweep reads (here `ŷ` and `ŷ − y`; its value,
+which no one reads, it does not compute), and `loss.bwd` runs the sweep on
+them, calling `Linear.apply.bwd`, whose sweep reads only its parameters and
+so needs no `.fwd` (the `language` chapter, "Residuals"; `--remat
+recompute` keeps the `.vjp`s that compute their forward pass again). The
 `language` chapter describes the representation and the differentiation
 rules.
 
@@ -953,12 +972,13 @@ step 40  epoch 3  loss 0.843784  lr 8.536e-3  |g| 8.2585e-1
 step 60  epoch 4  loss 0.521466  lr 5.000e-3  |g| 6.9388e-1
 step 80  epoch 5  loss 0.432558  lr 1.464e-3  |g| 5.8567e-1
 step 100  epoch 7  loss 0.320685  lr 0.000e0  |g| 4.6561e-1
-presk train: 5.9 ms a step, median of 99 (the first excluded)
+presk train: 5.1 ms a step, median of 99 (the first excluded)
 presk train: 100 steps of Tower, final loss 0.320685, weights in out/tutorial_ckpt/final.psk.d
 ```
 
-Each step evaluates the loss and its gradient (the `vjp` generated by
-differentiation, through the fold of the stacked blocks) and applies the
+Each step evaluates the loss and its gradient in one call (the `value_vjp`
+generated by differentiation, which returns the loss and the cotangents,
+through the fold of the stacked blocks) and applies the
 AdamW step, itself a PSK-Core function; the learning rate follows the cosine
 schedule from its warm-up to 0 at step 100 (`--steps` sets the horizon). The
 weights are a one-sample `.psk.d` of type `params Tower`. Everything runs at
@@ -1037,8 +1057,8 @@ step 40  epoch 3  loss 0.843784  lr 8.536e-3  |g| 8.2585e-1
 step 60  epoch 4  loss 0.521466  lr 5.000e-3  |g| 6.9388e-1
 step 80  epoch 5  loss 0.432558  lr 1.464e-3  |g| 5.8567e-1
 step 100  epoch 7  loss 0.320685  lr 0.000e0  |g| 4.6561e-1
-presk train: 259 kernel launches a step, 419 without fusion (38% removed)
-presk train: 0.7 ms a step, median of 99 (the first excluded)
+presk train: 184 kernel launches a step, 332 without fusion (45% removed)
+presk train: 0.6 ms a step, median of 99 (the first excluded)
 presk train: 100 steps of Tower, final loss 0.320685, weights in out/tutorial_ckpt_native/final.psk.d
 ```
 
@@ -1065,24 +1085,26 @@ presk run tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6 
 ```
 
 ```text
-presk-opt: 5 of 9 functions rewritten, 59 → 45 lets, cost 97.51 → 68.78 (operation counts)
+presk-opt: 4 of 14 functions rewritten, 62 → 55 lets, cost 48.95 → 45.04 (operation counts)
   loss_grad: 3 → 2 lets, cost 1.01 → 1.01 (saturated, 1 iterations)
   Linear.init: 6 → 5 lets, cost 2.03 → 2.03 (saturated, 1 iterations)
-  loss_grad.lambda0.vjp: 6 → 5 lets, cost 3.04 → 3.04 (saturated, 1 iterations)
-  loss.vjp: 17 → 13 lets, cost 37.43 → 29.73 (saturated, 7 iterations)
-  Linear.apply.vjp: 14 → 7 lets, cost 38.07 → 17.04 (saturated, 6 iterations)
+  Linear.apply.bwd: 9 → 5 lets, cost 12.04 → 9.03 (saturated, 6 iterations)
+  loss.bwd: 11 → 10 lets, cost 5.94 → 5.04 (saturated, 4 iterations)
 params = {
   w = [3, 1] [[-1.30262], [0.342146], [2.7531]]
   b = [1] [3.47884]
 }
 ```
 
-The adjoint of `Linear.apply` halves: the forward pass that differentiation
-recomputed is dead and vanishes, a `sum_to` between equal types is the
-identity, and the two `set_field`s of zeros that it summed become one record
-`{w = …, b = …}`. The gradient is the one of step 4 to the last digit — the
-rules are exact, and the interpreter is the oracle that checks it (every
-golden output of the test suite is reproduced under `--opt`).
+Differentiation has already removed its own dead code (the forward pass
+`Linear.apply.vjp` recomputed, and a `sum_to` between equal types, the
+identity), and keeps its forward pass's values rather than computing them
+again; the rules take the adjoint of `Linear.apply`, its `.bwd`, from 9
+`let`s to 5, the two `set_field`s of zeros that it summed becoming one
+record `{w = …, b = …}`, and `loss.bwd`'s `pow 1` goes. The gradient is the one of step 4
+to the last digit — the rules are exact, and the interpreter is the oracle
+that checks it (every golden output of the test suite is reproduced under
+`--opt`).
 
 Which of two equivalent programs is cheaper is the *cost model's* decision.
 Without more information it counts operations; with a machine profile it
@@ -1265,6 +1287,7 @@ not reach yet.
 | `make ra4-dev`, `make ra4-dev-frozen`, `make ra4-ablation` | 0.8.0's development set: 0.7.0's measurements priced again under a profile, nothing measured; the frozen model's report on it, byte for byte; every form of the model on it (`cli` chapter, `presk reprice`; minutes) |
 | `make calibrate-ra4-small`, `make ra4-f2*`, `make ra4-f1*` | 0.8.0's fresh sweeps, each a dry run, two days, a check of every point on the kernel interpreter and a report: the A725 cores calibrated and 0.7.0's shapes swept on them (F2), new shapes on the X925 cores (F1) (`experiments` chapter §8; hours each) |
 | `make c-conformance`, `make c-speed` | the C export on the example entries and the course GPT, under plans, on threads, with integer weights, built with GCC, Clang and for x86-64, bit for bit against the native backend; `presk serve`'s tokens from the exported loop; the SCoP mode's nests against Polly; the exported course GPT timed against the native backend (`export_c` chapter; minutes, installs zig and LLVM's release) |
+| `make pytorch-baseline` | the course GPT's forward pass and training step timed on the native backend, the C export and PyTorch, under the default layout and under plans, with the distances to the native `f64` logits and where the C program's time goes (`experiments` chapter §3; twenty minutes, a quiet machine, needs `.venv`; `CFLAGS` builds the C programs with other flags) |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
@@ -1333,7 +1356,7 @@ presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2
   sites       22 narrowable, 22 assigned away from f64
   cost        1.2900e3 against 2.6000e3 all-f64 (2.02x), relaxation floor 6.5000e2
   proposal    1.2900e3 before measurement widened anything (time when --profile is given, bytes otherwise)
-  estimate    1.044e-3 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  estimate    2.085e-3 (sensitivity-weighted, first order: it ranks, it does not guarantee)
   measured    3.663e-8 against the exact reference, after 0 widening round(s) — inside the budget
   optimal     not searched (the space is too large); the relaxation floor above is the lower bound
 presk solve: wrote out/tut_solved.json — run it with `--realize @out/tut_solved.json`
@@ -1397,14 +1420,14 @@ presk calibrate --step tutorial/07_train.psk --weights out/tutorial_ckpt/final.p
 
 ```text
 presk calibrate: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of tutorial/data/pairs.psk.d (noise: the next 8)
-presk calibrate: 226 sites in 12 functions of one exact step at 256 bits (0.0 s)
+presk calibrate: 245 sites in 18 functions of one exact step at 256 bits (0.0 s)
   |θ′ − θ|    3.7830e-2   |g| 5.6012e-1   |θ| 5.2636e0
   noise       7.1633e-1   ‖g_B − g_B′‖₂ / ‖g_B‖₂ between two batches of 8 (f64): what a rounding error is to be compared with
 realization                    update gap storage floor     grad gap    predicted B
-f64                             7.577e-15     7.565e-15    3.600e-16       5.3320e4
-f32                              6.963e-6      3.826e-6     2.737e-7       2.6660e4
-bf16                              1.000e0      2.111e-1     2.034e-2       1.3330e4
-recipe                           8.659e-3      3.826e-6     2.386e-2       1.6918e4
+f64                             7.577e-15     7.565e-15    3.600e-16       6.7632e4
+f32                              6.963e-6      3.826e-6     2.737e-7       3.3816e4
+bf16                              1.000e0      2.111e-1     2.034e-2       1.6908e4
+recipe                           8.659e-3      3.826e-6     2.386e-2       2.0496e4
 presk calibrate: wrote out/tut_step.json
 ```
 
@@ -1419,7 +1442,8 @@ type and compared with the exact step at 256 bits:
 - The **gradient gap** says where the error enters. In `f32` the update is 25
   times further from the exact one than the gradient: AdamW divides by
   `√v`, which amplifies the gradient's error, and that is why the budget binds
-  the update rather than the gradient (340 times on the corpus GPT, D52).
+  the update rather than the gradient (545 times on the corpus GPT, D93;
+  340 in D52, whose training used a gradient defect 3f made wrong).
 - **`bf16` loses the step.** An update gap of exactly one means `θ̂′` is as
   far from `θ′` as `θ` is: a learning-rate-sized change is below `bf16`'s
   resolution, so the parameters come back unchanged. That is why practice
@@ -1438,24 +1462,30 @@ presk solve --step tutorial/07_train.psk --precision out/tut_step.json \
 
 ```text
 presk solve: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of tutorial/data/pairs.psk.d (noise: the next 8)
-presk solve: the step under an update budget of 1.00e-3 (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), 12 functions, 25 native steps measured
+presk solve: the step under an update budget of 1.00e-3 (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), 18 functions, 38 native steps measured
 function                        sites     f64 cost     gap f32    gap bf16   chosen
-Block.apply                         6      1.216e3     5.10e-8     2.58e-3      f32
-Block.apply.vjp                    23      5.312e3     1.74e-8     8.67e-4     bf16
+Block.apply                         6      1.216e3     5.15e-8     2.67e-3      f32
+Block.apply.bwd                    22      5.376e3     8.76e-9     6.87e-4      f32
+Block.apply.fwd                     9      5.056e3     1.37e-8     4.13e-4     bf16
+Block.apply.vjp                     3      3.136e3    7.58e-15    7.58e-15     bf16
 Linear.apply                        4      6.720e2     2.34e-8     4.37e-3      f32
-Linear.apply.vjp                   14      2.560e3     1.28e-8     6.61e-4      f32
-RMSNorm.apply                       8      1.000e3     4.94e-8     3.17e-3      f32
-RMSNorm.apply.vjp                  32      4.992e3     3.77e-8     2.57e-3      f32
+Linear.apply.bwd                   11      1.792e3     1.28e-8     6.61e-4      f32
+RMSNorm.apply                       8      1.000e3     6.96e-8     4.19e-3      f32
+RMSNorm.apply.bwd                  25      4.272e3     3.98e-8     2.40e-3      f32
+RMSNorm.apply.fwd                  11      2.664e3     3.70e-8     2.75e-3      f32
+RMSNorm.apply.vjp                   3      1.696e3    7.58e-15    7.58e-15     bf16
 Tower.apply                         4      1.120e3    7.58e-15    7.58e-15     bf16
 Tower.apply.fold_bwd                7      3.136e3    7.58e-15    7.58e-15     bf16
-Tower.apply.vjp                    20      1.046e4     2.83e-9     1.78e-4     bf16
+Tower.apply.vjp                    19      1.021e4     2.83e-9     1.78e-4     bf16
 adamw.lr                           29      2.320e2     5.46e-8     1.10e-3      f32
 adamw.step                         37      1.412e4     8.73e-6      1.06e0      f32
-loss.vjp                           23      8.496e3     2.08e-8     2.38e-3      f32
-  chosen      0 f64, 8 f32, 4 bf16
-  cost        2.1652e4 against 5.3320e4 all-f64 (2.46x), bytes
-  estimate    8.853e-4 (√Σ of the chosen functions' isolated gaps: it proposes, it does not guarantee)
-  measured    8.689e-4 update gap (storage floor 3.803e-6), 3.012e-3 gradient gap, after 0 widening round(s) — inside the budget
+loss.bwd                           17      7.208e3     1.61e-8     5.91e-4     bf16
+loss.fwd                            9      2.576e3     2.08e-8     2.38e-3      f32
+loss.vjp                            3      2.152e3    7.58e-15    7.58e-15     bf16
+  chosen      0 f64, 10 f32, 8 bf16
+  cost        2.5388e4 against 6.7632e4 all-f64 (2.66x), bytes
+  estimate    7.422e-4 (√Σ of the chosen functions' isolated gaps: it proposes, it does not guarantee)
+  measured    8.537e-4 update gap (storage floor 3.803e-6), 2.723e-3 gradient gap, after 1 widening round(s) — inside the budget
 presk solve: wrote out/tut_step_solved.json — train with it with `presk train --realize @out/tut_step_solved.json`
 ```
 
@@ -1463,7 +1493,13 @@ Every function of the step is run alone in `f32` and in `bf16`, everything
 else in `f64`, and measured against the one exact step; the functions are
 then narrowed greedily by bytes saved per unit of gap, and the combination is
 measured, not predicted. Here it keeps the update inside the budget with
-2.46 times fewer bytes. With `--profile`, the objective is predicted seconds
+2.66 times fewer bytes, after widening once what its estimate put too close.
+The functions are those of a gradient that keeps its forward pass's values
+(the `language` chapter, "Residuals"): `Block.apply.fwd` runs a block once
+and `Block.apply.bwd` its reverse sweep, and a `.vjp` only calls the two,
+which is why five functions show no gap at all; the tower itself, generic in
+its leading axes (`...`), keeps its recomputing `Tower.apply.vjp`. With
+`--profile`, the objective is predicted seconds
 instead of bytes, and on the corpus GPT that objective refuses `bf16`
 everywhere: its conversions cost more than its traffic saves. The file is a
 realization whose `functions` map gives each function its type, and `presk
@@ -1481,24 +1517,25 @@ presk data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_seed1/fin
 ```
 
 ```text
-step 20  epoch 2  loss 1.472082  lr 1.000e-2  |g| 2.0667e0
-step 40  epoch 3  loss 0.843842  lr 8.536e-3  |g| 8.2499e-1
-step 60  epoch 4  loss 0.521410  lr 5.000e-3  |g| 6.9372e-1
-step 80  epoch 5  loss 0.432535  lr 1.464e-3  |g| 5.8522e-1
-step 100  epoch 7  loss 0.320654  lr 0.000e0  |g| 4.6536e-1
-presk train: 259 kernel launches a step, 419 without fusion (38% removed)
-presk train: 0.7 ms a step, median of 99 (the first excluded)
-presk train: 100 steps of Tower, final loss 0.320654, weights in out/tutorial_ckpt_step/final.psk.d
-presk data: ‖a − b‖₂ 1.138262e-3   ‖a‖₂ 5.344120e0   relative 2.129934e-4   over 76 reals
+step 20  epoch 2  loss 1.472400  lr 1.000e-2  |g| 2.0692e0
+step 40  epoch 3  loss 0.843814  lr 8.536e-3  |g| 8.2627e-1
+step 60  epoch 4  loss 0.521474  lr 5.000e-3  |g| 6.9435e-1
+step 80  epoch 5  loss 0.432605  lr 1.464e-3  |g| 5.8487e-1
+step 100  epoch 7  loss 0.320642  lr 0.000e0  |g| 4.6503e-1
+presk train: 184 kernel launches a step, 332 without fusion (45% removed)
+presk train: 0.6 ms a step, median of 99 (the first excluded)
+presk train: 100 steps of Tower, final loss 0.320642, weights in out/tutorial_ckpt_step/final.psk.d
+presk data: ‖a − b‖₂ 1.210527e-3   ‖a‖₂ 5.344120e0   relative 2.265156e-4   over 76 reals
 step 100  epoch 7  loss 0.296131  lr 0.000e0  |g| 4.6998e-1
-presk train: 259 kernel launches a step, 419 without fusion (38% removed)
-presk train: 0.7 ms a step, median of 99 (the first excluded)
+presk train: 184 kernel launches a step, 332 without fusion (45% removed)
+presk train: 0.6 ms a step, median of 99 (the first excluded)
 presk train: 100 steps of Tower, final loss 0.296131, weights in out/tutorial_ckpt_seed1/final.psk.d
 presk data: ‖a − b‖₂ 4.842373e0   ‖a‖₂ 5.344120e0   relative 9.061123e-1   over 76 reals
 ```
 
-The log moves in the fifth digit against step 12's, which is the four `bf16`
-functions showing. The weights end 2.1·10⁻⁴ from the `f64` run's, where
+The log moves in the fifth digit against step 12's, which is the three
+`bf16` functions that compute showing. The weights end 2.3·10⁻⁴ from the
+`f64` run's, where
 another seed ends 0.91 away: four thousand times closer than the ordinary
 variation of training, and over a hundred steps nothing accumulated into a
 different model.
@@ -1547,20 +1584,20 @@ presk bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
 layout                                                           group               measured µs predicted µs
 …
 -- 300 layouts timed (0 ill-formed at these shapes), 300 samples kept from out/tut_layout.json, 5 calls each
--- fit (p-norm, q = 1.00, load term, rules lines,overhead): λ = 14.22 µs, spawn = 192.39 µs, β_L2 = 7.670e11, β_L3 = 6.201e11, β_mem = 6.325e23 bytes/s
---      π[f32+lanes1+w1] = 1.310e10 ops/s
---      π[f32+lanes1+w10] = 6.257e9 ops/s
---      π[f32+lanes1+w20] = 6.116e9 ops/s
---      π[f32+lanes4+w1] = 1.565e11 ops/s
---      π[f32+lanes4+w10] = 2.114e24 ops/s
---      π[f32+lanes4+w20] = 1.545e24 ops/s
---      ρ[f32+lanes1+w1] = 6.637e10 loads/s
---      ρ[f32+lanes1+w10] = 7.677e9 loads/s
---      ρ[f32+lanes1+w20] = 7.929e9 loads/s
---      ρ[f32+lanes4+w1] = 5.612e9 loads/s
---      ρ[f32+lanes4+w10] = 1.419e9 loads/s
---      ρ[f32+lanes4+w20] = 1.205e9 loads/s
--- uncertainty u = 0.094 (median relative residual over 600 samples), Spearman 0.985
+-- fit (p-norm, q = 1.00, load term, rules lines,overhead): λ = 0.88 µs, spawn = 0.00 µs, β_L2 = 4.151e11, β_L3 = 8.879e11, β_mem = 1.556e12 bytes/s
+--      π[f32+lanes1+w1] = 1.331e10 ops/s
+--      π[f32+lanes1+w10] = 6.604e9 ops/s
+--      π[f32+lanes1+w20] = 7.123e9 ops/s
+--      π[f32+lanes4+w1] = 1.655e11 ops/s
+--      π[f32+lanes4+w10] = 1.608e11 ops/s
+--      π[f32+lanes4+w20] = 2.837e17 ops/s
+--      ρ[f32+lanes1+w1] = 6.220e10 loads/s
+--      ρ[f32+lanes1+w10] = 7.789e9 loads/s
+--      ρ[f32+lanes1+w20] = 6.260e9 loads/s
+--      ρ[f32+lanes4+w1] = 5.534e9 loads/s
+--      ρ[f32+lanes4+w10] = 1.678e9 loads/s
+--      ρ[f32+lanes4+w20] = 1.439e9 loads/s
+-- uncertainty u = 0.101 (median relative residual over 600 samples), Spearman 0.985
 -- profile written to out/tut_layout.json
 ```
 
@@ -1582,12 +1619,13 @@ lane width and a worker count. That is the form 0.8.0 froze before testing
 it, and `--space calib`'s default: the p-norm, footprints counted in whole
 cache lines (`-- costed under the rules lines,overhead`), and one operation
 of work per loop iteration; `--combine` and `--rules` choose another. `u` is the
-model's own uncertainty, the median relative error of the fit: 9 %. Three
-constants came out near 10²⁴, `β_mem` and `π` in four lanes on ten and
-twenty workers: the fit is better without those terms than with any rate,
-so it makes them vanish. At these sizes no sample shows the time memory
-takes, and in four lanes on many workers the work never shows apart from
-the loads. `make calibrate-ra4` does this properly, at four sizes and two
+model's own uncertainty, the median relative error of the fit: 10 %. One
+rate came out near 10¹⁷, `π` in four lanes on twenty workers: the fit is
+better without that term than with any rate, so it makes it vanish; in
+four lanes on many workers the work never shows apart from the loads. And
+starting the workers costs nothing the fit can see, `spawn = 0.00 µs`:
+since 0.10.0 the native backend's workers are a pool that waits spinning
+between launches (`native` chapter). `make calibrate-ra4` does this properly, at four sizes and two
 thin products in two types, pinned to like cores with `taskset`.
 
 Now choose a layout for every nest of the entry, statically:
@@ -1599,28 +1637,28 @@ presk plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --rea
 
 ```text
 nest                         operands                        space     predicted          undecided  layout
-scores/%2                    [16, 2, 256, 4] [16, 2, 256, 4]   413 points      323.13 µs    9 within 1 + u  tiled, tile [4, 16], kblock none, order IJ, lanes 4, split (0, 20), pack
-scores/%5                    []                           1 points       14.22 µs    1 within 1 + u  lanes 1, split none
-scores/%6                    [16, 2, 256, 256] []         7 points      310.40 µs    2 within 1 + u  lanes 1, split (2, 20)
-attend/%5                    [16, 2, 256, 256] [256, 256]     7 points      310.84 µs    2 within 1 + u  lanes 1, split (2, 20)
-attend/%6                    [16, 2, 256, 256]           14 points      577.11 µs    1 within 1 + u  lanes 1, split (2, 20), passes 2
-attend/%7                    [16, 2, 256, 256] [16, 2, 256, 4]   577 points      358.96 µs   38 within 1 + u  tiled, tile [4, 4], kblock none, order IJ, lanes 4, split (0, 20), no pack
--- 6 nests, 1019 points costed in 0.043 s, the entry captured in 0.039 s; u = 0.094
--- wall time 0.083 s
+scores/%2                    [16, 2, 256, 4] [16, 2, 256, 4]   413 points       93.72 µs    3 within 1 + u  tiled, tile [4, 16], kblock none, order JI, lanes 4, split (0, 20), pack
+scores/%5                    []                           1 points        0.88 µs    1 within 1 + u  lanes 1, split none
+scores/%6                    [16, 2, 256, 256] []         7 points      114.08 µs    1 within 1 + u  lanes 1, split (2, 20)
+attend/%5                    [16, 2, 256, 256] [256, 256]    14 points      610.03 µs    1 within 1 + u  lanes 1, split (2, 20), passes 2
+attend/%6                    [16, 2, 256, 256] [16, 2, 256, 4]   577 points      133.24 µs   14 within 1 + u  tiled, tile [4, 4], kblock none, order JI, lanes 4, split (0, 20), no pack
+-- 5 nests, 1012 points costed in 0.046 s, the entry captured in 0.007 s; u = 0.101
+-- wall time 0.054 s
 -- plan written to out/tut_plan.json
 ```
 
 The entry's launches are captured from its shapes: the host program runs on
 zero inputs and records each nest's launch without running a kernel. Then
 every nest is lowered under every point of its space, thread splits
-included, and each point is costed. Nothing is compiled or timed: 1 019
-points in a twenty-fifth of a second. The nests are named as `presk dump
---stage core` names their bindings: `scores/%2` and `attend/%7` are the two
-`ein`s, `attend/%6` the softmax, which takes two passes instead of three.
+included, and each point is costed. Nothing is compiled or timed: 1 012
+points in a twentieth of a second. The nests are named as `presk dump
+--stage core` names their bindings: `scores/%2` and `attend/%6` are the two
+`ein`s, `attend/%5` the softmax, which reads the causal mask, its second
+operand, and takes two passes instead of three.
 The model picks the largest register tiles the nests allow, `[4, 16]` with
 the pack on the scores and `[4, 4]` on the values, whose `J` is `hd = 4`,
 split over all twenty workers. The `undecided` column counts the points the
-model predicts within `1 + u` of its best: on the two `ein`s, 9 and 38
+model predicts within `1 + u` of its best: on the two `ein`s, 3 and 14
 points it cannot tell from its choice. The plan is a JSON file (`realize`
 chapter), and `--plan` runs it:
 
@@ -1655,10 +1693,9 @@ presk autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 -
 scores/%2                    [16, 2, 256, 4] [16, 2, 256, 4]    76 of    76 points  out/tut_tune/day1/scores__2.jsonl
 scores/%5                    []                           1 of     1 points  out/tut_tune/day1/scores__5.jsonl
 scores/%6                    [16, 2, 256, 256] []         3 of     3 points  out/tut_tune/day1/scores__6.jsonl
-attend/%5                    [16, 2, 256, 256] [256, 256]     3 of     3 points  out/tut_tune/day1/attend__5.jsonl
-attend/%6                    [16, 2, 256, 256]            6 of     6 points  out/tut_tune/day1/attend__6.jsonl
-attend/%7                    [16, 2, 256, 256] [16, 2, 256, 4]     4 of     4 points  out/tut_tune/day1/attend__7.jsonl
--- 93 points of 6 nests measured in 2.1 s, costed in 0.009 s; every output bit-identical to point 0, natively and on the kernel interpreter: yes
+attend/%5                    [16, 2, 256, 256] [256, 256]     6 of     6 points  out/tut_tune/day1/attend__5.jsonl
+attend/%6                    [16, 2, 256, 256] [16, 2, 256, 4]     4 of     4 points  out/tut_tune/day1/attend__6.jsonl
+-- 90 points of 5 nests measured in 2.8 s, costed in 0.009 s; every output bit-identical to point 0, natively and on the kernel interpreter: yes
 ```
 
 `--space small` is a daily subset of each space. Every point is compiled and
@@ -1678,12 +1715,12 @@ presk rank out/tut_tune/day1 out/tut_tune/day2 --entry attend --out out/tut_rank
 
 | | statement | measured | verdict |
 |---|---|---|---|
-| L | every point bit-identical to point 0, natively and on the kernel interpreter | 99 of 99 points of day 1 checked on the interpreter; 0 outputs differing, natively or on the interpreter, in any sweep | **holds** |
-| M | more than 90 % of the distinguished close pairs ranked right, each `ein` of `attend` at B=16,T=256, f32 | `attend/%7` 66.7 % of 3; `scores/%2` 92.4 % of 158 | inconclusive: fewer than 10³ distinguished pairs |
-| N | choosing statically at least 10³× cheaper than the exhaustive sweep of the same points, `attend` | B=16,T=256 f32 76× (31× with the entry run); B=16,T=256 f32 71× (32× with the entry run) | **fails** |
-| O | the model's pick within 1.25× of the best measured, every contraction nest of `attend` at B=16,T=256, f32 | `attend/%7` 1.00; `scores/%2` 1.15 | **holds** |
+| L | every point bit-identical to point 0, natively and on the kernel interpreter | 95 of 95 points of day 1 checked on the interpreter; 0 outputs differing, natively or on the interpreter, in any sweep | **holds** |
+| M | more than 90 % of the distinguished close pairs ranked right, each `ein` of `attend` at B=16,T=256, f32 | `attend/%6` 66.7 % of 3; `scores/%2` 77.5 % of 178 | inconclusive: fewer than 10³ distinguished pairs |
+| N | choosing statically at least 10³× cheaper than the exhaustive sweep of the same points, `attend` | B=16,T=256 f32 254× (74× with the entry run); B=16,T=256 f32 238× (69× with the entry run) | **fails** |
+| O | the model's pick within 1.25× of the best measured, every contraction nest of `attend` at B=16,T=256, f32 | `attend/%6` 1.00; `scores/%2` 1.01 | **holds** |
 | P | the best point of the GEMM space at least 3× the 0.6.0 default, `gemm` at N=1024, f32 | — | not measured |
-| Q | measuring only the points predicted within 1 + u of the model's best finds one within 1.05× of the best measured, at no more than 10 % of the exhaustive sweep's time (question 72: the static side and the candidates' measured time), every contraction nest of every configuration swept whole | 2 contraction nests: the best candidate within 1.11× of the best measured at worst (`scores/%2` B=16,T=256 f32); the static side and the candidates' measured time at most 32.3 % of the nest's exhaustive sweep (`attend/%7` B=16,T=256 f32); their share of its timed launches at most 6.20 % (`attend/%7` B=16,T=256 f32, D71's count) | **fails** |
+| Q | measuring only the points predicted within 1 + u of the model's best finds one within 1.05× of the best measured, at no more than 10 % of the exhaustive sweep's time (question 72: the static side and the candidates' measured time), every contraction nest of every configuration swept whole | 2 contraction nests: the best candidate within 1.01× of the best measured at worst (`scores/%2` B=16,T=256 f32); the static side and the candidates' measured time at most 19.2 % of the nest's exhaustive sweep (`attend/%6` B=16,T=256 f32); their share of its timed launches at most 5.30 % (`attend/%6` B=16,T=256 f32, D71's count) | **fails** |
 
 ## Statement Q, per contraction nest
 
@@ -1691,19 +1728,19 @@ presk rank out/tut_tune/day1 out/tut_tune/day2 --entry attend --out out/tut_rank
 
 | nest | config | type | points | candidates | regret | cost | static, candidates, exhaustive (s) | kernel share | verdict |
 |---|---|---|---|---|---|---|---|---|---|
-| `attend/%7` | B=16,T=256 | f32 | 4 | 1 | 1.00 | 32.3 % / 32.2 % | 0.03, 0.01, 0.1 / 0.03, 0.01, 0.1 | 6.20 % / 6.00 % | **fails** |
-| `scores/%2` | B=16,T=256 | f32 | 76 | 4 | 1.11 | 4.8 % / 4.7 % | 0.03, 0.04, 1.4 / 0.03, 0.03, 1.2 | 1.80 % / 1.78 % | **fails** |
+| `attend/%6` | B=16,T=256 | f32 | 4 | 1 | 1.00 | 19.2 % / 19.0 % | 0.01, 0.02, 0.2 / 0.01, 0.02, 0.1 | 5.26 % / 5.30 % | **fails** |
+| `scores/%2` | B=16,T=256 | f32 | 76 | 2 | 1.01 | 2.4 % / 2.3 % | 0.01, 0.03, 1.7 / 0.01, 0.03, 1.6 | 0.52 % / 0.51 % | **holds** |
 
 ## Per decision class
 
 | class | close pairs | distinguished | right | right, decided | undecided | tied |
 |---|---|---|---|---|---|---|
-| lanes | 24 | 20 | 100.0 % | 100.0 % | 0.0 % | 0.0 % |
-| order | 36 | 5 | 0.0 % | — | 100.0 % | 0.0 % |
-| pack | 24 | 5 | 0.0 % | — | 100.0 % | 0.0 % |
+| lanes | 24 | 24 | 100.0 % | 100.0 % | 0.0 % | 0.0 % |
+| order | 36 | 7 | 42.9 % | — | 100.0 % | 0.0 % |
+| pack | 24 | 13 | 23.1 % | — | 100.0 % | 0.0 % |
 | passes | 3 | 3 | 100.0 % | 100.0 % | 0.0 % | 0.0 % |
-| split | 90 | 79 | 96.2 % | 96.2 % | 0.0 % | 0.0 % |
-| tile | 112 | 63 | 98.4 % | 97.2 % | 42.9 % | 0.0 % |
+| split | 87 | 79 | 69.6 % | 69.6 % | 0.0 % | 0.0 % |
+| tile | 112 | 67 | 91.0 % | 94.6 % | 44.8 % | 0.0 % |
 ```
 
 The report's unit is a **close pair**: two points of a nest that differ in one
@@ -1711,26 +1748,29 @@ decision. A pair is *distinguished* when its two median times differ by more
 than twice the larger median absolute deviation, on both days, with the same
 sign; the model orders it *right* when its predictions order it as the
 measurement does, and a pair it predicts equal is *tied*, which is not right.
-The per-class table is where to read it. The model is right on lanes,
-softmax passes and thread splits, which its terms read (a rate per lane
-width, a rate per worker count, the cost of starting workers), and on 98 %
-of the register tiles, which its load term reads: 0.7.0's model, with no
-such term, ordered 39 % of them here and tied 41 %. It orders none of the
-five loop orders and five packs the measurement distinguishes, all pairs it
-predicts within `1 + u` of each other.
+The per-class table is where to read it. The model is right on every pair
+of lanes and of softmax passes, which its terms read (a rate per lane
+width, the loads of a pass), and on 91 % of the register tiles, which its
+load term reads: 0.7.0's model, with no such term, ordered 39 % of them
+here and tied 41 %. It orders 70 % of the thread splits, nearly all of them
+the scores', by rates per worker count fitted on the product alone; and
+three of the seven loop orders and three of the thirteen packs the
+measurement distinguishes, all pairs it predicts within `1 + u` of each
+other.
 
 The statements are 0.7.0's five and 0.8.0's `Q`. `L` holds, every point
 exact on both executors. `M` asks for more than 90 % of at least a thousand
 pairs and is inconclusive at this size. `N` fails because a point takes
-milliseconds to time, so measuring them all costs only seventy times more
-than costing them. `O` holds: the model's pick among the scores' points is
-1.15 times slower than the best one measured, within 1.25. `P` is about a
+milliseconds to time, so measuring them all costs only about 250 times
+more than costing them. `O` holds: the model's pick among the scores'
+points is 1.01 times slower than the best one measured, within 1.25. `P` is about a
 matrix product this sweep does not include. `Q` asks whether measuring only
 the model's candidates, the points within `1 + u` of its best, finds a
-point within 1.05× of the best at a tenth of the sweep's cost. It fails
-twice here: the scores' four candidates miss the best by 1.11×, and the
-values `ein` has four points in all, so choosing statically and measuring
-its one candidate costs a third of sweeping it. The table after the statements gives each
+point within 1.05× of the best at a tenth of the sweep's cost. It holds on
+the scores, whose two candidates hold a point within 1.01× of the best at
+2.4 % of the sweep, and fails on the values `ein`, which has four points in
+all, so that choosing statically and measuring its one candidate costs a
+fifth of sweeping it. The table after the statements gives each
 nest's candidates, regret and cost.
 
 These sizes test the tools, not the hypothesis: at `hd = 4` the scores sum
@@ -1758,20 +1798,22 @@ presk export tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim
 ```
 
 ```text
-presk export: `attend` at B = 1, T = 3 in f64: 7 launches (0 dead, on one thread) of 7 kernels, 1 function besides the entry's and 0 loops, an arena of 1472 bytes (1792 released nothing), into out/tut_c; `make -C out/tut_c check` builds it and compares it with the native backend
+presk export: `attend` at B = 1, T = 3 in f64: 6 launches (0 dead, on one thread) of 6 kernels, 1 function besides the entry's and 0 loops, an arena of 1280 bytes (1600 released nothing), into out/tut_c; `make -C out/tut_c check` builds it and compares it with the native backend
 ```
 
 The export runs the entry once on the native backend, at step 3's
 dimensions and on the inputs `presk run` would synthesize, and records
 what its host does: every kernel it launches, in order, with the buffers
 each reads and writes. The program is that recording in C. `kernels.c`
-holds the seven kernels, each the native backend's, printed as one C
-function under its PSK-Kernel text:
+holds the six kernels, each the native backend's, printed as one C
+function under its PSK-Kernel text, which the compiler inlines wherever
+the host launches it (`PRESK_KERNEL`, a static inline function, always
+inlined):
 
 ```c
 // kernel ein[batch, heads, seq, seq2] (%0 : f64[batch: 1, heads: 2, seq: 3, hd: 4], %1 : f64[batch: 1, heads: 2, seq: 3, hd: 4]) -> %2 : f64[batch: 1, heads: 2, seq: 3, seq2: 3] {
 // …
-static void k0(const double *restrict in0, const double *restrict in1, double *restrict out, int64_t lo, int64_t hi) {
+PRESK_KERNEL void k0(const double *restrict in0, const double *restrict in1, double *restrict out, int64_t lo, int64_t hi) {
     int64_t i0 = 0, i1 = 0, i2 = 0, i3 = 0, i4 = 0;
     double s0 = 0.0, s1 = 0.0;
     for (i0 = lo; i0 < hi; i0++) {
@@ -1794,7 +1836,8 @@ static void k0(const double *restrict in0, const double *restrict in1, double *r
 `model.c` holds the host: a C function per Presk function, here `scores`
 (the "1 function besides the entry's") and the entry, which calls it and
 launches the mask, the softmax and the values `ein`, each buffer named
-after its `let` and taken from one arena whose size the export computed:
+after its `let` and taken from one arena whose size the export computed;
+the mask is a buffer of indices, `1` where a position is allowed:
 
 ```c
 void presk_attend(presk_arena *arena, const presk_attend_in *in, presk_attend_out *out)
@@ -1808,16 +1851,13 @@ void presk_attend(presk_arena *arena, const presk_attend_in *in, presk_attend_ou
     double *s = presk_alloc(arena, 18 * sizeof(double));
     presk_scores(arena, q, k, s);
     /* attend/%4 */
-    double *t4 = presk_alloc(arena, 9 * sizeof(double));
+    int64_t *t4 = presk_alloc(arena, 9 * sizeof(int64_t));
     k3(t4, 0, 3);
-    /* attend/%5 */
-    double *t5 = presk_alloc(arena, 18 * sizeof(double));
-    k4(s, t4, t5, 0, 1);
-    /* attend/%6 (a) */
+    /* attend/%5 (a) */
     double *a = presk_alloc(arena, 18 * sizeof(double));
-    k5(t5, a, 0, 1);
-    /* attend/%7 */
-    k6(a, v, result, 0, 1);
+    k4(s, t4, a, 0, 1);
+    /* attend/%6 */
+    k5(a, v, result, 0, 1);
     out->result = result;
     presk_release(arena, mark);
 }
@@ -1878,7 +1918,7 @@ OMP_NUM_THREADS=1 make -s -C out/tut_c16 check
 ```
 
 ```text
-presk export: `attend` at B = 16, T = 256 in f32 under the plan out/tut_plan.json: 8 launches (0 dead, 5 of them divided among up to 20 threads) of 8 kernels, 1 function besides the entry's and 0 loops, an arena of 25952256 bytes (34472064 released nothing), into out/tut_c16; `make -C out/tut_c16 check` builds it and compares it with the native backend
+presk export: `attend` at B = 16, T = 256 in f32 under the plan out/tut_plan.json: 7 launches (0 dead, 4 of them divided among up to 20 threads) of 7 kernels, 1 function besides the entry's and 0 loops, an arena of 17825792 bytes (26345600 released nothing), into out/tut_c16; `make -C out/tut_c16 check` builds it and compares it with the native backend
 C1 holds: the outputs are the native backend's, bit for bit
 C1 holds: the outputs are the native backend's, bit for bit
 ```
@@ -1895,10 +1935,10 @@ values `ein`:
 #pragma omp parallel num_threads(presk_team(16))
     {
         int64_t t = omp_get_thread_num(), w = omp_get_num_threads();
-        k7(a, v, result, 16 * t / w, 16 * (t + 1) / w);
+        k6(a, v, result, 16 * t / w, 16 * (t + 1) / w);
     }
 #else
-    k7(a, v, result, 0, 16);
+    k6(a, v, result, 0, 16);
 #endif
 ```
 
@@ -1917,8 +1957,8 @@ OMP_NUM_THREADS=1 out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d o
 ```
 
 ```text
-presk_attend: 11 calls, median 2.402 ms, best 2.002 ms
-presk_attend: 11 calls, median 8.587 ms, best 8.499 ms
+presk_attend: 11 calls, median 2.455 ms, best 2.048 ms
+presk_attend: 11 calls, median 8.057 ms, best 8.003 ms
 ```
 
 The `export_c` chapter compares the program's speed with the native
@@ -1937,31 +1977,33 @@ make -s -C out/tut_scop check
 ```
 
 ```text
-presk export: `attend` at B = 16, T = 256 in f32: 6 nests at 6 shapes at point zero, a C function each, 6 of them static-control parts and 0 not (`nests.json` says why), into out/tut_scop; `make -C out/tut_scop check` builds them and compares each with the native backend
-the 6 nests compute the native backend's bits
+presk export: `attend` at B = 16, T = 256 in f32: 5 nests at 5 shapes at point zero, a C function each, 5 of them static-control parts and 0 not (`nests.json` says why), into out/tut_scop; `make -C out/tut_scop check` builds them and compares each with the native backend
+the 5 nests compute the native backend's bits
 ```
 
-The six nests are step 17's. Each is a file of its own, `nests/attend_6.c`
-for the softmax:
+The five nests are step 17's. Each is a file of its own, `nests/attend_5.c`
+for the masked softmax:
 
 ```c
-void attend_6(const float in0[restrict 16][2][256][256], float out[restrict 16][2][256][256]) {
+void attend_5(const float in0[restrict 16][2][256][256], const int64_t in1[restrict 256][256], float out[restrict 16][2][256][256]) {
     int64_t i0 = 0, i1 = 0, i2 = 0, i3 = 0;
-    float s0 = 0.0f, s1 = 0.0f;
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f;
 #pragma scop
     for (i0 = 0; i0 < 16; i0++) {
         for (i1 = 0; i1 < 2; i1++) {
             for (i2 = 0; i2 < 256; i2++) {
-                s0 = in0[i0][i1][i2][0];
+                s2 = 1.0f;
+                s0 = 0.0f;
                 for (i3 = 0; i3 < 256; i3++) {
-                    s0 = in0[i0][i1][i2][i3] > s0 ? in0[i0][i1][i2][i3] : s0;
+                    s0 = (float)in1[i2][i3] > 0.5f ? (s2 > 0.5f ? in0[i0][i1][i2][i3] : in0[i0][i1][i2][i3] > s0 ? in0[i0][i1][i2][i3] : s0) : s0;
+                    s2 = (float)in1[i2][i3] > 0.5f ? 0.0f : s2;
                 }
                 s1 = 0.0f;
                 for (i3 = 0; i3 < 256; i3++) {
-                    s1 = s1 + presk_expf(in0[i0][i1][i2][i3] - s0);
+                    s1 = s1 + ((float)in1[i2][i3] > 0.5f ? presk_expf(in0[i0][i1][i2][i3] - s0) : 0.0f);
                 }
                 for (i3 = 0; i3 < 256; i3++) {
-                    out[i0][i1][i2][i3] = presk_expf(in0[i0][i1][i2][i3] - s0) / s1;
+                    out[i0][i1][i2][i3] = (float)in1[i2][i3] > 0.5f ? presk_expf(in0[i0][i1][i2][i3] - s0) / s1 : 0.0f;
                 }
             }
         }
@@ -1971,8 +2013,9 @@ void attend_6(const float in0[restrict 16][2][256][256], float out[restrict 16][
 ```
 
 Arrays of literal dimensions, loops to literal bounds, every access affine
-in the loop variables, and the running maximum a selection rather than a
-branch: a static-control part, the region between the pragmas, which pet,
+in the loop variables, and the running maximum and the mask selections
+rather than branches (`s2` says the row's first allowed position is still
+to come): a static-control part, the region between the pragmas, which pet,
 PPCG and PLUTO read. The check runs each nest on inputs its driver draws
 and compares it with the native backend's point zero, bit for bit; `make
 -C out/tut_scop time` times each nest. `make llvm` installs LLVM's release,
@@ -1994,7 +2037,7 @@ native backend's and what is checked.
   (`make experiment`): a silent broadcasting bug of plain PyTorch that the
   types rule out, the gap of float32 and float64 training to the exact
   reference with presk's own realizations next to PyTorch's, and the
-  falsifiable statements of 0.4.0 to 0.9.0, each answered by
+  falsifiable statements of 0.4.0 to 0.10.0, each answered by
   measurement.
 - The `precision` chapter for everything behind steps 15 and 16: the
   envelope, the bound and the condition number, sensitivities, the solver,

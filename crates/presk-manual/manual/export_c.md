@@ -71,10 +71,12 @@ where releasing nothing took 352, 176 and 88 MB.
 
 The straight-line host of step 3 stays, as the structured one's oracle
 (`presk export --straight-line`): one function performing every operation
-in order, nothing released. A gradient's host runs the forward pass twice,
-once for the primal result it discards, and so does the C program in both
-forms (125 of `loss_grad`'s 767 launches; below, "What the export does not
-do").
+in order, nothing released. The program performs what the native backend
+performs: until 0.10.0 step 3 a gradient's host also ran the forward pass
+for the primal result it discards, and the C program copied it (125 of
+`loss_grad`'s 767 launches); that dead code now goes after differentiation
+(the `language` chapter, "Dead code after differentiation"), and
+`loss_grad` records 583 launches, 4 of them dead.
 
 ## Plans and threads
 
@@ -95,21 +97,27 @@ threads.
 
 ## Sampling and generation
 
-`sample` takes no key: the native backend draws from a stream of its own,
-`ChaCha20Rng::seed_from_u64(seed ^ 0x5a5a5a5a)`, created with the backend
-and advancing across its calls, so that `presk serve`'s step `k` continues
-step `k − 1`'s draws (step 6, D83). The recorder records `sample` as a host
-operation, and the program has a stream of its own, a `presk_rng` in the
-runtime: Bernstein's ChaCha20 (a 64-bit block counter and a 64-bit stream
-number, not RFC 7539's layout), read as `rand_core`'s block generator reads
-it (four blocks at a time, a 64-bit draw as two words, the low one first),
-seeded by `rand_core`'s `seed_from_u64` (PCG32). It is the program's state:
-a function that draws takes it as an argument after the arena, and `main`
-seeds it with the export's seed or `-s`.
+`sample(key, logits)` draws from its key (0.10.0 step 7b, D99; until then
+it took no key, and the native backend and the program each drew from a
+stream of their own, step 6, D83). The recorder records `sample` as a host
+operation, and the key it reads must be an argument of the entry: the
+program holds it as a `presk_key` of the entry's `_in` struct, and a key
+the program does not hold (split by `split_key`, or stacked by a fold)
+reaching `sample` is refused (`E8006`). The runtime's keys are
+`presk-interp`'s: the key a seed names (`presk_key_from_seed`, the first 32
+bytes of `seed_from_u64`'s stream, PCG32), a key's split
+(`presk_key_split`) and its child (`presk_key_child`), each read from
+Bernstein's ChaCha20 (a 64-bit block counter and a 64-bit stream number,
+not RFC 7539's layout) as `rand_core`'s block generator reads it (four
+blocks at a time, a 64-bit draw as two words, the low one first). A
+function that draws takes the entry's keys after the arena, and `main` sets
+each key field to the key `presk run --seed` synthesizes for that argument,
+from the export's seed or `-s`; a key nothing draws from is no field.
 
 A draw is the native backend's, in `f64`: the row's largest logit, `exp(x −
 m)` of each, their sum in order, and the first token whose running sum of
-`e_i / z` exceeds `u`, the top 53 bits of a draw over 2⁵³. The native
+`e_i / z` exceeds `u`, the key's uniform draw of the row's rank, the top 53
+bits of its 64-bit word over 2⁵³. The native
 backend's `exp` there is the `libm` crate's, which the kernels call, since
 step 6; it was Rust's standard library's, the platform's C library (glibc on
 falicon). So the C program calls `presk_exp`, depends on no C library, and
@@ -120,7 +128,8 @@ seeds), the tokens are the ones the standard library's `exp` gave.
 An entry's `f64` argument (a temperature, an `eps`) is a `double` of its
 `_in` struct, not a constant of the program: `main` sets it to the value
 `presk run` synthesizes. `presk export --target c --serve` exports a
-generation function (`presk serve`'s, or `--entry`) at one sequence and the
+generation function (`presk serve`'s, or `--entry`), its key, when it takes
+one, given to token `i` as the child `i` of the key the seed names, at one sequence and the
 window `T` its parameters fix, and its greedy copy, every `sample` an
 `argmax`, which `presk serve` calls at temperature 0: both are recorded on
 one backend and share their functions (`presk_MiniGPT_apply` is one), and
@@ -168,7 +177,7 @@ Rule by rule:
 | a weight a realization quantizes | quantized from the checkpoint's reals when loaded; loaded by a kernel as `f32(q)·s`, or converted at a kernel's edge | `presk_quantize` from the same reals, the same arithmetic; `(float)q * s[c]` in the kernel, `presk_dequantize` at an edge |
 | a fill (`zeros_like`, a dropout mask outside training) and a scalar made a tensor | `Buf::of`, rounding from `f64` | `presk_fill`, the same rounding |
 | the host's arithmetic on hyperparameters, a scalar read back from a kernel (the gradient norm's sum of squares in `adamw.step`), an `f64` argument | `f64` in Rust | `double` in C, the same operations in the same order |
-| `sample` | the backend's `ChaCha20Rng`, seeded by the run's seed, advancing across calls; each row in `f64` with the `libm` crate's `exp` | `presk_sample` on `presk_rng`, the same generator seeded the same way and carried by the caller; `presk_exp` |
+| `sample` | the uniform draws of its key, `presk-interp`'s `Key` (ChaCha20), one per row; each row in `f64` with the `libm` crate's `exp` | `presk_sample` on the key the caller passes (`presk_key`, the same bytes, derived from the seed as `presk run --seed` derives them); `presk_exp` |
 | a thread split | pieces that write disjoint elements, a scoped thread per piece at each launch | the same pieces, an OpenMP team (a pool) of at most the same workers, or one thread: each element computed by the same loops in the same order |
 
 Two of these rules corrected the plan. GCC ignores `#pragma STDC
@@ -244,10 +253,12 @@ native`, the same `--json` document byte for byte: in `make test`,
 hosts, greedy and sampled at three temperatures and four seeds; in `make
 c-conformance`, the same with the trained checkpoint of `make
 train-examples`, and `next_token` with it at the test set's dimensions
-(C1). The stream is checked against the crates (`presk-export-c/tests/rng.rs`:
-10⁶ draws over 10³ seeds, reads of words and pairs that straddle two
-refills, and `presk_sample` against the native `sample` on 12 028 rows in
-the three types, ties, infinities and NaNs among them).
+(C1). The generator is checked against the crates
+(`presk-export-c/tests/rng.rs`: 10⁶ draws over 10³ seeds, reads of words
+and pairs that straddle two refills; the keys of 10³ seeds, their splits and
+their children against `presk-interp`'s, byte for byte; and `presk_sample`
+against the native `sample` from 4 800 keys, on rows in the three types,
+ties, infinities and NaNs among them).
 
 **The check is checked**, by mutations that each change the outputs, on an
 arena filled with NaNs (`presk-export-c/tests/host.rs`):
@@ -262,8 +273,10 @@ arena filled with NaNs (`presk-export-c/tests/host.rs`):
   overlap cannot change the outputs, since the elements computed twice are
   the same bits both times, and a check of the pieces added to the program
   catches it;
-- of `generate.c`: a draw skipped at the second step (the greedy tokens
-  stay), the stream seeded again at each step, the window one token behind;
+- of `generate.c`: each token given the key of the token before, every
+  token given the first one's (the greedy tokens stay, 0.10.0 step 7b; a
+  draw skipped and the stream seeded again at each step until then), the
+  window one token behind;
 - of integer weights: a scale one channel off, the two nibbles of a byte
   swapped, and the scale kept in `f64` when quantizing (on a checkpoint
   with a tie `w/s = 3.5` in each column of the head: drawn weights meet a
@@ -326,6 +339,72 @@ it cannot run a plan that splits among ten on one worker (condition 5), so
 its one-thread row runs the plan with every split stated as none, the same
 kernels.
 
+**The shares, and PyTorch** (after 0.9.0, `make pytorch-baseline`, D87;
+`experiments` chapter §3). On the ten X925 cores pinned, the same forward
+pass under the same plan takes 281–285 ms in C, 697–710 ms natively and
+153–156 ms under PyTorch (the model `presk export --target pytorch` writes,
+in eval mode), two runs. Timed launch by launch, the C program's kernels
+take 268–274 ms and its host 7–17. The native backend's kernels take
+362 ms, counting each launch's thread starts (`presk bench --calibrate`), so
+Cranelift's code is 1.3× GCC's on the same kernels and the native host
+takes the other 335–348 ms. The host is about four fifths of the native
+backend's lead, and not by first touches of memory: its page faults do not
+grow with the calls. On every core unpinned the C program is 1.13×
+PyTorch's time. A gradient exports too: the course GPT's `loss_grad`
+(`experiments/gpt_grad.psk`) at these constants records 2 220 launches, 386
+of them dead, into an arena of 1.22 GB (since 0.10.0 step 3, which removes
+the dead code after differentiation, 1 616 launches, 12 dead, 1.02 GB;
+since step 4, which keeps the forward pass's residuals, 1 182 launches, 10
+dead, 3.04 GB, and `--remat recompute` the step-3 program; since step 4b,
+which keeps the fusion groups only where a realization can see them, in
+`f32` 1 012 launches, none dead, 2.49 GB, the `bf16` program step 4's), and
+C1 holds. With `adamw.step`
+the program runs a training step in 12.2 s under the plan, against
+PyTorch's 1.0 s. Four fifths of its time is the derivatives of `dot`,
+which no plan reaches.
+
+**The flags, and what else moves the program's speed** (0.10.0 step 7,
+D97). The Makefile's `STRICT` holds the flags bit identity rests on and
+`CFLAGS` the rest, `-O2` and the warnings, which `make CFLAGS=…`
+replaces. Built `-O3` or `-O3 -mcpu=native`, every program of the
+baseline gives the native backend's bits: `-O3` reassociates no sum
+without `-ffast-math`, and `-mcpu=native`'s fused multiply-adds stay
+unused under `-ffp-contract=off`. Neither pays: on the course GPT `-O3`
+moves the forward pass and the gradient by −4 % to +2 %, its sign the
+program's, and `-mcpu=native` adds nothing; `-O2` stays the default. Two
+other things moved the program more, and the follow-up of step 7 settled
+both (D97's addendum).
+
+- **Every kernel is always inlined** into the host's functions
+  (`PRESK_KERNEL`, a static inline function with GCC's `always_inline`, in
+  `kernels.c`), and on GCC `model.c` is compiled without the scheduling
+  that runs before register allocation (a `#pragma GCC optimize
+  ("no-schedule-insns")` at its head, which Clang does not read). Under a
+  4×16 tile a product's inner loop holds sixteen sums, four rows and four
+  scalars, at the edge of the 32 vector registers. Left to itself, GCC
+  inlined some kernels and not others, a choice that moved with the
+  program's other kernels, and where the allocator ran short (out of line
+  always, inlined after the scheduling hoisted the sixteen products ahead
+  of their sums) one sum lived on the stack, read and written at every
+  iteration: the product took about 60 ms where it takes 45. So the
+  course GPT's gradient took 1 124 or 1 011 ms with the same products, by
+  whether the bias `add`s were kernels of their own; it now takes about
+  the same either way, 822 and 827 ms with its threads waiting as below,
+  where today's programs took 959 and 844. No bit moves: C1 holds on
+  every program, and Clang and GCC compile the files without a warning.
+- **How the OpenMP threads wait.** libgomp lets an idle worker spin
+  300 000 times, about 0.1 ms on the X925 cores, then sleep, and a sleeping
+  worker takes a few hundred microseconds to wake; the host often runs
+  undivided kernels for longer than that between two regions. The native
+  backend's workers spin about 2 ms. `GOMP_SPINCOUNT=8M` makes libgomp's
+  spin as long (measured: an empty region costs 2 µs after a gap of 2.0
+  ms, 0.2 ms after 2.2), and `OMP_WAIT_POLICY=active`, which every OpenMP
+  runtime reads, keeps them spinning: the forward pass then takes 222 ms
+  instead of 268 and the gradient 827 instead of 969, the same bits. The
+  program leaves the setting to its runner, and its README says so; `make
+  pytorch-baseline` times every C program both ways, and T4 compares the
+  native backend with the second.
+
 ## The SCoP mode
 
 `presk export --target c --mode scop` (step 8, D85; the `cli` chapter)
@@ -382,11 +461,15 @@ between the pragmas, were not run: none was on the machine.
 - **`.pskk` and `presk build`**: the export prints C at the seam of spec
   §8.5 without the binary form the specification gives it (questions 35,
   36 and 73).
-- **Work a gradient does and discards.** A gradient's host runs the forward
-  pass twice, once for the primal result it discards, and the program
-  copies it, so that C4 compares the same work (`docs/kernels-roadmap.md`,
-  "Work a gradient does and discards": dead-code elimination in PSK-Core
-  after differentiation).
+- **Work a gradient does and discards.** Since 0.10.0 step 3 the dead code
+  of a gradient goes after differentiation, and since step 4 a gradient
+  keeps its forward pass's residuals rather than recomputing it (`language`
+  chapter, "Residuals"). What is left: the values `bf16`'s fusion groups
+  make the gradient compute apart from the forward pass, and the few dead
+  launches the dead-code pass keeps so that no group changes (10 of the
+  course GPT's gradient, four of them the zeros a fold stacks first). The
+  program copies them, so that it performs the native backend's work
+  (`docs/kernels-roadmap.md`, "Work a gradient does and discards").
 - **Reshaping integer weights**: an entry that merges or splits the axes of
   a quantized leaf is refused (`E8007`). The native host's view keeps the
   leaf's old scales' axis under the new shape, where the scales need not be

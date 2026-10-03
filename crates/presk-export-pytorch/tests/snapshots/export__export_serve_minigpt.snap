@@ -25,17 +25,17 @@ def _merge_heads(x, H, HD):
     return x.transpose(-3, -2).reshape(*x.shape[:-3], x.shape[-2], H * HD)
 
 
-# dimensions B, T: symbolic, taken from the arguments' shapes
-def next_token(θ, ctx, temperature=0.8, generator=None, training=False):
+def next_token(θ, key, ctx, temperature=0.8, training=False):
     """Generated from `fn next_token` (serve_minigpt.psk:9)."""
     # θ : params MiniGPT
+    # key : key
     # ctx : idx[50257][batch: B, seq: T]
     B = ctx.shape[0]
     T = ctx.shape[1]
     # temperature : f64
     logits = torch.func.functional_call(MiniGPT(T), θ, (ctx,))  # ℝ[batch: B, seq: T, vocab: 50257]
     last = logits[:, -1]  # ℝ[batch: B, vocab: 50257]
-    return torch.multinomial(torch.softmax((last / temperature), dim=-1), 1, generator=generator).squeeze(-1)
+    return torch.multinomial(torch.softmax((last / temperature), dim=-1), 1).squeeze(-1)
 
 # inference serve {  -- not exported in 0.1.0: a training loop or a serving configuration
 #   model = m.MiniGPT

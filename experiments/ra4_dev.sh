@@ -3,7 +3,10 @@
 # read-only by step 0 (D63), priced again under a profile by `presk reprice`
 # (every recorded point lowered again from its layout and costed, its times
 # copied) and ranked by `presk rank`, in about a minute and without measuring
-# anything. A model is compared with 0.7.0's on it; it decides nothing.
+# anything. A model is compared with 0.7.0's on it; it decides nothing. The
+# attention is the course GPT's as 0.7.0 measured it, its mask added to the
+# scores, frozen in experiments/ra4_attention.psk (plan 0.10.0 step 7b,
+# D99): its nests are the ones the days name.
 #
 #   experiments/ra4_dev.sh OUT
 #
@@ -37,12 +40,12 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 { date -Is; echo "profiles $PROFILE $PROFILE_20"; git rev-parse --short HEAD; } > "$OUT/dev.txt"
 for d in ra4/day1 ra4/day2; do
-  "$PRESK" reprice corpus/nlp/05_gpt.psk --entry SelfAttention.apply --day "$RA4_DEV/out/$d" --profile "$PROFILE" --out "$OUT/out/$d" | grep '^--' || exit 1
+  "$PRESK" reprice experiments/ra4_attention.psk --entry SelfAttention.apply --day "$RA4_DEV/out/$d" --profile "$PROFILE" --out "$OUT/out/$d" | grep '^--' || exit 1
   "$PRESK" reprice experiments/gemm.psk --entry gemm --day "$RA4_DEV/out/$d" --profile "$PROFILE" --out "$OUT/out/$d" | grep '^--' || exit 1
 done
 days="ra4/day1 ra4/day2"
 if [ -n "$PROFILE_20" ]; then
-  "$PRESK" reprice corpus/nlp/05_gpt.psk --entry SelfAttention.apply --day "$RA4_DEV/out/ra4-20/day1" --profile "$PROFILE_20" --out "$OUT/out/ra4-20/day1" | grep '^--' || exit 1
+  "$PRESK" reprice experiments/ra4_attention.psk --entry SelfAttention.apply --day "$RA4_DEV/out/ra4-20/day1" --profile "$PROFILE_20" --out "$OUT/out/ra4-20/day1" | grep '^--' || exit 1
   days="$days ra4-20/day1"
 fi
 cd "$OUT" || exit 1

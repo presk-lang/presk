@@ -20,6 +20,7 @@ impl Elaborator<'_> {
                 let bound = self.dim_expr(scope, bound, implicit)?;
                 Some(Ty::Idx { bound, shape: self.shape(scope, axes, implicit)? })
             }
+            ast::Ty::Bool { axes, .. } => Some(Ty::Truth(self.shape(scope, axes, implicit)?)),
             // `param T` is a declaration qualifier; as a type it is `T`.
             ast::Ty::Param { inner, .. } => self.ty_with(scope, inner, implicit),
             ast::Ty::Params { module, span } => {

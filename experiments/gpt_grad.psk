@@ -1,0 +1,26 @@
+-- gpt_grad.psk — the gradient of the course GPT's training loss, the C side
+-- of a training step in the PyTorch baseline at 0.9.0 (D87, `make
+-- pytorch-baseline`): `presk export --target c --entry loss_grad` with the
+-- course's checkpoint, then `adamw.step` of 05_gpt.psk exported apart.
+--
+-- The model is 05_gpt.psk's, imported; its `loss` is written here again,
+-- word for word, since an import brings modules and constants and not
+-- functions, and so is its token type. Its functions are named as `presk
+-- train` names those of 05_gpt.psk (`loss`, `loss.fwd`, `GPT.apply.bwd`, …;
+-- `loss.vjp`, `GPT.apply.vjp` with `--remat recompute`), so a plan `presk
+-- plan` gives for `loss_grad` holds for `presk train` too.
+-- The export drops keys: its dropout is the expectation, where `presk train`
+-- and train.py drop.
+import "../corpus/nlp/05_gpt.psk" as g
+
+dim B
+dim T <= 1024
+
+type Tokens = idx[g.V][batch: B, seq: T]
+
+fn loss(θ : params g.GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[] uses Rand =
+  let (x, y) = batch
+  mean(cross_entropy(g.GPT.apply(θ, x, k), y))
+
+fn loss_grad(θ : params g.GPT, k : key, batch : (Tokens, Tokens)) -> params g.GPT uses Rand =
+  grad(λ θ. loss(θ, k, batch))(θ)

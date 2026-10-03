@@ -2,7 +2,7 @@
  * 0.9.0 §3.2-§3.5): the bf16 conversions and the saturating conversion to an
  * integer, inline; the transcendental functions (presk_libm.c); the
  * conversion of a buffer between machine types, the .psk.d reader and
- * writer, integer weights and their quantization, the arena, and the stream
+ * writer, integer weights and their quantization, the arena, and the keys
  * `sample` draws from (presk_rt.c).
  *
  * Build with  cc -std=c11 -O2 -ffp-contract=off  and never with -ffast-math
@@ -284,17 +284,17 @@ void presk_quantize(void *q, float *s, const double *w, uint64_t outer, uint64_t
 void presk_dequantize(void *dst, presk_dtype to, const void *q, const float *s, int bits, uint64_t k, uint64_t inner, uint64_t from, size_t n);
 
 /* ------------------------------------------------------------------------
- * The sampling stream (plan 0.9.0 step 6, presk D83)
+ * Keys and their draws (plan 0.9.0 step 6, presk D83; plan 0.10.0 step 7b,
+ * D99)
  * ------------------------------------------------------------------------ */
 
-/* The generator `sample` draws from: rand_chacha 0.9's ChaCha20Rng, which
- * the native backend and the interpreter use. Bernstein's ChaCha20, twenty
- * rounds: words 0-3 the constant, 4-11 the key, 12-13 a 64-bit block
- * counter and 14-15 a 64-bit stream number, 0; not RFC 7539's 32-bit
- * counter and 96-bit nonce. As a rand_core BlockRng it computes four blocks
- * at a time, 64 words, and reads them in order, a u64 as two words, the low
- * one first. It is the program's state: seeded once, it advances across
- * calls of the entry. */
+/* The generator of Presk's keys: rand_chacha 0.9's ChaCha20Rng, which the
+ * native backend and the interpreter use (the reference's definition "The
+ * generator"). Bernstein's ChaCha20, twenty rounds: words 0-3 the constant,
+ * 4-11 the key, 12-13 a 64-bit block counter and 14-15 a 64-bit stream
+ * number, 0; not RFC 7539's 32-bit counter and 96-bit nonce. As a rand_core
+ * BlockRng it computes four blocks at a time, 64 words, and reads them in
+ * order, a u64 as two words, the low one first. */
 typedef struct {
     uint32_t key[8];
     uint64_t counter;     /* the block the next refill starts at */
@@ -314,18 +314,34 @@ uint32_t presk_rng_next_u32(presk_rng *r);
 uint64_t presk_rng_next_u64(presk_rng *r);
 
 /* A real in [0, 1): the top 53 bits of next_u64 over 2^53 (presk-interp's
- * uniform01). */
+ * uniform01): the uniform draws of a key, in order. */
 double presk_uniform01(presk_rng *r);
 
-/* The stream `sample` draws from under the run's seed, as the native
- * backend and the interpreter make it: seed_from_u64(seed ^ 0x5a5a5a5a). */
-void presk_rng_init(presk_rng *r, uint64_t seed);
+/* A key: 32 bytes (presk-interp's Key). Its keystream is the bytes of the
+ * generator seeded with it, a word at a time, the low byte first. */
+typedef struct {
+    uint8_t b[32];
+} presk_key;
 
-/* `sample` (presk-kernel's host): `rows` rows of `vocab` logits of type
- * `from`, a token each into out. Per row, in f64: m the largest logit,
- * e_i = presk_exp(x_i - m), z their sum in order, u = presk_uniform01(r),
- * and the token the first i with u < e_0/z + ... + e_i/z, summed in order;
- * the last if none. One draw per row. */
-void presk_sample(int64_t *out, const void *logits, presk_dtype from, size_t rows, size_t vocab, presk_rng *r);
+/* The key a seed names (Key::from_seed, `presk run --seed`): the first 32
+ * bytes of the keystream of seed_from_u64(seed). */
+void presk_key_from_seed(presk_key *out, uint64_t seed);
+
+/* Key l of split_key n k, for any n > l (Key::split): the bytes 32l to
+ * 32l + 31 of k's keystream. */
+void presk_key_split(const presk_key *k, uint64_t l, presk_key *out);
+
+/* The child t of k (Key::child): split 0 of the key whose first eight bytes
+ * are k's xored with t, the low byte first. A training step and a token of
+ * a serve each take a child of the run's key. */
+void presk_key_child(const presk_key *k, uint64_t t, presk_key *out);
+
+/* `sample(key, logits)` (presk-kernel's host): `rows` rows of `vocab` logits
+ * of type `from`, a token each into out. Per row, in f64: m the largest
+ * logit, e_i = presk_exp(x_i - m), z their sum in order, u the key's uniform
+ * draw of the row's rank (the rows in order, one draw each), and the token
+ * the first i with u < e_0/z + ... + e_i/z, summed in order; the last if
+ * none. */
+void presk_sample(int64_t *out, const void *logits, presk_dtype from, size_t rows, size_t vocab, const presk_key *key);
 
 #endif

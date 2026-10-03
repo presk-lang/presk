@@ -331,11 +331,12 @@ impl<'a> Printer<'a> {
             params.push(s);
         }
         if sig.effects.iter().any(|e| e == "Rand") {
-            // A `uses Rand` function takes the source of randomness of
-            // `sample` and the switch of `dropout`, both off by default and
-            // passed on to every `uses Rand` callee; `train.py` turns the
-            // switch on (D54).
-            params.push("generator=None".into());
+            // A `uses Rand` function takes the switch of `dropout`, off by
+            // default and passed on to every `uses Rand` callee; `train.py`
+            // turns it on (D54). Its keys are its parameters, as in the
+            // program, and read by nothing: PyTorch draws `sample`'s tokens
+            // and `dropout`'s masks from its own generator (plan 0.10.0 step
+            // 7b, D99).
             params.push("training=False".into());
         }
         if !method {
@@ -450,8 +451,7 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// Whether `fid` is `uses Rand`, and so takes the `generator` and
-    /// `training` keywords.
+    /// Whether `fid` is `uses Rand`, and so takes the `training` keyword.
     fn has_rand(&self, fid: FnId) -> bool {
         self.elab.function(fid).effects.iter().any(|e| e == "Rand")
     }
@@ -459,7 +459,7 @@ impl<'a> Printer<'a> {
     /// The keywords a call to `callee` passes on: the caller's own, when both
     /// are `uses Rand` (the effect discipline makes the caller so).
     fn rand_kwargs(&self, callee: FnId) -> Option<String> {
-        (self.has_rand(callee) && self.fn_id.is_some_and(|f| self.has_rand(f))).then(|| "generator=generator, training=training".to_string())
+        (self.has_rand(callee) && self.fn_id.is_some_and(|f| self.has_rand(f))).then(|| "training=training".to_string())
     }
 
     /// `blocks.apply(h0, mask)` through `stack{L}(Block)`: a loop.
@@ -821,7 +821,7 @@ impl<'a> Printer<'a> {
                             None => modexpr,
                             Some(n) => format!("{modexpr}.{n}"),
                         };
-                        let kwargs = if kw.is_some() { ", {\"generator\": generator, \"training\": training}" } else { "" };
+                        let kwargs = if kw.is_some() { ", {\"training\": training}" } else { "" };
                         format!("torch.func.functional_call({target}, {theta}, ({},){kwargs})", vals.join(", "))
                     }
                     (None, _) => {
@@ -908,7 +908,24 @@ impl<'a> Printer<'a> {
             "softmax" => {
                 let a = x(self, 0);
                 let k = self.axis_pos(args, pos).unwrap_or(-1);
-                format!("torch.softmax({a}, dim={k})")
+                // `where = m` (plan 0.10.0 step 7b): the refused positions
+                // filled with `-inf`, whose exponential is 0, the mask
+                // aligned with the scores as Presk aligns it.
+                let mask = args.iter().find_map(|a| match a {
+                    Arg::Named { name, value } if name.name == "where" => Some(value),
+                    _ => None,
+                });
+                match mask {
+                    None => format!("torch.softmax({a}, dim={k})"),
+                    Some(m) => {
+                        let mt = self.expr_at(m, 90);
+                        let mt = match (self.ty_of(m).and_then(|t| t.shape().cloned()), pos.first().and_then(|e| self.ty_of(e)).and_then(|t| t.shape().cloned())) {
+                            (Some(ms), Some(xs)) => self.broadcast_fix(&ms, &xs, mt),
+                            _ => mt,
+                        };
+                        format!("torch.softmax({a}.masked_fill(~{mt}, float(\"-inf\")), dim={k})")
+                    }
+                }
             }
             "real" => {
                 let a = x(self, 0);
@@ -967,7 +984,9 @@ impl<'a> Printer<'a> {
                 format!("F.cross_entropy({l}.flatten(0, -2), {y}.flatten(), reduction=\"none\").view({y}.shape)")
             }
             "argmax" => format!("{}.argmax(dim=-1)", x(self, 0)),
-            "sample" => format!("torch.multinomial(torch.softmax({}, dim=-1), 1, generator=generator).squeeze(-1)", x(self, 0)),
+            // `sample(key, logits)`: drawn from PyTorch's generator, not from
+            // the key (plan 0.10.0 step 7b).
+            "sample" => format!("torch.multinomial(torch.softmax({}, dim=-1), 1).squeeze(-1)", x(self, 1)),
             "split_heads" => format!("_split_heads({}, H, HD)", x(self, 0)),
             "merge_heads" => format!("_merge_heads({}, H, HD)", x(self, 0)),
             "positions" | "causal_mask" => {
@@ -975,7 +994,8 @@ impl<'a> Printer<'a> {
                     Arg::NamedAxis { value, .. } => Some(self.expr(value)),
                     _ => None,
                 }).unwrap_or_else(|| "None".into());
-                if name == "positions" { format!("torch.arange({n})") } else { format!("torch.triu(torch.full(({n}, {n}), float(\"-inf\")), diagonal=1)") }
+                // A mask: true where j ≤ i (plan 0.10.0 step 7b).
+                if name == "positions" { format!("torch.arange({n})") } else { format!("torch.ones(({n}, {n}), dtype=torch.bool).tril()") }
             }
             "grad" => format!("torch.func.grad({})", x(self, 0)),
             "matmul" => format!("{} @ {}", x(self, 0), x(self, 1)),

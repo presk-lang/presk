@@ -1,0 +1,19 @@
+-- The field `generate` of an `inference serve` names its generation
+-- function (the reference's decision W4): here `last`, the second of two
+-- functions whose signatures fit, where the first would be taken without
+-- the field. `last` gives the least likely token, `first` the most likely.
+const V : nat = 8
+dim B
+dim T
+module Toy {
+  param w : ℝ[V, V]  init = xavier_uniform
+  fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
+}
+fn first(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> idx[V][batch: B] =
+  argmax(Toy.apply(θ, ctx)[seq: -1])
+fn last(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> idx[V][batch: B] =
+  argmax(-Toy.apply(θ, ctx)[seq: -1])
+inference serve {
+  model    = Toy
+  generate = last
+}

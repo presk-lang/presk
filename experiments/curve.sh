@@ -23,6 +23,10 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
+# What a gradient does with its forward pass's values (`--remat`, 0.10.0 step
+# 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
+# recorded (the re-measurement after defect 3f, D93).
+REMAT=${REMAT:-store}
 MODEL=corpus/nlp/05_gpt.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 DIMS=(--dim B=2 --dim T=256)
@@ -37,7 +41,7 @@ BUDGETS=(1e-1 1e-2 1e-3 1e-4 1e-5 1e-6 1e-7)
 [ -f "$W" ] || { echo "no trained weights at $W: make gpt-trained"; exit 1; }
 
 "$PRESK" calibrate --precision "$MODEL" --entry loss "${CONSTS[@]}" "${DIMS[@]}" \
-    --bits 128 --out "$ENV" >/dev/null 2>&1 || { echo "calibrate failed"; exit 1; }
+    --bits 128 --remat "$REMAT" --out "$ENV" >/dev/null 2>&1 || { echo "calibrate failed"; exit 1; }
 # The bound line reads `bound <rule> <value> (<relative> relative)` since
 # 0.6.0 step 6: take the first number, not the second field (the rule's name).
 BOUND=$("$PRESK" check --precision "$ENV" "$MODEL" --realize f64 --model cond 2>/dev/null \
@@ -47,7 +51,7 @@ BOUND=$("$PRESK" check --precision "$ENV" "$MODEL" --realize f64 --model cond 2>
 declare -A NARROWED COST RATIO GAP INSIDE
 for b in "${BUDGETS[@]}"; do
     r=$("$PRESK" solve "$MODEL" --precision "$ENV" --budget "$b" --weights "$W" \
-        --out "out/curve_$b.json" --sites 0 2>/dev/null)
+        --out "out/curve_$b.json" --sites 0 --remat "$REMAT" 2>/dev/null)
     NARROWED[$b]=$(echo "$r" | awk '/^  sites/ {print $4}')
     COST[$b]=$(echo "$r" | awk '/^  cost/ {print $2}')
     RATIO[$b]=$(echo "$r" | awk '/^  cost/ {print $6}' | tr -d '(),')
@@ -73,7 +77,7 @@ open('out/civil_val.txt', 'w').write(' '.join(t[cut:]) + '\n')"
     train() { # name realize-spec
         "$PRESK" train "$MODEL" "${CONSTS[@]}" --data out/civil_train_T256.psk.d \
             --steps "$STEPS" --epochs 10 --log-every 100 --backend native --threads "$threads" \
-            --realize "$2" --ckpt "out/curve_train_$1" > "out/curve_train_$1.log" 2>&1
+            --realize "$2" --remat "$REMAT" --ckpt "out/curve_train_$1" > "out/curve_train_$1.log" 2>&1
     }
     names=(f64 "${BUDGETS[@]}")
     running=0

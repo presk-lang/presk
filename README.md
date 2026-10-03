@@ -5,7 +5,7 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.9.0**: the front-end (`presk check`); an arbitrary-precision
+**Version 0.10.0**: the front-end (`presk check`); an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), the oracle
 every other executor is measured against; a native backend — PSK-Kernel v0
 compiled by Cranelift, with fusion groups, threads, blocked contractions and
@@ -47,7 +47,14 @@ within 1.05× of the best, and prunes a search to under 2 % of its cost
 (0.8.0; the manual's `experiments` chapter, §7 and §8). An exported C
 program is bit-identical to the native backend on every entry tested, with
 GCC and Clang, on any number of threads, and generates `presk serve`'s
-tokens (0.9.0, §9). See `CHANGELOG.md` and the
+tokens (0.9.0, §9). A training step pays (0.10.0, §10): the derivatives of
+`dot` are nests of the layout space, which the frozen model ranks; a
+gradient keeps its forward pass's residuals instead of recomputing it
+(`--remat store`, the default); the native host shares its buffers and
+runs a pool of workers; a linear layer's bias is its product's epilogue;
+and the language's four decisions of 2026-09-29 are in (`sample` from a
+key, masks of truth values, an entry refused at the dimensions where an
+operation is undefined), every change exact. See `CHANGELOG.md` and the
 user manual (`make doc`); its tutorial chapter (programs in `tutorial/`,
 commands in `make tutorial`) is the place to start.
 
@@ -77,6 +84,7 @@ make calibrate-ra4-small ra4-f2 ra4-f2-check ra4-f2-day2 ra4-f1 ra4-f1-check ra4
                                              # 0.8.0's fresh sweeps (hours each; manual chapter experiments §8)
 make c-conformance                           # the C export: bit identity, Clang and x86-64, presk serve's tokens, Polly (minutes)
 make c-speed                                 # the exported course GPT against the native backend (a quiet machine)
+make pytorch-baseline                        # the course GPT on the native backend, the C export and PyTorch (a quiet machine)
 make doc                                     # the user manual (rustdoc)
 ```
 

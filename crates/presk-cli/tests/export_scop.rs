@@ -182,8 +182,10 @@ fn every_nest_of_the_test_set_computes_the_native_backends_bits() {
             }
         }
     }
-    let counts: Vec<(usize, usize)> = per_type.values().copied().collect();
-    assert!(counts.windows(2).all(|w| w[0] == w[1]), "the same nests in each type: {per_type:?}");
+    // The same nests in `f64` and `f32`; `bf16`'s gradients keep the
+    // launches that hold its fusion groups (0.10.0 step 4b, D94).
+    let (f64n, f32n, bf16n) = (per_type["f64"], per_type["f32"], per_type["bf16"]);
+    assert!(f64n == f32n && bf16n.0 >= f32n.0, "the same nests in f64 and f32, and bf16's held ones besides: {per_type:?}");
     eprintln!("the test set's nests at point zero: {per_type:?} (nests, static control), every one built with -Werror and bit-identical to the native backend; {:.1} s", started.elapsed().as_secs_f64());
 }
 

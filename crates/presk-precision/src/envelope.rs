@@ -96,6 +96,13 @@ pub struct StepSpec {
     pub warmup: u64,
     pub total: u64,
     pub seed: u64,
+    /// The `--remat` the step was differentiated under (0.10.0 step 4):
+    /// `store` names the `.fwd` and `.bwd` functions, `recompute` the
+    /// `.vjp`s, so a solve reads its sites under the same policy. Absent
+    /// in an envelope written before the re-measurement of D93: its sites'
+    /// names say which.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remat: Option<String>,
 }
 
 /// `samples` entries of a `.psk.d` file, starting at `from`.

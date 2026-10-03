@@ -18,14 +18,14 @@ Program {
             FnDecl {
                 name: Ident {
                     name: "next_token",
-                    span: 625..635,
+                    span: 616..626,
                 },
                 typarams: [],
                 params: [
                     Param {
                         name: Ident {
                             name: "θ",
-                            span: 636..638,
+                            span: 627..629,
                         },
                         ty: Some(
                             Params {
@@ -33,26 +33,50 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "m",
-                                            span: 648..649,
+                                            span: 639..640,
                                         },
                                         Ident {
                                             name: "MiniGPT",
-                                            span: 650..657,
+                                            span: 641..648,
                                         },
                                     ],
-                                    span: 648..657,
+                                    span: 639..648,
                                 },
-                                span: 641..657,
+                                span: 632..648,
                             },
                         ),
                         default: None,
                         axis: false,
-                        span: 636..657,
+                        span: 627..648,
+                    },
+                    Param {
+                        name: Ident {
+                            name: "key",
+                            span: 650..653,
+                        },
+                        ty: Some(
+                            Named {
+                                path: Path {
+                                    segs: [
+                                        Ident {
+                                            name: "key",
+                                            span: 656..659,
+                                        },
+                                    ],
+                                    span: 656..659,
+                                },
+                                args: [],
+                                span: 656..659,
+                            },
+                        ),
+                        default: None,
+                        axis: false,
+                        span: 650..659,
                     },
                     Param {
                         name: Ident {
                             name: "ctx",
-                            span: 659..662,
+                            span: 661..664,
                         },
                         ty: Some(
                             Idx {
@@ -61,14 +85,14 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "m",
-                                                span: 669..670,
+                                                span: 671..672,
                                             },
                                             Ident {
                                                 name: "V",
-                                                span: 671..672,
+                                                span: 673..674,
                                             },
                                         ],
-                                        span: 669..672,
+                                        span: 671..674,
                                     },
                                 },
                                 axes: [
@@ -76,18 +100,22 @@ Program {
                                         name: Some(
                                             Ident {
                                                 name: "batch",
-                                                span: 674..679,
+                                                span: 676..681,
                                             },
                                         ),
                                         dim: Var {
                                             path: Path {
                                                 segs: [
                                                     Ident {
+                                                        name: "m",
+                                                        span: 683..684,
+                                                    },
+                                                    Ident {
                                                         name: "B",
-                                                        span: 681..682,
+                                                        span: 685..686,
                                                     },
                                                 ],
-                                                span: 681..682,
+                                                span: 683..686,
                                             },
                                         },
                                     },
@@ -95,33 +123,37 @@ Program {
                                         name: Some(
                                             Ident {
                                                 name: "seq",
-                                                span: 684..687,
+                                                span: 688..691,
                                             },
                                         ),
                                         dim: Var {
                                             path: Path {
                                                 segs: [
                                                     Ident {
+                                                        name: "m",
+                                                        span: 693..694,
+                                                    },
+                                                    Ident {
                                                         name: "T",
-                                                        span: 689..690,
+                                                        span: 695..696,
                                                     },
                                                 ],
-                                                span: 689..690,
+                                                span: 693..696,
                                             },
                                         },
                                     },
                                 ],
-                                span: 665..691,
+                                span: 667..697,
                             },
                         ),
                         default: None,
                         axis: false,
-                        span: 659..691,
+                        span: 661..697,
                     },
                     Param {
                         name: Ident {
                             name: "temperature",
-                            span: 707..718,
+                            span: 713..724,
                         },
                         ty: Some(
                             Named {
@@ -129,13 +161,13 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "f64",
-                                            span: 721..724,
+                                            span: 727..730,
                                         },
                                     ],
-                                    span: 721..724,
+                                    span: 727..730,
                                 },
                                 args: [],
-                                span: 721..724,
+                                span: 727..730,
                             },
                         ),
                         default: Some(
@@ -143,11 +175,11 @@ Program {
                                 lit: Float(
                                     "0.8",
                                 ),
-                                span: 727..730,
+                                span: 733..736,
                             },
                         ),
                         axis: false,
-                        span: 707..730,
+                        span: 713..736,
                     },
                 ],
                 ret: Some(
@@ -157,14 +189,14 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "m",
-                                        span: 739..740,
+                                        span: 745..746,
                                     },
                                     Ident {
                                         name: "V",
-                                        span: 741..742,
+                                        span: 747..748,
                                     },
                                 ],
-                                span: 739..742,
+                                span: 745..748,
                             },
                         },
                         axes: [
@@ -172,36 +204,40 @@ Program {
                                 name: Some(
                                     Ident {
                                         name: "batch",
-                                        span: 744..749,
+                                        span: 750..755,
                                     },
                                 ),
                                 dim: Var {
                                     path: Path {
                                         segs: [
                                             Ident {
+                                                name: "m",
+                                                span: 757..758,
+                                            },
+                                            Ident {
                                                 name: "B",
-                                                span: 751..752,
+                                                span: 759..760,
                                             },
                                         ],
-                                        span: 751..752,
+                                        span: 757..760,
                                     },
                                 },
                             },
                         ],
-                        span: 735..753,
+                        span: 741..761,
                     },
                 ),
                 effects: [
                     Ident {
                         name: "Rand",
-                        span: 759..763,
+                        span: 767..771,
                     },
                 ],
                 body: Let {
                     pat: Ident(
                         Ident {
                             name: "logits",
-                            span: 772..778,
+                            span: 780..786,
                         },
                     ),
                     init: Call {
@@ -210,18 +246,18 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "m",
-                                        span: 781..782,
+                                        span: 789..790,
                                     },
                                     Ident {
                                         name: "MiniGPT",
-                                        span: 783..790,
+                                        span: 791..798,
                                     },
                                     Ident {
                                         name: "apply",
-                                        span: 791..796,
+                                        span: 799..804,
                                     },
                                 ],
-                                span: 781..796,
+                                span: 789..804,
                             },
                         },
                         args: [
@@ -231,10 +267,10 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "θ",
-                                                span: 797..799,
+                                                span: 805..807,
                                             },
                                         ],
-                                        span: 797..799,
+                                        span: 805..807,
                                     },
                                 },
                             ),
@@ -244,21 +280,21 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "ctx",
-                                                span: 801..804,
+                                                span: 809..812,
                                             },
                                         ],
-                                        span: 801..804,
+                                        span: 809..812,
                                     },
                                 },
                             ),
                         ],
-                        span: 781..805,
+                        span: 789..813,
                     },
                     body: Let {
                         pat: Ident(
                             Ident {
                                 name: "last",
-                                span: 852..856,
+                                span: 860..864,
                             },
                         ),
                         init: Index {
@@ -267,17 +303,17 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "logits",
-                                            span: 861..867,
+                                            span: 869..875,
                                         },
                                     ],
-                                    span: 861..867,
+                                    span: 869..875,
                                 },
                             },
                             sels: [
                                 Named {
                                     axis: Ident {
                                         name: "seq",
-                                        span: 868..871,
+                                        span: 876..879,
                                     },
                                     value: Unary {
                                         op: Neg,
@@ -285,13 +321,13 @@ Program {
                                             lit: Nat(
                                                 "1",
                                             ),
-                                            span: 874..875,
+                                            span: 882..883,
                                         },
-                                        span: 873..875,
+                                        span: 881..883,
                                     },
                                 },
                             ],
-                            span: 861..876,
+                            span: 869..884,
                         },
                         body: Call {
                             callee: Var {
@@ -299,13 +335,26 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "sample",
-                                            span: 937..943,
+                                            span: 945..951,
                                         },
                                     ],
-                                    span: 937..943,
+                                    span: 945..951,
                                 },
                             },
                             args: [
+                                Pos(
+                                    Var {
+                                        path: Path {
+                                            segs: [
+                                                Ident {
+                                                    name: "key",
+                                                    span: 952..955,
+                                                },
+                                            ],
+                                            span: 952..955,
+                                        },
+                                    },
+                                ),
                                 Pos(
                                     Binary {
                                         op: Div,
@@ -314,10 +363,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "last",
-                                                        span: 944..948,
+                                                        span: 957..961,
                                                     },
                                                 ],
-                                                span: 944..948,
+                                                span: 957..961,
                                             },
                                         },
                                         rhs: Call {
@@ -326,10 +375,10 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "real",
-                                                            span: 951..955,
+                                                            span: 964..968,
                                                         },
                                                     ],
-                                                    span: 951..955,
+                                                    span: 964..968,
                                                 },
                                             },
                                             args: [
@@ -339,27 +388,27 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "temperature",
-                                                                    span: 956..967,
+                                                                    span: 969..980,
                                                                 },
                                                             ],
-                                                            span: 956..967,
+                                                            span: 969..980,
                                                         },
                                                     },
                                                 ),
                                             ],
-                                            span: 951..968,
+                                            span: 964..981,
                                         },
-                                        span: 944..968,
+                                        span: 957..981,
                                     },
                                 ),
                             ],
-                            span: 937..969,
+                            span: 945..982,
                         },
-                        span: 848..969,
+                        span: 856..982,
                     },
-                    span: 768..969,
+                    span: 776..982,
                 },
-                span: 622..969,
+                span: 613..982,
             },
         ),
         Inference {
@@ -367,7 +416,7 @@ Program {
                 Field {
                     name: Ident {
                         name: "model",
-                        span: 1234..1239,
+                        span: 1242..1247,
                     },
                     ty: None,
                     value: Var {
@@ -375,36 +424,36 @@ Program {
                             segs: [
                                 Ident {
                                     name: "m",
-                                    span: 1244..1245,
+                                    span: 1252..1253,
                                 },
                                 Ident {
                                     name: "MiniGPT",
-                                    span: 1246..1253,
+                                    span: 1254..1261,
                                 },
                             ],
-                            span: 1244..1253,
+                            span: 1252..1261,
                         },
                     },
-                    span: 1234..1253,
+                    span: 1242..1261,
                 },
                 Field {
                     name: Ident {
                         name: "weights",
-                        span: 1256..1263,
+                        span: 1264..1271,
                     },
                     ty: None,
                     value: Lit {
                         lit: Str(
                             "ckpt/final",
                         ),
-                        span: 1266..1278,
+                        span: 1274..1286,
                     },
-                    span: 1256..1278,
+                    span: 1264..1286,
                 },
                 Field {
                     name: Ident {
                         name: "precision",
-                        span: 1466..1475,
+                        span: 1474..1483,
                     },
                     ty: None,
                     value: Binary {
@@ -415,27 +464,27 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "budget",
-                                            span: 1478..1484,
+                                            span: 1486..1492,
                                         },
                                     ],
-                                    span: 1478..1484,
+                                    span: 1486..1492,
                                 },
                             },
                             args: [
                                 Named {
                                     name: Ident {
                                         name: "abs_error",
-                                        span: 1485..1494,
+                                        span: 1493..1502,
                                     },
                                     value: Lit {
                                         lit: Float(
                                             "1e-2",
                                         ),
-                                        span: 1497..1501,
+                                        span: 1505..1509,
                                     },
                                 },
                             ],
-                            span: 1478..1502,
+                            span: 1486..1510,
                         },
                         rhs: Call {
                             callee: Var {
@@ -443,10 +492,10 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "quantize",
-                                            span: 1505..1513,
+                                            span: 1513..1521,
                                         },
                                     ],
-                                    span: 1505..1513,
+                                    span: 1513..1521,
                                 },
                             },
                             args: [
@@ -456,36 +505,36 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "int8",
-                                                    span: 1514..1518,
+                                                    span: 1522..1526,
                                                 },
                                             ],
-                                            span: 1514..1518,
+                                            span: 1522..1526,
                                         },
                                     },
                                 ),
                                 Named {
                                     name: Ident {
                                         name: "calibration",
-                                        span: 1520..1531,
+                                        span: 1528..1539,
                                     },
                                     value: Lit {
                                         lit: Str(
                                             "data/calib.psk.d",
                                         ),
-                                        span: 1534..1552,
+                                        span: 1542..1560,
                                     },
                                 },
                             ],
-                            span: 1505..1553,
+                            span: 1513..1561,
                         },
-                        span: 1478..1553,
+                        span: 1486..1561,
                     },
-                    span: 1466..1553,
+                    span: 1474..1561,
                 },
                 Field {
                     name: Ident {
                         name: "target",
-                        span: 1644..1650,
+                        span: 1652..1658,
                     },
                     ty: None,
                     value: Binary {
@@ -496,10 +545,10 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "gpu",
-                                            span: 1656..1659,
+                                            span: 1664..1667,
                                         },
                                     ],
-                                    span: 1656..1659,
+                                    span: 1664..1667,
                                 },
                             },
                             args: [
@@ -509,15 +558,15 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "sm_90",
-                                                    span: 1660..1665,
+                                                    span: 1668..1673,
                                                 },
                                             ],
-                                            span: 1660..1665,
+                                            span: 1668..1673,
                                         },
                                     },
                                 ),
                             ],
-                            span: 1656..1666,
+                            span: 1664..1674,
                         },
                         rhs: Call {
                             callee: Var {
@@ -525,10 +574,10 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "cpu",
-                                            span: 1669..1672,
+                                            span: 1677..1680,
                                         },
                                     ],
-                                    span: 1669..1672,
+                                    span: 1677..1680,
                                 },
                             },
                             args: [
@@ -538,24 +587,24 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "avx512",
-                                                    span: 1673..1679,
+                                                    span: 1681..1687,
                                                 },
                                             ],
-                                            span: 1673..1679,
+                                            span: 1681..1687,
                                         },
                                     },
                                 ),
                             ],
-                            span: 1669..1680,
+                            span: 1677..1688,
                         },
-                        span: 1656..1680,
+                        span: 1664..1688,
                     },
-                    span: 1644..1680,
+                    span: 1652..1688,
                 },
                 Field {
                     name: Ident {
                         name: "batching",
-                        span: 1684..1692,
+                        span: 1692..1700,
                     },
                     ty: None,
                     value: Call {
@@ -564,47 +613,47 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "dynamic",
-                                        span: 1696..1703,
+                                        span: 1704..1711,
                                     },
                                 ],
-                                span: 1696..1703,
+                                span: 1704..1711,
                             },
                         },
                         args: [
                             Named {
                                 name: Ident {
                                     name: "max_batch",
-                                    span: 1704..1713,
+                                    span: 1712..1721,
                                 },
                                 value: Lit {
                                     lit: Nat(
                                         "64",
                                     ),
-                                    span: 1716..1718,
+                                    span: 1724..1726,
                                 },
                             },
                             Named {
                                 name: Ident {
                                     name: "timeout",
-                                    span: 1720..1727,
+                                    span: 1728..1735,
                                 },
                                 value: Lit {
                                     lit: Quantity {
                                         num: "5",
                                         unit: "ms",
                                     },
-                                    span: 1730..1733,
+                                    span: 1738..1741,
                                 },
                             },
                         ],
-                        span: 1696..1734,
+                        span: 1704..1742,
                     },
-                    span: 1684..1734,
+                    span: 1692..1742,
                 },
                 Field {
                     name: Ident {
                         name: "cache",
-                        span: 1979..1984,
+                        span: 1987..1992,
                     },
                     ty: None,
                     value: Call {
@@ -613,26 +662,26 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "kv_cache",
-                                        span: 1991..1999,
+                                        span: 1999..2007,
                                     },
                                 ],
-                                span: 1991..1999,
+                                span: 1999..2007,
                             },
                         },
                         args: [
                             Axis(
                                 Ident {
                                     name: "seq",
-                                    span: 2005..2008,
+                                    span: 2013..2016,
                                 },
                             ),
                         ],
-                        span: 1991..2009,
+                        span: 1999..2017,
                     },
-                    span: 1979..2009,
+                    span: 1987..2017,
                 },
             ],
-            span: 1214..2011,
+            span: 1222..2019,
         },
     ],
 }

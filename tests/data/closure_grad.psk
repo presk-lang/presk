@@ -1,0 +1,27 @@
+-- A closure applied inside a differentiated function (0.10.0 step 3, defect
+-- 3a of the reference's chapter 5). The `.vjp` looked the closure up under
+-- the wrong variable: with one closure in scope the gradient was refused
+-- (E6001), with two it was the other closure's, without a diagnostic
+-- (`d_two` gave `sq`'s `x/2` instead of `y/4`). `d_captured` applies a
+-- closure that captures the variable differentiated, so the cotangent flows
+-- back through the captured value and the argument both.
+fn sq(a : ℝ[4]) -> ℝ[4] = a * a
+fn prod(a : ℝ[4], y : ℝ[4]) -> ℝ[4] = a * y
+
+fn two(x : ℝ[4], y : ℝ[4]) -> ℝ[] =
+  let f = λ a. prod(a, y)
+  let g = λ a. sq(a)
+  mean(f(x))
+
+fn one(x : ℝ[4], y : ℝ[4]) -> ℝ[] =
+  let f = λ a. prod(a, y)
+  mean(f(x))
+
+fn captured(x : ℝ[4], y : ℝ[4]) -> ℝ[] =
+  let g = λ a. sq(a)
+  let h = λ a. prod(a, x)
+  mean(h(y) + g(x))
+
+fn d_two(x : ℝ[4], y : ℝ[4]) -> ℝ[4] = grad(λ x. two(x, y))(x)
+fn d_one(x : ℝ[4], y : ℝ[4]) -> ℝ[4] = grad(λ x. one(x, y))(x)
+fn d_captured(x : ℝ[4], y : ℝ[4]) -> ℝ[4] = grad(λ x. captured(x, y))(x)

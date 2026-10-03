@@ -24,7 +24,6 @@ def _merge_heads(x, H, HD):
     return x.transpose(-3, -2).reshape(*x.shape[:-3], x.shape[-2], H * HD)
 
 
-# dimensions B, T: symbolic, taken from the arguments' shapes
 def loss(θ, batch):
     """Generated from `fn loss` (train_minigpt.psk:10)."""
     # θ : params MiniGPT

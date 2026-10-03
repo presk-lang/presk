@@ -24,10 +24,19 @@ inference serve {
 - `model` is a plain module; `weights` is a path relative to the file, with
   `.psk.d` appended (`ckpt/final.psk.d`), a one-sample file of type `params
   M` as `presk train` writes it. It need not exist at check time.
-- The **generation function** is the top-level function of the file whose
-  signature is `(θ : params M, ctx : idx[V][batch: B, seq: T], … with
-  defaults) -> idx[V][batch: B]`: `next_token` in the example, which applies
-  the model to the context, keeps the last position and samples. A file with
+- The **generation function** is the top-level function the field
+  `generate = name` names, or, without the field, the first function of the
+  file, in declaration order, whose signature is `(θ : params M, [key :
+  key,] ctx : idx[V][batch: B, seq: T], … with defaults) ->
+  idx[V][batch: B]` (the field since 0.10.0 step 8, the reference's decision
+  W4). A name that is not a top-level function of the file, or whose
+  signature does not fit, is an error (`E2010`). It is `next_token` in the
+  example, which
+  applies the model to the context, keeps the last position and samples from
+  its key. A key, when the function takes one, comes second, and is given a
+  key of its own at every token (0.10.0 step 7b; the reference's definition
+  "Generation function"); a function without one is served as before, and
+  cannot sample, since `sample` takes a key. A file with
   the block but no such function gets `W0003`; `presk serve --entry FN` then
   names one.
 - `precision`, `target`, `batching`, `cache` pass the schema and are listed
@@ -37,7 +46,7 @@ inference serve {
 -- inference --
 inference serve: model MiniGPT
     weights : ckpt/final (tests/examples/minigpt/ckpt/final.psk.d, not found)
-    generate: next_token(θ, ctx, temperature)
+    generate: next_token(θ, key, ctx, temperature)
     ignored : precision, target, batching, cache (checked, without effect in this version)
 ```
 
@@ -61,8 +70,9 @@ The loop, in `presk-serve`:
 ```text
 θ   = load(weights, shaped like M.init(key))
 ctx = prompt
-repeat --tokens times:
-  next = generate(θ, ctx[-T:], temperature)
+k   = key(--seed)
+repeat --tokens times, i = 1, 2, …:
+  next = generate(θ, child(k, i), ctx[-T:], temperature)
   ctx  = ctx ++ [next]
 ```
 
@@ -73,16 +83,21 @@ reference interpreter (`--bits`), on the kernel interpreter or natively
 (`native` chapter). Two forms of the step:
 
 - **sampling** (`--temperature x > 0`, default: the function's own default,
-  `0.8` in the example): the function is called as written; its `sample`
-  draws from the backend's stream seeded by `--seed`, so two backends need
-  not produce the same tokens (question 41), but one backend is deterministic
-  for a seed; the kernel backends draw with the `libm` crate's `exp`, the
-  one their kernels call, so their tokens do not depend on the machine's C
-  library (since 0.9.0 step 6);
+  `0.8` in the example): the function is called as written, token `i` (from
+  1) given the child `i` of the key `--seed` names, as a training run gives
+  step `t` the child `t` of its own (the reference's definition
+  "Generation"). Its `sample` draws from that key, so every backend draws
+  alike (it drew from a stream of each backend's until 0.10.0 step 7b); the
+  kernel backends draw with the `libm` crate's `exp`, the one their kernels
+  call, so their tokens do not depend on the machine's C library (since
+  0.9.0 step 6), and they sum the probabilities in `f64` where the
+  interpreter sums them at its precision, so a token can differ only where a
+  draw falls within that rounding of a cumulative sum;
 - **greedy** (`--temperature 0`): a copy of the function in which every
-  `sample` is an `argmax` is called instead (`next_token.greedy`, appended to
-  the Core program; the temperature is passed as `1`). Every backend and
-  realization agrees on this path, up to exact ties in the logits.
+  `sample(key, x)` is an `argmax(x)` is called instead (`next_token.greedy`,
+  appended to the Core program; the temperature is passed as `1`, the key
+  is read by nothing). Every backend and realization agrees on this path, up
+  to exact ties in the logits.
 
 **The context length.** In the example the positional embedding is `param
 pos : ℝ[T, D]` with the file's `dim T <= 1024`: the parameters fix `T`, and a
@@ -123,18 +138,21 @@ the native backend in `f64` and in `f32`, and of the exported `serve.py` in
 float64 and in float32 (`make serve-examples`, `make serve-pt` compare the
 outputs byte for byte). Twenty training steps at a warming-up learning rate
 leave a nearly uniform model, hence the repetitions: the point here is the
-agreement, not the text. With sampling, `--seed` fixes the tokens of one
-backend:
+agreement, not the text. With sampling (without `--temperature 0`), `--seed`
+fixes the tokens, the same on the interpreter at 64 bits and natively in
+`f64` and in `f32` (they were each backend's own until 0.10.0 step 7b,
+`19 55 1 63 57 1 54 29` natively):
 
 ```text
 presk serve: MiniGPT from out/ckpt/final.psk.d, prompt of 8 tokens, 8 generated, sampled, context window 8
-19 55 1 63 57 1 54 29
+6 7 23 37 52 34 57 19
 ```
 
 A test (`crates/presk-serve/tests/serve.rs`) does the same on a fresh
 initialization: greedy tokens identical on the interpreter and natively in
-both realizations, sampling deterministic per seed, the window rule and its
-error.
+both realizations, sampled tokens identical on the interpreter and natively
+for three seeds and different from one seed to another, the window rule and
+its error.
 
 ## In PyTorch: `presk export --serve`
 
@@ -147,8 +165,9 @@ python out/serve_pt/serve.py --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 
 `--serve` adds `serve.py` and `pskd.py` to the readable export. `serve.py`
 builds the exported class with its dimension arguments (`MiniGPT(T)`, `T`
 from `--dim T=N` or the prompt's length), loads the weights, and runs the
-same loop: `next_token(θ, ctx, temperature, generator)` for sampling (a
-seeded `torch.Generator`), `model(ctx)[:, -1].argmax(-1)` for
+same loop: `next_token(θ, None, ctx, temperature)` for sampling (the key
+passed as `None`, read by nothing; PyTorch draws from its own generator,
+seeded by `--seed`, so the sampled tokens are not `presk serve`'s), `model(ctx)[:, -1].argmax(-1)` for
 `--temperature 0`, with the same sliding window. The weights are either
 `final.pt` from `train.py` or a `.psk.d` checkpoint of `presk train`:
 `pskd.read_params` decodes the latter with the **layout of the parameter
@@ -183,8 +202,9 @@ out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" -
 The C export (plan 0.9.0 step 6; `cli` chapter) writes the generation
 function and its greedy copy as C functions, at one sequence and the window
 the parameters fix (`--dim T=8`, which a C program of one shape needs where
-`presk serve` takes the prompt's length), and `generate`, the same loop. Its
-draws come from a copy of the native backend's stream, and its output is
+`presk serve` takes the prompt's length), and `generate`, the same loop,
+token `i` given the child `i` of the key `--seed` names (`presk_key_child`).
+Its draws are the native backend's from the same keys, and its output is
 `presk serve --backend native`'s byte for byte, in every realization,
 greedy and sampled, `--json` included (statement C5): the eight greedy tokens
 above are `33 33 33 33 0 0 0 0` again, and with `--seed` the sampled ones are

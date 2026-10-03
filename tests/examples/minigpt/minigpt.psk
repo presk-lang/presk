@@ -21,7 +21,7 @@ dim T <= 1024               -- context length, bounded
 -- ── Named types, to avoid "index soup" (§3.2) ────────────────────────────────────
 type Tokens = idx[V][batch: B, seq: T]                 -- input: indices, NOT reals
 type Acts   = ℝ[batch: B, seq: T, model: D]            -- activations
-type Mask   = ℝ[seq: T, seq2: T]                       -- additive mask (0 or −∞)
+type Mask   = bool[seq: T, seq2: T]                    -- which positions a position sees
 
 -- ─────────────────────────────────────────────────────────────────────────────────
 -- Causal multi-head attention.
@@ -40,8 +40,8 @@ module SelfAttention {
     -- The compiler checks that `hd` appears in exactly the two operands (§3.2).
     let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
 
-    -- softmax over seq2, causal mask added before normalization.
-    let a = softmax(axis seq2, s + mask)
+    -- softmax over the positions of seq2 that the causal mask allows.
+    let a = softmax(axis seq2, s, where = mask)
 
     -- Reweighting of the values, then output projection.
     let o = ein[batch, heads, seq, hd](a * v)
@@ -89,7 +89,7 @@ module MiniGPT {
   -- The causal mask is derived from the type: position i only sees j ≤ i.
   -- This is the property that the inference kv_cache will exploit (§7).
   fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
-    let mask = causal_mask(seq: T)                  -- ℝ[seq, seq2], 0 where j≤i, else −∞
+    let mask = causal_mask(seq: T)                  -- bool[seq, seq2], true where j≤i
     let h0   = emb.apply(ids)
     let hL   = blocks.apply(h0, mask)               -- applies the L blocks in turn
     lnf.apply(hL) · head                            -- ℝ[batch, seq, vocab: V]

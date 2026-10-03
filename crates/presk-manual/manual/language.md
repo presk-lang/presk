@@ -5,9 +5,11 @@ semantics implemented: elaboration (names, constants, dimensions,
 assertions, module instances, signatures), shape typing of function bodies
 ("Typing"), regularity classes and effects, and the intermediate
 representation ("PSK-Core"). The reference programs are in
-`tests/examples/`; the reference text is the specification chapter of
-`presk-specs`. Where the grammar of the specification is only sketched, the
-choice made here is recorded in `docs/spec-questions.md`.
+`tests/examples/`; the normative text is the language reference of
+`presk-specs` (`reference/presk-reference.tex`), whose Status paragraphs
+say where this compiler departs from it. Where the specification left a
+choice, the one made here is recorded in `docs/spec-questions.md`, and the
+reference's chapter 8 states what became of each.
 
 ## Lexical structure
 
@@ -55,8 +57,11 @@ A leading `-` is the unary minus operator, not part of the literal
 configuration field ends at the end of its line. An expression ends at the
 end of its line unless the *next* line starts with a binary operator that
 cannot itself begin an expression (`|>`, `|`, `⊗`, `∘`, `·`, `*`, `/`, `%`,
-`^`, `+`, `==`, `<=`, …); such a line continues the expression. `-` never
-continues a line, since `-x` is an expression. Inside parentheses, brackets
+`+`, `==`, `<=`, …); such a line continues the expression. `-` never
+continues a line, since `-x` is an expression, and neither does `^`, which
+the parser reads with the unary operators and not as a binary operator (the
+reference's requirement on line breaks, chapter 1; this chapter listed it
+until 0.10.0). Inside parentheses, brackets
 and dimension-argument braces, line breaks are ignored, which is how a long
 function signature or call spans several lines. A `let` binding takes the rest
 of its line and its body starts on the next line (there is no `in`).
@@ -275,6 +280,7 @@ leaf of a parameter tree.
 |---|---|
 | `ℝ[axes]`, `ℝ[]`, `ℝ` | real tensor; `ℝ[]` and bare `ℝ` are the real scalar |
 | `idx[N][axes]`, `idx[N]` | tensor of integers bounded by `0 ≤ i < N` |
+| `bool[axes]` | tensor of truth values, a mask (0.10.0 step 7b): `causal_mask` gives one and `softmax(…, where = m)` reads one; `bool` is a contextual word, and without axes the hyperparameter scalar below |
 | `param T` | a learnable tensor of type `T` |
 | `params M` | the parameter tree of module `M` (a path: `params net`, `params m.MiniGPT`) |
 | `nat`, `int`, `rat`, `f64`, `bool`, `key` | hyperparameter scalars (ordinary named types) |
@@ -360,8 +366,11 @@ with warning `W0001`; in a module it is an error.
 `a % k == 0` (`k` a positive constant) over dimension expressions. It is
 decided for *all* values in ℕ of the symbolic dimensions: a failing assertion
 reports a counterexample (`fails for T = 1`); an assertion the procedure
-cannot decide is an error rather than a silent pass. A discharged symbolic
-assertion becomes a fact for the rest of the file.
+cannot decide is an error rather than a silent pass. The assertions of a
+file are decided last, after its constants, dimensions and types, which do
+not see them: an assertion adds no fact. (The reference reads a symbolic
+assertion as a constraint on the file's dimensions; the compiler refuses
+one that does not hold for every value, `E1004`.)
 
 **Types.** `ℝ[axes]` and `idx[N][axes]` become shapes whose axis lengths are
 linear forms; `...` must be the first axis. `nat int rat f64 bool key` are the
@@ -380,7 +389,10 @@ parameters. An *instance* is a module applied to dimension arguments; equal
 instances are shared. The parameter tree of an instance substitutes the
 arguments recursively through the `use`s, and `stack{L}(M)` prepends an axis
 of length `L` to every parameter of `M`: `presk dump --stage elab` lists,
-for `MiniGPT`, `blocks.attn.wq.w : ℝ[12, 768, 768]`.
+for `MiniGPT`, `blocks.attn.wq.w : ℝ[12, 768, 768]`. A module that includes
+itself, directly or through other modules, has no parameter tree and is
+refused (`E2016`, since 0.10.0 step 8), as a function that calls itself is
+(below).
 
 **Configuration blocks** and `model` declarations are recorded but their
 contents are not checked yet.
@@ -390,7 +402,11 @@ contents are not checked yet.
 Every function is checked once, generically: its type parameters, the file's
 `dim`s and its `...` prefix are fixed unknowns. At a call, the callee's
 signature is instantiated with fresh unknowns that unification then solves
-from the arguments.
+from the arguments. Once every call is resolved, a function that calls
+itself, directly or through other functions, is refused (`E2016`, the
+reference's requirement "No recursion"; iteration is `stack{N}(M)`): until
+0.10.0 step 8 such a program passed the checker and overflowed the stack of
+the analyses that follow calls.
 
 **Shapes.** Two shapes unify axis by axis. A *named* axis unifies only with
 an axis of the same name or with an unnamed one; two named axes with
@@ -408,15 +424,18 @@ prefix shared by every occurrence in the signature, so
 
 **Broadcasting** (`+ - * / ^` between real tensors): a scalar `ℝ[]` combines
 with anything; otherwise the axes are aligned from the last one (`x̂ * γ`
-with `γ : ℝ[D]`, `s + mask` with `mask : ℝ[seq: T, seq2: T]`) and, if that
+with `γ : ℝ[D]`, `s * w` with `w : ℝ[seq: T, seq2: T]`) and, if that
 fails because of names, by name (every axis of the smaller operand named and
 present in the larger). The result is the larger shape; names are kept. There
 is no length-1 broadcasting.
 
 **Operators.** `·` contracts the last axis of the left operand with the first
 of the right; `^ n` takes a natural exponent; `- * + /` between numbers of
-the same hyperparameter type (`nat`, `f64`, …) stay in that type; an `idx`
-tensor never mixes with reals (`real(t)` injects it). Comparisons give `bool`.
+the same hyperparameter type (`nat`, `f64`, …) stay in that type, except
+that `nat - nat` and `nat / nat` are `int`, the quotient the integer
+quotient (`real(7 / 2)` is `3`); an `idx`
+tensor never mixes with reals (`real(t)` injects it), and a mask `bool[S]`
+enters no arithmetic. Comparisons give `bool`.
 
 **`ein[out](a * b)`.** The body is a product; every axis of every operand
 must be named. Output names must occur in the operands; the other names are
@@ -443,7 +462,10 @@ parameters are inferred from use.
 
 **Builtins** (with their typing): elementwise `gelu relu exp tanh sqrt abs
 log sigmoid sin cos` (`ℝ[S] → ℝ[S]`); `mean(x)`, `sum(x)` (`→ ℝ[]`);
-`mean(axis a, x)`, `sum(axis a, x)` (remove axis `a`); `softmax(axis a, x)`;
+`mean(axis a, x)`, `sum(axis a, x)` (remove axis `a`); `softmax(axis a, x)`,
+and `softmax(axis a, x, where = m)` with a mask `m : bool[S2]` that
+broadcasts into `x : ℝ[S]` without widening it (S ⊔ S2 = S): the softmax
+over the positions `m` allows, 0 where it refuses (0.10.0 step 7b);
 `real(n)` (`nat`/`f64` → `ℝ[]`) and `real(t)` (`idx[N][S] → ℝ[S]`);
 `embed(w : ℝ[V, D], t : idx[V][S]) → ℝ[S, D]`, whose new axis takes the name
 of the table's second axis when it has one (`param tok : ℝ[vocab: V, emb: E]`
@@ -451,7 +473,9 @@ gives `ℝ[S, emb: E]`) and is unnamed otherwise; `one_hot(t : idx[V][S]) →
 ℝ[S, V]`, the indicator vectors whose contraction with `w` `embed` denotes
 (its new axis is always unnamed, since the bound is a dimension, not a named
 axis, and is named by the signature it is passed to); `cross_entropy(logits :
-ℝ[S, V], y : idx[V][S]) → ℝ[S]`; `argmax`, `sample` (`ℝ[S, V] → idx[V][S]`);
+ℝ[S, V], y : idx[V][S]) → ℝ[S]`; `argmax(x : ℝ[S, V]) → idx[V][S]` and
+`sample(key : key, logits : ℝ[S, V]) → idx[V][S]`, which draws from its key
+(0.10.0 step 7b; "Running programs" below);
 `merge(axis a, axis b, x)`, which joins two axes into one of length `|a|·|b|`,
 row-major (`(i, j) ↦ i·|b| + j`): the two must already be adjacent and in that
 order, because joining distant axes would also transpose and `merge` moves no
@@ -470,7 +494,9 @@ select. Both are pure retags: they move no data and launch no kernel.
 `merge` and `split`, also permute — which is why they are not sugar for the
 pair, and why a head layout with a shared key group is written with `split`
 and not with them (`coverage` chapter);
-`positions(seq: T) → idx[T][seq: T]`; `causal_mask(seq: T) → ℝ[seq: T, seq2: T]`;
+`positions(seq: T) → idx[T][seq: T]`; `causal_mask(seq: T) → bool[seq: T, seq2: T]`,
+true where `seq2 ≤ seq` (it was a real tensor of 0 and `−∞` added to the
+scores until 0.10.0 step 7b, and no tensor holds `−∞` since);
 `matmul`; `grad`; `dropout(rate, key, x)` and `split_key(key) → (key, key)`,
 below. Not implemented: `vjp`, `jvp`, `concat`,
 `clamp`, `max`, `min` (error `E2012`). Initializers are not builtins but
@@ -482,9 +508,11 @@ objective optimizer data epochs parallel precision` plus `checkpoint every N
 steps to "path"` (`model`, `objective`, `optimizer` required; `objective`
 must be a top-level function whose first parameter is `params <model>`;
 `optimizer` must name an `optimizer` block); `inference serve` fields `model
-weights precision target batching cache` (`model` required; the block is
-resolved with the file's generation function, `serve` chapter, `W0003`
-without one). Value forms:
+weights precision target batching cache generate` (`model` required;
+`generate` names a top-level function of the file whose signature is a
+generation function's, since 0.10.0 step 8; the block is resolved with the
+file's generation function, the one `generate` names or the first that
+fits, `serve` chapter, `W0003` without one). Value forms:
 `cosine(warmup = N)`, `stream "path" |> shuffle(seed = N) |> batch(B = N)`,
 `data_parallel(replicas = auto|N) ⊗ tensor_parallel(axis a)`,
 `budget(rel_error|abs_error = ε) | quantize(int8, calibration = "path")`,
@@ -503,7 +531,8 @@ lattice `C∞ < C⁰⁺ < Disc`: the worst class of any operation on a path from
 that parameter to the result. Primitives contribute per argument: `argmax`
 and `sample` are `Disc` in everything, and so is `one_hot`, whose only
 argument is an index; `embed` and `cross_entropy` are `C∞`
-in the table/logits and `Disc` in the indices; `real(t)` of an index tensor
+in the table/logits and `Disc` in the indices, and `softmax` in its scores
+and its mask; `real(t)` of an index tensor
 is `Disc`; `relu` and `abs` are `C⁰⁺`; everything else (`+ · ein exp tanh
 softmax gelu sqrt mean …`) is `C∞`. Calls use the callee's summary, so
 `loss` in `train_minigpt.psk` is `C∞` in `θ` and `Disc` in `batch`, and
@@ -529,13 +558,15 @@ responsible and where it is, and suggests a substitute:
 inverted-dropout mask — `0` with probability `rate`, `1/(1 − rate)`
 otherwise — drawn from `key` *and nothing else*. The key is in the
 signature, not in a hidden stream, and that is a correctness requirement
-rather than a style: differentiation recomputes the forward pass, so a mask
-drawn from a stream would differ between the forward and the backward and the
-gradient would be silently wrong. Being a function of the key, the mask
-recomputes identically, and `dropout` needs no differentiation rule of its
-own — it lowers to `x · dropout_mask(rate, key, x)`, and the adjoint of a
-product is already known. `split_key(key)` gives two independent keys, so a
-function can drop more than once:
+rather than a style: differentiation may recompute the forward pass (`--remat
+recompute`, and a `.vjp` the split into `.fwd` and `.bwd` leaves whole), so
+a mask drawn from a stream would differ between the forward and the backward
+and the gradient would be silently wrong. Being a function of the key, the
+mask recomputes identically, and `dropout` needs no differentiation rule of
+its own — it lowers to `x · dropout_mask(rate, key, x)`, and the adjoint of
+a product is already known; a gradient that keeps its residuals keeps the
+mask. `split_key(key)` gives two independent keys, so a function can drop
+more than once:
 
 ```text
 fn block(x : ℝ[batch: B, model: D], key : key) -> ℝ[batch: B, model: D] uses Rand =
@@ -576,7 +607,8 @@ for this, it differentiates through the ordinary fold adjoint, and
 
 **Effects.** The only effect is `Rand`. A function *uses* `Rand`
 if it calls `sample`, `dropout`, `split_key` or an initializer, or calls a
-function that does. The
+function that does. Each of them draws from a key it is given and from
+nothing else (`sample` since 0.10.0 step 7b). The
 inferred effects must be declared with `uses Rand` (`E4001` otherwise,
 labelling the first use); a `uses` clause naming an unknown effect is
 `E4002`. Initializers (`M.init`) are implicitly `uses Rand`; a lambda is
@@ -630,7 +662,12 @@ What lowering does:
   and `presk run --unroll-stack` give 0.1.0's form, `L` calls on
   `slice_params i`, for comparison. A stacked module's *initializer* still
   splits its key `L` times and stacks `L` trees, so `L` must be a constant
-  there (`E5002`).
+  there (`E5002`). With `L = 0` the initializer stacks no tree: every leaf
+  of `M` gets a leading axis of length 0, built from the stacked type, and
+  the fold of count 0 gives its initial value; a gradient's scan over it
+  stacks the accumulators of no iteration the same way (since 0.10.0 step
+  8, on every executor and in the C export; the initializer and the kernel
+  backend's host panicked on a stack of none before).
 - **Lambdas are lifted** (closure conversion): `grad(λ θ. mse(net, θ, x, y))`
   becomes a function `mse_grad.lambda0(x, y, θ)` whose free variables come
   first, a `closure` over `x, y`, a `grad` of that function value, and an
@@ -672,21 +709,20 @@ sum). `grad v`, where `v = closure f[captured…]`, becomes
 The function values are then applied as before, so nothing but ordinary
 PSK-Core remains and `verify` applies to the result.
 
-Excerpt of `mlp.psk` after differentiation:
+Excerpt of `mlp.psk` after differentiation, as `presk dump --stage
+core-after-ad` prints it (below, the dead code it has lost since 0.10.0
+step 3):
 
 ```text
 fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out])
     -> (params Linear{In, Out}, ℝ[..., In]) {
   w : ℝ[In, Out] = θ.w
-  %4 : ℝ[..., Out] = dot x, w
   b : ℝ[Out] = θ.b
-  %6 : ℝ[..., Out] = add %4, b
-  %7 : ℝ[..., Out] = sum_to ct, %4        -- adjoint of the broadcast add
-  %8 : ℝ[Out] = sum_to ct, b
+  %8 : ℝ[Out] = sum_to ct, b               -- adjoint of the broadcast add
   %9 : params Linear{In, Out} = zeros_like θ
   %10 : params Linear{In, Out} = set_field b %9, %8
-  %11 : ℝ[..., In] = dot_vjp_l %7, w       -- ∂x
-  %12 : ℝ[In, Out] = dot_vjp_r x, %7       -- ∂w
+  %11 : ℝ[..., In] = dot_vjp_l ct, w       -- ∂x
+  %12 : ℝ[In, Out] = dot_vjp_r x, ct       -- ∂w
   %13 : params Linear{In, Out} = zeros_like θ
   %14 : params Linear{In, Out} = set_field w %13, %12
   %15 : params Linear{In, Out} = add %10, %14
@@ -713,13 +749,190 @@ fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : 
 - **No adjoint** flows into hyperparameters (`nat`, `f64`), indices, keys, or
   through `argmax`/`sample`; the regularity analysis has already rejected
   `grad` where that would be a mistake.
-- **Not supported in 0.1.0** (`E6001`/`E6002`): second-order differentiation
+- **Lambdas applied in a differentiated body** (`let f = λ a. prod(a, y)`,
+  then `f(x)`) are differentiated through the function they call, their
+  captured values included (fixed in 0.10.0 step 3,
+  `tests/data/closure_grad.psk`).
+- **Not supported** (`E6001`/`E6002`): second-order differentiation
   (`grad` inside a differentiated function, derivatives of the adjoint
   primitives), `grad` of a function value that is not a lambda of the same
-  body, `vjp`/`jvp` as source-level operators.
+  body, applying in a differentiated function a function value that is not
+  a lambda of its body, `vjp`/`jvp` as source-level operators.
 
 The interpreter (step 7) executes the adjoint primitives; until then the
 transformation is validated by `verify` and by the snapshot of `mlp.psk`.
+
+### Dead code after differentiation
+
+Since 0.10.0 step 3 the functions a differentiation generates lose what
+nothing reads before anything runs them (`presk_core::ad::prune`; every
+command that differentiates gets it). A `.vjp` copies its function's
+forward body before the reverse sweep, and a `.grad` reads one of the
+cotangents a `.vjp` returns; much of that is never read.
+
+- **Forward values the sweep does not need**: the primal value of the
+  function `grad` differentiates, which `grad` discards (`mse_grad`'s call
+  of `mse` in `mse_grad.lambda0.vjp`), and a callee's value that only the
+  callee's own `.vjp` computes again (`MLP.apply.vjp`'s second product).
+- **Cotangents no caller reads**: a `.vjp` returns the cotangents its
+  callers read, in their order, and no others. `mse_grad.lambda0.grad`
+  reads `θ`'s, so `mse_grad.lambda0.vjp`, `mse.vjp` and `MLP.apply.vjp`
+  return `(params MLP{D, 4*D})`, and `x`'s and `y`'s are not computed. A
+  backward fold keeps the accumulators someone reads (not the cotangent of
+  the mask a stacked block receives). A function read outside the program
+  keeps its result whole: a `.grad`, and the functions `presk train` calls.
+- **Values read for their shape**: `sum_to x, t` and `broadcast_like x, t`
+  between equal types are `x` (the excerpt's `dot_vjp_l ct, w` read `sum_to
+  ct, %4`, and the forward `%4 = dot x, w` and `%6 = add %4, b` went with
+  it); and a primitive that reads an operand for its shape only (the
+  template of `sum_to`, `mean_vjp`, `dropout_mask`, `zeros_like`,
+  `scatter_index`, `embed_vjp`, `reshape_like`) reads another value of that
+  type the function computes anyway, when there is one whose type names
+  every axis (in the course GPT's `Block.apply.vjp`, `dropout_mask` read
+  the feed-forward's output for its shape only; it reads the second
+  normalization's, which the feed-forward's `.vjp` reads anyway, and the
+  forward feed-forward goes).
+
+What stays is computed as before, bit for bit, in every realization. Every
+draw is a function of its key (`sample`'s since 0.10.0 step 7b), so a draw
+nothing reads goes like any other `let`. Functions keep their names and bindings their numbers, so a
+nest (`Linear.apply.vjp/%11`) keeps its name.
+
+**Fusion groups, under `bf16` or a site typed apart.** A fusion group
+(`realize` chapter) computes every value it holds in its root site's
+arithmetic type and stores only the root. So a value inside a group stays
+in `f32` under `bf16`, where a value outside every group reaches memory in
+`bf16`; and a value whose site a realization types apart from the rest of
+its function (a `storage` entry) takes, inside a group, its group's type.
+Under such a realization removing a reader that kept a value out of a group
+would change a result, and the pass then keeps every group of what the
+result reads: it holds what would change one, an identity left in place, a
+dead `let` kept as the reader it was. On the course GPT's gradient that is
+68 of the 2 220 launches. Under a uniform `f32` or `f64` realization, or
+one by function, every value of a function is computed and stored in one
+type, a group changes no bit, and since 0.10.0 step 4b nothing is held
+(`Realization::groups_visible`, D94). A command decides by the
+realizations it runs: `presk run`, `export`, `train`, `plan`, `autotune`,
+`reprice` and `dump` by their `--realize` or `--plan`; `presk bench` holds
+unless it times its plan alone (`--plan-only`, `--calibrate`), since its
+rows include `bf16`; `presk solve --step` holds, its menu being `bf16` too;
+`presk calibrate --step` holds when one of its realizations would, or when
+it writes an envelope (`--out`), which `solve --step` reads. A plan made
+under one names nests the other's program lacks, and is refused
+(`E7002`).
+
+What it removes, counted by the C export's recorder (`presk export --target
+c`, `f32`):
+
+| Gradient | Launches before | After | Of them dead before, after |
+|---|---|---|---|
+| `mse_grad` (`mlp.psk`, `D = 4`, `B = 2`) | 46 | 28 | 15, 2 |
+| `loss_grad` (`tests/plan/minigpt_grad.psk`, the tiny constants) | 767 | 583 | 125, 4 |
+| `loss_grad` (`experiments/gpt_grad.psk`, the course GPT) | 2 220 | 1 616 | 386, 12 |
+
+More goes than the recorder counted dead, since it counts a read for a
+shape as a read. What it still counts dead is what the pass holds for a
+fusion group (the counts are `bf16`'s, holding), and in `mse_grad` the
+first layer's `∂x`: one
+`Linear.apply.vjp` serves both layers, and the second layer's caller reads
+its `∂x`. `presk-opt` (`--opt`) removes
+the dead code it finds too, without regard to fusion groups. (The counts
+are those of `--remat recompute`; the next section's are storing.)
+
+### Residuals: a gradient keeps its forward pass (`--remat`)
+
+A `.vjp` copies its function's forward body, so a gradient computes each
+callee's forward pass twice: once for the value its caller reads, and again
+inside the callee's `.vjp`, at every level of calls. Since 0.10.0 step 4 a
+gradient keeps what its forward pass computed instead (`--remat store`, the
+default of `presk run`, `export`, `train`, `bench`, `plan`, `autotune`,
+`reprice` and `dump`; `--remat recompute` keeps the copies). After the dead code has
+gone (`presk_core::ad::store`), each `.vjp` is split in two:
+
+- **`f.fwd`** runs `f`'s body once and returns its value and its
+  **residuals**, the values its sweep reads that `f` computes: the inputs of
+  the primitives' rules, and each callee's residuals, as it calls each
+  callee's `.fwd`. Its bindings are `f`'s, numbered as in `f`, so a site of
+  `f.fwd` is `f`'s site of the same number: a realization or a plan that
+  states a type or a layout for `f/%5` states it for `f.fwd/%5`, unless it
+  names `f.fwd/%5` itself.
+- **`f.bwd`** takes the parameters of `f` its sweep reads, the residuals, and
+  the cotangent, and runs the sweep, calling each callee's `.bwd` on that
+  callee's residuals. Its bindings are the `.vjp`'s, numbered as in the
+  `.vjp`, so the sweep's nests keep their numbers under another name
+  (`Linear.apply.vjp/%11`, the `dot_vjp_l` of a linear layer, is
+  `Linear.apply.bwd/%11`).
+- **`f.vjp`** is `f.bwd` after `f.fwd`, and `.grad` still calls it.
+  `presk train`'s `objective.value_vjp` is `f.fwd`'s value and `f.bwd`'s
+  cotangents: the loss it logs is `f.fwd`'s, computed as `f` computes it.
+
+```text
+fn MLP.apply.fwd{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D])
+    -> (ℝ[..., D], (ℝ[..., hidden], ℝ[..., hidden])) {
+  l1 : params Linear{D, hidden} = θ.l1
+  %3 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %4 : ℝ[..., hidden] = gelu %3
+  l2 : params Linear{hidden, D} = θ.l2
+  %6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)
+  %7 : (ℝ[..., hidden], ℝ[..., hidden]) = (%3, %4)      -- gelu's input, l2's
+  %8 : (ℝ[..., D], (ℝ[..., hidden], ℝ[..., hidden])) = (%6, %7)
+  return %8
+}
+```
+
+`Linear.apply` needs no `.fwd`: its sweep reads only its parameters (`x`
+and `w`), which its caller passes to `Linear.apply.bwd`. Projections,
+tuples and key splits are computed again in `.bwd` rather than kept, and
+so is a value the sweep's own fusion groups hold inside.
+
+**A fold stacks its layers' residuals.** A stacked module's forward fold
+carries, in its accumulator, the residuals of the layer before (zeros
+before the first), and scans: the stack of the accumulators before each
+iteration then holds, at slot `i + 1`, layer `i`'s residuals, and the final
+accumulator the last layer's. The backward fold carries the residuals of
+the layer it differentiates and hands the next its own from the stack. A
+key in the accumulator is stacked as the sequence of the layers' keys, as
+a tensor is stacked as its slices: until 0.10.0 step 4 a stack kept the
+first key for every layer, and the backward fold of a stacked module that
+drops gave every layer layer 0's key, a wrong gradient under training
+(`tests/data/stack_dropout_grad.psk`).
+
+**The same bits.** Every gradient is bit-identical under `store` and
+`recompute`, in `f64`, `f32` and `bf16`. A realization that can see a
+fusion group (the previous section: `bf16`, or a site typed apart) is where
+it takes care: a group computes its members in its root's type, `f32`
+under `bf16`, so a residual must be computed in the same groups as the
+`.vjp`'s copy computed it, and `f.fwd`'s value in `f`'s. Where the two
+partitions differ, `f.fwd` computes the residual apart, a copy of the
+`.vjp`'s computation, beside `f`'s own: a normalization's intermediate the
+sweep reads, and, in the course GPT, attention's scores and the
+feed-forward after the second normalization, which the launches the
+dead-code pass holds made the `.vjp` round where the block does not. Under
+any other realization (since 0.10.0 step 4b) a group changes no bit, and
+`f.fwd` shares every residual with `f`'s computation, reading it where
+`f`'s groups kept it inside: nothing is computed apart. A `.vjp` whose
+split cannot be made exact keeps recomputing: one whose fold's body is
+generic in its leading axes (`...`, `tests/data/stack_prefix_grad.psk`'s
+tower), since no zeros have the first slot's shape, and a function that
+reaches itself.
+
+Launches, counted by the C export's recorder, keeping the groups (what
+`bf16` runs) and not (what `f32` and `f64` run):
+
+| Gradient | `recompute`, `bf16` | `store`, `bf16` | `recompute`, `f32` | `store`, `f32` |
+|---|---|---|---|---|
+| `mse_grad` (`mlp.psk`, `D = 4`, `B = 2`) | 28 | 24 | 26 | 23 |
+| `loss_grad` (`tests/plan/minigpt_grad.psk`, the tiny constants) | 583 | 424 | 563 | 385 |
+| `loss_grad` (`experiments/gpt_grad.psk`, the course GPT) | 1 616 | 1 182 | 1 548 | 1 012 |
+
+What a realization states by function names the functions of the program
+as it is: `presk solve --step` names `.fwd` and `.bwd` functions under
+`store`, and a realization written for `.vjp`s types nothing of a stored
+gradient's sweep, which `W0004` says, naming each such `.vjp` whose
+`.fwd` and `.bwd` the realization does not name (a warning, since a
+realization for a training step also runs forward entries; since 0.10.0
+step 4b). A plan made under one policy names nests the other does
+not have (`E7002`).
 
 ## Running programs: the reference interpreter
 
@@ -728,11 +941,19 @@ interpreter over arbitrary-precision reals (MPFR through `rug`, `--bits`,
 default 256). It is the executable approximation of the exact denotation: the
 error of one operation is about 2⁻²⁵⁶ and every operation is correctly
 rounded, so results are deterministic across machines and serve as the
-reference for everything else (golden tests, the coming PyTorch conformance
-test).
+reference for everything else — up to the last bit of the machine's `ln`,
+`sqrt` and `cos` in a value drawn from a key (a normal draw is computed in
+binary64 with them, then injected exactly) (golden tests, the coming PyTorch conformance
+test). Its own distance to the denotation is measured, not bounded: about
+3·10⁻³⁸ relative at 128 bits and 4–8·10⁻⁷⁷ at 256 on the course GPT, five to
+ten units of roundoff at `--bits` (`make delta-p`; the `precision` chapter,
+"The reference's own gap"; D98).
 
 - **Values** are tensors with *named axes* over MPFR reals, index tensors
-  (`i64` with their bound), hyperparameters (`nat`, `f64`), keys, tuples,
+  (`i64` with their bound; a mask is indices below 2, true 1, which `presk
+  run` prints by the entry's signature as `bool[…]` of `true` and `false`,
+  in its text and its `--json`, since 0.10.0 step 8; `idx[2][…]` before),
+  hyperparameters (`nat`, `f64`), keys, tuples,
   parameter records and function values. After every binding the tensor's axis
   names are set from the binding's type, so primitives select axes by name
   (`mean axis model`, `softmax axis seq2`, `index seq: -1`) exactly as the
@@ -746,14 +967,34 @@ test).
   adjoint `sum_to` reduces along the same alignment.
 - **Exact functions**: `gelu` is `x·Φ(x)` with `Φ` from `erf`; `softmax`
   subtracts the row maximum before `exp` (a value-preserving rewrite, since
-  the semantics is exact); `causal_mask` uses `−∞`, which `exp` maps to 0;
-  `cross_entropy` is `−log softmax(logits)[y]` per position.
+  the semantics is exact), and with a mask takes its maximum and its sum over
+  the positions the mask allows and gives 0 elsewhere, a row the mask
+  empties being an error of the run; over an axis of length 0 it is defined,
+  and empty; `cross_entropy` is `−log softmax(logits)[y]` per position.
+- **Undefined at the dimensions given** (0.10.0 step 7b): before anything
+  is computed, an entry whose body (or a function it calls, a closure it
+  applies, a fold of count at least one) holds an operation undefined at
+  the dimensions given is refused, `E7003`: a `mean` over no element, a
+  selection outside its axis, `embed`, `cross_entropy`, `argmax` or `sample`
+  with no index below `V`, or their derivatives; so is an entry a type of
+  whose parameters has no value (indices below 0). The check reads types,
+  not values, on every executor; a division by zero stays an error of the
+  run.
 - **Dimension arguments** of a call or a fold are evaluated in the caller;
   one the checker left unconstrained (a file-level `dim` that the callee's
   types do not mention) is left unbound, and only a use of it fails.
 - **Randomness** is reproducible: `--seed` derives a master ChaCha20 key,
-  split into one key per entry parameter; `normal(std)` and `xavier_uniform`
-  draw from their key; `sample` draws from a stream seeded by `--seed`.
+  split into one key per entry parameter; `normal(std)`, `xavier_uniform`,
+  `dropout` and `sample` draw from their key (the reference's definitions
+  "The generator" and "Draws"; `sample` drew from a stream seeded by
+  `--seed` until 0.10.0 step 7b). `sample(key, logits)` takes, at the
+  position of rank `p`, the least index whose cumulative probability exceeds
+  the key's uniform draw `p`, the draw a dyadic number of 53 bits, the
+  probabilities and their sums at the interpreter's precision; the native
+  backend sums them in `f64`, so a token can differ only where a draw falls
+  within that rounding of a cumulative sum. A run is deterministic across
+  machines up to the last bit of `ln`, `sqrt` and `cos` in a drawn value
+  (`normal`).
 - **`training run`** is not executable (no data reader, no optimizer
   semantics in 0.1.0): `presk run` without `--entry` on such a file exits
   with 3. Its functions (`loss`) run with `--entry`.
@@ -805,10 +1046,13 @@ constructor argument, propagated through the modules that use them
 (`MiniGPT(T)`); `fn apply` → `forward`; module-typed parameters stay Python
 parameters (an `nn.Module`); `params M` → a state dict, and `net.apply(θ, x)`
 → `torch.func.functional_call(net, θ, (x,))`; `grad(λ θ. e)(θ)` →
-`torch.func.grad(lambda θ: e)(θ)`; `uses Rand` → the keywords
-`generator=None` (what `sample` draws from) and `training=False` (the switch
-of `dropout`), both passed on to every `uses Rand` callee: with both left
-out, the function is its expectation.
+`torch.func.grad(lambda θ: e)(θ)`; `uses Rand` → the keyword
+`training=False` (the switch of `dropout`), passed on to every `uses Rand`
+callee: left out, the function is its expectation. A key stays a parameter,
+as in the program, and is read by nothing: `dropout`'s masks and
+`sample`'s tokens are drawn by PyTorch's own generator, not from the key,
+and differ from the compiler's (the keyword `generator=` went with 0.10.0
+step 7b).
 Symbolic dimensions of a function are bound from the arguments' shapes
 (`T = ids.shape[1]`) where a value is needed (`torch.arange(T)`, the causal
 mask, shape assertions).
@@ -818,9 +1062,12 @@ one letter per axis name (after the relabeling of the type checker);
 `mean(axis a, x)` → `x.mean(dim=k)` with `k` from the axis position, counted
 from the end when the type has an open prefix; `softmax` likewise; `embed` →
 indexing; `positions(seq: T)` → `torch.arange(T)`; `causal_mask` →
-`torch.triu(torch.full(…, -inf), 1)`; `split_heads`/`merge_heads` → two small
+`torch.ones((T, T), dtype=torch.bool).tril()`; `softmax(axis a, x, where = m)`
+→ `torch.softmax(x.masked_fill(~m, float("-inf")), dim=k)`, the mask aligned
+as Presk aligns it; `split_heads`/`merge_heads` → two small
 helpers emitted in every file; `cross_entropy` → `F.cross_entropy(…,
-reduction="none")` per position; `argmax`, `sample` (`torch.multinomial`);
+reduction="none")` per position; `argmax`, `sample` (`torch.multinomial` of
+the softmax, PyTorch's draws);
 `real(t)` of an index tensor → `.to(default dtype)`; a hyperparameter
 injected into `ℝ` (`sqrt(HD : ℝ)`) stays a Python number (`math.sqrt`).
 Presk broadcasts by leading prefix or by name where PyTorch broadcasts from
@@ -833,9 +1080,14 @@ a comment; dtypes are those of the inputs (PyTorch's default `float32`, or
 `float64` in the conformance test). `--mode graph` and `--precision=solved`
 are not in 0.1.0.
 
-## What the parser accepts but the specification leaves open
+## What the specification left open
 
-See `docs/spec-questions.md` in the repository: the two `param` forms, the
-grammar of configuration blocks, the layout rule, the `name: e` / `name : ℝ`
-distinction in calls, the contextual keywords, and the rule that `-` never
-continues a line.
+`docs/spec-questions.md` in the repository lists every point where the
+examples or the specification left this compiler a choice (the two `param`
+forms, the grammar of configuration blocks, the layout rule, the `name: e`
+/ `name : ℝ` distinction in calls, the contextual keywords, the rule that
+`-` never continues a line, and seventy more), each with the answer
+implemented. The language reference has settled most of them: its chapter
+8, "Open questions", is the list of record, and the file's status column is
+that chapter's table (closed, closed otherwise than the compiler, restated,
+open, or outside the language), marked at 0.10.0 step 8.

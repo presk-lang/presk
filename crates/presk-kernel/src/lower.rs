@@ -247,6 +247,7 @@ pub fn lower_planned(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: Reductio
         PrimOp::SumAll | PrimOp::MeanAll => reduce_all(op, ins, dtype),
         PrimOp::Sum { axis } | PrimOp::Mean { axis } => reduce_axis(op, axis, ins, dtype),
         PrimOp::MeanVjp { axis } => mean_vjp(axis.as_deref(), ins, dtype),
+        PrimOp::Softmax { axis } if ins.len() == 2 => masked_softmax(axis, ins, dtype, layout.passes == Some(2)),
         PrimOp::Softmax { axis } if layout.passes == Some(2) => softmax_two_pass(axis, ins, dtype),
         PrimOp::Softmax { axis } => softmax(axis, ins, dtype),
         PrimOp::Embed => embed(ins, dtype),
@@ -457,7 +458,10 @@ fn dot(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> 
     )
 }
 
-/// `ct[..., N…] · b[K, N…] → a[..., K]` (`k = rank(b) − 1` trailing axes of `ct` contracted).
+/// `ct[..., N…] · b[K, N…] → a[..., K]` (`k = rank(b) − 1` trailing axes of `ct` contracted)
+/// that is not a contraction nest: a `b` of rank above two, a `ct` of rank
+/// one, or an interleaved order. One accumulator per output element. A
+/// contraction nest is built by [`emit_contraction`] (0.10.0 step 1).
 fn dot_vjp_l(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let (ct, b) = (tensor_in(ins, 0, "dot_vjp_l")?, tensor_in(ins, 1, "dot_vjp_l")?);
     let k = b.axes.len() - 1;
@@ -489,7 +493,10 @@ fn dot_vjp_l(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     )
 }
 
-/// `a[..., K], ct[..., N…] → b[K, N…]`, summing over the `rank(a) − 1` leading axes.
+/// `a[..., K], ct[..., N…] → b[K, N…]`, summing over the `rank(a) − 1` leading axes,
+/// that is not a contraction nest: a `ct` of another rank than `a`, an `a` of
+/// rank one, or an interleaved order. One accumulator per output element. A
+/// contraction nest is built by [`emit_contraction`] (0.10.0 step 1).
 fn dot_vjp_r(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let (a, ct) = (tensor_in(ins, 0, "dot_vjp_r")?, tensor_in(ins, 1, "dot_vjp_r")?);
     let lead = a.axes.len() - 1;
@@ -573,25 +580,43 @@ pub enum Slot {
 /// `dot` whose right operand has rank two and whose left has rank at least two,
 /// or an `ein` whose output is the outer axes, then `I`, then `J`, every outer
 /// axis carried by both operands, `I` by operand 0 only, `J` by operand 1 only,
-/// over one contracted axis `K` — under an exact reduction order. Its output
-/// is always (outer…, `I`, `J`), so its kernel is one builder for both
-/// primitives ([`emit_contraction`]).
+/// over one contracted axis `K` — under an exact reduction order. Since 0.10.0
+/// step 1 (D89), also the two derivatives of such a `dot`: `dot_vjp_l`, the
+/// NT product `ct · bᵀ`, and `dot_vjp_r`, the product `aᵀ · ct` summed over
+/// every leading axis of its operands, taken as one summed axis `K` of their
+/// lengths' product iterated lexicographically ([`Contraction::ks`]). Its
+/// output is always (outer…, `I`, `J`), so its kernel is one builder for
+/// every primitive ([`emit_contraction`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Contraction {
-    /// The kernel's name: `dot`, or `ein[…]` as 0.6.0 named it.
+    /// The kernel's name: `dot`, `dot_vjp_l`, `dot_vjp_r`, or `ein[…]` as
+    /// 0.6.0 named it.
     pub name: String,
     /// The output's axes: the outer axes, `I`, `J`.
     pub out: Vec<Axis>,
     pub outer: Vec<usize>,
     pub i: usize,
     pub j: usize,
+    /// The length of the summed axis `K`: the product of [`Contraction::ks`].
     pub k: usize,
+    /// The axes `K` runs over, outermost first: one, except in a `dot_vjp_r`
+    /// whose operands have several leading axes. Their iterations in
+    /// lexicographic order are `K`'s in increasing order, since both operands
+    /// carry them first, in this order, and row-major; so the slot `K` stands
+    /// for all of them in an operand's index, and a k-block divides the
+    /// innermost of them.
+    pub ks: Vec<usize>,
     /// Operand 0's axes, and operand 1's, as slots.
     pub x_index: Vec<Slot>,
     pub w_index: Vec<Slot>,
     pub dot: bool,
     /// `K` is operand 1's innermost axis, so `J` is not contiguous in it.
     pub nt: bool,
+    /// Where the tile holds one accumulator of one lane, operand 0 is read
+    /// inside the product rather than into a variable first: how 0.9.0
+    /// lowered the derivatives of `dot`, so that their default kernel is
+    /// 0.9.0's byte for byte (D89). The two texts compute the same product.
+    pub inline_x: bool,
 }
 
 impl Contraction {
@@ -611,7 +636,35 @@ impl Contraction {
                 out.push(w[1].clone());
                 let mut x_index: Vec<Slot> = (0..p).map(Slot::Outer).collect();
                 x_index.extend([Slot::I, Slot::K]);
-                Some(Contraction { name: "dot".into(), out, outer: x[..p].iter().map(|a| a.len).collect(), i: x[p].len, j: w[1].len, k: w[0].len, x_index, w_index: vec![Slot::K, Slot::J], dot: true, nt: false })
+                Some(Contraction { name: "dot".into(), out, outer: x[..p].iter().map(|a| a.len).collect(), i: x[p].len, j: w[1].len, k: w[0].len, ks: vec![w[0].len], x_index, w_index: vec![Slot::K, Slot::J], dot: true, nt: false, inline_x: false })
+            }
+            // `ct[outer…, I, N] · b[J, N] → [outer…, I, J]`: the derivative of
+            // a `dot` contraction nest in its left operand, NT, its summed axis
+            // `N` innermost in both operands.
+            PrimOp::DotVjpL => {
+                let (ct, b) = (&ins[0].axes, &ins[1].axes);
+                if b.len() != 2 || ct.len() < 2 || ct[ct.len() - 1].len != b[1].len {
+                    return None;
+                }
+                let p = ct.len() - 2;
+                let mut out = ct[..=p].to_vec();
+                out.push(b[0].clone());
+                let mut x_index: Vec<Slot> = (0..p).map(Slot::Outer).collect();
+                x_index.extend([Slot::I, Slot::K]);
+                Some(Contraction { name: "dot_vjp_l".into(), out, outer: ct[..p].iter().map(|a| a.len).collect(), i: ct[p].len, j: b[0].len, k: b[1].len, ks: vec![b[1].len], x_index, w_index: vec![Slot::J, Slot::K], dot: false, nt: true, inline_x: true })
+            }
+            // `a[lead…, I], ct[lead…, J] → [I, J]`, summed over the leading
+            // axes: the derivative of a `dot` contraction nest in its right
+            // operand, operand 0 transposed (`K` outermost).
+            PrimOp::DotVjpR => {
+                let (a, ct) = (&ins[0].axes, &ins[1].axes);
+                let lead = a.len().checked_sub(1)?;
+                if lead == 0 || ct.len() != a.len() || a[..lead].iter().zip(&ct[..lead]).any(|(x, y)| x.len != y.len) {
+                    return None;
+                }
+                let ks: Vec<usize> = a[..lead].iter().map(|x| x.len).collect();
+                let out = vec![a[lead].clone(), ct[lead].clone()];
+                Some(Contraction { name: "dot_vjp_r".into(), out, outer: vec![], i: a[lead].len, j: ct[lead].len, k: ks.iter().product(), ks, x_index: vec![Slot::K, Slot::I], w_index: vec![Slot::K, Slot::J], dot: false, nt: false, inline_x: true })
             }
             PrimOp::Ein { operands, output } if operands.len() == 2 => {
                 let n = output.len();
@@ -653,18 +706,24 @@ impl Contraction {
                 out.push(Axis { name: Some(i.clone()), len: ni });
                 out.push(Axis { name: Some(j.clone()), len: nj });
                 let nt = w_index.last() == Some(&Slot::K);
-                Some(Contraction { name: format!("ein[{}]", output.join(", ")), out, outer: outer_len, i: ni, j: nj, k: nk, x_index, w_index, dot: false, nt })
+                Some(Contraction { name: format!("ein[{}]", output.join(", ")), out, outer: outer_len, i: ni, j: nj, k: nk, ks: vec![nk], x_index, w_index, dot: false, nt, inline_x: false })
             }
             _ => None,
         }
     }
 
-    /// The axes of operand 1's panel under a pack: the outer axes, `K`, `J`,
-    /// named as operand 1 names them.
+    /// The outer axes operand 1 carries, by their positions among the outer
+    /// axes: every one in an `ein`, none in a `dot` or a `dot_vjp_l`, whose
+    /// operand 1 is a matrix.
+    pub fn w_outer(&self) -> Vec<usize> {
+        (0..self.outer.len()).filter(|o| self.w_index.contains(&Slot::Outer(*o))).collect()
+    }
+
+    /// The axes of operand 1's panel under a pack: the outer axes it carries,
+    /// `K`, `J`, named as operand 1 names them.
     pub fn panel_axes(&self, w: &Operand) -> Vec<Axis> {
-        let p = self.outer.len();
-        let at = |s: Slot| w.axes[self.w_index.iter().position(|t| *t == s).expect("operand 1 carries every slot")].clone();
-        let mut axes: Vec<Axis> = (0..p).map(|o| at(Slot::Outer(o))).collect();
+        let at = |s: Slot| w.axes[self.w_index.iter().position(|t| *t == s).expect("operand 1 carries K and J")].clone();
+        let mut axes: Vec<Axis> = self.w_outer().into_iter().map(|o| at(Slot::Outer(o))).collect();
         axes.push(at(Slot::K));
         axes.push(at(Slot::J));
         axes
@@ -672,7 +731,7 @@ impl Contraction {
 
     /// The same contraction reading operand 1 from its panel, which is NN.
     pub fn packed(&self) -> Contraction {
-        let mut w_index: Vec<Slot> = (0..self.outer.len()).map(Slot::Outer).collect();
+        let mut w_index: Vec<Slot> = self.w_outer().into_iter().map(Slot::Outer).collect();
         w_index.extend([Slot::K, Slot::J]);
         Contraction { w_index, nt: false, ..self.clone() }
     }
@@ -680,21 +739,56 @@ impl Contraction {
     /// What a layout needs to know of this nest, in a storage type and an
     /// accumulation type.
     pub fn kind(&self, dtype: Dtype, accum: Dtype) -> presk_rt::layout::Contraction {
-        presk_rt::layout::Contraction { dot: self.dot, i: self.i, j: self.j, k: self.k, nt: self.nt, accum_is_storage: accum == dtype, width: dtype.natural_lanes() }
+        presk_rt::layout::Contraction { dot: self.dot, i: self.i, j: self.j, k: self.k, k_inner: self.k_inner(), nt: self.nt, accum_is_storage: accum == dtype, width: dtype.natural_lanes() }
+    }
+
+    /// The innermost of the axes `K` runs over, which a k-block divides.
+    pub fn k_inner(&self) -> usize {
+        self.ks.last().copied().unwrap_or(self.k)
     }
 }
 
 /// An operand's index: its slots, given the outer loop variables and the
-/// expressions of `i`, `j` and `k`.
-fn slots(idx: &[Slot], outer: &[usize], i: &Expr, j: &Expr, k: &Expr) -> Vec<Expr> {
+/// expressions of `i`, `j` and of each axis `K` runs over.
+fn slots(idx: &[Slot], outer: &[usize], i: &Expr, j: &Expr, k: &[Expr]) -> Vec<Expr> {
     idx.iter()
-        .map(|s| match s {
-            Slot::Outer(p) => Expr::Iv(outer[*p]),
-            Slot::I => i.clone(),
-            Slot::J => j.clone(),
-            Slot::K => k.clone(),
+        .flat_map(|s| match s {
+            Slot::Outer(p) => vec![Expr::Iv(outer[*p])],
+            Slot::I => vec![i.clone()],
+            Slot::J => vec![j.clone()],
+            Slot::K => k.to_vec(),
         })
         .collect()
+}
+
+/// The `add` a contraction nest's kernel performs once each output element's
+/// sum is done (plan 0.10.0 step 7): its epilogue, a bias added in the
+/// product's kernel. The operand added is the kernel's last input, read
+/// through its broadcast into the output, as the `add`'s kernel reads it.
+/// Exact: the separate nests round the sum to the storage type, then add in
+/// the arithmetic type and round again, and so does the epilogue. Where the
+/// two types are one (`f64`, `f32`) the sum is added to in its register
+/// before its store; where storage is narrower (`bf16`), the sum is stored,
+/// which rounds it, and the stored value is read back and added to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Epilogue {
+    /// The product is the `add`'s first operand: `sum + b`; else `b + sum`.
+    pub first: bool,
+    /// The `add`'s result axes: the product's lengths, under the names the
+    /// `add` gives them. The kernel's output.
+    pub out: Vec<Axis>,
+}
+
+impl Epilogue {
+    /// `sum + b`, or `b + sum`, as the `add` has it.
+    fn add(&self, sum: Expr, b: Expr) -> Expr {
+        if self.first { bin(BinOp::Add, sum, b) } else { bin(BinOp::Add, b, sum) }
+    }
+
+    fn vadd(&self, sum: Expr, b: Expr) -> Expr {
+        let (x, y) = if self.first { (sum, b) } else { (b, sum) };
+        Expr::VBin(BinOp::Add, Box::new(x), Box::new(y))
+    }
 }
 
 /// `iv·n + t`: the index a block loop of width `n` gives its `t`-th offset,
@@ -722,14 +816,44 @@ fn blocked(iv: usize, n: usize, t: usize) -> Expr {
 /// tile, order and lane count: the forms differ in where a running sum lives,
 /// never in the order of the additions. A spill stores and reloads in the
 /// storage type, which is exact where the layout is well-formed (condition 7).
-/// At the default layout the text is 0.6.0's `dot`, character for character.
+/// At the default layout the text is 0.6.0's `dot`, character for character,
+/// and 0.9.0's `dot_vjp_l` and `dot_vjp_r` (D89).
+///
+/// When `K` runs over several axes ([`Contraction::ks`]), its loop is one
+/// loop per axis, outermost first, and with a k-block the loop over the
+/// blocks of `K` is one loop per leading axis, then the loop over the blocks
+/// of the innermost: the same `k` in the same order, since the flat index of
+/// row-major axes is lexicographic.
 pub fn emit_contraction(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: &Layout) -> Result<Lowered> {
+    emit_contraction_with(c, dtype, ins, layout, None)
+}
+
+/// The same, with an epilogue when `epi` is given: the operand it adds is
+/// `ins`'s last, after the contraction's two (plan 0.10.0 step 7). Its sum
+/// is added to once the last block of `K` is done, in whichever form.
+pub fn emit_contraction_with(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: &Layout, epi: Option<&Epilogue>) -> Result<Lowered> {
     let lanes = layout.lanes.unwrap_or(1);
+    let want = if epi.is_some() { 3 } else { 2 };
+    if ins.len() != want {
+        return Err(format!("{}: {} operands, {want} expected", c.name, ins.len()));
+    }
+    // Where the epilogue's operand reads each output position: the output's
+    // positions its axes align with.
+    let bias = match epi {
+        Some(e) => {
+            let b = &ins[2];
+            if e.out.len() != c.out.len() || e.out.iter().zip(&c.out).any(|(a, o)| a.len != o.len) {
+                return Err(format!("{}: the epilogue's output {} is not the product's {}", c.name, show(&e.out), show(&c.out)));
+            }
+            Some(align(&b.axes, &e.out).ok_or_else(|| format!("{}: the epilogue's operand {} does not broadcast into {}", c.name, show(&b.axes), show(&e.out)))?)
+        }
+        None => None,
+    };
     if layout.form == Some(Form::RowWise) {
         if lanes != 1 {
             return Err(format!("{}: a row-wise contraction has one lane, not {lanes}", c.name));
         }
-        return row_wise(c, dtype, ins);
+        return row_wise(c, dtype, ins, epi.zip(bias.as_deref()));
     }
     let (mi, nj) = layout.tile.unwrap_or((1, 1));
     let kblock = layout.kblock.unwrap_or(KBlock::None);
@@ -745,7 +869,8 @@ pub fn emit_contraction(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: 
     }
     let b = match kblock {
         KBlock::None => None,
-        KBlock::Width(b) if b > 0 && c.k % b == 0 => Some(b),
+        KBlock::Width(b) if b > 0 && c.k_inner() % b == 0 => Some(b),
+        KBlock::Width(b) if c.ks.len() > 1 => return Err(format!("{}: the k-block {b} does not divide the innermost summed axis, {}", c.name, c.k_inner())),
         KBlock::Width(b) => return Err(format!("{}: the k-block {b} does not divide K = {}", c.name, c.k)),
     };
     let mut sorted = order.clone();
@@ -759,28 +884,39 @@ pub fn emit_contraction(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: 
     let ov = bd.loops(&c.outer);
     // The block loops' variables in loop order, then the loop over k (or,
     // with a k-block, the within-block loop and the `k` it sets): at the
-    // default layout, the numbering of 0.6.0's blocked `dot`.
+    // default layout, the numbering of 0.6.0's blocked `dot`. The leading
+    // axes `K` runs over, when there are several, take their variables where
+    // the loop over the blocks of `K` is, or before the loop over the last.
+    let lead_k = c.ks.len().saturating_sub(1);
     let mut var = [0usize; 3];
+    let mut kouter: Vec<usize> = vec![];
     for l in &order {
+        if *l == BlockLoop::K {
+            kouter = bd.loops(&c.ks[..lead_k]);
+        }
         var[*l as usize] = bd.iv();
     }
-    let (kloop, kvar) = match b {
+    let (kloops, kx): (Vec<usize>, Vec<Expr>) = match b {
         None => {
-            let kv = bd.iv();
-            (kv, kv)
+            let kv = bd.loops(&c.ks);
+            (kv.clone(), ivs(&kv))
         }
-        Some(_) => (bd.iv(), bd.iv()),
+        Some(_) => {
+            let (kloop, kvar) = (bd.iv(), bd.iv());
+            (vec![kloop, kvar], kouter.iter().chain([&kvar]).map(|v| Expr::Iv(*v)).collect())
+        }
     };
     let (vi, vj, vk) = (var[BlockLoop::I as usize], var[BlockLoop::J as usize], var[BlockLoop::K as usize]);
     let vector = lanes > 1;
     let cols = nj / lanes;
+    let inline = c.inline_x && mi == 1 && nj == 1;
     let fresh = |bd: &mut B| if vector { bd.vv(lanes) } else { bd.sv() };
     let accs: Vec<Vec<usize>> = (0..mi).map(|_| (0..cols).map(|_| fresh(&mut bd)).collect()).collect();
-    let xs: Vec<usize> = (0..mi).map(|_| bd.sv()).collect();
+    let xs: Vec<usize> = if inline { vec![] } else { (0..mi).map(|_| bd.sv()).collect() };
     // With several rows, operand 1's columns are loaded once per k and shared.
     let ws: Vec<usize> = if mi > 1 { (0..cols).map(|_| fresh(&mut bd)).collect() } else { vec![] };
 
-    let (ix, jx, kx) = (|r: usize| blocked(vi, mi, r), |g: usize| blocked(vj, nj, g * lanes), Expr::Iv(kvar));
+    let (ix, jx) = (|r: usize| blocked(vi, mi, r), |g: usize| blocked(vj, nj, g * lanes));
     let out_ix = |r: usize, g: usize| {
         let mut v = ivs(&ov);
         v.push(ix(r));
@@ -789,6 +925,7 @@ pub fn emit_contraction(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: 
     };
     let x_at = |r: usize| slots(&c.x_index, &ov, &ix(r), &Expr::I(0), &kx);
     let w_at = |g: usize| slots(&c.w_index, &ov, &Expr::I(0), &jx(g), &kx);
+    let x_of = |r: usize| if inline { load(0, x_at(r)) } else { Expr::Sv(xs[r]) };
     let buf_out = ins.len();
 
     let mut micro: Vec<Stmt> = xs.iter().enumerate().map(|(r, x)| Stmt::Set { var: *x, value: load(0, x_at(r)) }).collect();
@@ -804,9 +941,9 @@ pub fn emit_contraction(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: 
                 (None, false) => load(1, w_at(g)),
             };
             micro.push(if vector {
-                Stmt::VSet { var: *a, value: Expr::VBin(BinOp::Add, Box::new(Expr::Vv(*a)), Box::new(Expr::VBin(BinOp::Mul, Box::new(Expr::VSplat(Box::new(Expr::Sv(xs[r])))), Box::new(wv)))) }
+                Stmt::VSet { var: *a, value: Expr::VBin(BinOp::Add, Box::new(Expr::Vv(*a)), Box::new(Expr::VBin(BinOp::Mul, Box::new(Expr::VSplat(Box::new(x_of(r)))), Box::new(wv)))) }
             } else {
-                Stmt::Set { var: *a, value: bin(BinOp::Add, Expr::Sv(*a), bin(BinOp::Mul, Expr::Sv(xs[r]), wv)) }
+                Stmt::Set { var: *a, value: bin(BinOp::Add, Expr::Sv(*a), bin(BinOp::Mul, x_of(r), wv)) }
             });
         }
     }
@@ -814,66 +951,154 @@ pub fn emit_contraction(c: &Contraction, dtype: Dtype, ins: &[Operand], layout: 
     let init = each(&|_, _, a| if vector { Stmt::VSet { var: a, value: Expr::VSplat(Box::new(f(0.0))) } } else { Stmt::Set { var: a, value: f(0.0) } });
     let store = each(&|r, g, a| if vector { Stmt::VStore { buf: buf_out, index: out_ix(r, g), value: Expr::Vv(a) } } else { Stmt::Store { buf: buf_out, index: out_ix(r, g), value: Expr::Sv(a) } });
     let reload = each(&|r, g, a| if vector { Stmt::VSet { var: a, value: Expr::VLoad(buf_out, out_ix(r, g)) } } else { Stmt::Set { var: a, value: load(buf_out, out_ix(r, g)) } });
+    // The epilogue (step 7): the operand at output position (r, g), and what
+    // the tile does with it once its sums are done.
+    let narrow = dtype.arith() != dtype;
+    let (epi_add, epi_rounded) = match (epi, &bias) {
+        (Some(e), Some(map)) => {
+            let rank = c.out.len();
+            let at = |r: usize, g: usize| -> Vec<Expr> {
+                map.iter()
+                    .map(|p| if *p + 2 < rank { Expr::Iv(ov[*p]) } else if *p + 2 == rank { ix(r) } else { jx(g) })
+                    .collect()
+            };
+            let operand = |r: usize, g: usize| -> Result<Expr> {
+                if !vector {
+                    return Ok(load(2, at(r, g)));
+                }
+                // Lanes read `lanes` columns of the operand: contiguous where
+                // `J` is its innermost axis, one value where it has no `J`.
+                match map.iter().position(|p| *p + 1 == rank) {
+                    Some(q) if q + 1 == map.len() => Ok(Expr::VLoad(2, at(r, g))),
+                    Some(_) => Err(format!("{}: the epilogue's operand {} has J, but not innermost, so its columns are not contiguous and cannot be loaded in lanes", c.name, show(&ins[2].axes))),
+                    None => Ok(Expr::VSplat(Box::new(load(2, at(r, g))))),
+                }
+            };
+            let mut adds = Vec::new();
+            for (r, row) in accs.iter().enumerate() {
+                for (g, a) in row.iter().enumerate() {
+                    let b = operand(r, g)?;
+                    adds.push(if narrow {
+                        if vector {
+                            return Err(format!("{}: lanes in a type narrower than its arithmetic", c.name));
+                        }
+                        // The sum was stored, rounded to the storage type: read
+                        // it back, add, and store the rounded sum.
+                        Stmt::Store { buf: buf_out, index: out_ix(r, g), value: e.add(load(buf_out, out_ix(r, g)), b) }
+                    } else if vector {
+                        Stmt::VSet { var: *a, value: e.vadd(Expr::Vv(*a), b) }
+                    } else {
+                        Stmt::Set { var: *a, value: e.add(Expr::Sv(*a), b) }
+                    });
+                }
+            }
+            (adds, narrow)
+        }
+        _ => (vec![], false),
+    };
 
     // The loop over the k of one block (or of all of K).
     let over_k = match b {
-        None => Stmt::For { var: kloop, bound: c.k, body: micro },
+        None => nest(&kloops, &c.ks, micro),
         Some(b) => {
+            let (kloop, kvar) = (kloops[0], kloops[1]);
             let mut body = vec![Stmt::SetL { var: kvar, value: bin(BinOp::IAdd, bin(BinOp::IMul, Expr::Iv(vk), Expr::I(b as i64)), Expr::Iv(kloop)) }];
             body.extend(micro);
-            Stmt::For { var: kloop, bound: b, body }
+            vec![Stmt::For { var: kloop, bound: b, body }]
         }
     };
-    let bound = |l: BlockLoop| match l {
-        BlockLoop::I => (vi, c.i / mi),
-        BlockLoop::J => (vj, c.j / nj),
-        BlockLoop::K => (vk, c.k / b.unwrap_or(1)),
+    // Each block loop's loops, outermost first: the loop over the blocks of
+    // K is preceded by one per leading axis K runs over.
+    let bounds = |l: BlockLoop| -> Vec<(usize, usize)> {
+        match l {
+            BlockLoop::I => vec![(vi, c.i / mi)],
+            BlockLoop::J => vec![(vj, c.j / nj)],
+            BlockLoop::K => kouter.iter().copied().zip(c.ks[..lead_k].iter().copied()).chain([(vk, c.k_inner() / b.unwrap_or(1))]).collect(),
+        }
     };
     let wrap = |loops: &[BlockLoop], body: Vec<Stmt>| -> Vec<Stmt> {
         let mut body = body;
-        for l in loops.iter().rev() {
-            let (v, n) = bound(*l);
+        for (v, n) in loops.iter().flat_map(|l| bounds(*l)).collect::<Vec<_>>().into_iter().rev() {
             body = vec![Stmt::For { var: v, bound: n, body }];
         }
         body
     };
     let spill = b.is_some() && order.last() != Some(&BlockLoop::K);
-    let tile = |k_part: Stmt, spill: bool| -> Vec<Stmt> {
+    // Not the first block of K: a block variable is not zero.
+    let later_block = kouter.iter().rev().fold(Expr::Iv(vk), |e, v| bin(BinOp::IAdd, Expr::Iv(*v), e));
+    // The last block of K: every block variable at its last value, so their
+    // sum at the sum of those.
+    let last_sum: usize = c.ks[..lead_k].iter().map(|n| n - 1).sum::<usize>() + (c.k_inner() / b.unwrap_or(1)).saturating_sub(1);
+    let last_block = Expr::Cmp(CmpOp::Eq, Box::new(Expr::ToF(Box::new(later_block.clone()))), Box::new(f(last_sum as f64)));
+    // A spilling tile stores its sums at the end of every block of K, and
+    // the epilogue belongs to the last.
+    let epilogue = |spill: bool| -> Vec<Stmt> {
+        if spill && !epi_add.is_empty() { vec![Stmt::If { cond: last_block.clone(), then: epi_add.clone() }] } else { epi_add.clone() }
+    };
+    let tile = |k_part: Vec<Stmt>, spill: bool| -> Vec<Stmt> {
         let mut v = init.clone();
         if spill {
             // After the first block of K, the running sums come back from the
             // output, where the previous block left them (condition 7).
-            v.push(Stmt::If { cond: Expr::Iv(vk), then: reload.clone() });
+            v.push(Stmt::If { cond: later_block.clone(), then: reload.clone() });
         }
-        v.push(k_part);
+        v.extend(k_part);
+        if !epi_rounded {
+            v.extend(epilogue(spill));
+        }
         v.extend(store.clone());
+        if epi_rounded {
+            v.extend(epilogue(spill));
+        }
         v
     };
     let body = if spill {
         wrap(&order, tile(over_k, true))
     } else if b.is_some() {
         // K innermost: the blocks of K run inside the tile, in registers.
-        let kb = Stmt::For { var: vk, bound: c.k / b.unwrap_or(1), body: vec![over_k] };
+        let kb = wrap(&[BlockLoop::K], over_k);
         wrap(&order[..2], tile(kb, false))
     } else {
         wrap(&order, tile(over_k, false))
     };
-    let kern = kernel(c.name.clone(), dtype, ins, &c.out, BufKind::Real, &bd, nest(&ov, &c.outer, body));
-    done(kern, c.out.clone())
+    let out = epi.map_or(&c.out, |e| &e.out);
+    let kern = kernel(epilogue_name(c, epi), dtype, ins, out, BufKind::Real, &bd, nest(&ov, &c.outer, body));
+    done(kern, out.clone())
+}
+
+/// A contraction's kernel name, `dot+add` with an epilogue.
+fn epilogue_name(c: &Contraction, epi: Option<&Epilogue>) -> String {
+    match epi {
+        Some(_) => format!("{}+add", c.name),
+        None => c.name.clone(),
+    }
 }
 
 /// The pack of an NT contraction (0.7.0 step 3): operand 1 copied, in its own
-/// type, to a panel with the axes (outer…, `K`, `J`), which the contraction
-/// then reads as NN. A copy moves no value's bits, so the pack is layout; it
-/// is a kernel of its own, launched just before the contraction's (spec
-/// question 66). Written along `J`, the panel's innermost axis.
+/// type, to a panel with the axes (the outer axes it carries…, `K`, `J`),
+/// which the contraction then reads as NN. A copy moves no value's bits, so
+/// the pack is layout; it is a kernel of its own, launched just before the
+/// contraction's (spec question 66). Written along `J`, the panel's innermost
+/// axis.
 pub fn pack_panel(c: &Contraction, dtype: Dtype, w: &Operand) -> Result<Lowered> {
+    if c.ks.len() > 1 {
+        // Only an NT contraction is packed (condition 9), and `K` runs over
+        // several axes in a `dot_vjp_r` only, which is NN.
+        return Err(format!("{}: a pack of a sum over several axes", c.name));
+    }
     let axes = c.panel_axes(w);
     let mut bd = B::new();
     let lv = bd.loops(&dims(&axes));
-    let p = c.outer.len();
+    // The panel's loop over each outer axis operand 1 carries, by the axis's
+    // position among the outer axes.
+    let carried = c.w_outer();
+    let mut ov = vec![0; c.outer.len()];
+    for (n, o) in carried.iter().enumerate() {
+        ov[*o] = lv[n];
+    }
+    let p = carried.len();
     let (k, j) = (Expr::Iv(lv[p]), Expr::Iv(lv[p + 1]));
-    let src = slots(&c.w_index, &lv[..p], &Expr::I(0), &j, &k);
+    let src = slots(&c.w_index, &ov, &Expr::I(0), &j, std::slice::from_ref(&k));
     let body = vec![Stmt::Store { buf: 1, index: ivs(&lv), value: load(0, src) }];
     let kern = kernel("pack", dtype, std::slice::from_ref(w), &axes, BufKind::Real, &bd, nest(&lv, &dims(&axes), body));
     done(kern, axes)
@@ -882,13 +1107,15 @@ pub fn pack_panel(c: &Contraction, dtype: Dtype, w: &Operand) -> Result<Lowered>
 /// The row-wise form: for each output row, `out = 0`, then for each `k`,
 /// `out[j] += x[k] · w[k, j]` along the row. 0.4.0's form for a `dot` whose
 /// width is not a multiple of eight, and a point of every contraction's
-/// layout space since 0.7.0.
-fn row_wise(c: &Contraction, dtype: Dtype, ins: &[Operand]) -> Result<Lowered> {
+/// layout space since 0.7.0. When `K` runs over several axes, its loop is
+/// one loop per axis, outermost first.
+fn row_wise(c: &Contraction, dtype: Dtype, ins: &[Operand], epi: Option<(&Epilogue, &[usize])>) -> Result<Lowered> {
     let mut bd = B::new();
     let mut rows = c.outer.clone();
     rows.push(c.i);
     let ov = bd.loops(&rows);
-    let (kv, jv, acc) = (bd.iv(), bd.iv(), bd.sv());
+    let kv = bd.loops(&c.ks);
+    let (jv, acc) = (bd.iv(), bd.sv());
     let (outer, iv) = (&ov[..ov.len() - 1], Expr::Iv(ov[ov.len() - 1]));
     let buf_out = ins.len();
     let cix = |j: usize| -> Vec<Expr> {
@@ -897,16 +1124,26 @@ fn row_wise(c: &Contraction, dtype: Dtype, ins: &[Operand]) -> Result<Lowered> {
         ix
     };
     let zero = Stmt::For { var: jv, bound: c.j, body: vec![Stmt::Store { buf: buf_out, index: cix(jv), value: f(0.0) }] };
-    let xix = slots(&c.x_index, outer, &iv, &Expr::I(0), &Expr::Iv(kv));
-    let wix = slots(&c.w_index, outer, &iv, &Expr::Iv(jv), &Expr::Iv(kv));
+    let kx = ivs(&kv);
+    let xix = slots(&c.x_index, outer, &iv, &Expr::I(0), &kx);
+    let wix = slots(&c.w_index, outer, &iv, &Expr::Iv(jv), &kx);
     let sweep = Stmt::For {
         var: jv,
         bound: c.j,
         body: vec![Stmt::Store { buf: buf_out, index: cix(jv), value: bin(BinOp::Add, load(buf_out, cix(jv)), bin(BinOp::Mul, Expr::Sv(acc), load(1, wix))) }],
     };
-    let over_k = Stmt::For { var: kv, bound: c.k, body: vec![Stmt::Set { var: acc, value: load(0, xix) }, sweep] };
-    let kern = kernel(c.name.clone(), dtype, ins, &c.out, BufKind::Real, &bd, nest(&ov, &rows, vec![zero, over_k]));
-    done(kern, c.out.clone())
+    let mut body = vec![zero];
+    body.extend(nest(&kv, &c.ks, vec![Stmt::Set { var: acc, value: load(0, xix) }, sweep]));
+    // The epilogue: the row's sums are in the output, in its type, as the
+    // `add` would read them; one more sweep adds the operand to them.
+    if let Some((e, map)) = epi {
+        let rank = c.out.len();
+        let bix: Vec<Expr> = map.iter().map(|p| if *p + 1 == rank { Expr::Iv(jv) } else { Expr::Iv(ov[*p]) }).collect();
+        body.push(Stmt::For { var: jv, bound: c.j, body: vec![Stmt::Store { buf: buf_out, index: cix(jv), value: e.add(load(buf_out, cix(jv)), load(2, bix)) }] });
+    }
+    let out = epi.map_or(&c.out, |(e, _)| &e.out);
+    let kern = kernel(epilogue_name(c, epi.map(|(e, _)| e)), dtype, ins, out, BufKind::Real, &bd, nest(&ov, &rows, body));
+    done(kern, out.clone())
 }
 
 fn reduce_all(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
@@ -994,7 +1231,10 @@ fn softmax(axis: &str, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 1, index: full.clone(), value: bin(BinOp::Div, un(UnOp::Exp, bin(BinOp::Sub, load(0, full), Expr::Sv(m))), Expr::Sv(z)) }] });
     let mut outer = t.axes.clone();
     outer.remove(p);
-    let kern = kernel(format!("softmax axis {axis}"), dtype, ins, &t.axes, BufKind::Real, &bd, nest(&ov, &dims(&outer), body));
+    // Over an axis of length 0 the softmax is defined, and empty: no row
+    // has a first element to start its maximum from, and none is stored.
+    let body = if n == 0 { vec![] } else { nest(&ov, &dims(&outer), body) };
+    let kern = kernel(format!("softmax axis {axis}"), dtype, ins, &t.axes, BufKind::Real, &bd, body);
     done(kern, t.axes.clone())
 }
 
@@ -1035,7 +1275,74 @@ fn softmax_two_pass(axis: &str, ins: &[Operand], dtype: Dtype) -> Result<Lowered
         },
         Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 1, index: at.clone(), value: bin(BinOp::Div, load(1, at), Expr::Sv(z)) }] },
     ];
-    let kern = kernel(format!("softmax axis {axis}, two passes"), dtype, ins, &t.axes, BufKind::Real, &bd, nest(&ov, &dims(&outer), body));
+    let body = if n == 0 { vec![] } else { nest(&ov, &dims(&outer), body) };
+    let kern = kernel(format!("softmax axis {axis}, two passes"), dtype, ins, &t.axes, BufKind::Real, &bd, body);
+    done(kern, t.axes.clone())
+}
+
+/// The softmax over the positions a mask allows, 0 where it refuses (plan
+/// 0.10.0 step 7b): input 0 the scores, input 1 the mask, indices 0 or 1 that
+/// broadcast into the scores. Per row, the maximum `m` of the allowed scores
+/// from the first allowed one on, a strict `>` after it, as the unmasked
+/// form takes it from the row's first; then, in three passes, `z` the sum of
+/// `exp(x − m)` over the allowed positions in order and each output
+/// `exp(x − m) / z`, or in two, each allowed exponential stored and summed
+/// and the row divided by `z`. A refused position adds 0 to `z` and gives 0:
+/// the bits the unmasked softmax gives a row whose refused positions hold
+/// `−∞`, the additive mask's, since `exp(−∞) = 0` and `z + 0 = z`. The mask
+/// is read in selections only, never a branch around a store, so the nest
+/// stays a static-control part (the SCoP mode). A row the mask empties, which
+/// has no value, gives zeros.
+fn masked_softmax(axis: &str, ins: &[Operand], dtype: Dtype, two_passes: bool) -> Result<Lowered> {
+    let (t, m) = (tensor_in(ins, 0, "softmax")?, tensor_in(ins, 1, "softmax")?);
+    let p = axis_pos(&t.axes, axis)?;
+    let map = align(&m.axes, &t.axes).ok_or_else(|| format!("softmax: the mask {} does not broadcast into {}", show(&m.axes), show(&t.axes)))?;
+    let mut outer = t.axes.clone();
+    let n = outer.remove(p).len;
+    let mut bd = B::new();
+    let ov = bd.loops(&dims(&outer));
+    let k = bd.iv();
+    let (mx, z, first, e) = (bd.sv(), bd.sv(), bd.sv(), bd.sv());
+    let full = |i: Expr| -> Vec<Expr> {
+        let mut v = ivs(&ov);
+        v.insert(p, i);
+        v
+    };
+    let at = full(Expr::Iv(k));
+    let x = || load(0, at.clone());
+    let allowed = || cmp(CmpOp::Gt, Expr::ToF(Box::new(Expr::LoadI(1, map.iter().map(|q| at[*q].clone()).collect()))), f(0.5));
+    let ex = || un(UnOp::Exp, bin(BinOp::Sub, x(), Expr::Sv(mx)));
+    let mut body = vec![
+        Stmt::Set { var: first, value: f(1.0) },
+        Stmt::Set { var: mx, value: f(0.0) },
+        Stmt::For {
+            var: k,
+            bound: n,
+            body: vec![
+                Stmt::Set { var: mx, value: select(allowed(), select(cmp(CmpOp::Gt, Expr::Sv(first), f(0.5)), x(), select(cmp(CmpOp::Gt, x(), Expr::Sv(mx)), x(), Expr::Sv(mx))), Expr::Sv(mx)) },
+                Stmt::Set { var: first, value: select(allowed(), f(0.0), Expr::Sv(first)) },
+            ],
+        },
+        Stmt::Set { var: z, value: f(0.0) },
+    ];
+    if two_passes {
+        body.push(Stmt::For {
+            var: k,
+            bound: n,
+            body: vec![
+                Stmt::Set { var: e, value: select(allowed(), ex(), f(0.0)) },
+                Stmt::Store { buf: 2, index: at.clone(), value: Expr::Sv(e) },
+                Stmt::Set { var: z, value: bin(BinOp::Add, Expr::Sv(z), Expr::Sv(e)) },
+            ],
+        });
+        body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 2, index: at.clone(), value: select(allowed(), bin(BinOp::Div, load(2, at.clone()), Expr::Sv(z)), f(0.0)) }] });
+    } else {
+        body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: z, value: bin(BinOp::Add, Expr::Sv(z), select(allowed(), ex(), f(0.0))) }] });
+        body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 2, index: at.clone(), value: select(allowed(), bin(BinOp::Div, ex(), Expr::Sv(z)), f(0.0)) }] });
+    }
+    let body = if n == 0 { vec![] } else { nest(&ov, &dims(&outer), body) };
+    let name = if two_passes { format!("softmax axis {axis} where, two passes") } else { format!("softmax axis {axis} where") };
+    let kern = kernel(name, dtype, ins, &t.axes, BufKind::Real, &bd, body);
     done(kern, t.axes.clone())
 }
 
@@ -1272,14 +1579,17 @@ pub fn positions(axis: &str, n: usize, dtype: Dtype) -> Lowered {
     Lowered { kernel: kern, out_axes: out, out_kind: BufKind::Idx, out_bound: n as u64 }
 }
 
-/// `causal_mask`: 0 on `j ≤ i`, −∞ elsewhere.
+/// `causal_mask`: a mask, 1 (true) on `j ≤ i` and 0 elsewhere, indices below
+/// 2 (plan 0.10.0 step 7b; it was 0 and −∞, a real tensor added to the
+/// scores).
 pub fn causal_mask(axis: &str, n: usize, dtype: Dtype) -> Lowered {
     let out = vec![Axis { name: Some(axis.to_string()), len: n }, Axis { name: Some(format!("{axis}2")), len: n }];
     let mut bd = B::new();
     let (i, j) = (bd.iv(), bd.iv());
-    let body = nest(&[i, j], &[n, n], vec![Stmt::Store { buf: 0, index: vec![Expr::Iv(i), Expr::Iv(j)], value: select(cmp(CmpOp::Le, Expr::ToF(Box::new(Expr::Iv(j))), Expr::ToF(Box::new(Expr::Iv(i)))), f(0.0), f(f64::NEG_INFINITY)) }]);
-    let kern = kernel(format!("causal_mask {axis}"), dtype, &[], &out, BufKind::Real, &bd, body);
-    Lowered { kernel: kern, out_axes: out, out_kind: BufKind::Real, out_bound: 0 }
+    let below = select(cmp(CmpOp::Le, Expr::ToF(Box::new(Expr::Iv(j))), Expr::ToF(Box::new(Expr::Iv(i)))), f(1.0), f(0.0));
+    let body = nest(&[i, j], &[n, n], vec![Stmt::StoreI { buf: 0, index: vec![Expr::Iv(i), Expr::Iv(j)], value: Expr::ToI(Box::new(below)) }]);
+    let kern = kernel(format!("causal_mask {axis}"), dtype, &[], &out, BufKind::Idx, &bd, body);
+    Lowered { kernel: kern, out_axes: out, out_kind: BufKind::Idx, out_bound: 2 }
 }
 
 /// `one_hot`: 1 where the index equals the position on the new trailing axis.

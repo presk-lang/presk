@@ -1,0 +1,24 @@
+-- defined.psk — what the refusal at dimensions walks (plan 0.10.0 step 7b,
+-- `crates/presk-cli/tests/run_diag.rs`): the body of every fold whose count
+-- is at least 1, and of every closure applied; a softmax over an axis of
+-- length 0 is defined, and empty.
+const L : nat = 2
+dim T
+
+module Layer {
+  param g : ℝ[model: 4]
+  fn apply(x : ℝ[seq: T, model: 4]) -> ℝ[seq: T, model: 4] = x - mean(axis seq, x) * g
+}
+
+module Tower {
+  use layers : stack{L}(Layer)
+  fn apply(x : ℝ[seq: T, model: 4]) -> ℝ[seq: T, model: 4] = layers.apply(x)
+}
+
+fn centered(y : ℝ[seq: T, model: 4]) -> ℝ[model: 4] = mean(axis seq, y)
+
+fn through(x : ℝ[seq: T, model: 4]) -> ℝ[model: 4] =
+  let f = λ y. centered(y)
+  f(x)
+
+fn fine(x : ℝ[seq: T, model: 4]) -> ℝ[model: 4] = sum(axis seq, softmax(axis seq, x))

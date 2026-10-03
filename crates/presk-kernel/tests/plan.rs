@@ -49,7 +49,7 @@ fn plan(json: &str) -> Plan {
 /// every kernel it compiled, as `presk dump --stage kernel` prints them.
 fn run(core: &presk_core::Program, prog: &ElabProgram, entry: &str, dims: &[(&str, u64)], plan: Option<&Plan>, r: &Realization) -> presk_rt::Result<(Value, Vec<presk_kernel::Kernel>)> {
     let opts = RunOptions { entry: entry.into(), dims: dims.iter().map(|(n, v)| (n.to_string(), *v)).collect(), seed: 0, bits: 128, digits: 17 };
-    let mut b = KernelBackend::new(core, prog, r, 0);
+    let mut b = KernelBackend::new(core, prog, r);
     if let Some(p) = plan {
         b.set_plan(p.clone());
     }
@@ -97,8 +97,8 @@ fn a_default_plan_lowers_to_the_kernels_of_0_6_0() {
     let stated = plan(
         r#"{ "realization": "f32", "layout": {
              "SelfAttention.apply/%13": { "form": "tiled", "tile": [1, 1], "kblock": "none", "order": "IJ", "lanes": 1, "pack": false },
-             "SelfAttention.apply/%20": { "passes": 3 },
-             "SelfAttention.apply/%23": { "form": "tiled", "tile": [1, 1], "kblock": "none", "order": "IJ", "lanes": 1, "pack": false },
+             "SelfAttention.apply/%19": { "passes": 3 },
+             "SelfAttention.apply/%22": { "form": "tiled", "tile": [1, 1], "kblock": "none", "order": "IJ", "lanes": 1, "pack": false },
              "Linear.apply/%3": { "form": "tiled", "tile": [1, 8], "lanes": 1 } } }"#,
     );
     check_plan(&stated, &core).unwrap();
@@ -128,7 +128,7 @@ fn two_layouts_of_one_shape_do_not_share_a_kernel() {
 
     // One backend, two plans that differ in one nest's layout.
     let opts = RunOptions { entry: "twice".into(), dims: vec![], seed: 0, bits: 128, digits: 17 };
-    let mut b = KernelBackend::new(&core, &prog, &r, 0);
+    let mut b = KernelBackend::new(&core, &prog, &r);
     b.set_plan(plan(r#"{ "realization": "f32", "layout": { "twice/%2": { "lanes": 1 } } }"#));
     presk_rt::run_with(&mut b, &core, &prog, &opts, &r).unwrap();
     assert_eq!(dots(&b.kernels), [1]);

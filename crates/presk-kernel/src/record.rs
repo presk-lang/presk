@@ -35,13 +35,17 @@
 //! them. The C export's structured host is built from the tree, and its
 //! straight-line host, the oracle, from the list.
 //!
-//! **Randomness** (plan 0.9.0 step 6, D83). `sample` takes no key: it draws
-//! from the backend's own stream, seeded by the run's seed, and is a host
-//! operation ([`Op::Sample`]), which the C program runs on its own stream,
-//! seeded alike and advancing across calls. An `f64` argument of the entry
-//! (a temperature, an `eps`) is a host scalar computed at run time
-//! ([`Scalar::Var`]), not a constant: the C program takes it as an argument,
-//! and the value it was recorded with is kept ([`Recording::scalar_args`]).
+//! **Randomness** (plan 0.9.0 step 6, D83; plan 0.10.0 step 7b, D99).
+//! `sample(key, logits)` draws from its key and is a host operation
+//! ([`Op::Sample`]). The C program holds the entry's key arguments, each a
+//! 32-byte key of its `_in` struct ([`Recording::key_args`]), and `sample`
+//! must draw from one of them ([`Sym::Key`]); a key derived from another
+//! (`split_key`) or stacked is held by nothing, and may only be split again
+//! or given to a dropout mask outside training, which reads none. An `f64`
+//! argument of the entry (a temperature, an `eps`) is a host scalar computed
+//! at run time ([`Scalar::Var`]), not a constant: the C program takes it as
+//! an argument, and the value it was recorded with is kept
+//! ([`Recording::scalar_args`]).
 //!
 //! **Integer weights** (plan 0.9.0 step 7, D84). A quantized leaf of the
 //! entry's arguments is an input buffer of integers and scales
@@ -56,8 +60,8 @@
 //!
 //! **What it refuses**, with the export's codes: an initializer (`E8004`,
 //! a host primitive the C runtime does not provide), a key anywhere but
-//! `split_key`, a dropout mask and the structure that carries them
-//! (`E8006`), integer weights reshaped by a view, drawn from, or in the
+//! `split_key`, a dropout mask, `sample` (a key argument of the entry only)
+//! and the structure that carries them (`E8006`), integer weights reshaped by a view, drawn from, or in the
 //! result (`E8007`, which refused every integer weight until step 7), and a
 //! result the C program cannot write, a scalar (`E8008`). `sample` was
 //! refused (`E8005`) until step 6.
@@ -218,8 +222,11 @@ pub enum Sym {
     Int(i64),
     F64(Scalar),
     Bool(bool),
-    /// A key: read by nothing the C program runs (§3.3), dropped.
-    Key,
+    /// A key: the entry's key argument `n` (the `n`-th of
+    /// [`Recording::key_args`]), which `sample` may read; or, `None`, one
+    /// the C program does not hold (derived by `split_key`, stacked), read by
+    /// nothing it runs (§3.3).
+    Key(Option<usize>),
     Tuple(Vec<Sym>),
     Record(Vec<(String, Sym)>),
 }
@@ -245,9 +252,10 @@ pub enum Op {
     /// `out` = the first element of `src`, as `f64` (`Value::scalar_f64`).
     Read { out: usize, src: View },
     /// `sample`: `rows` rows of `vocab` logits at `src`, a token each into
-    /// the index buffer `out`, one draw of the backend's stream per row
-    /// (plan 0.9.0 step 6).
-    Sample { out: usize, src: View, rows: usize, vocab: usize },
+    /// the index buffer `out`, the row of rank `p` from the uniform draw `p`
+    /// of the entry's key argument `key` (plan 0.9.0 step 6, plan 0.10.0
+    /// step 7b).
+    Sample { out: usize, src: View, rows: usize, vocab: usize, key: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -369,10 +377,23 @@ pub struct Recording {
     /// host scalar computed at run time, and the value it was recorded with
     /// (step 6).
     pub scalar_args: Vec<(usize, f64)>,
+    /// The entry's key arguments, in the order of their leaves (plan 0.10.0
+    /// step 7b): the argument each is a leaf of, and its path through the
+    /// tuples of that argument, `(length, position)` at each, which is how
+    /// `presk run` derives it from its seed (`split` at each level).
+    pub key_args: Vec<KeyArg>,
     /// The structure (step 4): `calls[0]` is the entry's call, and the
     /// tree below it holds every operation of `ops` once.
     pub calls: Vec<Call>,
     pub folds: Vec<Fold>,
+}
+
+/// A key argument of the entry: leaf of argument `arg`, at `path` through its
+/// tuples.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyArg {
+    pub arg: usize,
+    pub path: Vec<(usize, usize)>,
 }
 
 /// Why an entry cannot be exported: a code of the export and a message in
@@ -519,7 +540,7 @@ fn kind(s: &Sym) -> &'static str {
         Sym::Int(_) => "int",
         Sym::F64(_) => "f64",
         Sym::Bool(_) => "bool",
-        Sym::Key => "key",
+        Sym::Key(_) => "key",
         Sym::Tuple(_) => "tuple",
         Sym::Record(_) => "record",
     }
@@ -527,7 +548,7 @@ fn kind(s: &Sym) -> &'static str {
 
 /// `E8006`: a key reaching what the C program would have to compute with it.
 fn key_refusal<T>(what: &str) -> R<T> {
-    refuse("E8006", format!("a key reaches {what}: the C program holds no key, so a key may only be split (`split_key`) or given to a dropout mask outside training, which reads none (`sample` draws from the run's stream, not from a key)"))
+    refuse("E8006", format!("a key reaches {what}: the C program holds the entry's keys only to draw from them, so a key may only be split (`split_key`), given to a dropout mask outside training, which reads none, or given to `sample` as an argument of the entry"))
 }
 
 impl Recorder {
@@ -559,7 +580,7 @@ impl Recorder {
                     return refuse("E8007", "the entry's result holds integer weights, its argument's as they were quantized: the C program writes the reals it computes, and the weights are read, not computed");
                 }
                 Sym::Tensor(_) => {}
-                Sym::Key => return key_refusal("the entry's result"),
+                Sym::Key(_) => return key_refusal("the entry's result"),
                 other => return refuse("E8008", format!("the entry's result holds a {}, which a `.psk.d` file cannot hold: the C program writes tensors only", kind(&other))),
             }
         }
@@ -629,7 +650,7 @@ impl Recorder {
             let mut syms = Vec::with_capacity(args.len());
             for (i, a) in args.iter().enumerate() {
                 let mut leaf = 0;
-                syms.push(r.input(i, a, &mut leaf)?);
+                syms.push(r.input(i, a, &mut leaf, &mut Vec::new())?);
             }
             r.rec.args = syms.clone();
             r.pending = Some(syms);
@@ -637,7 +658,7 @@ impl Recorder {
         });
     }
 
-    fn input(&mut self, arg: usize, v: &Value, leaf: &mut usize) -> R<Sym> {
+    fn input(&mut self, arg: usize, v: &Value, leaf: &mut usize, path: &mut Vec<(usize, usize)>) -> R<Sym> {
         Ok(match v {
             Value::Real(t) => {
                 let store = match &t.data {
@@ -666,9 +687,22 @@ impl Recorder {
                 Sym::F64(Scalar::Var(v))
             }
             Value::Bool(b) => Sym::Bool(*b),
-            Value::Key(_) => Sym::Key,
-            Value::Tuple(vs) => Sym::Tuple(vs.iter().map(|x| self.input(arg, x, leaf)).collect::<R<_>>()?),
-            Value::Record(fs) => Sym::Record(fs.iter().map(|(n, x)| Ok((n.clone(), self.input(arg, x, leaf)?))).collect::<R<_>>()?),
+            // An argument of the C function, which `sample` may read (step 7b).
+            Value::Key(_) => {
+                self.rec.key_args.push(KeyArg { arg, path: path.clone() });
+                Sym::Key(Some(self.rec.key_args.len() - 1))
+            }
+            Value::Tuple(vs) => {
+                let mut out = Vec::with_capacity(vs.len());
+                for (k, x) in vs.iter().enumerate() {
+                    path.push((vs.len(), k));
+                    out.push(self.input(arg, x, leaf, path)?);
+                    path.pop();
+                }
+                Sym::Tuple(out)
+            }
+            Value::Record(fs) => Sym::Record(fs.iter().map(|(n, x)| Ok((n.clone(), self.input(arg, x, leaf, path)?))).collect::<R<_>>()?),
+            Value::Stacked(_) => return internal("a stacked value as an entry's argument"),
         })
     }
 
@@ -828,8 +862,10 @@ impl Recorder {
     }
 
     /// The fold's value: the accumulator, or with `scan` the pair of it and
-    /// the stack of the accumulators before each iteration.
-    pub fn fold_end(&mut self) {
+    /// the stack of the accumulators before each iteration; `empty`, the
+    /// host's stack of none when the scan made no iteration (D99's
+    /// addendum, 0.10.0 step 8).
+    pub fn fold_end(&mut self, empty: Option<&Value>) {
         self.guard(|r| {
             let Some(mut f) = r.folds.pop() else { return internal("the end of no fold") };
             if !matches!(r.open.pop(), Some(Open::Fold(id)) if id == f.id) {
@@ -845,8 +881,13 @@ impl Recorder {
                 (r.var, r.name) = (var, name);
                 f.pre.sort_by_key(|(i, _)| *i);
                 let parts: Vec<Sym> = f.pre.into_iter().map(|(_, s)| s).collect();
-                r.stacking = Some(f.id);
-                let stacked = r.stack(&parts);
+                // A stack of none is filled in the caller's body: a scan's
+                // stack is made by copies of its iterations' accumulators.
+                r.stacking = (!parts.is_empty()).then_some(f.id);
+                let stacked = match empty {
+                    Some(v) if parts.is_empty() => r.empty(v),
+                    _ => r.stack(&parts),
+                };
                 r.stacking = None;
                 Sym::Tuple(vec![f.acc, stacked?])
             } else {
@@ -926,6 +967,30 @@ impl Recorder {
         });
     }
 
+    /// An `add` evaluated by its product's kernel, as its epilogue (plan
+    /// 0.10.0 step 7): the product's `let` (`product_site`) made nothing,
+    /// and this one launches the product's kernel, a pack's first where the
+    /// layout packs, on the product's operands `product` and the `add`'s
+    /// other operand.
+    #[allow(clippy::too_many_arguments)]
+    pub fn epilogue(&mut self, var: VarId, product: &[VarId], other: VarId, dtype: Dtype, product_site: &str, site: &str, name: Option<&str>) {
+        self.guard(|r| {
+            r.site = match name {
+                Some(n) => format!("{product_site} + {site} ({n})"),
+                None => format!("{product_site} + {site}"),
+            };
+            (r.var, r.name) = (Some(var.0), name.map(String::from));
+            let mut args = r.gets(product)?;
+            args.push(r.get(&other)?);
+            let mut ins = Vec::with_capacity(args.len());
+            for a in &args {
+                ins.push(r.as_tensor(a, dtype)?);
+            }
+            let s = r.tensor_prim(&ins)?;
+            r.bind(var, s)
+        });
+    }
+
     fn bind(&mut self, var: VarId, s: Sym) -> R<()> {
         if let Some(e) = self.events.front() {
             return internal(format!("{} launch(es) of this `let` not accounted for, the first of kernel {}", self.events.len(), e.kernel));
@@ -985,21 +1050,23 @@ impl Recorder {
             Sym::Nat(n) => Ok(self.scalar_buf(Scalar::Const(*n as f64), dtype)),
             Sym::Int(n) => Ok(self.scalar_buf(Scalar::Const(*n as f64), dtype)),
             Sym::F64(x) => Ok(self.scalar_buf(*x, dtype)),
-            Sym::Key => key_refusal("a kernel"),
+            Sym::Key(_) => key_refusal("a kernel"),
             other => internal(format!("a {} where a real tensor is expected", kind(other))),
         }
     }
 
     /// The host's `tensor_prim_kinds`: one launch, or a pack and its
-    /// contraction.
+    /// contraction, operand 1 packed (and an epilogue's operand after it).
     fn tensor_prim(&mut self, ins: &[View]) -> R<Sym> {
         let pack = self.events.front().is_some_and(|e| e.pack);
         let out = if pack {
-            if ins.len() != 2 {
-                return internal("a pack of an operation of other than two operands");
+            if ins.len() != 2 && ins.len() != 3 {
+                return internal("a pack of an operation of other than two operands, or three with an epilogue");
             }
-            let panel = self.consume(&ins[1..], true)?;
-            self.consume(&[ins[0].clone(), panel], false)?
+            let panel = self.consume(&ins[1..2], true)?;
+            let mut rest = vec![ins[0].clone(), panel];
+            rest.extend(ins[2..].iter().cloned());
+            self.consume(&rest, false)?
         } else {
             self.consume(ins, false)?
         };
@@ -1075,6 +1142,10 @@ impl Recorder {
                 other => internal(format!("set_elem on a {}", kind(other))),
             },
             PrimOp::SliceParams { index } => self.slice(a(0)?, *index as usize),
+            PrimOp::StackParams { .. } if args.is_empty() => match top {
+                Some(v) => self.empty(v),
+                None => internal("a stack of no layer without its value"),
+            },
             PrimOp::StackParams { .. } => self.stack(args),
             PrimOp::SetSlice => {
                 let Sym::Nat(i) = a(1)? else { return internal("set_slice at a non-static index") };
@@ -1101,12 +1172,12 @@ impl Recorder {
                 Sym::F64(x) => Ok(Sym::Tensor(self.scalar_buf(*x, dtype))),
                 Sym::Tensor(v) if v.bound.is_none() => Ok(Sym::Tensor(v.clone())),
                 Sym::Tensor(v) => self.tensor_prim(std::slice::from_ref(v)),
-                Sym::Key => key_refusal("`real`"),
+                Sym::Key(_) => key_refusal("`real`"),
                 other => internal(format!("real of a {}", kind(other))),
             },
             PrimOp::Zeros { .. } | PrimOp::Ones { .. } | PrimOp::Positions { .. } | PrimOp::CausalMask { .. } => self.tensor_prim(&[]),
             PrimOp::DropoutMask => {
-                if !matches!(a(1)?, Sym::Key) {
+                if !matches!(a(1)?, Sym::Key(_)) {
                     return internal("a dropout mask without a key");
                 }
                 let v = self.as_tensor(a(2)?, dtype)?;
@@ -1116,22 +1187,26 @@ impl Recorder {
                 Ok(Sym::Tensor(View { buf: b, off: 0, shape: v.shape, bound: None }))
             }
             PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } => refuse("E8004", format!("the entry calls the initializer `{}`, which the C runtime does not provide: an exported model reads its parameters", op.name())),
+            // The halves are held by nothing: they may be split again, or
+            // given to a dropout mask outside training.
             PrimOp::SplitKey { n } => match a(0)? {
-                Sym::Key => Ok(Sym::Tuple(vec![Sym::Key; *n])),
+                Sym::Key(_) => Ok(Sym::Tuple(vec![Sym::Key(None); *n])),
                 other => internal(format!("split_key of a {}", kind(other))),
             },
-            // A host operation on the backend's stream (step 6): the rows of
-            // the last axis, a token each.
-            PrimOp::Sample => match a(0)? {
-                Sym::Tensor(v) if matches!(self.rec.bufs[v.buf].store, Store::Quant { .. }) => refuse("E8007", "`sample` draws from integer weights: the C program samples from the logits it computes"),
-                Sym::Tensor(v) if v.bound.is_none() && !v.shape.is_empty() => {
+            // A host operation (step 6) drawing from a key argument of the
+            // entry (step 7b): the rows of the last axis, a token each.
+            PrimOp::Sample => match (a(0)?, a(1)?) {
+                (Sym::Key(None), _) => key_refusal("`sample` that is not an argument of the entry (split, or stacked)"),
+                (_, Sym::Tensor(v)) if matches!(self.rec.bufs[v.buf].store, Store::Quant { .. }) => refuse("E8007", "`sample` draws from integer weights: the C program samples from the logits it computes"),
+                (Sym::Key(Some(key)), Sym::Tensor(v)) if v.bound.is_none() && !v.shape.is_empty() => {
+                    let key = *key;
                     let vocab = v.shape[v.shape.len() - 1];
                     let rows = v.numel() / vocab.max(1);
                     let out = self.buf(Store::I64, rows, Made::Sample);
-                    self.push(Op::Sample { out, src: v.clone(), rows, vocab });
+                    self.push(Op::Sample { out, src: v.clone(), rows, vocab, key });
                     Ok(Sym::Tensor(View { buf: out, off: 0, shape: v.shape[..v.shape.len() - 1].to_vec(), bound: Some(vocab as u64) }))
                 }
-                other => internal(format!("sample of a {}", kind(other))),
+                (k, x) => internal(format!("sample of a {} by a {}", kind(x), kind(k))),
             },
             PrimOp::OneHot => match a(0)? {
                 Sym::Tensor(v) if v.bound.is_some() => self.tensor_prim(std::slice::from_ref(v)),
@@ -1233,17 +1308,48 @@ impl Recorder {
         Ok(Sym::Tensor(self.consume(&ins, false)?))
     }
 
-    /// The host's `stack_trees`: leaf by leaf along a new leading axis.
+    /// A stack of no part, as the host built it from its type (D99's
+    /// addendum, 0.10.0 step 8): each tensor leaf a buffer of no element,
+    /// filled; the keys of no layer held by nothing.
+    fn empty(&mut self, v: &Value) -> R<Sym> {
+        Ok(match v {
+            Value::Real(t) | Value::Idx { t, .. } => {
+                let store = match &t.data {
+                    Buf::F64(_) => Store::F64,
+                    Buf::F32(_) => Store::F32,
+                    Buf::Bf16(_) => Store::Bf16,
+                    Buf::I64(_) => Store::I64,
+                    other => return internal(format!("a stack of no part of type {}", other.dtype())),
+                };
+                let b = self.buf(store, t.numel(), Made::Fill);
+                self.push(Op::Fill { buf: b, value: 0.0 });
+                let bound = match v {
+                    Value::Idx { bound, .. } => Some(*bound),
+                    _ => None,
+                };
+                Sym::Tensor(View { buf: b, off: 0, shape: t.axes.iter().map(|a| a.len).collect(), bound })
+            }
+            Value::Tuple(vs) => Sym::Tuple(vs.iter().map(|x| self.empty(x)).collect::<R<_>>()?),
+            Value::Record(fs) => Sym::Record(fs.iter().map(|(n, x)| Ok((n.clone(), self.empty(x)?))).collect::<R<_>>()?),
+            Value::Stacked(vs) if vs.is_empty() => Sym::Key(None),
+            other => return internal(format!("a stack of no part holding a {}", other.kind())),
+        })
+    }
+
+    /// The host's `stack_trees`: leaf by leaf along a new leading axis. A
+    /// leaf with no axis, which the host stacks as the sequence of its
+    /// values (defect 3f, 0.10.0 step 4), is one symbol here when every layer
+    /// has the same: a key, which the C program never holds, always does.
     fn stack(&mut self, parts: &[Sym]) -> R<Sym> {
         let Some(first) = parts.first() else { return internal("a stack of nothing") };
         match first {
-            Sym::Tensor(f) if f.bound.is_none() => {
+            Sym::Tensor(f) => {
                 let store = self.rec.bufs[f.buf].store.rebuilt();
                 let mut views = Vec::with_capacity(parts.len());
                 for p in parts {
                     match p {
-                        Sym::Tensor(v) if v.bound.is_none() => views.push(v.clone()),
-                        other => return internal(format!("a stack of a tensor and a {}", kind(other))),
+                        Sym::Tensor(v) if v.bound == f.bound => views.push(v.clone()),
+                        other => return internal(format!("a stack of a {} and a {}", kind(first), kind(other))),
                     }
                 }
                 let n: usize = views.iter().map(|v| v.numel()).sum();
@@ -1256,7 +1362,7 @@ impl Recorder {
                 }
                 let mut shape = vec![parts.len()];
                 shape.extend(f.shape.iter().copied());
-                Ok(Sym::Tensor(View { buf: b, off: 0, shape, bound: None }))
+                Ok(Sym::Tensor(View { buf: b, off: 0, shape, bound: f.bound }))
             }
             Sym::Record(fs) => {
                 let mut out = Vec::with_capacity(fs.len());
@@ -1280,7 +1386,10 @@ impl Recorder {
                 }
                 Ok(Sym::Tuple(out))
             }
-            other => Ok(other.clone()),
+            other if parts.iter().all(|p| p == other) => Ok(other.clone()),
+            // Keys that differ from layer to layer: held by nothing (step 7b).
+            Sym::Key(_) if parts.iter().all(|p| matches!(p, Sym::Key(_))) => Ok(Sym::Key(None)),
+            other => internal(format!("a fold's accumulator holds a {} that differs from layer to layer", kind(other))),
         }
     }
 
@@ -1329,16 +1438,16 @@ impl Recorder {
 
 impl Recorder {
     /// The host's `slice_tree`: slice `i` along the leading axis of every
-    /// real tensor leaf, a view at an offset. A leaf of integer weights stays
+    /// tensor leaf, a view at an offset. A leaf of integer weights stays
     /// integers where `QBuf::slice_leading` keeps them; where it gives up (the
     /// scales constant along the leading axis, or an `int4` slice of odd
     /// length, which would start inside a byte) the slice is a copy of its
     /// values in `f64`, as `with_data` makes it (step 7).
     fn slice(&mut self, s: &Sym, i: usize) -> R<Sym> {
         map_leaves(s, &mut |leaf| match leaf {
-            Sym::Tensor(v) if v.bound.is_none() && !v.shape.is_empty() => {
+            Sym::Tensor(v) if !v.shape.is_empty() => {
                 let chunk = v.numel() / v.shape[0].max(1);
-                let at = View { buf: v.buf, off: v.off + i * chunk, shape: v.shape[1..].to_vec(), bound: None };
+                let at = View { buf: v.buf, off: v.off + i * chunk, shape: v.shape[1..].to_vec(), bound: v.bound };
                 let rb = &self.rec.bufs[v.buf];
                 if let (Store::Quant { bits, .. }, Some(q)) = (rb.store, rb.quant) {
                     let over = (q.over + v.shape.len()).checked_sub(q.rank);

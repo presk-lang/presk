@@ -26,7 +26,7 @@ use presk_data::{Layout, Leaf, Pipeline, Reader};
 use presk_interp::eval::Dims;
 use presk_interp::key::Key;
 pub use presk_rt::{Backend, Buf, Realization, Tensor, Value, load_params, params_from_data, params_to_data, save_params};
-use presk_rt::{Axis, Prepared, RtError};
+use presk_rt::{Axis, Plan, Prepared, RtError};
 use presk_syntax::Span;
 use presk_types::check::TypedProgram;
 use presk_types::check::training::TrainingRun;
@@ -119,8 +119,8 @@ impl From<presk_data::DataError> for TrainError {
 }
 
 /// The Core functions a training run needs, resolved from the typed program.
-/// `prepare_training` generates the objective's `vjp` into `core`; a backend
-/// is then built over the final program.
+/// `prepare_training` generates the objective's `vjp` and `value_vjp` into
+/// `core`; a backend is then built over the final program.
 #[derive(Clone, Debug)]
 pub struct TrainingFns {
     pub model: String,
@@ -128,6 +128,14 @@ pub struct TrainingFns {
     pub key: bool,
     pub objective: FuncId,
     pub vjp: FuncId,
+    /// `objective.value_vjp`: the objective's value, then the `vjp`'s
+    /// cotangents, from one forward pass (0.10.0 step 3). The training loop
+    /// calls it once a step, where it called the objective, for the loss it
+    /// logs, and then the `vjp`.
+    pub value_vjp: FuncId,
+    /// The objective's `let`s that `value_vjp` computes again for its value,
+    /// and their copies there ([`presk_core::ad::ValueVjp::again`]).
+    pub again: Vec<(presk_core::VarId, presk_core::VarId)>,
     pub init: FuncId,
     pub opt_init: FuncId,
     pub opt_step: FuncId,
@@ -135,6 +143,15 @@ pub struct TrainingFns {
 }
 
 pub fn prepare_training(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram) -> Result<TrainingFns> {
+    prepare_training_as(core, elab, typed, presk_core::ad::Options::default())
+}
+
+/// [`prepare_training`] under a policy for the forward pass's values
+/// (`presk train --remat`): stored, the objective's `.vjp` and `.value_vjp`
+/// are its `.bwd` after its `.fwd`, one forward pass a step; and keeping
+/// the fusion groups or not, as the realizations the step runs under need
+/// (`presk_core::ad::Options::groups`, 0.10.0 step 4b).
+pub fn prepare_training_as(core: &mut Program, elab: &ElabProgram, typed: &TypedProgram, opts: impl Into<presk_core::ad::Options>) -> Result<TrainingFns> {
     let Some(run) = typed.training.first() else {
         return err("E7001", "no `training run` in this file");
     };
@@ -149,7 +166,7 @@ pub fn prepare_training(core: &mut Program, elab: &ElabProgram, typed: &TypedPro
         .position(|f| matches!(f.origin, presk_core::ir::Origin::Source(id) if id == run.objective))
         .map(|i| FuncId(i as u32))
         .ok_or_else(|| TrainError { code: "E7001", message: "objective not lowered".into(), span: None })?;
-    let (vjp, diags) = presk_core::ad::vjp_function(core, objective);
+    let presk_core::ad::ValueVjp { vjp, value_vjp, again, diags } = presk_core::ad::value_vjp_function_as(core, objective, opts);
     if let Some(d) = diags.iter().find(|d| d.is_error()) {
         return Err(TrainError { code: "E6001", message: format!("cannot differentiate the objective: {}", d.message), span: d.primary_span() });
     }
@@ -160,7 +177,56 @@ pub fn prepare_training(core: &mut Program, elab: &ElabProgram, typed: &TypedPro
         return err("E7001", format!("optimizer `{opt}` has no lowered functions (only `adamw` is implemented)"));
     };
     Ok(TrainingFns {
-        key: matches!(core.func(objective).params.get(1).map(|p| &p.ty), Some(Ty::Key)), model, objective, vjp, init, opt_init, opt_step, opt_lr })
+        key: matches!(core.func(objective).params.get(1).map(|p| &p.ty), Some(Ty::Key)), model, objective, vjp, value_vjp, again, init, opt_init, opt_step, opt_lr })
+}
+
+/// The plan the training loop runs under, from the one given for the
+/// program (0.10.0 step 3). The loop calls the objective's `.value_vjp`
+/// where it called the objective and its `.vjp`: what the plan states of
+/// the `.vjp`'s sites (its types, its layouts) it states of the
+/// `.value_vjp`'s, whose bindings share the `.vjp`'s numbers up to the end
+/// of the reverse sweep; and what it states of the objective's sites, of the
+/// copies `.value_vjp` computes its value with. A realization solved over a
+/// step (`presk solve --step`, which measures the `.vjp`) and a plan made for
+/// the gradient (`presk plan --entry loss_grad` on a program whose functions
+/// are named as `presk train` names them) then give the loop the types and
+/// layouts they gave before, and the loss it logs is the objective's.
+pub fn plan_for_loop(plan: &Plan, core: &Program, fns: &TrainingFns) -> Plan {
+    let mut p = plan.clone();
+    let (obj, vjp, vv) = (&core.func(fns.objective).name, &core.func(fns.vjp).name, &core.func(fns.value_vjp).name);
+    let given = &plan.realization;
+    if let Some(d) = given.functions.get(vjp) {
+        p.realization.functions.entry(vv.clone()).or_insert(*d);
+    }
+    let of_vjp = |k: &String| k.strip_prefix(vjp.as_str()).filter(|r| r.starts_with('/')).map(|r| format!("{vv}{r}"));
+    for (k, d) in &given.storage {
+        if let Some(site) = of_vjp(k) {
+            p.realization.storage.entry(site).or_insert(*d);
+        }
+    }
+    for (k, d) in &given.accum {
+        if let Some(site) = of_vjp(k) {
+            p.realization.accum.entry(site).or_insert(*d);
+        }
+    }
+    for (k, l) in &plan.layout {
+        if let Some(nest) = of_vjp(k) {
+            p.layout.entry(nest).or_insert_with(|| l.clone());
+        }
+    }
+    for (a, b) in &fns.again {
+        let (site, copy) = (format!("{obj}/%{}", a.0), format!("{vv}/%{}", b.0));
+        if p.realization.dtype_at(&copy) != given.dtype_at(&site) {
+            p.realization.storage.insert(copy.clone(), given.dtype_at(&site));
+        }
+        if p.realization.accum_at(&copy) != given.accum_at(&site) {
+            p.realization.accum.insert(copy.clone(), given.accum_at(&site));
+        }
+        if let Some(l) = plan.layout.get(&site) {
+            p.layout.insert(copy, l.clone());
+        }
+    }
+    p
 }
 
 /// Runs the (first) `training run` of the program over `backend`, built
@@ -205,8 +271,7 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
         Ok(d)
     };
     let d_obj = dims_of(fns.objective)?;
-    let objective: Prepared = backend.prepare(fns.objective, &d_obj, &opts.realize)?;
-    let vjp = backend.prepare(fns.vjp, &d_obj, &opts.realize)?;
+    let value_vjp: Prepared = backend.prepare(fns.value_vjp, &d_obj, &opts.realize)?;
     let init = backend.prepare(fns.init, &dims_of(fns.init)?, &opts.realize)?;
     let d_opt = dims_of(fns.opt_step)?;
     let opt_init = backend.prepare(fns.opt_init, &d_opt, &opts.realize)?;
@@ -240,19 +305,14 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
             // A fresh key per step, derived from the run's seed: `dropout`
             // draws its mask from it, and the backward pass, which recomputes
             // the forward, recomputes the same mask from the same key.
-            let mut obj_args = vec![theta.clone()];
             let mut vjp_args = vec![theta.clone()];
             if fns.key {
-                let k = Value::Key(run_key.child(t));
-                obj_args.push(k.clone());
-                vjp_args.push(k);
+                vjp_args.push(Value::Key(run_key.child(t)));
             }
-            obj_args.push(batch.clone());
             vjp_args.push(batch);
             vjp_args.push(one.clone());
             let t0 = std::time::Instant::now();
-            let loss = backend.call(&objective, obj_args)?;
-            let g = gradient(backend, &vjp, vjp_args)?;
+            let (loss, g) = value_and_gradient(backend, &value_vjp, vjp_args)?;
             let grad_norm = g.sum_squares_f64().sqrt();
             let lr = backend.call(&opt_lr, vec![Value::Nat(t), Value::Nat(total)])?;
             (theta, state) = update(backend, &opt_step, theta, state, g, t, total)?;
@@ -288,6 +348,19 @@ pub fn gradient(backend: &mut dyn Backend, vjp: &Prepared, args: Vec<Value>) -> 
     match backend.call(vjp, args)? {
         Value::Tuple(mut parts) if !parts.is_empty() => Ok(parts.swap_remove(0)),
         other => err("E7001", format!("vjp returned a {}", other.kind())),
+    }
+}
+
+/// `objective.value_vjp(θ, [key,] batch, 1)`: the objective's value and the
+/// gradient, the first of the cotangents, from one call.
+pub fn value_and_gradient(backend: &mut dyn Backend, value_vjp: &Prepared, args: Vec<Value>) -> Result<(Value, Value)> {
+    match backend.call(value_vjp, args)? {
+        Value::Tuple(mut parts) if parts.len() >= 2 => {
+            parts.truncate(2);
+            let g = parts.pop().unwrap();
+            Ok((parts.pop().unwrap(), g))
+        }
+        other => err("E7001", format!("value_vjp returned a {}", other.kind())),
     }
 }
 
@@ -331,7 +404,7 @@ pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabPr
 pub type DataArgs = (FuncId, Dims, presk_interp::run::Inputs, Vec<Value>);
 
 pub fn args_on_data(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<DataArgs> {
-    let to_train = |e: presk_interp::RunError| TrainError { code: "E7001", message: e.message, span: e.span };
+    let to_train = |e: presk_interp::RunError| TrainError { code: e.code.unwrap_or("E7001"), message: e.message, span: e.span };
     let (entry_fn, _, _) = presk_interp::run::resolve_entry(core, elab, &opts.entry).map_err(to_train)?;
     let Some(last) = core.func(entry_fn).params.last() else {
         return err("E7001", format!("`{}` takes no argument to fill from a data file", opts.entry));
@@ -399,7 +472,7 @@ fn batch_value(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &
                 presk_data::Value::Real(d) => Ok(d.clone()),
                 _ => err("E9005", "reals expected in the sample"),
             })?;
-            Ok(Value::Real(Tensor { axes, data: Buf::F64(data) }))
+            Ok(Value::Real(Tensor { axes, data: Buf::F64(data.into()) }))
         }
         (Ty::Idx { bound, shape }, Layout::Leaf(Leaf::Idx { .. })) => {
             let axes = presk_rt::axes_of(shape, dims)?;
@@ -409,7 +482,7 @@ fn batch_value(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &
                 presk_data::Value::Idx(d) => Ok(d.iter().map(|x| *x as i64).collect()),
                 _ => err("E9005", "indices expected in the sample"),
             })?;
-            Ok(Value::Idx { bound, t: Tensor { axes, data: Buf::I64(data) } })
+            Ok(Value::Idx { bound, t: Tensor { axes, data: Buf::I64(data.into()) } })
         }
         _ => err("E9005", "the batch type and the file's layout disagree"),
     }

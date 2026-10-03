@@ -1,0 +1,16 @@
+-- E2016: a module includes itself, directly (`M`) or through another
+-- (`A` stacks `B`, which uses `A`).
+module M {
+  param w : ℝ[4]
+  use inner : M
+  fn apply(x : ℝ[4]) -> ℝ[4] = x * w
+}
+module A {
+  use blocks : stack{2}(B)
+  fn apply(x : ℝ[4]) -> ℝ[4] = x
+}
+module B {
+  param w : ℝ[4]
+  use a : A
+  fn apply(x : ℝ[4]) -> ℝ[4] = x * w
+}

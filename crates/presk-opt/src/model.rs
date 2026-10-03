@@ -129,7 +129,9 @@ fn prim_work_bytes(op: &PrimOp, ch: &[Id], elems: &dyn Fn(Id) -> f64, ty_of: &dy
         Softmax { .. } => (TRANSCENDENTAL + 3.0) * n_out,
         CrossEntropy | CrossEntropyVjp => (TRANSCENDENTAL + 3.0) * in0,
         Embed | OneHot | EmbedVjp | MeanVjp { .. } | BroadcastLike | ScatterIndex { .. } | ScatterParams { .. } | SetSlice => n_out,
-        Argmax | Sample => in0,
+        Argmax => in0,
+        // `(key, logits)`: the logits' elements.
+        Sample => ch.get(1).map_or(0.0, |c| elems(*c)),
         Zeros { .. } | Ones { .. } | ZerosLike | Normal { .. } | XavierUniform { .. } | DropoutMask | Positions { .. } | CausalMask { .. } => n_out,
         MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SliceParams { .. } | StackParams { .. } | SplitKey { .. } | SetField { .. } | SetElem { .. } => 0.0,
     };

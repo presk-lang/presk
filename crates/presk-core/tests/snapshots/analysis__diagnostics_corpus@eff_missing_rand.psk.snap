@@ -6,12 +6,12 @@ input_file: tests/diag/eff_missing_rand.psk
 [E4001] Error: `pick` uses the effect `Rand` without declaring it
    ,-[ tests/diag/eff_missing_rand.psk:4:3 ]
    |
- 3 | ,-> fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
- 4 | |->   sample(logits)
-   | |     ^^^^^^^|^^^^^^   
-   | |            `--------- this uses `Rand`
-   | |                      
-   | `---------------------- declared without `uses`
+ 3 | ,-> fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+ 4 | |->   sample(key, logits)
+   | |     ^^^^^^^^^|^^^^^^^^^   
+   | |              `------------ this uses `Rand`
+   | |                           
+   | `--------------------------- declared without `uses`
    |     
    |     Help: add `uses Rand` to the signature of `pick`
 ---'

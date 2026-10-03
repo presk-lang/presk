@@ -16,6 +16,10 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
+# What a gradient does with its forward pass's values (`--remat`, 0.10.0 step
+# 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
+# recorded (the re-measurement after defect 3f, D93).
+REMAT=${REMAT:-store}
 MODEL=corpus/nlp/05_gpt.psk
 W=${W:-out/gpt_trained/final.psk.d}
 PROF=${PROF:-out/gpt_prof.json}
@@ -27,11 +31,11 @@ STEP=(--const D=64 --const H=2 --const L=2 --weights "$W" --warmup 100 --steps 6
 
 # TABLE_ONLY=1 rebuilds the table from the outputs of a previous run.
 if [ "${TABLE_ONLY:-0}" != 1 ]; then
-"$PRESK" calibrate --step "$MODEL" "${STEP[@]}" --profile "$PROF" \
+"$PRESK" calibrate --step "$MODEL" "${STEP[@]}" --profile "$PROF" --remat "$REMAT" \
     --realize f64 --realize f32 --realize bf16 --realize recipe \
     --out out/step_env.json 2>/dev/null | tee out/step_calibrate.txt
 for b in 1e-3 1e-2; do
-    "$PRESK" solve --step "$MODEL" --precision out/step_env.json --budget "$b" --bits 128 \
+    "$PRESK" solve --step "$MODEL" --precision out/step_env.json --budget "$b" --bits 128 --remat "$REMAT" \
         --profile "$PROF" --out "out/step_$b.json" 2>/dev/null | tee "out/step_solve_$b.txt"
 done
 # The recipe as a file, for the course-scale timing (j_step.sh): the forward

@@ -17,16 +17,20 @@
 # JSON line per point), sweep.json (the times, the machine, u), plan.json and
 # plan.txt (`presk plan --cost`); DAY/day.txt the date, the load and the
 # commit of each run into DAY. EXTRA is passed to `presk autotune` (a sample:
-# "--top 8 --random 32").
+# "--top 8 --random 32"). NEST names the nests to sweep, separated by spaces,
+# every nest when empty: one sweep of several nests into one configuration
+# (0.10.0 step 2, T3; `presk autotune` records them in sweep.json).
 # The defaults are the measurement of §3.4: SelfAttention.apply of the
 # course GPT at its constants (D = 384, H = 6), T = 256, B ∈ {1, 16}, f32
-# and f64, the whole space. Needs a quiet machine and a calibrated profile
-# (`make calibrate-ra4`).
+# and f64, the whole space; the attention as the sweeps measured it, its
+# mask a real tensor added to the scores, frozen in
+# experiments/ra4_attention.psk since plan 0.10.0 step 7b (D99). Needs a
+# quiet machine and a calibrated profile (`make calibrate-ra4`).
 set -u -o pipefail
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
 CORES=${RA4_CORES:-5-9,15-19}
-FILE=${FILE:-corpus/nlp/05_gpt.psk}
+FILE=${FILE:-experiments/ra4_attention.psk}
 ENTRY=${ENTRY:-SelfAttention.apply}
 CONSTS=${CONSTS:-}                       # e.g. "D=1024 H=16"
 SHAPES=${SHAPES:-B=1,T=256 B=16,T=256}   # one --dim set per word
@@ -35,18 +39,18 @@ SPACE=${SPACE:-full}
 REPEAT=${REPEAT:-7}
 PROFILE=${PROFILE:-out/profile.json}
 INTERP=${INTERP:-1}                      # 1, 0, or the shapes to check on the interpreter, e.g. "B=1,T=256"
-NEST=${NEST:-}                           # one nest only, e.g. SelfAttention.apply/%13
+NEST=${NEST:-}                           # nests only, e.g. "SelfAttention.apply/%13 SelfAttention.apply/%23"
 EXTRA=${EXTRA:-}
 DAY=${1:?usage: experiments/ra4.sh DAY [EARLIER OUT.md]}
 [ -f "$PROFILE" ] || { echo "missing $PROFILE: run make calibrate-ra4 first"; exit 1; }
 mkdir -p "$DAY"
 # The commit, marked -dirty when the working tree differs from it: `presk
 # rank --frozen` refuses such a day (plan 0.8.0 §3.4).
-{ date -Is; uptime; echo "$ENTRY $CONSTS $SHAPES $TYPES, cores $CORES"
+{ date -Is; uptime; echo "$ENTRY $CONSTS $SHAPES $TYPES${NEST:+, nests $NEST}, cores $CORES"
   echo "$(git rev-parse --short HEAD)$([ -z "$(git status --porcelain)" ] || echo -dirty)"; } >> "$DAY/day.txt"
 common=(--entry "$ENTRY")
 for c in $CONSTS; do common+=(--const "$c"); done
-[ -n "$NEST" ] && common+=(--nest "$NEST")
+for n in $NEST; do common+=(--nest "$n"); done
 for shape in $SHAPES; do
   interp=(); { [ "$INTERP" = 1 ] || [[ " $INTERP " == *" $shape "* ]]; } && interp=(--interp)
   dims=(); for d in ${shape//,/ }; do dims+=(--dim "$d"); done

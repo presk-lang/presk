@@ -123,6 +123,38 @@ pub enum Rhs {
     Fold { body: FuncId, dim_args: BTreeMap<DimVar, DimExpr>, n: DimExpr, stacked: Vec<VarId>, init: VarId, extra: Vec<VarId>, index: bool, reverse: bool, scan: bool },
 }
 
+impl Rhs {
+    /// The variables it reads, in order, once per read.
+    pub fn vars(&self) -> Vec<VarId> {
+        match self {
+            Rhs::Lit(_) => vec![],
+            Rhs::Prim { args, .. } | Rhs::Tuple(args) | Rhs::Call { args, .. } | Rhs::Closure { captured: args, .. } => args.clone(),
+            Rhs::Proj(x, _) | Rhs::Field(x, _) | Rhs::Grad(x) => vec![*x],
+            Rhs::Record(fields) => fields.iter().map(|(_, v)| *v).collect(),
+            Rhs::Apply { fun, args } => std::iter::once(*fun).chain(args.iter().copied()).collect(),
+            Rhs::Fold { stacked, init, extra, .. } => stacked.iter().chain(std::iter::once(init)).chain(extra).copied().collect(),
+        }
+    }
+
+    /// The same right-hand side reading `m(v)` wherever it reads `v`.
+    pub fn map_vars(&self, m: impl Fn(VarId) -> VarId) -> Rhs {
+        let all = |vs: &[VarId]| vs.iter().map(|v| m(*v)).collect::<Vec<_>>();
+        match self {
+            Rhs::Lit(x) => Rhs::Lit(x.clone()),
+            Rhs::Prim { op, args } => Rhs::Prim { op: op.clone(), args: all(args) },
+            Rhs::Call { f, dim_args, args } => Rhs::Call { f: *f, dim_args: dim_args.clone(), args: all(args) },
+            Rhs::Tuple(vs) => Rhs::Tuple(all(vs)),
+            Rhs::Proj(x, i) => Rhs::Proj(m(*x), *i),
+            Rhs::Record(fs) => Rhs::Record(fs.iter().map(|(n, v)| (n.clone(), m(*v))).collect()),
+            Rhs::Field(x, n) => Rhs::Field(m(*x), n.clone()),
+            Rhs::Closure { f, captured } => Rhs::Closure { f: *f, captured: all(captured) },
+            Rhs::Grad(x) => Rhs::Grad(m(*x)),
+            Rhs::Apply { fun, args } => Rhs::Apply { fun: m(*fun), args: all(args) },
+            Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, scan } => Rhs::Fold { body: *body, dim_args: dim_args.clone(), n: n.clone(), stacked: all(stacked), init: m(*init), extra: all(extra), index: *index, reverse: *reverse, scan: *scan },
+        }
+    }
+}
+
 /// The type of `n` stacked values of type `ty` along a new leading axis:
 /// `params M` → `params stack{n}(M)`, a tensor gains a leading axis, a tuple
 /// is stacked leaf by leaf. A shape with an open prefix `...` is unchanged:
@@ -141,6 +173,7 @@ pub fn stack_ty(ty: &Ty, n: &DimExpr) -> Ty {
     match ty {
         Ty::Real(s) => Ty::Real(lead(s)),
         Ty::Idx { bound, shape } => Ty::Idx { bound: bound.clone(), shape: lead(shape) },
+        Ty::Truth(shape) => Ty::Truth(lead(shape)),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| stack_ty(t, n)).collect()),
         Ty::Params(r) => Ty::Params(ModRef::Stack { n: n.clone(), inner: Box::new(r.clone()) }),
         other => other.clone(),
@@ -154,6 +187,7 @@ pub fn unstack_ty(ty: &Ty) -> Ty {
     match ty {
         Ty::Real(s) => Ty::Real(drop(s)),
         Ty::Idx { bound, shape } => Ty::Idx { bound: bound.clone(), shape: drop(shape) },
+        Ty::Truth(shape) => Ty::Truth(drop(shape)),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(unstack_ty).collect()),
         Ty::Params(ModRef::Stack { inner, .. }) => Ty::Params((**inner).clone()),
         other => other.clone(),
@@ -194,6 +228,9 @@ pub enum PrimOp {
     MeanAll,
     Sum { axis: String },
     Mean { axis: String },
+    /// `(x)`, or `(x, mask)` with the mask a `bool[S2]` that broadcasts into
+    /// `x` (plan 0.10.0 step 7b): along `axis`, over the positions the mask
+    /// allows, `0` where it refuses.
     Softmax { axis: String },
     /// `embed(table, indices)`
     Embed,
@@ -203,7 +240,10 @@ pub enum PrimOp {
     /// `cross_entropy(logits, targets)`: per-position losses.
     CrossEntropy,
     Argmax,
-    /// `sample(logits)`: uses the `Rand` effect.
+    /// `(key, logits)`: a token per position of the logits but the last,
+    /// the least index whose cumulative probability exceeds the key's uniform
+    /// draw of that position's rank (plan 0.10.0 step 7b; the reference's
+    /// definition "Draws"). Uses the `Rand` effect.
     Sample,
     /// `t[axis: index]` (negative indices count from the end).
     IndexConst { axis: String, index: i64 },
@@ -222,6 +262,8 @@ pub enum PrimOp {
     SplitHeads { h: u64, hd: u64 },
     MergeHeads { h: u64, hd: u64 },
     Positions { axis: String, len: DimExpr },
+    /// `bool[axis: len, axis2: len]`, true where the second index is at most
+    /// the first (plan 0.10.0 step 7b).
     CausalMask { axis: String, len: DimExpr },
     // initializers (the shape comes from `ty`)
     Zeros { ty: Ty },
@@ -349,6 +391,17 @@ impl PrimOp {
             PrimOp::ScatterIndex { axis, index } => format!("scatter_index {axis}: {index}"),
             PrimOp::ScatterParams { index } => format!("scatter_params {index}"),
         }
+    }
+
+    /// Whether the primitive is an elementwise map over its operands, and so
+    /// can share a loop nest with its neighbours (PSK-Realize's fusion
+    /// groups). `real` and `pi` are excluded: they lift a hyperparameter, and
+    /// the host produces them without a kernel. `pow n` expands to `n − 1`
+    /// products of its argument, so a big exponent would duplicate the fused
+    /// subtree; those stay kernels of their own.
+    pub fn elementwise(&self) -> bool {
+        use PrimOp::*;
+        matches!(self, Add | Sub | Mul | Div | Neg | Exp | Log | Tanh | Sqrt | Gelu | Relu | Abs | Sigmoid | Sin | Cos | GeluDeriv | Heaviside | Sign) || matches!(self, Pow(n) if *n <= 2)
     }
 
     /// Whether the primitive draws randomness.

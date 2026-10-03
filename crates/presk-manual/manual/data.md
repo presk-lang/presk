@@ -37,7 +37,9 @@ Two rules follow from the language's semantics:
 
 **Sample types** are closed data types: `ℝ[…]`, `idx[N][…]` and tuples of
 them, with every dimension a literal (`(idx[64][seq: 8], idx[64][seq: 8])`,
-`ℝ[model: 4]`, `ℝ[]`). Axis names are kept for documentation; readers check
+`ℝ[model: 4]`, `ℝ[]`); a mask is stored as indices below 2, false 0 and
+true 1, and a type that writes it `bool[…]` reads as `idx[2][…]` (0.10.0
+step 7b, D99). Axis names are kept for documentation; readers check
 lengths and bounds, not names. A `params M` type is also a sample type,
 which is how **checkpoints and weights** are stored: one sample of type
 `params MiniGPT`. Its leaf layout is not derivable from the type text alone

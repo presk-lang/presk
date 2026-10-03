@@ -320,7 +320,9 @@ pub fn static_control(k: &Kernel) -> std::result::Result<(), String> {
 /// What the driver draws each input below: 0 for a real input; for an index
 /// input, the least length of an axis it indexes or of a loop it is compared
 /// with (a cross-entropy's gradient compares its labels with the classes),
-/// and 1, zeros, when it does neither.
+/// or, compared with a literal `c`, `⌊c⌋ + 2`, so that both sides of the
+/// comparison are drawn (a mask of a softmax, compared with `0.5`, is drawn
+/// below 2: plan 0.10.0 step 7b); and 1, zeros, when it does none of these.
 pub fn index_bounds(k: &Kernel) -> Vec<u64> {
     let mut bounds: Vec<Option<u64>> = vec![None; k.inputs.len()];
     let mut lower = |j: usize, n: usize| {
@@ -385,6 +387,11 @@ pub fn index_bounds(k: &Kernel) -> Vec<u64> {
                 && let Some(n) = loop_bounds.get(v)
             {
                 lower(*j, *n);
+            }
+            if let (Expr::LoadI(j, _), Expr::F(c)) = (&x, &y)
+                && *c >= 0.0
+            {
+                lower(*j, c.floor() as usize + 2);
             }
         }
     }

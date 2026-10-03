@@ -1,0 +1,17 @@
+-- E2010: `generate` names a function whose signature does not fit a
+-- generation function: it returns the logits, not a token.
+const V : nat = 16
+dim B
+dim T
+module Toy {
+  param w : ℝ[V, V]
+  fn apply(x : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = embed(w, x)
+}
+fn logits(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = Toy.apply(θ, ctx)
+fn next(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> idx[V][batch: B] =
+  argmax(Toy.apply(θ, ctx)[seq: -1])
+inference serve {
+  model    = Toy
+  weights  = "ckpt/final"
+  generate = logits
+}

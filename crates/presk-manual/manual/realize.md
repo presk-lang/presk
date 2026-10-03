@@ -32,7 +32,13 @@ Those three conditions are what make the group safe to launch as one kernel,
 and they are what the crate's test asserts on the corpus and the examples.
 The partition is structural: it depends on the body, not on the shapes or the
 realization, so it is computed once per function and reused by every backend
-and every dimension.
+and every dimension. It is part of what a program computes, not only of how
+fast: a value inside a group stays in the kernel's arithmetic type, `f32`
+for `bf16`, where a value that reaches memory is rounded to its storage
+type. So the dead-code pass after differentiation (0.10.0 step 3, the
+`language` chapter) keeps every group of what a gradient's result reads,
+and the partition is computed in PSK-Core (`presk_core::fusion`, which this
+crate re-exports) so that the pass can check it.
 
 A value read twice *inside* a group appears twice in the emitted expression,
 which trades an arithmetic operation for a round trip through memory. That
@@ -136,11 +142,12 @@ they name: a layout moves no bit, so it owes no gap.
 
 The decisions and their domains are the language reference's (§6.3, table
 `realize-decisions`), and since 0.7.0 step 3 every one of them is lowered. A
-nest is a **contraction** (a `dot` whose right operand has rank two, or an
-`ein` whose output is the outer axes, then `I`, then `J`, summed over one
-axis `K`: both of attention's `ein`s), a **softmax**, or anything else (an
-elementwise group, a reduction, a contraction of another pattern), whose only
-decision is the thread split.
+nest is a **contraction** (a `dot` whose right operand has rank two, the two
+derivatives of such a `dot` since 0.10.0 step 1, or an `ein` whose output is
+the outer axes, then `I`, then `J`, summed over one axis `K`: both of
+attention's `ein`s), a **softmax**, or anything else (an elementwise group, a
+reduction, a contraction of another pattern), whose only decision is the
+thread split.
 
 | Decision | Nests | Domain | Default | What it changes |
 |---|---|---|---|---|
@@ -150,8 +157,9 @@ decision is the thread split.
 | `order` | tiled contraction | the block loops, outermost first: `"IJ"`, `"JI"`; with a k-block a permutation of `"IJK"` | `"IJ"`, or `"IJK"` with a k-block | which operand stays in cache while the other streams |
 | `lanes` | tiled contraction | 1, or the register's width (four in `f32`, two in `f64`, one in `bf16`) | the register's width where it divides `n_j` and operand 1 is contiguous along `J`, else 1 | vector registers across the tile's columns, never across `k` |
 | `split` | every nest | `"none"`, or `{ "depth": d, "workers": p }` with `d` at most 2 and `p` the machine's workers or half of them | the executor's: the outermost loop over every worker, above four million weighted operations | which loop is divided among threads |
-| `pack` | NT contraction | `true`, `false` | `false` | operand 1 copied, before the contraction, to a panel with the axes (outer…, `K`, `J`), so that `J` is contiguous and lanes can read it |
-| `passes` | softmax | 3, 2 | 3 | two passes store `exp(x − m)` while summing it and divide in place: each exponential computed once |
+| `pack` | NT contraction | `true`, `false` | `false` | operand 1 copied, before the contraction, to a panel with the axes (the outer axes it carries…, `K`, `J`), so that `J` is contiguous and lanes can read it |
+| `passes` | softmax | 3, 2 | 3 | two passes store `exp(x − m)` while summing it and divide in place: each exponential computed once. A softmax with a mask (`where = m`, since 0.10.0 step 7b) reads it as one more input, indices 0 or 1, in both forms: the maximum and the sum over the allowed positions, 0 where it refuses, the bits of the softmax of the scores with `−∞` at every refused position |
+| `epilogue` | contraction whose value one `add` alone reads | `true`, `false` | `false` | the product's kernel adds the `add`'s other operand to each output element once its sum is done, and the `add` launches nothing (since 0.10.0 step 7, below) |
 
 The default of every decision is the kernel 0.6.0 lowered, with one
 exception the reference makes: a `bf16` `dot` whose `J` is not a multiple of
@@ -161,18 +169,107 @@ chapter, D56, D58). The native backend's lanes are its default layout's, as
 wide as each kernel allows; the kernel interpreter's are one, which is why
 `presk dump --stage kernel` prints scalar kernels unless a plan states lanes.
 
+**The derivatives of `dot`** (since 0.10.0 step 1, D89). A gradient's
+largest contractions are the derivatives of its products, `dot_vjp_l` and
+`dot_vjp_r` (`language` chapter, "Automatic differentiation"), and both are
+contraction nests wherever the `dot` is one:
+
+- **`dot_vjp_l`**, `ct[…, I, N] · w[J, N]`, the cotangent of the left
+  operand, is NT: its summed axis `N` is innermost in both operands, its `I`
+  is the cotangent's last leading axis, its `J` the rows of `w`, and the
+  cotangent's other leading axes are outer. A pack copies `w` to its
+  transpose, a panel `[N, J]`, since `w` carries no outer axis.
+- **`dot_vjp_r`**, `x[…, I]ᵀ · ct[…, J]`, the cotangent of the right operand,
+  sums over every leading axis of its operands: `batch` and `seq` on a
+  transformer. They are one summed axis `K`, their lengths' product, iterated
+  as one loop per axis, outermost first. That is the order of their flat
+  index, since both operands are row-major and carry them first, so no
+  operand is reshaped and the kernel's signature is its operands' own. A
+  k-block divides the innermost of them, `seq`.
+
+Their default layout is the tile `[1, 1]` with one lane, and at the
+default their kernels are 0.9.0's, character for character: a one-element
+tile of a derivative reads its operand 0 inside the product, where an
+`ein`'s reads it into a scalar first. So `make plan-check`, every golden, the
+C export's programs and the SCoP mode's point zero did not move. A plan may
+state their layouts, and `presk plan` states them, so a plan it gives for a
+gradient, which `presk train` runs too, tiles them. A derivative of a `dot`
+that is not a contraction nest (a right operand of rank above two, a left
+operand of rank one) keeps its own lowering. The derivative of an `ein` is an
+`ein`, and a contraction nest when its axes follow the pattern.
+
+**The bias as an epilogue** (since 0.10.0 step 7, D97). `Linear.apply`
+is `x · w + b`: a product, then an `add` of the bias, which fusion cannot
+take, since a group holds elementwise `let`s only and the product is none.
+Stated on the product's nest, `"epilogue": true` gives the product's kernel
+the `add`: the product's `let` launches nothing, and the `add`'s launches
+the product's kernel, under the product's layout and at its site, which
+adds the `add`'s other operand to each output element once that element's
+sum is done, and binds the `add`'s value. One launch and one pass over the
+output instead of two. It applies where `presk dump --stage core` shows:
+
+- the nest is a contraction nest (a `dot`, an `ein` of the pattern, a
+  derivative of `dot`) whose value one `let` alone reads, an `add` of it and
+  another tensor, in either order, which is no member of a fusion group and
+  so launches by itself; the value is not the function's result;
+- the `add`'s site has the product's storage type, since one kernel computes
+  both; a realization that types one of the two sites apart from the other
+  makes the plan refused;
+- the other operand broadcasts into the product's output without widening
+  it: a bias along `J`, a mask carrying `I` and `J`, a residual of the
+  output's shape, an operand carrying the outer axes or `I` alone; and,
+  where the tile has lanes, it runs along `J` as its innermost axis or not
+  at all.
+
+It is exact. The separate nests round the sum to the storage type, then add
+in the arithmetic type and round again; so does the epilogue. In `f64` and
+`f32`, whose arithmetic is their storage, the operand is added to the sum in
+its register before the store. In `bf16` the sum is stored, rounded, read
+back in `f32`, added to and stored again, as the `add`'s kernel would read
+it. Under a spill the addition belongs to the last block of `K` (every
+block variable at its last value); in the row-wise form, one more sweep of
+the output row. The kernels accumulate in their arithmetic type, so the
+rounding the epilogue reproduces is the storage type's; a realization that
+declares another accumulation type is refused on the kernel and native
+backends (`E7002`, since 0.10.0 step 8: condition 7 read the declared type,
+and under `bf16` accumulated in `bf16` admitted a spill whose bits differ
+from the default's, D97). The kernel's name is the product's with `+add` (`dot+add`).
+
+The epilogue is a layout decision, but no point of a nest's space: like the
+split it stays as stated when a layout is resolved, so no point and no key
+of `presk autotune`'s spaces carries it, and no archived measurement moves.
+Its worth is the `add`'s launch, which a nest timed alone does not show.
+`presk plan` states it on every product whose every launch can take it,
+over the layout it chooses without it, and prints them (`cli` chapter); the
+frozen model prices a nest alone and has no term for it. Unstated, the two
+nests run as before, byte for byte.
+
 **Every point is exact.** Each output element adds its terms in increasing
 `k` whatever the tile, the k-block, the order, the lanes, the pack or the
 split, so every point of a nest's space computes its default's bits (`native`
 chapter, "Contractions"), and a plan owes no measured gap. Tests lower every
 point of four nests in three types on both executors, and the measurement of
-0.7.0 checked 17 879 more (`experiments` chapter §7).
+0.7.0 checked 17 879 more (`experiments` chapter §7). Since 0.10.0 step 1
+they also lower every point of the derivative nests of three gradients, the
+MLP's, MiniGPT's and the course GPT's at small constants (4 280 points on
+twenty nest shapes, in three types, on both executors), and run each
+gradient with every derivative nest planned at once, packs included. Since
+0.10.0 step 7 they lower every point with its epilogue too, on the products
+of `tests/plan/epilogue.psk` (a bias after a `dot`, before it, a mask after
+the scores `ein`, a residual after the values `ein`, an operand constant
+along `J`; 3 208 points in three types and under an `f64` accumulation) and
+on the derivative nests given an operand to add (4 280 points), against the
+product's kernel followed by the `add`'s, on both executors; and run the
+MLP, MiniGPT and the course GPT with every product's epilogue planned at
+four points, and MiniGPT's gradient under mixed realizations.
 
 **Well-formedness.** A plan is checked twice, and an ill-formed layout is
 refused with `E7002`, never ignored, because it would then be timed and
 reported as if it had been applied. Before anything runs, every nest it names
 must exist and be a nest, and state only decisions its kind has (a tile on a
-contraction, passes on a softmax). When a nest is launched, its layout is
+contraction, passes on a softmax, an epilogue on a product whose value one
+`add` alone reads, launched by itself and of the product's type). When a
+nest is launched, its layout is
 checked against its shapes and types — the reference's conditions 3 (the
 tile and the k-block divide the axes; a row-wise contraction has no tile,
 block, order or pack), 4 (the lanes are one or the register's width, divide
@@ -245,11 +342,11 @@ tile chosen there could fail to divide another shape.
   table: every buffer is in one global memory space, and launches are
   sequential. The pack is two launches, a copy and the contraction, until
   placement has a domain and the panel becomes a scratch buffer (question 66).
-- **A plan for a training step.** The derivatives of a `dot`
-  (`dot_vjp_l`, `dot_vjp_r`), a training step's largest contractions, keep
-  their own lowering and are not contraction nests, so a plan gives them no
-  layout; the derivative of an `ein` is an `ein`, and a contraction nest when
-  its axes follow the pattern.
+- **The derivative nests ranked.** `presk plan` prices the derivatives of
+  `dot` with the frozen model of 0.8.0, which has never seen a nest of their
+  shapes, a summed axis of 4 096 against an output of 384 × 1 536 on the
+  course GPT. Whether it ranks them as it ranks attention's `ein`s is
+  statement T3 of plan 0.10.0, measured in its step 2.
 - **A layout chosen with the realization.** `presk solve` chooses types and
   `presk plan` layouts, one after the other; a solver over both at once is
   for a later version.

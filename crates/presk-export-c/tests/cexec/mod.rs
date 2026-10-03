@@ -355,10 +355,10 @@ fn sentinel(b: &Buf) -> u64 {
 fn sentinels(b: &Buf) -> Buf {
     let s = sentinel(b);
     match b {
-        Buf::F64(x) => Buf::F64(vec![f64::from_bits(s); x.len()]),
-        Buf::F32(x) => Buf::F32(vec![f32::from_bits(s as u32); x.len()]),
-        Buf::Bf16(x) => Buf::Bf16(vec![s as u16; x.len()]),
-        Buf::I64(x) => Buf::I64(vec![s as i64; x.len()]),
+        Buf::F64(x) => Buf::F64(vec![f64::from_bits(s); x.len()].into()),
+        Buf::F32(x) => Buf::F32(vec![f32::from_bits(s as u32); x.len()].into()),
+        Buf::Bf16(x) => Buf::Bf16(vec![s as u16; x.len()].into()),
+        Buf::I64(x) => Buf::I64(vec![s as i64; x.len()].into()),
         Buf::Exact(_) | Buf::Quant(_) => unreachable!("an output is a machine buffer"),
     }
 }
@@ -383,7 +383,7 @@ fn raw_buf(b: &Buf) -> Vec<u64> {
 pub fn raw(v: &Value) -> Vec<u64> {
     match v {
         Value::Real(t) | Value::Idx { t, .. } => raw_buf(&t.data),
-        Value::Tuple(xs) => xs.iter().flat_map(raw).collect(),
+        Value::Tuple(xs) | Value::Stacked(xs) => xs.iter().flat_map(raw).collect(),
         Value::Record(xs) => xs.iter().flat_map(|(_, x)| raw(x)).collect(),
         Value::Nat(n) => vec![*n],
         Value::Int(i) => vec![*i as u64],

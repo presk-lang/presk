@@ -379,13 +379,13 @@ Program {
                 name: "Mask",
                 span: 1405..1409,
             },
-            ty: Real {
+            ty: Bool {
                 axes: [
                     Axis {
                         name: Some(
                             Ident {
                                 name: "seq",
-                                span: 1418..1421,
+                                span: 1419..1422,
                             },
                         ),
                         dim: Var {
@@ -393,10 +393,10 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "T",
-                                        span: 1423..1424,
+                                        span: 1424..1425,
                                     },
                                 ],
-                                span: 1423..1424,
+                                span: 1424..1425,
                             },
                         },
                     },
@@ -404,7 +404,7 @@ Program {
                         name: Some(
                             Ident {
                                 name: "seq2",
-                                span: 1426..1430,
+                                span: 1427..1431,
                             },
                         ),
                         dim: Var {
@@ -412,23 +412,23 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "T",
-                                        span: 1432..1433,
+                                        span: 1433..1434,
                                     },
                                 ],
-                                span: 1432..1433,
+                                span: 1433..1434,
                             },
                         },
                     },
                 ],
-                span: 1414..1434,
+                span: 1414..1435,
             },
-            span: 1400..1434,
+            span: 1400..1435,
         },
         Module(
             ModuleDecl {
                 name: Ident {
                     name: "SelfAttention",
-                    span: 2022..2035,
+                    span: 2024..2037,
                 },
                 typarams: [],
                 members: [
@@ -436,19 +436,19 @@ Program {
                         names: [
                             Ident {
                                 name: "wq",
-                                span: 2044..2046,
+                                span: 2046..2048,
                             },
                             Ident {
                                 name: "wk",
-                                span: 2048..2050,
+                                span: 2050..2052,
                             },
                             Ident {
                                 name: "wv",
-                                span: 2052..2054,
+                                span: 2054..2056,
                             },
                             Ident {
                                 name: "wo",
-                                span: 2056..2058,
+                                span: 2058..2060,
                             },
                         ],
                         module: App {
@@ -456,14 +456,14 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "ff",
-                                        span: 2061..2063,
+                                        span: 2063..2065,
                                     },
                                     Ident {
                                         name: "Linear",
-                                        span: 2064..2070,
+                                        span: 2066..2072,
                                     },
                                 ],
-                                span: 2061..2070,
+                                span: 2063..2072,
                             },
                             dim_args: [
                                 Var {
@@ -471,10 +471,10 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "D",
-                                                span: 2071..2072,
+                                                span: 2073..2074,
                                             },
                                         ],
-                                        span: 2071..2072,
+                                        span: 2073..2074,
                                     },
                                 },
                                 Var {
@@ -482,30 +482,30 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "D",
-                                                span: 2074..2075,
+                                                span: 2076..2077,
                                             },
                                         ],
-                                        span: 2074..2075,
+                                        span: 2076..2077,
                                     },
                                 },
                             ],
                             mod_args: [],
-                            span: 2061..2076,
+                            span: 2063..2078,
                         },
-                        span: 2040..2076,
+                        span: 2042..2078,
                     },
                     Fn(
                         FnDecl {
                             name: Ident {
                                 name: "apply",
-                                span: 2253..2258,
+                                span: 2255..2260,
                             },
                             typarams: [],
                             params: [
                                 Param {
                                     name: Ident {
                                         name: "x",
-                                        span: 2259..2260,
+                                        span: 2261..2262,
                                     },
                                     ty: Some(
                                         Named {
@@ -513,23 +513,23 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "Acts",
-                                                        span: 2263..2267,
+                                                        span: 2265..2269,
                                                     },
                                                 ],
-                                                span: 2263..2267,
+                                                span: 2265..2269,
                                             },
                                             args: [],
-                                            span: 2263..2267,
+                                            span: 2265..2269,
                                         },
                                     ),
                                     default: None,
                                     axis: false,
-                                    span: 2259..2267,
+                                    span: 2261..2269,
                                 },
                                 Param {
                                     name: Ident {
                                         name: "mask",
-                                        span: 2269..2273,
+                                        span: 2271..2275,
                                     },
                                     ty: Some(
                                         Named {
@@ -537,18 +537,18 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "Mask",
-                                                        span: 2276..2280,
+                                                        span: 2278..2282,
                                                     },
                                                 ],
-                                                span: 2276..2280,
+                                                span: 2278..2282,
                                             },
                                             args: [],
-                                            span: 2276..2280,
+                                            span: 2278..2282,
                                         },
                                     ),
                                     default: None,
                                     axis: false,
-                                    span: 2269..2280,
+                                    span: 2271..2282,
                                 },
                             ],
                             ret: Some(
@@ -557,13 +557,13 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "Acts",
-                                                span: 2285..2289,
+                                                span: 2287..2291,
                                             },
                                         ],
-                                        span: 2285..2289,
+                                        span: 2287..2291,
                                     },
                                     args: [],
-                                    span: 2285..2289,
+                                    span: 2287..2291,
                                 },
                             ),
                             effects: [],
@@ -571,7 +571,7 @@ Program {
                                 pat: Ident(
                                     Ident {
                                         name: "q",
-                                        span: 2300..2301,
+                                        span: 2302..2303,
                                     },
                                 ),
                                 init: Call {
@@ -580,10 +580,10 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "split_heads",
-                                                    span: 2304..2315,
+                                                    span: 2306..2317,
                                                 },
                                             ],
-                                            span: 2304..2315,
+                                            span: 2306..2317,
                                         },
                                     },
                                     args: [
@@ -594,14 +594,14 @@ Program {
                                                         segs: [
                                                             Ident {
                                                                 name: "wq",
-                                                                span: 2316..2318,
+                                                                span: 2318..2320,
                                                             },
                                                             Ident {
                                                                 name: "apply",
-                                                                span: 2319..2324,
+                                                                span: 2321..2326,
                                                             },
                                                         ],
-                                                        span: 2316..2324,
+                                                        span: 2318..2326,
                                                     },
                                                 },
                                                 args: [
@@ -611,25 +611,25 @@ Program {
                                                                 segs: [
                                                                     Ident {
                                                                         name: "x",
-                                                                        span: 2325..2326,
+                                                                        span: 2327..2328,
                                                                     },
                                                                 ],
-                                                                span: 2325..2326,
+                                                                span: 2327..2328,
                                                             },
                                                         },
                                                     ),
                                                 ],
-                                                span: 2316..2327,
+                                                span: 2318..2329,
                                             },
                                         ),
                                     ],
-                                    span: 2304..2328,
+                                    span: 2306..2330,
                                 },
                                 body: Let {
                                     pat: Ident(
                                         Ident {
                                             name: "k",
-                                            span: 2337..2338,
+                                            span: 2339..2340,
                                         },
                                     ),
                                     init: Call {
@@ -638,10 +638,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "split_heads",
-                                                        span: 2341..2352,
+                                                        span: 2343..2354,
                                                     },
                                                 ],
-                                                span: 2341..2352,
+                                                span: 2343..2354,
                                             },
                                         },
                                         args: [
@@ -652,14 +652,14 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "wk",
-                                                                    span: 2353..2355,
+                                                                    span: 2355..2357,
                                                                 },
                                                                 Ident {
                                                                     name: "apply",
-                                                                    span: 2356..2361,
+                                                                    span: 2358..2363,
                                                                 },
                                                             ],
-                                                            span: 2353..2361,
+                                                            span: 2355..2363,
                                                         },
                                                     },
                                                     args: [
@@ -669,25 +669,25 @@ Program {
                                                                     segs: [
                                                                         Ident {
                                                                             name: "x",
-                                                                            span: 2362..2363,
+                                                                            span: 2364..2365,
                                                                         },
                                                                     ],
-                                                                    span: 2362..2363,
+                                                                    span: 2364..2365,
                                                                 },
                                                             },
                                                         ),
                                                     ],
-                                                    span: 2353..2364,
+                                                    span: 2355..2366,
                                                 },
                                             ),
                                         ],
-                                        span: 2341..2365,
+                                        span: 2343..2367,
                                     },
                                     body: Let {
                                         pat: Ident(
                                             Ident {
                                                 name: "v",
-                                                span: 2374..2375,
+                                                span: 2376..2377,
                                             },
                                         ),
                                         init: Call {
@@ -696,10 +696,10 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "split_heads",
-                                                            span: 2378..2389,
+                                                            span: 2380..2391,
                                                         },
                                                     ],
-                                                    span: 2378..2389,
+                                                    span: 2380..2391,
                                                 },
                                             },
                                             args: [
@@ -710,14 +710,14 @@ Program {
                                                                 segs: [
                                                                     Ident {
                                                                         name: "wv",
-                                                                        span: 2390..2392,
+                                                                        span: 2392..2394,
                                                                     },
                                                                     Ident {
                                                                         name: "apply",
-                                                                        span: 2393..2398,
+                                                                        span: 2395..2400,
                                                                     },
                                                                 ],
-                                                                span: 2390..2398,
+                                                                span: 2392..2400,
                                                             },
                                                         },
                                                         args: [
@@ -727,25 +727,25 @@ Program {
                                                                         segs: [
                                                                             Ident {
                                                                                 name: "x",
-                                                                                span: 2399..2400,
+                                                                                span: 2401..2402,
                                                                             },
                                                                         ],
-                                                                        span: 2399..2400,
+                                                                        span: 2401..2402,
                                                                     },
                                                                 },
                                                             ),
                                                         ],
-                                                        span: 2390..2401,
+                                                        span: 2392..2403,
                                                     },
                                                 ),
                                             ],
-                                            span: 2378..2402,
+                                            span: 2380..2404,
                                         },
                                         body: Let {
                                             pat: Ident(
                                                 Ident {
                                                     name: "s",
-                                                    span: 2585..2586,
+                                                    span: 2587..2588,
                                                 },
                                             ),
                                             init: Binary {
@@ -754,19 +754,19 @@ Program {
                                                     axes: [
                                                         Ident {
                                                             name: "batch",
-                                                            span: 2593..2598,
+                                                            span: 2595..2600,
                                                         },
                                                         Ident {
                                                             name: "heads",
-                                                            span: 2600..2605,
+                                                            span: 2602..2607,
                                                         },
                                                         Ident {
                                                             name: "seq",
-                                                            span: 2607..2610,
+                                                            span: 2609..2612,
                                                         },
                                                         Ident {
                                                             name: "seq2",
-                                                            span: 2612..2616,
+                                                            span: 2614..2618,
                                                         },
                                                     ],
                                                     body: Binary {
@@ -776,10 +776,10 @@ Program {
                                                                 segs: [
                                                                     Ident {
                                                                         name: "q",
-                                                                        span: 2618..2619,
+                                                                        span: 2620..2621,
                                                                     },
                                                                 ],
-                                                                span: 2618..2619,
+                                                                span: 2620..2621,
                                                             },
                                                         },
                                                         rhs: Var {
@@ -787,15 +787,15 @@ Program {
                                                                 segs: [
                                                                     Ident {
                                                                         name: "k",
-                                                                        span: 2622..2623,
+                                                                        span: 2624..2625,
                                                                     },
                                                                 ],
-                                                                span: 2622..2623,
+                                                                span: 2624..2625,
                                                             },
                                                         },
-                                                        span: 2618..2623,
+                                                        span: 2620..2625,
                                                     },
-                                                    span: 2589..2624,
+                                                    span: 2591..2626,
                                                 },
                                                 rhs: Call {
                                                     callee: Var {
@@ -803,10 +803,10 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "sqrt",
-                                                                    span: 2627..2631,
+                                                                    span: 2629..2633,
                                                                 },
                                                             ],
-                                                            span: 2627..2631,
+                                                            span: 2629..2633,
                                                         },
                                                     },
                                                     args: [
@@ -817,29 +817,29 @@ Program {
                                                                         segs: [
                                                                             Ident {
                                                                                 name: "HD",
-                                                                                span: 2632..2634,
+                                                                                span: 2634..2636,
                                                                             },
                                                                         ],
-                                                                        span: 2632..2634,
+                                                                        span: 2634..2636,
                                                                     },
                                                                 },
                                                                 ty: Real {
                                                                     axes: [],
-                                                                    span: 2637..2640,
+                                                                    span: 2639..2642,
                                                                 },
-                                                                span: 2632..2640,
+                                                                span: 2634..2642,
                                                             },
                                                         ),
                                                     ],
-                                                    span: 2627..2641,
+                                                    span: 2629..2643,
                                                 },
-                                                span: 2589..2641,
+                                                span: 2591..2643,
                                             },
                                             body: Let {
                                                 pat: Ident(
                                                     Ident {
                                                         name: "a",
-                                                        span: 2717..2718,
+                                                        span: 2724..2725,
                                                     },
                                                 ),
                                                 init: Call {
@@ -848,74 +848,76 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "softmax",
-                                                                    span: 2721..2728,
+                                                                    span: 2728..2735,
                                                                 },
                                                             ],
-                                                            span: 2721..2728,
+                                                            span: 2728..2735,
                                                         },
                                                     },
                                                     args: [
                                                         Axis(
                                                             Ident {
                                                                 name: "seq2",
-                                                                span: 2734..2738,
+                                                                span: 2741..2745,
                                                             },
                                                         ),
                                                         Pos(
-                                                            Binary {
-                                                                op: Add,
-                                                                lhs: Var {
-                                                                    path: Path {
-                                                                        segs: [
-                                                                            Ident {
-                                                                                name: "s",
-                                                                                span: 2740..2741,
-                                                                            },
-                                                                        ],
-                                                                        span: 2740..2741,
-                                                                    },
+                                                            Var {
+                                                                path: Path {
+                                                                    segs: [
+                                                                        Ident {
+                                                                            name: "s",
+                                                                            span: 2747..2748,
+                                                                        },
+                                                                    ],
+                                                                    span: 2747..2748,
                                                                 },
-                                                                rhs: Var {
-                                                                    path: Path {
-                                                                        segs: [
-                                                                            Ident {
-                                                                                name: "mask",
-                                                                                span: 2744..2748,
-                                                                            },
-                                                                        ],
-                                                                        span: 2744..2748,
-                                                                    },
-                                                                },
-                                                                span: 2740..2748,
                                                             },
                                                         ),
+                                                        Named {
+                                                            name: Ident {
+                                                                name: "where",
+                                                                span: 2750..2755,
+                                                            },
+                                                            value: Var {
+                                                                path: Path {
+                                                                    segs: [
+                                                                        Ident {
+                                                                            name: "mask",
+                                                                            span: 2758..2762,
+                                                                        },
+                                                                    ],
+                                                                    span: 2758..2762,
+                                                                },
+                                                            },
+                                                        },
                                                     ],
-                                                    span: 2721..2749,
+                                                    span: 2728..2763,
                                                 },
                                                 body: Let {
                                                     pat: Ident(
                                                         Ident {
                                                             name: "o",
-                                                            span: 2817..2818,
+                                                            span: 2831..2832,
                                                         },
                                                     ),
                                                     init: Ein {
                                                         axes: [
                                                             Ident {
                                                                 name: "batch",
-                                                                span: 2825..2830,
+                                                                span: 2839..2844,
                                                             },
                                                             Ident {
                                                                 name: "heads",
-                                                                span: 2832..2837,
+                                                                span: 2846..2851,
                                                             },
                                                             Ident {
                                                                 name: "seq",
-                                                                span: 2839..2842,
+                                                                span: 2853..2856,
                                                             },
                                                             Ident {
                                                                 name: "hd",
-                                                                span: 2844..2846,
+                                                                span: 2858..2860,
                                                             },
                                                         ],
                                                         body: Binary {
@@ -925,10 +927,10 @@ Program {
                                                                     segs: [
                                                                         Ident {
                                                                             name: "a",
-                                                                            span: 2848..2849,
+                                                                            span: 2862..2863,
                                                                         },
                                                                     ],
-                                                                    span: 2848..2849,
+                                                                    span: 2862..2863,
                                                                 },
                                                             },
                                                             rhs: Var {
@@ -936,15 +938,15 @@ Program {
                                                                     segs: [
                                                                         Ident {
                                                                             name: "v",
-                                                                            span: 2852..2853,
+                                                                            span: 2866..2867,
                                                                         },
                                                                     ],
-                                                                    span: 2852..2853,
+                                                                    span: 2866..2867,
                                                                 },
                                                             },
-                                                            span: 2848..2853,
+                                                            span: 2862..2867,
                                                         },
-                                                        span: 2821..2854,
+                                                        span: 2835..2868,
                                                     },
                                                     body: Call {
                                                         callee: Var {
@@ -952,14 +954,14 @@ Program {
                                                                 segs: [
                                                                     Ident {
                                                                         name: "wo",
-                                                                        span: 2859..2861,
+                                                                        span: 2873..2875,
                                                                     },
                                                                     Ident {
                                                                         name: "apply",
-                                                                        span: 2862..2867,
+                                                                        span: 2876..2881,
                                                                     },
                                                                 ],
-                                                                span: 2859..2867,
+                                                                span: 2873..2881,
                                                             },
                                                         },
                                                         args: [
@@ -970,10 +972,10 @@ Program {
                                                                             segs: [
                                                                                 Ident {
                                                                                     name: "merge_heads",
-                                                                                    span: 2868..2879,
+                                                                                    span: 2882..2893,
                                                                                 },
                                                                             ],
-                                                                            span: 2868..2879,
+                                                                            span: 2882..2893,
                                                                         },
                                                                     },
                                                                     args: [
@@ -983,44 +985,44 @@ Program {
                                                                                     segs: [
                                                                                         Ident {
                                                                                             name: "o",
-                                                                                            span: 2880..2881,
+                                                                                            span: 2894..2895,
                                                                                         },
                                                                                     ],
-                                                                                    span: 2880..2881,
+                                                                                    span: 2894..2895,
                                                                                 },
                                                                             },
                                                                         ),
                                                                     ],
-                                                                    span: 2868..2882,
+                                                                    span: 2882..2896,
                                                                 },
                                                             ),
                                                         ],
-                                                        span: 2859..2883,
+                                                        span: 2873..2897,
                                                     },
-                                                    span: 2813..2883,
+                                                    span: 2827..2897,
                                                 },
-                                                span: 2713..2883,
+                                                span: 2720..2897,
                                             },
-                                            span: 2581..2883,
+                                            span: 2583..2897,
                                         },
-                                        span: 2370..2883,
+                                        span: 2372..2897,
                                     },
-                                    span: 2333..2883,
+                                    span: 2335..2897,
                                 },
-                                span: 2296..2883,
+                                span: 2298..2897,
                             },
-                            span: 2250..2883,
+                            span: 2252..2897,
                         },
                     ),
                 ],
-                span: 2015..3047,
+                span: 2017..3061,
             },
         ),
         Module(
             ModuleDecl {
                 name: Ident {
                     name: "Block",
-                    span: 3623..3628,
+                    span: 3637..3642,
                 },
                 typarams: [],
                 members: [
@@ -1028,7 +1030,7 @@ Program {
                         names: [
                             Ident {
                                 name: "attn",
-                                span: 3637..3641,
+                                span: 3651..3655,
                             },
                         ],
                         module: App {
@@ -1036,22 +1038,22 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "SelfAttention",
-                                        span: 3644..3657,
+                                        span: 3658..3671,
                                     },
                                 ],
-                                span: 3644..3657,
+                                span: 3658..3671,
                             },
                             dim_args: [],
                             mod_args: [],
-                            span: 3644..3657,
+                            span: 3658..3671,
                         },
-                        span: 3633..3657,
+                        span: 3647..3671,
                     },
                     Use {
                         names: [
                             Ident {
                                 name: "mlp",
-                                span: 3664..3667,
+                                span: 3678..3681,
                             },
                         ],
                         module: App {
@@ -1059,14 +1061,14 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "ff",
-                                        span: 3671..3673,
+                                        span: 3685..3687,
                                     },
                                     Ident {
                                         name: "MLP",
-                                        span: 3674..3677,
+                                        span: 3688..3691,
                                     },
                                 ],
-                                span: 3671..3677,
+                                span: 3685..3691,
                             },
                             dim_args: [
                                 Var {
@@ -1074,10 +1076,10 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "D",
-                                                span: 3678..3679,
+                                                span: 3692..3693,
                                             },
                                         ],
-                                        span: 3678..3679,
+                                        span: 3692..3693,
                                     },
                                 },
                                 Binary {
@@ -1086,36 +1088,36 @@ Program {
                                         lit: Nat(
                                             "4",
                                         ),
-                                        span: 3681..3682,
+                                        span: 3695..3696,
                                     },
                                     rhs: Var {
                                         path: Path {
                                             segs: [
                                                 Ident {
                                                     name: "D",
-                                                    span: 3683..3684,
+                                                    span: 3697..3698,
                                                 },
                                             ],
-                                            span: 3683..3684,
+                                            span: 3697..3698,
                                         },
                                     },
-                                    span: 3681..3684,
+                                    span: 3695..3698,
                                 },
                             ],
                             mod_args: [],
-                            span: 3671..3685,
+                            span: 3685..3699,
                         },
-                        span: 3660..3685,
+                        span: 3674..3699,
                     },
                     Use {
                         names: [
                             Ident {
                                 name: "ln1",
-                                span: 3692..3695,
+                                span: 3706..3709,
                             },
                             Ident {
                                 name: "ln2",
-                                span: 3697..3700,
+                                span: 3711..3714,
                             },
                         ],
                         module: App {
@@ -1123,14 +1125,14 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "norm",
-                                        span: 3703..3707,
+                                        span: 3717..3721,
                                     },
                                     Ident {
                                         name: "LayerNorm",
-                                        span: 3708..3717,
+                                        span: 3722..3731,
                                     },
                                 ],
-                                span: 3703..3717,
+                                span: 3717..3731,
                             },
                             dim_args: [
                                 Var {
@@ -1138,30 +1140,30 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "D",
-                                                span: 3718..3719,
+                                                span: 3732..3733,
                                             },
                                         ],
-                                        span: 3718..3719,
+                                        span: 3732..3733,
                                     },
                                 },
                             ],
                             mod_args: [],
-                            span: 3703..3720,
+                            span: 3717..3734,
                         },
-                        span: 3688..3720,
+                        span: 3702..3734,
                     },
                     Fn(
                         FnDecl {
                             name: Ident {
                                 name: "apply",
-                                span: 3727..3732,
+                                span: 3741..3746,
                             },
                             typarams: [],
                             params: [
                                 Param {
                                     name: Ident {
                                         name: "x",
-                                        span: 3733..3734,
+                                        span: 3747..3748,
                                     },
                                     ty: Some(
                                         Named {
@@ -1169,23 +1171,23 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "Acts",
-                                                        span: 3737..3741,
+                                                        span: 3751..3755,
                                                     },
                                                 ],
-                                                span: 3737..3741,
+                                                span: 3751..3755,
                                             },
                                             args: [],
-                                            span: 3737..3741,
+                                            span: 3751..3755,
                                         },
                                     ),
                                     default: None,
                                     axis: false,
-                                    span: 3733..3741,
+                                    span: 3747..3755,
                                 },
                                 Param {
                                     name: Ident {
                                         name: "mask",
-                                        span: 3743..3747,
+                                        span: 3757..3761,
                                     },
                                     ty: Some(
                                         Named {
@@ -1193,18 +1195,18 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "Mask",
-                                                        span: 3750..3754,
+                                                        span: 3764..3768,
                                                     },
                                                 ],
-                                                span: 3750..3754,
+                                                span: 3764..3768,
                                             },
                                             args: [],
-                                            span: 3750..3754,
+                                            span: 3764..3768,
                                         },
                                     ),
                                     default: None,
                                     axis: false,
-                                    span: 3743..3754,
+                                    span: 3757..3768,
                                 },
                             ],
                             ret: Some(
@@ -1213,13 +1215,13 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "Acts",
-                                                span: 3759..3763,
+                                                span: 3773..3777,
                                             },
                                         ],
-                                        span: 3759..3763,
+                                        span: 3773..3777,
                                     },
                                     args: [],
-                                    span: 3759..3763,
+                                    span: 3773..3777,
                                 },
                             ),
                             effects: [],
@@ -1227,7 +1229,7 @@ Program {
                                 pat: Ident(
                                     Ident {
                                         name: "x",
-                                        span: 3774..3775,
+                                        span: 3788..3789,
                                     },
                                 ),
                                 init: Binary {
@@ -1237,10 +1239,10 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "x",
-                                                    span: 3778..3779,
+                                                    span: 3792..3793,
                                                 },
                                             ],
-                                            span: 3778..3779,
+                                            span: 3792..3793,
                                         },
                                     },
                                     rhs: Call {
@@ -1249,14 +1251,14 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "attn",
-                                                        span: 3782..3786,
+                                                        span: 3796..3800,
                                                     },
                                                     Ident {
                                                         name: "apply",
-                                                        span: 3787..3792,
+                                                        span: 3801..3806,
                                                     },
                                                 ],
-                                                span: 3782..3792,
+                                                span: 3796..3806,
                                             },
                                         },
                                         args: [
@@ -1267,14 +1269,14 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "ln1",
-                                                                    span: 3793..3796,
+                                                                    span: 3807..3810,
                                                                 },
                                                                 Ident {
                                                                     name: "apply",
-                                                                    span: 3797..3802,
+                                                                    span: 3811..3816,
                                                                 },
                                                             ],
-                                                            span: 3793..3802,
+                                                            span: 3807..3816,
                                                         },
                                                     },
                                                     args: [
@@ -1284,15 +1286,15 @@ Program {
                                                                     segs: [
                                                                         Ident {
                                                                             name: "x",
-                                                                            span: 3803..3804,
+                                                                            span: 3817..3818,
                                                                         },
                                                                     ],
-                                                                    span: 3803..3804,
+                                                                    span: 3817..3818,
                                                                 },
                                                             },
                                                         ),
                                                     ],
-                                                    span: 3793..3805,
+                                                    span: 3807..3819,
                                                 },
                                             ),
                                             Pos(
@@ -1301,17 +1303,17 @@ Program {
                                                         segs: [
                                                             Ident {
                                                                 name: "mask",
-                                                                span: 3807..3811,
+                                                                span: 3821..3825,
                                                             },
                                                         ],
-                                                        span: 3807..3811,
+                                                        span: 3821..3825,
                                                     },
                                                 },
                                             ),
                                         ],
-                                        span: 3782..3812,
+                                        span: 3796..3826,
                                     },
-                                    span: 3778..3812,
+                                    span: 3792..3826,
                                 },
                                 body: Binary {
                                     op: Add,
@@ -1320,10 +1322,10 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "x",
-                                                    span: 3858..3859,
+                                                    span: 3872..3873,
                                                 },
                                             ],
-                                            span: 3858..3859,
+                                            span: 3872..3873,
                                         },
                                     },
                                     rhs: Call {
@@ -1332,14 +1334,14 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "mlp",
-                                                        span: 3862..3865,
+                                                        span: 3876..3879,
                                                     },
                                                     Ident {
                                                         name: "apply",
-                                                        span: 3866..3871,
+                                                        span: 3880..3885,
                                                     },
                                                 ],
-                                                span: 3862..3871,
+                                                span: 3876..3885,
                                             },
                                         },
                                         args: [
@@ -1350,14 +1352,14 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "ln2",
-                                                                    span: 3872..3875,
+                                                                    span: 3886..3889,
                                                                 },
                                                                 Ident {
                                                                     name: "apply",
-                                                                    span: 3876..3881,
+                                                                    span: 3890..3895,
                                                                 },
                                                             ],
-                                                            span: 3872..3881,
+                                                            span: 3886..3895,
                                                         },
                                                     },
                                                     args: [
@@ -1367,36 +1369,36 @@ Program {
                                                                     segs: [
                                                                         Ident {
                                                                             name: "x",
-                                                                            span: 3882..3883,
+                                                                            span: 3896..3897,
                                                                         },
                                                                     ],
-                                                                    span: 3882..3883,
+                                                                    span: 3896..3897,
                                                                 },
                                                             },
                                                         ),
                                                     ],
-                                                    span: 3872..3884,
+                                                    span: 3886..3898,
                                                 },
                                             ),
                                         ],
-                                        span: 3862..3885,
+                                        span: 3876..3899,
                                     },
-                                    span: 3858..3885,
+                                    span: 3872..3899,
                                 },
-                                span: 3770..3885,
+                                span: 3784..3899,
                             },
-                            span: 3724..3885,
+                            span: 3738..3899,
                         },
                     ),
                 ],
-                span: 3616..3887,
+                span: 3630..3901,
             },
         ),
         Module(
             ModuleDecl {
                 name: Ident {
                     name: "Embedding",
-                    span: 4522..4531,
+                    span: 4536..4545,
                 },
                 typarams: [],
                 members: [
@@ -1404,7 +1406,7 @@ Program {
                         names: [
                             Ident {
                                 name: "tok",
-                                span: 4542..4545,
+                                span: 4556..4559,
                             },
                         ],
                         ty: Param {
@@ -1417,10 +1419,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "V",
-                                                        span: 4558..4559,
+                                                        span: 4572..4573,
                                                     },
                                                 ],
-                                                span: 4558..4559,
+                                                span: 4572..4573,
                                             },
                                         },
                                     },
@@ -1431,17 +1433,17 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "D",
-                                                        span: 4561..4562,
+                                                        span: 4575..4576,
                                                     },
                                                 ],
-                                                span: 4561..4562,
+                                                span: 4575..4576,
                                             },
                                         },
                                     },
                                 ],
-                                span: 4554..4563,
+                                span: 4568..4577,
                             },
-                            span: 4548..4563,
+                            span: 4562..4577,
                         },
                         init: Some(
                             Call {
@@ -1450,36 +1452,36 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "normal",
-                                                span: 4572..4578,
+                                                span: 4586..4592,
                                             },
                                         ],
-                                        span: 4572..4578,
+                                        span: 4586..4592,
                                     },
                                 },
                                 args: [
                                     Named {
                                         name: Ident {
                                             name: "std",
-                                            span: 4579..4582,
+                                            span: 4593..4596,
                                         },
                                         value: Lit {
                                             lit: Float(
                                                 "0.02",
                                             ),
-                                            span: 4585..4589,
+                                            span: 4599..4603,
                                         },
                                     },
                                 ],
-                                span: 4572..4590,
+                                span: 4586..4604,
                             },
                         ),
-                        span: 4536..4590,
+                        span: 4550..4604,
                     },
                     Param {
                         names: [
                             Ident {
                                 name: "pos",
-                                span: 4616..4619,
+                                span: 4630..4633,
                             },
                         ],
                         ty: Param {
@@ -1492,10 +1494,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "T",
-                                                        span: 4632..4633,
+                                                        span: 4646..4647,
                                                     },
                                                 ],
-                                                span: 4632..4633,
+                                                span: 4646..4647,
                                             },
                                         },
                                     },
@@ -1506,17 +1508,17 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "D",
-                                                        span: 4635..4636,
+                                                        span: 4649..4650,
                                                     },
                                                 ],
-                                                span: 4635..4636,
+                                                span: 4649..4650,
                                             },
                                         },
                                     },
                                 ],
-                                span: 4628..4637,
+                                span: 4642..4651,
                             },
-                            span: 4622..4637,
+                            span: 4636..4651,
                         },
                         init: Some(
                             Call {
@@ -1525,43 +1527,43 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "normal",
-                                                span: 4646..4652,
+                                                span: 4660..4666,
                                             },
                                         ],
-                                        span: 4646..4652,
+                                        span: 4660..4666,
                                     },
                                 },
                                 args: [
                                     Named {
                                         name: Ident {
                                             name: "std",
-                                            span: 4653..4656,
+                                            span: 4667..4670,
                                         },
                                         value: Lit {
                                             lit: Float(
                                                 "0.02",
                                             ),
-                                            span: 4659..4663,
+                                            span: 4673..4677,
                                         },
                                     },
                                 ],
-                                span: 4646..4664,
+                                span: 4660..4678,
                             },
                         ),
-                        span: 4610..4664,
+                        span: 4624..4678,
                     },
                     Fn(
                         FnDecl {
                             name: Ident {
                                 name: "apply",
-                                span: 4699..4704,
+                                span: 4713..4718,
                             },
                             typarams: [],
                             params: [
                                 Param {
                                     name: Ident {
                                         name: "ids",
-                                        span: 4705..4708,
+                                        span: 4719..4722,
                                     },
                                     ty: Some(
                                         Named {
@@ -1569,18 +1571,18 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "Tokens",
-                                                        span: 4711..4717,
+                                                        span: 4725..4731,
                                                     },
                                                 ],
-                                                span: 4711..4717,
+                                                span: 4725..4731,
                                             },
                                             args: [],
-                                            span: 4711..4717,
+                                            span: 4725..4731,
                                         },
                                     ),
                                     default: None,
                                     axis: false,
-                                    span: 4705..4717,
+                                    span: 4719..4731,
                                 },
                             ],
                             ret: Some(
@@ -1589,13 +1591,13 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "Acts",
-                                                span: 4722..4726,
+                                                span: 4736..4740,
                                             },
                                         ],
-                                        span: 4722..4726,
+                                        span: 4736..4740,
                                     },
                                     args: [],
-                                    span: 4722..4726,
+                                    span: 4736..4740,
                                 },
                             ),
                             effects: [],
@@ -1603,7 +1605,7 @@ Program {
                                 pat: Ident(
                                     Ident {
                                         name: "e",
-                                        span: 4737..4738,
+                                        span: 4751..4752,
                                     },
                                 ),
                                 init: Call {
@@ -1612,10 +1614,10 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "embed",
-                                                    span: 4741..4746,
+                                                    span: 4755..4760,
                                                 },
                                             ],
-                                            span: 4741..4746,
+                                            span: 4755..4760,
                                         },
                                     },
                                     args: [
@@ -1625,10 +1627,10 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "tok",
-                                                            span: 4747..4750,
+                                                            span: 4761..4764,
                                                         },
                                                     ],
-                                                    span: 4747..4750,
+                                                    span: 4761..4764,
                                                 },
                                             },
                                         ),
@@ -1638,21 +1640,21 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "ids",
-                                                            span: 4752..4755,
+                                                            span: 4766..4769,
                                                         },
                                                     ],
-                                                    span: 4752..4755,
+                                                    span: 4766..4769,
                                                 },
                                             },
                                         ),
                                     ],
-                                    span: 4741..4756,
+                                    span: 4755..4770,
                                 },
                                 body: Let {
                                     pat: Ident(
                                         Ident {
                                             name: "p",
-                                            span: 4837..4838,
+                                            span: 4851..4852,
                                         },
                                     ),
                                     init: Call {
@@ -1661,10 +1663,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "embed",
-                                                        span: 4841..4846,
+                                                        span: 4855..4860,
                                                     },
                                                 ],
-                                                span: 4841..4846,
+                                                span: 4855..4860,
                                             },
                                         },
                                         args: [
@@ -1674,10 +1676,10 @@ Program {
                                                         segs: [
                                                             Ident {
                                                                 name: "pos",
-                                                                span: 4847..4850,
+                                                                span: 4861..4864,
                                                             },
                                                         ],
-                                                        span: 4847..4850,
+                                                        span: 4861..4864,
                                                     },
                                                 },
                                             ),
@@ -1688,36 +1690,36 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "positions",
-                                                                    span: 4852..4861,
+                                                                    span: 4866..4875,
                                                                 },
                                                             ],
-                                                            span: 4852..4861,
+                                                            span: 4866..4875,
                                                         },
                                                     },
                                                     args: [
                                                         NamedAxis {
                                                             name: Ident {
                                                                 name: "seq",
-                                                                span: 4862..4865,
+                                                                span: 4876..4879,
                                                             },
                                                             value: Var {
                                                                 path: Path {
                                                                     segs: [
                                                                         Ident {
                                                                             name: "T",
-                                                                            span: 4867..4868,
+                                                                            span: 4881..4882,
                                                                         },
                                                                     ],
-                                                                    span: 4867..4868,
+                                                                    span: 4881..4882,
                                                                 },
                                                             },
                                                         },
                                                     ],
-                                                    span: 4852..4869,
+                                                    span: 4866..4883,
                                                 },
                                             ),
                                         ],
-                                        span: 4841..4870,
+                                        span: 4855..4884,
                                     },
                                     body: Binary {
                                         op: Add,
@@ -1726,10 +1728,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "e",
-                                                        span: 4919..4920,
+                                                        span: 4933..4934,
                                                     },
                                                 ],
-                                                span: 4919..4920,
+                                                span: 4933..4934,
                                             },
                                         },
                                         rhs: Var {
@@ -1737,30 +1739,30 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "p",
-                                                        span: 4923..4924,
+                                                        span: 4937..4938,
                                                     },
                                                 ],
-                                                span: 4923..4924,
+                                                span: 4937..4938,
                                             },
                                         },
-                                        span: 4919..4924,
+                                        span: 4933..4938,
                                     },
-                                    span: 4833..4924,
+                                    span: 4847..4938,
                                 },
-                                span: 4733..4924,
+                                span: 4747..4938,
                             },
-                            span: 4696..4924,
+                            span: 4710..4938,
                         },
                     ),
                 ],
-                span: 4515..4994,
+                span: 4529..5008,
             },
         ),
         Module(
             ModuleDecl {
                 name: Ident {
                     name: "MiniGPT",
-                    span: 5579..5586,
+                    span: 5593..5600,
                 },
                 typarams: [],
                 members: [
@@ -1768,7 +1770,7 @@ Program {
                         names: [
                             Ident {
                                 name: "emb",
-                                span: 5595..5598,
+                                span: 5609..5612,
                             },
                         ],
                         module: App {
@@ -1776,22 +1778,22 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "Embedding",
-                                        span: 5604..5613,
+                                        span: 5618..5627,
                                     },
                                 ],
-                                span: 5604..5613,
+                                span: 5618..5627,
                             },
                             dim_args: [],
                             mod_args: [],
-                            span: 5604..5613,
+                            span: 5618..5627,
                         },
-                        span: 5591..5613,
+                        span: 5605..5627,
                     },
                     Use {
                         names: [
                             Ident {
                                 name: "blocks",
-                                span: 5620..5626,
+                                span: 5634..5640,
                             },
                         ],
                         module: App {
@@ -1799,10 +1801,10 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "stack",
-                                        span: 5629..5634,
+                                        span: 5643..5648,
                                     },
                                 ],
-                                span: 5629..5634,
+                                span: 5643..5648,
                             },
                             dim_args: [
                                 Var {
@@ -1810,10 +1812,10 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "L",
-                                                span: 5635..5636,
+                                                span: 5649..5650,
                                             },
                                         ],
-                                        span: 5635..5636,
+                                        span: 5649..5650,
                                     },
                                 },
                             ],
@@ -1823,25 +1825,25 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "Block",
-                                                span: 5638..5643,
+                                                span: 5652..5657,
                                             },
                                         ],
-                                        span: 5638..5643,
+                                        span: 5652..5657,
                                     },
                                     dim_args: [],
                                     mod_args: [],
-                                    span: 5638..5643,
+                                    span: 5652..5657,
                                 },
                             ],
-                            span: 5629..5644,
+                            span: 5643..5658,
                         },
-                        span: 5616..5644,
+                        span: 5630..5658,
                     },
                     Use {
                         names: [
                             Ident {
                                 name: "lnf",
-                                span: 5716..5719,
+                                span: 5730..5733,
                             },
                         ],
                         module: App {
@@ -1849,14 +1851,14 @@ Program {
                                 segs: [
                                     Ident {
                                         name: "norm",
-                                        span: 5725..5729,
+                                        span: 5739..5743,
                                     },
                                     Ident {
                                         name: "LayerNorm",
-                                        span: 5730..5739,
+                                        span: 5744..5753,
                                     },
                                 ],
-                                span: 5725..5739,
+                                span: 5739..5753,
                             },
                             dim_args: [
                                 Var {
@@ -1864,23 +1866,23 @@ Program {
                                         segs: [
                                             Ident {
                                                 name: "D",
-                                                span: 5740..5741,
+                                                span: 5754..5755,
                                             },
                                         ],
-                                        span: 5740..5741,
+                                        span: 5754..5755,
                                     },
                                 },
                             ],
                             mod_args: [],
-                            span: 5725..5742,
+                            span: 5739..5756,
                         },
-                        span: 5712..5742,
+                        span: 5726..5756,
                     },
                     Param {
                         names: [
                             Ident {
                                 name: "head",
-                                span: 5751..5755,
+                                span: 5765..5769,
                             },
                         ],
                         ty: Param {
@@ -1893,10 +1895,10 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "D",
-                                                        span: 5768..5769,
+                                                        span: 5782..5783,
                                                     },
                                                 ],
-                                                span: 5768..5769,
+                                                span: 5782..5783,
                                             },
                                         },
                                     },
@@ -1907,17 +1909,17 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "V",
-                                                        span: 5771..5772,
+                                                        span: 5785..5786,
                                                     },
                                                 ],
-                                                span: 5771..5772,
+                                                span: 5785..5786,
                                             },
                                         },
                                     },
                                 ],
-                                span: 5764..5773,
+                                span: 5778..5787,
                             },
-                            span: 5758..5773,
+                            span: 5772..5787,
                         },
                         init: Some(
                             Var {
@@ -1925,27 +1927,27 @@ Program {
                                     segs: [
                                         Ident {
                                             name: "zeros",
-                                            span: 5782..5787,
+                                            span: 5796..5801,
                                         },
                                     ],
-                                    span: 5782..5787,
+                                    span: 5796..5801,
                                 },
                             },
                         ),
-                        span: 5745..5787,
+                        span: 5759..5801,
                     },
                     Fn(
                         FnDecl {
                             name: Ident {
                                 name: "apply",
-                                span: 5991..5996,
+                                span: 6005..6010,
                             },
                             typarams: [],
                             params: [
                                 Param {
                                     name: Ident {
                                         name: "ids",
-                                        span: 5997..6000,
+                                        span: 6011..6014,
                                     },
                                     ty: Some(
                                         Named {
@@ -1953,18 +1955,18 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "Tokens",
-                                                        span: 6003..6009,
+                                                        span: 6017..6023,
                                                     },
                                                 ],
-                                                span: 6003..6009,
+                                                span: 6017..6023,
                                             },
                                             args: [],
-                                            span: 6003..6009,
+                                            span: 6017..6023,
                                         },
                                     ),
                                     default: None,
                                     axis: false,
-                                    span: 5997..6009,
+                                    span: 6011..6023,
                                 },
                             ],
                             ret: Some(
@@ -1974,7 +1976,7 @@ Program {
                                             name: Some(
                                                 Ident {
                                                     name: "batch",
-                                                    span: 6018..6023,
+                                                    span: 6032..6037,
                                                 },
                                             ),
                                             dim: Var {
@@ -1982,10 +1984,10 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "B",
-                                                            span: 6025..6026,
+                                                            span: 6039..6040,
                                                         },
                                                     ],
-                                                    span: 6025..6026,
+                                                    span: 6039..6040,
                                                 },
                                             },
                                         },
@@ -1993,7 +1995,7 @@ Program {
                                             name: Some(
                                                 Ident {
                                                     name: "seq",
-                                                    span: 6028..6031,
+                                                    span: 6042..6045,
                                                 },
                                             ),
                                             dim: Var {
@@ -2001,10 +2003,10 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "T",
-                                                            span: 6033..6034,
+                                                            span: 6047..6048,
                                                         },
                                                     ],
-                                                    span: 6033..6034,
+                                                    span: 6047..6048,
                                                 },
                                             },
                                         },
@@ -2012,7 +2014,7 @@ Program {
                                             name: Some(
                                                 Ident {
                                                     name: "vocab",
-                                                    span: 6036..6041,
+                                                    span: 6050..6055,
                                                 },
                                             ),
                                             dim: Var {
@@ -2020,15 +2022,15 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "V",
-                                                            span: 6043..6044,
+                                                            span: 6057..6058,
                                                         },
                                                     ],
-                                                    span: 6043..6044,
+                                                    span: 6057..6058,
                                                 },
                                             },
                                         },
                                     ],
-                                    span: 6014..6045,
+                                    span: 6028..6059,
                                 },
                             ),
                             effects: [],
@@ -2036,7 +2038,7 @@ Program {
                                 pat: Ident(
                                     Ident {
                                         name: "mask",
-                                        span: 6056..6060,
+                                        span: 6070..6074,
                                     },
                                 ),
                                 init: Call {
@@ -2045,38 +2047,38 @@ Program {
                                             segs: [
                                                 Ident {
                                                     name: "causal_mask",
-                                                    span: 6063..6074,
+                                                    span: 6077..6088,
                                                 },
                                             ],
-                                            span: 6063..6074,
+                                            span: 6077..6088,
                                         },
                                     },
                                     args: [
                                         NamedAxis {
                                             name: Ident {
                                                 name: "seq",
-                                                span: 6075..6078,
+                                                span: 6089..6092,
                                             },
                                             value: Var {
                                                 path: Path {
                                                     segs: [
                                                         Ident {
                                                             name: "T",
-                                                            span: 6080..6081,
+                                                            span: 6094..6095,
                                                         },
                                                     ],
-                                                    span: 6080..6081,
+                                                    span: 6094..6095,
                                                 },
                                             },
                                         },
                                     ],
-                                    span: 6063..6082,
+                                    span: 6077..6096,
                                 },
                                 body: Let {
                                     pat: Ident(
                                         Ident {
                                             name: "h0",
-                                            span: 6154..6156,
+                                            span: 6159..6161,
                                         },
                                     ),
                                     init: Call {
@@ -2085,14 +2087,14 @@ Program {
                                                 segs: [
                                                     Ident {
                                                         name: "emb",
-                                                        span: 6161..6164,
+                                                        span: 6166..6169,
                                                     },
                                                     Ident {
                                                         name: "apply",
-                                                        span: 6165..6170,
+                                                        span: 6170..6175,
                                                     },
                                                 ],
-                                                span: 6161..6170,
+                                                span: 6166..6175,
                                             },
                                         },
                                         args: [
@@ -2102,21 +2104,21 @@ Program {
                                                         segs: [
                                                             Ident {
                                                                 name: "ids",
-                                                                span: 6171..6174,
+                                                                span: 6176..6179,
                                                             },
                                                         ],
-                                                        span: 6171..6174,
+                                                        span: 6176..6179,
                                                     },
                                                 },
                                             ),
                                         ],
-                                        span: 6161..6175,
+                                        span: 6166..6180,
                                     },
                                     body: Let {
                                         pat: Ident(
                                             Ident {
                                                 name: "hL",
-                                                span: 6184..6186,
+                                                span: 6189..6191,
                                             },
                                         ),
                                         init: Call {
@@ -2125,14 +2127,14 @@ Program {
                                                     segs: [
                                                         Ident {
                                                             name: "blocks",
-                                                            span: 6191..6197,
+                                                            span: 6196..6202,
                                                         },
                                                         Ident {
                                                             name: "apply",
-                                                            span: 6198..6203,
+                                                            span: 6203..6208,
                                                         },
                                                     ],
-                                                    span: 6191..6203,
+                                                    span: 6196..6208,
                                                 },
                                             },
                                             args: [
@@ -2142,10 +2144,10 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "h0",
-                                                                    span: 6204..6206,
+                                                                    span: 6209..6211,
                                                                 },
                                                             ],
-                                                            span: 6204..6206,
+                                                            span: 6209..6211,
                                                         },
                                                     },
                                                 ),
@@ -2155,15 +2157,15 @@ Program {
                                                             segs: [
                                                                 Ident {
                                                                     name: "mask",
-                                                                    span: 6208..6212,
+                                                                    span: 6213..6217,
                                                                 },
                                                             ],
-                                                            span: 6208..6212,
+                                                            span: 6213..6217,
                                                         },
                                                     },
                                                 ),
                                             ],
-                                            span: 6191..6213,
+                                            span: 6196..6218,
                                         },
                                         body: Binary {
                                             op: Dot,
@@ -2173,14 +2175,14 @@ Program {
                                                         segs: [
                                                             Ident {
                                                                 name: "lnf",
-                                                                span: 6264..6267,
+                                                                span: 6269..6272,
                                                             },
                                                             Ident {
                                                                 name: "apply",
-                                                                span: 6268..6273,
+                                                                span: 6273..6278,
                                                             },
                                                         ],
-                                                        span: 6264..6273,
+                                                        span: 6269..6278,
                                                     },
                                                 },
                                                 args: [
@@ -2190,40 +2192,40 @@ Program {
                                                                 segs: [
                                                                     Ident {
                                                                         name: "hL",
-                                                                        span: 6274..6276,
+                                                                        span: 6279..6281,
                                                                     },
                                                                 ],
-                                                                span: 6274..6276,
+                                                                span: 6279..6281,
                                                             },
                                                         },
                                                     ),
                                                 ],
-                                                span: 6264..6277,
+                                                span: 6269..6282,
                                             },
                                             rhs: Var {
                                                 path: Path {
                                                     segs: [
                                                         Ident {
                                                             name: "head",
-                                                            span: 6281..6285,
+                                                            span: 6286..6290,
                                                         },
                                                     ],
-                                                    span: 6281..6285,
+                                                    span: 6286..6290,
                                                 },
                                             },
-                                            span: 6264..6285,
+                                            span: 6269..6290,
                                         },
-                                        span: 6180..6285,
+                                        span: 6185..6290,
                                     },
-                                    span: 6150..6285,
+                                    span: 6155..6290,
                                 },
-                                span: 6052..6285,
+                                span: 6066..6290,
                             },
-                            span: 5988..6285,
+                            span: 6002..6290,
                         },
                     ),
                 ],
-                span: 5572..6343,
+                span: 5586..6348,
             },
         ),
     ],

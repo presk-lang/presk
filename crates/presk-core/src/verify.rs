@@ -1,8 +1,10 @@
 //! Structural verification of a PSK-Core program: every variable is
 //! defined once and before use, blocks return a defined variable, calls have
-//! the callee's arity and instantiate all its dimensions, tuple projections
-//! are in range. Run in debug builds after lowering (and, later, after every
-//! transformation) and by the tests.
+//! the callee's arity and instantiate all its dimensions. A tuple projection
+//! is a use of its operand only: its index is not checked against the
+//! tuple's arity (the language reference's chapter 5 found this comment
+//! saying it was). Run in debug builds after lowering (and, later, after
+//! every transformation) and by the tests.
 
 use std::collections::HashSet;
 

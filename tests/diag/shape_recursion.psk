@@ -1,0 +1,5 @@
+-- E2016: a function calls itself, directly (`f`) or through another (`g`
+-- and `h`); the checker refuses both before anything walks the calls.
+fn f(x : ℝ[4]) -> ℝ[4] = f(x)
+fn g(x : ℝ[4]) -> ℝ[4] = h(x) + x
+fn h(x : ℝ[4]) -> ℝ[4] = g(x)

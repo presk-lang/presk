@@ -1,5 +1,5 @@
--- 05_sample.psk — randomness is an effect.
+-- 05_sample.psk — randomness is an effect, and a draw a function of its key.
 dim B
 
-fn pick(logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
-  sample(logits)
+fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Rand =
+  sample(key, logits)

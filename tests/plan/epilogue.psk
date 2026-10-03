@@ -1,0 +1,17 @@
+-- epilogue.psk — products whose value one `add` alone reads, the epilogues
+-- of plan 0.10.0 step 7, at shapes every point of their layout space fits:
+-- a bias after a `dot` as `Linear` has it (I = 8, J = 48, K = 128), and the
+-- same with the bias first; a mask after the scores `ein` (NT), carrying I
+-- and J; a residual after the values `ein` (NN), of the output's shape; and
+-- an operand that carries I alone, constant along J.
+fn linear(x : ℝ[2, 8, 128], w : ℝ[128, 48], b : ℝ[48]) -> ℝ[2, 8, 48] = x · w + b
+
+fn bias_first(x : ℝ[2, 8, 128], w : ℝ[128, 48], b : ℝ[48]) -> ℝ[2, 8, 48] = b + x · w
+
+fn scores(q : ℝ[batch: 2, heads: 2, seq: 32, hd: 32], k : ℝ[batch: 2, heads: 2, seq2: 32, hd: 32], m : ℝ[seq: 32, seq2: 32]) -> ℝ[batch: 2, heads: 2, seq: 32, seq2: 32] =
+  ein[batch, heads, seq, seq2](q * k) + m
+
+fn values(a : ℝ[batch: 2, heads: 2, seq: 32, seq2: 32], v : ℝ[batch: 2, heads: 2, seq2: 32, hd: 32], r : ℝ[batch: 2, heads: 2, seq: 32, hd: 32]) -> ℝ[batch: 2, heads: 2, seq: 32, hd: 32] =
+  ein[batch, heads, seq, hd](a * v) + r
+
+fn rows(x : ℝ[batch: 2, seq: 8, model: 128], w : ℝ[model: 128, out: 48], s : ℝ[seq: 8]) -> ℝ[batch: 2, seq: 8, out: 48] = x · w + s

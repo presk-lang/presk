@@ -10,8 +10,11 @@ mod builtins;
 mod config;
 mod expr;
 pub mod inference;
+mod recursion;
 pub mod training;
 mod unify;
+
+pub use recursion::module_cycles;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -83,10 +86,14 @@ pub fn check(sm: &SourceMap, prog: &ElabProgram) -> (TypedProgram, Vec<Diagnosti
         quiet: 0,
         fn_id: None,
         unit: prog.main,
+        calls: vec![],
     };
+    c.diags.extend(recursion::module_cycles(prog));
     for (i, f) in prog.fns.iter().enumerate() {
         c.check_fn(FnId(i as u32), f);
     }
+    let calls = std::mem::take(&mut c.calls);
+    c.diags.extend(recursion::fn_cycles(prog, &calls));
     for (i, m) in prog.modules.iter().enumerate() {
         c.check_inits(ModuleId(i as u32), m);
     }
@@ -117,6 +124,9 @@ pub(crate) struct Checker<'p> {
     pub(crate) quiet: u32,
     pub(crate) fn_id: Option<FnId>,
     pub(crate) unit: usize,
+    /// Every call of a user function: (caller, callee, call span), for the
+    /// requirement "No recursion" (`E2016`).
+    pub(crate) calls: Vec<(FnId, FnId, Span)>,
 }
 
 /// A name in scope inside a function body.

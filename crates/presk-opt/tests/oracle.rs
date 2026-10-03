@@ -71,7 +71,7 @@ fn regression_converges_after_rewriting() {
     let report = optimize(&mut core, &prog);
     assert!(report.lets_after() < report.lets_before(), "{}", report.summary());
     let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
-    let mut backend = InterpBackend::new(&core, &prog, 256, 0);
+    let mut backend = InterpBackend::new(&core, &prog, 256);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     assert!(out.logs.last().unwrap().loss < 1e-3, "final loss {}", out.logs.last().unwrap().loss);
 }
@@ -85,7 +85,7 @@ fn minigpt_train_golden_unchanged() {
     optimize(&mut core, &prog);
     let ckpt = std::env::temp_dir().join(format!("presk-opt-tests-{}", std::process::id()));
     let opts = TrainOptions { data: None, steps: Some(20), epochs: None, seed: 0, bits: 64, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt), checkpoints: false };
-    let mut backend = InterpBackend::new(&core, &prog, 64, 0);
+    let mut backend = InterpBackend::new(&core, &prog, 64);
     let out = train(&mut backend, &core, &prog, &typed, &fns, &opts, |_| {}).unwrap();
     let text: String = out.logs.iter().map(|l| format!("step {:>2} epoch {} loss {:.9} lr {:.3e} |g| {:.6}\n", l.step, l.epoch, l.loss, l.lr, l.grad_norm)).collect();
     golden("crates/presk-train/tests/snapshots", "train__minigpt_train_20", text);

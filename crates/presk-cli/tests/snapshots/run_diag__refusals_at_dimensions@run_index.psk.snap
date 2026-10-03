@@ -1,0 +1,14 @@
+---
+source: crates/presk-cli/tests/run_diag.rs
+assertion_line: 74
+expression: snap
+input_file: tests/diag/run_index.psk
+---
+$ presk run tests/diag/run_index.psk --entry last --dim T=0
+[E7003] Error: `last` is refused at the dimensions given: `[seq: -1]` selects position -1 of the axis `seq`, of length 0 (`T` = 0)
+   ,-[ tests/diag/run_index.psk:6:51 ]
+   |
+ 6 | fn last(x : ℝ[seq: T, model: 4]) -> ℝ[model: 4] = x[seq: -1]
+   |                                                   ^^^^^|^^^^  
+   |                                                        `------ undefined at the dimensions given
+---'

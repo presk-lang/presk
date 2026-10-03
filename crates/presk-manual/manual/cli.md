@@ -98,7 +98,7 @@ output format is not stable.
 | `ast` | the abstract syntax tree (Rust `Debug` format, spans as `start..end`) | implemented |
 | `elab` | the elaborated program: per file, imports, constants with their values, dimensions with bounds, type aliases, modules with the shapes of their parameters and sub-modules, function signatures, discharged assertions; then the table of module instances with every parameter's shape (stacked axes included) | implemented |
 | `core` | the PSK-Core intermediate representation after lowering (every function in A-normal form with its dimensions, parameters and types; `init` functions; lifted lambdas), verified before printing | implemented |
-| `core-after-ad` | PSK-Core after automatic differentiation: every `grad` rewritten, with the generated `.vjp` and `.grad` functions; verified before printing | implemented |
+| `core-after-ad` | PSK-Core after automatic differentiation: every `grad` rewritten, with the generated `.vjp` and `.grad` functions, without their dead code (since 0.10.0 step 3: a `.vjp` returns the cotangents its callers read; `language` chapter, "Dead code after differentiation"), and since step 4 each `.vjp` split into `.fwd` and `.bwd` unless `--remat recompute` ("Residuals"); verified before printing | implemented |
 | `kernel` | the PSK-Kernel v0 kernels launched by an entry, specialized on its shapes: needs `--entry` and `--dim`/`--const` as `presk run`, plus `--realize` or `--plan` (`native` chapter). The kernel interpreter lowers without lanes unless a plan states them, so a dump without a plan, or with one that states none, prints the scalar kernels | implemented (0.3.0 step 2; `--plan` 0.7.0 step 1) |
 | `sensitivity` | `‖∂L/∂v‖₁` at every site of a scalar entry and summed per module, from one reverse sweep: needs `--entry`, `--dim`/`--const`, and `--weights` to be worth reading, since a zero-initialized head makes every upstream gradient zero; `--sites N` lists more (`precision` chapter) | implemented (0.5.0 step 5) |
 | `realize` (`sched`) | the fusion groups of every function (`realize` chapter): one line per group with its steps, its inputs and the launches it removes; with `--plan @FILE`, then the plan: its realization, and each nest it gives a layout, with the nest's primitive and the decisions stated, after checking that every nest named exists (`E7002`) | implemented (0.4.0 step 4; `--plan` 0.7.0 step 1) |
@@ -133,10 +133,11 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--entry ENTRY` | a top-level function (`mse`), a module function (`MiniGPT.apply`), a module function with the module's dimension arguments (`LayerNorm{8}.apply`), or an optimizer function of a file with a `training run` (`adamw.step`, `adamw.lr`, `adamw.init`; their inputs are synthesized with a non-negative second moment, `t = 3`, `total = 10`). Required: without it, a file with a `training run` is directed to `presk train` (exit 2), and any other file lists the candidate entries. |
 | `--dim NAME=N` | binds a dimension of the entry (its type parameters, implicit dimensions, the file's `dim`s). A name that is not a dimension of the entry gives, in order, the axes of the open prefix `...` of its parameters: `--dim batch=3` makes `x : ℝ[..., model: D]` an `ℝ[batch: 3, model: 8]`. Every dimension must be bound, and the file's bounds (`dim T <= 1024`) are enforced (`E7001`). |
 | `--const NAME=N` | overrides a `const` of the file *or of its imports* (`minigpt.psk`'s `V`, `D`, `H`, `L` from `train_minigpt.psk`); `static assert`s are re-checked. This is how the MiniGPT examples run at a size the interpreter can afford. |
-| `--seed S` | seed of every random choice (default 0): synthesized inputs, initializers, `sample`. Same seed, same output, on every machine. |
+| `--remat store\|recompute` | what a gradient does with its forward pass's values (0.10.0 step 4, `language` chapter, "Residuals"): `store` (the default) keeps them, each `.vjp` its `.bwd` after its `.fwd`; `recompute` computes them again inside each callee's `.vjp`, as before. The same bits either way, fewer launches storing, more memory. `presk export`, `train`, `bench`, `plan`, `autotune`, `reprice`, `dump`, `calibrate` and `solve` take it too; every other command that differentiates stores. Under a realization that can see a fusion group (`bf16`, or a site typed apart from its function) a gradient keeps its groups as the recomputing `.vjp` had them, and not otherwise (0.10.0 step 4b, `language` chapter, "Dead code after differentiation"); a realization naming a stored `.vjp` is warned of (`W0004`). |
+| `--seed S` | seed of every random choice (default 0): synthesized inputs, initializers, and the keys `sample` and `dropout` draw from when they are inputs. Same seed, same output, on every machine. |
 | `--bits B` | MPFR precision of every intermediate, in bits (default 256). |
 | `--digits D` | significant digits when printing (default 12). |
-| `--json` | machine-readable output: entry, seed, bits, dimensions, inputs and result, reals as decimal strings at `--digits`. |
+| `--json` | machine-readable output: entry, seed, bits, dimensions, inputs and result, reals as decimal strings at `--digits`, a value of type `bool[…]` as its axes and JSON booleans (since 0.10.0 step 8; its text output prints `bool[…]` of `true` and `false` too, by the entry's signature, where a mask is indices below 2 at run time). |
 | `--verbose` | also print the synthesized inputs. |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
 | `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
@@ -152,18 +153,31 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 standard normal, index tensors uniformly in `[0, N)`, `params M` by running
 the module's initializer (`init =` clauses: `zeros`, `ones`, `xavier_uniform`,
 `normal(std = …)`), hyperparameters from their source default (`eps : f64 =
-1e-5`) or `1`. Each parameter draws from its own key derived from `--seed`.
+1e-5`) or `1`, a key from `--seed`, and a mask `bool[…]` with every position
+allowed (0.10.0 step 7b). Each parameter draws from its own key derived from
+`--seed`.
 
 **Output**: the result with its type, e.g. `ℝ[batch: 2, model: 4] = [batch: 2,
 model: 4] [[…], […]]`; parameter trees as nested `{ name = … }` records; index
 tensors as integers.
 
 **Exit codes**: 0 success; 1 a diagnostic (including a runtime error `E7001`,
-labelled with the source of the failing operation); 2 usage or internal
-error, including a `training run` file without `--entry`.
+labelled with the source of the failing operation, and an entry refused at
+the dimensions given, `E7003`); 2 usage or internal error, including a
+`training run` file without `--entry`.
 
-**Randomness**: `sample` draws from a stream seeded by `--seed` (the `Rand`
-effect has no explicit key argument in 0.1.0; see `docs/spec-questions.md`).
+**Undefined at the dimensions given** (0.10.0 step 7b): once the `--dim`
+values are bound and checked against the file's bounds, an entry whose body
+(or a function it calls, a closure it applies, a fold of count at least
+one) holds an operation undefined at them is refused before anything runs
+(`E7003`, `diagnostics` chapter): `mean` over no element, a selection
+outside its axis, `embed`, `cross_entropy`, `argmax`, `sample` with no
+index below `V`, their derivatives. Every command that runs an entry
+checks it, `train` and `serve` at each call, on every backend.
+
+**Randomness**: every draw is a function of a key. A key argument is
+synthesized from `--seed` like any input; `sample(key, logits)` draws from
+its key (it drew from a stream seeded by `--seed` until 0.10.0 step 7b).
 
 ## `presk export FILE.psk --target pytorch --mode readable -o DIR`
 
@@ -224,9 +238,9 @@ distinct recording of a Presk function, each `stack` fold a loop over its
 layers, buffers named after the source, each function releasing what it
 allocated when it returns. Under a plan the kernels are the plan's, and a
 launch the native backend divides among threads is an OpenMP region (0.9.0
-step 5). An entry that samples draws from the program's stream, the native
-backend's, and `--serve` exports a generation function with `presk serve`'s
-loop (step 6). A realization that quantizes weights (`int8`, `int4`) is
+step 5). An entry that samples draws from its key argument, as the native
+backend does (0.10.0 step 7b), and `--serve` exports a generation function
+with `presk serve`'s loop (step 6). A realization that quantizes weights (`int8`, `int4`) is
 exported too: the program reads their reals and quantizes them as it reads
 them, as `presk run` does (step 7). The `export_c` chapter says how it is
 made, why its bits are the native backend's and what is checked; tutorial
@@ -253,11 +267,12 @@ out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" -
 | `--entry E` | the entry, as `presk run --entry` names it (`mse_grad`, `LayerNorm{8}.apply`, `adamw.step`, `next_token`); required, but with `--serve`, where it names the generation function as for `presk serve`. |
 | `--serve` | the generation function of the file's `inference serve` (or `--entry`), at one sequence (`B = 1`, which `--dim` may not change) and the window `--dim T=N` its model's parameters fix, with its greedy copy and `generate`, `presk serve`'s loop (step 6; below). A model whose parameters do not fix the context's length is refused (`E8009`). |
 | `--dim NAME=N`, `--const NAME=N` | as for `presk run`; every dimension must be bound (`E8003`). |
+| `--remat store\|recompute` | as for `presk run` (0.10.0 step 4): a gradient entry is exported with its forward pass stored, `f.bwd` after `f.fwd`, by default; `recompute` exports the recomputing `.vjp`s. The C program follows the native backend's run either way, and C1 holds for both. |
 | `--realize f64\|f32\|bf16\|@FILE` | the realization, `f64` by default; a solved one (`@FILE`) too, its buffers converted at the kernels' edges as the native backend converts them; one with a `quant` map (`int8`, `int4`; `presk quantize`) too since step 7, below. |
 | `--plan @P.json` | a realization plan (`presk plan --out`), in place of `--realize`: its realization and a layout per nest, checked as `presk run --plan` checks them (`E7002`); the native run is the plan's, so the program's kernels are the plan's tiles, orders, lanes and packs, and its splits are the program's threads (0.9.0 step 5). |
 | `--threads N` | the native executor's workers, as for `presk run` (default: the cores). A plan's split must state `N` or `N / 2` workers (condition 5), and a kernel the plan leaves to the executor is divided among `N` when its work reaches the executor's threshold: the exported program divides it the same way. |
 | `--weights CKPT.psk.d` | trained parameters for the entry's first argument, a `params M` checkpoint of the dimensions the entry is exported at, as `presk run --weights` reads it. The program reads it where it is: the conformance script names its absolute path. Without it, the parameters are the ones `presk run` synthesizes, written to `conformance/weights.psk.d`. |
-| `--seed S` | the seed of the synthesized inputs and parameters, `presk run`'s, and of the stream `sample` draws from: `main -s` and `generate --seed` default to it. |
+| `--seed S` | the seed of the synthesized inputs and parameters, `presk run`'s, and of the keys `sample` draws from: `main -s` and `generate --seed` default to it. |
 | `--no-exact` | leave the exact reference out of `conformance/`: at a model's full size the reference interpreter takes hours (the course GPT at `T = 256`). |
 | `--straight-line` | write the host as one function performing every operation in order, releasing nothing (0.9.0 step 3): the structured host's oracle, which computes the same bits in an arena as large as every buffer together. |
 | `-o DIR` | the directory, created; files already there are replaced. |
@@ -302,9 +317,9 @@ weight was until step 7.
 
 | file | holds |
 |---|---|
-| `model.h`, `model.c` | the entry, `presk_<entry>(arena, in, out)` (the entry's name made a C identifier: `LayerNorm{8}.apply` is `presk_LayerNorm_8_apply`, `θ` is `theta`), its inputs and outputs as structs of typed pointers, one per leaf, a leaf of integer weights a `presk_q8` or `presk_q4` of its integers and scales, a `double` per `f64` argument, and the arena's size; an entry that samples takes the stream too, `presk_<entry>(arena, rng, in, out)`; with `--serve`, the greedy copy `presk_<entry>_greedy(arena, in, out)` beside it, on the same structs; in `model.c` the `static` functions they call, callees first (below) |
+| `model.h`, `model.c` | the entry, `presk_<entry>(arena, in, out)` (the entry's name made a C identifier: `LayerNorm{8}.apply` is `presk_LayerNorm_8_apply`, `θ` is `theta`), its inputs and outputs as structs of typed pointers, one per leaf, a leaf of integer weights a `presk_q8` or `presk_q4` of its integers and scales, a `double` per `f64` argument, a `presk_key` per key argument that `sample` draws from (0.10.0 step 7b; a key nothing draws from is no field), and the arena's size; with `--serve`, the greedy copy `presk_<entry>_greedy(arena, in, out)` beside it, on the same structs; in `model.c` the `static` functions they call, callees first (below) |
 | `kernels.c` | its kernels, one `static` function each under its PSK-Kernel text, deduplicated; `model.c` includes it |
-| `main.c` | reads the weights and the inputs (quantizing the leaves the realization quantizes as it reads them), calls the entry, writes the outputs: `./model [-r R] [-s SEED] [WEIGHTS.psk.d] [INPUTS.psk.d] OUT.psk.d`; with `-r R` it calls the entry `R` times, the arena released between calls, and prints the median and the best wall time on standard error; `-s SEED` (an entry that samples) seeds the stream, the export's `--seed` by default, again before each of the `R` calls |
+| `main.c` | reads the weights and the inputs (quantizing the leaves the realization quantizes as it reads them), calls the entry, writes the outputs: `./model [-r R] [-s SEED] [WEIGHTS.psk.d] [INPUTS.psk.d] OUT.psk.d`; with `-r R` it calls the entry `R` times, the arena released between calls, and prints the median and the best wall time on standard error; `-s SEED` (an entry that samples) gives each key argument the key `presk run --seed` synthesizes for it, the export's `--seed` by default |
 | `generate.c` | with `--serve`: `presk serve`'s loop over the entry and its greedy copy (below) |
 | `presk_rt.h`, `presk_rt.c`, `presk_libm.c` | the runtime and musl 1.1.22's transcendental functions (`export_c` chapter) |
 | `Makefile` | `make` builds `model` (and `generate`) with `-std=c11 -ffp-contract=off` (`STRICT`, never to change), `-O2 -Wall -Wextra`, and `OPENMP`: `-fopenmp` when a launch is divided among threads, empty otherwise; `make OPENMP=` builds without OpenMP, on one thread, with the same bits; `make check` runs the conformance script |
@@ -375,14 +390,16 @@ test set's sizes nothing is divided, since `presk plan` states no split and
 no kernel reaches the threshold; the course GPT at `B = 16`, `T = 256` under
 its plan divides 201 of its 228 launches among ten threads.
 
-**Sampling and generation** (0.9.0 step 6). `sample` takes no key: it draws
-from the backend's stream, seeded by the run's seed. The program's stream is
-a `presk_rng`, ChaCha20 as the native backend's (`rand_chacha`), seeded as
-it seeds its own and advanced by each draw; the entry takes it as an
-argument, so that a caller carries it from call to call as `presk serve`
-carries the backend's. The draw is the native backend's, in `f64`, with
-`presk_exp`. With `--serve`, `generate` runs `presk serve`'s loop, and its
-output is `presk serve --backend native`'s, byte for byte, `--json` included
+**Sampling and generation** (0.9.0 step 6; 0.10.0 step 7b). `sample(key,
+logits)` draws from its key, an argument of the entry the program holds as
+a `presk_key` (`presk_rt.h`: 32 bytes; the key a seed names, a key's split
+and its child; the uniform draws of ChaCha20 as `rand_chacha`'s), which
+`main` derives from `-s SEED` as `presk run --seed` does and a caller sets
+as it likes. The draw is the native backend's, in `f64`, with `presk_exp`.
+A key the program does not hold (split, or stacked) given to `sample` is
+refused (`E8006`). With `--serve`, `generate` runs `presk serve`'s loop,
+token `i` given the child `i` of the key `--seed` names, and its output is
+`presk serve --backend native`'s, byte for byte, `--json` included
 (statement C5):
 
 ```sh
@@ -392,7 +409,7 @@ out/serve_c/generate --weights W.psk.d --prompt "t1 t2 …" [--tokens N] [--temp
 The context is the last `T` tokens (the window the export fixed); each step
 computes a token, appends it and moves the window on. At temperature 0 a step
 calls the greedy copy (every `sample` an `argmax`) with temperature 1, above
-it the entry, every draw from one stream seeded once. The defaults are
+it the entry, from the token's key. The defaults are
 `presk serve`'s: 16 tokens, the function's default temperature, and the seed
 the program was exported with. A prompt shorter than the window, a token
 outside the vocabulary and a negative temperature are refused as `presk
@@ -546,9 +563,18 @@ loop, the flags (`--const`, `--data`, `--steps`, `--epochs`, `--seed`,
 the training step (`presk solve --step`), whose `functions` map gives each
 function of the step its type; a realization that quantises weights is
 refused. `--plan @P.json` takes a realization plan instead, as `presk run`
-does (0.7.0 step 1). Besides the log, standard error gets the kernel launches a step
+does (0.7.0 step 1). The loop calls the objective's `value_vjp` once a step
+(0.10.0 step 3), and what a realization or a plan states of the
+objective's `.vjp` and of the objective's own sites it states of that
+function (`training` chapter). `--remat store|recompute` as `presk run`: stored
+(the default), the step is `f.bwd` after `f.fwd`, one forward pass. Besides the log, standard error gets the kernel launches a step
 (native backend) and the median step time with the first step excluded;
-`--json` carries `ms` per step and `step_ms`.
+`--json` carries `ms` per step and `step_ms`. `--host-profile` (0.10.0 step
+5), with `--backend native` only (exit code 2 otherwise), times the native
+host by phase in every step, as `presk bench --host-profile` does a call,
+and prints the table of a step on standard error, the mean of every step
+but the first, with its page faults; only the clock is read, and the run's weights are the same
+bytes with it and without.
 
 ```sh
 presk train tests/train/mlp_regression.psk --steps 200 --ckpt out/reg_ckpt
@@ -563,7 +589,7 @@ or an unreadable data file.
 
 Generates tokens with the file's `inference serve`: its model, its weights
 (`--weights FILE.psk.d` overrides the block's) and its generation function
-(`--entry FN` overrides the one found by signature), on the backend of
+(`--entry FN` overrides the one the block's `generate` field names or, without it, the one found by signature), on the backend of
 `--backend`/`--realize`; `--tokens N` (16), `--temperature x` (0 is greedy;
 default the function's own), `--dim NAME=N` for a dimension of the parameters
 not fixed by the prompt (`T` of a positional embedding), `--seed`, `--bits`,
@@ -584,7 +610,7 @@ serve`, no weights file, or a malformed `--prompt`/`--dim`.
 presk calibrate --precision FILE.psk --entry ENTRY [--data FILE.psk.d]
     [--samples N] [--from K] [--dim NAME=N] [--const NAME=N]
     [--weights ckpt/final.psk.d] [--bits 256] [--seed 0] [--out ENV.json]
-    [--compare OTHER.json]
+    [--compare OTHER.json] [--remat store|recompute]
 ```
 
 Measures the **magnitude envelope**: the largest `|x|` at each site, on the
@@ -611,6 +637,7 @@ presk calibrate --step FILE.psk --weights ckpt/final.psk.d [--warmup 10] [--step
     [--data FILE.psk.d] [--samples 2] [--from 0] [--const NAME=N]
     [--realize f64|f32|bf16|recipe|@R.json]… [--profile FILE.json]
     [--reference exact|f64] [--bits 256] [--seed 0] [--out ENV.json]
+    [--remat store|recompute]
 ```
 
 Measures one **optimizer step** of the file's `training run` instead of an
@@ -637,7 +664,9 @@ every function but the optimizer in `bf16`, the optimizer and the master
 weights in `f32`. `--reference f64` compares against a native `f64` step
 instead of the exact one, for a model too large for the reference
 interpreter, and writes no envelope. See the `precision` chapter, "A budget
-on the training step".
+on the training step". `--remat` as `presk run` (since D93): the step's
+functions are the `.fwd`s and `.bwd`s storing, the `.vjp`s recomputing, and
+the envelope records which, since the sites it measures are theirs.
 
 **Exit codes**: 0; 1 a diagnostic, a run-time error or a checkpoint that
 does not load (of other dimensions: `E9005`); 2 no `training run`, no
@@ -659,7 +688,12 @@ default); `normwise`, sound without assumption; `k`, 0.5.0's worst case; `rss`,
 the root-sum-square, printed as an **estimate**; `all` prints the four.
 `--measure` runs the realization natively on the envelope's own inputs and
 weights and prints the measured distance to the exact reference, with each
-row's ratio to it. `--sites N` lists the `N` widest sites with their condition
+row's ratio to it; an element whose difference is not finite (a value that
+overflowed or became NaN where the reference is finite) makes it `inf`, the
+reference's gap, as for `presk solve`'s and `presk quantize`'s measurements
+(since 0.10.0 step 8; such an element was left out before, so a realization
+that overflowed was measured on the others, and `presk solve` could accept
+it). `--sites N` lists the `N` widest sites with their condition
 numbers. See the `precision` chapter, "Does the condition number rescue the
 bound?".
 
@@ -668,7 +702,7 @@ bound?".
 ```sh
 presk solve FILE.psk --precision ENV.json [--budget 1e-3] [--weights ckpt/final.psk.d]
     [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--no-verify] [--bits 128]
-    [--seed 0] [--out R.json] [--sites N]
+    [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
 ```
 
 Chooses a machine type per site under an error budget, minimising the
@@ -678,7 +712,11 @@ traffic otherwise, and writes a realization `--realize @R.json` can run. It **ve
 measurement** against the exact reference rather than by the propagated
 bound, which is vacuous on a real model; `--no-verify` gives the proposal
 alone. `--weights` matters: a sensitivity ranking at initialization is
-vacuous. The inputs are the envelope's: when it was measured on a data slice,
+vacuous. The envelope's entry must return a scalar `ℝ[]`, a loss: the sites
+are ranked by its sensitivity `∂L/∂v`, as `presk dump --stage sensitivity`
+ranks them, and any other entry is refused (exit 2) before anything is
+computed (D101; until then it failed in the reverse sweep's first `.vjp`,
+after its forward half). The inputs are the envelope's: when it was measured on a data slice,
 the sweep and every measurement run on that slice. `--quant` also offers every matrix parameter as `int8` or `int4`
 (`--scheme absmax|pow2`), priced by the parameters' gradient and accepted by
 measurement, and prints the three first-order readings per parameter with
@@ -689,7 +727,7 @@ to the initial parameters. See the `precision` chapter.
 
 ```sh
 presk solve --step FILE.psk --precision ENV.json [--budget 1e-3] [--profile FILE.json]
-    [--no-verify] [--bits 128] [--out R.json]
+    [--no-verify] [--bits 128] [--out R.json] [--remat store|recompute]
 ```
 
 With an envelope written by `presk calibrate --step`, solves the whole
@@ -706,11 +744,15 @@ function (sites, cost in `f64`, isolated gaps, chosen type), the predicted
 cost against all-`f64`, and the combination's measured update gap, storage
 floor and gradient gap. `--out` writes a realization whose `functions` map
 gives each narrowed function its type; `presk train --realize @R.json` trains
-with it.
+with it. `--remat` must be the policy the envelope was calibrated under (an
+envelope written before D93 does not record it, and its sites' names say
+it), and so should `presk train`'s: a
+realization of the recomputing step names `.vjp`s, which a stored gradient
+only calls.
 
 **Exit codes**: 0, whether or not the measured gap is inside the budget (the
 report says which); 1 a run-time error; 2 an envelope of an entry rather than
-of a step.
+of a step, or of a step calibrated under the other `--remat`.
 
 ## `presk quantize FILE.psk --entry ENTRY --realize @R.json …`
 
@@ -755,7 +797,11 @@ alone; with `--calibrate`, the kernels are timed under the plan's layout.
 realizations' (at the course GPT's `B = 16` on one thread they take most of
 half an hour), and `--weights CKPT.psk.d` replaces the entry's first argument
 by trained parameters, as for `presk run`: how `make c-speed` times the
-native side of an exported program. The inputs are rounded
+native side of an exported program. `--warmup N` (after 0.9.0, D87) makes
+`N` calls per row before the timed ones and times none of them: the native
+backend compiles its kernels on its first call, which the median of
+`--repeat` calls otherwise counts (`--warmup 1 --repeat 7` is how `make
+pytorch-baseline` takes a median of seven). The inputs are rounded
 to each row's machine type, and weights quantised, **once, outside the
 timing** — since 0.6.0 step 5b; before it, every native row also paid a
 conversion of its inputs from the reference's exact reals on every call,
@@ -769,11 +815,60 @@ roofline `λ + max(W/π, Q/β)` and writes the profile; an existing profile of
 the same realization keeps its other kernels and is refitted with the new
 ones. The table printed has one line per kernel (work, bytes, measured and
 predicted microseconds), then the constants and the rank correlations of
-three predictors with the measured times (`optimization` chapter).
+three predictors with the measured times (`optimization` chapter). A line
+`-- a call:` (after 0.9.0, D87) gives the launches of one call and the
+kernels' share of its time, each kernel's median launch times its launches:
+the call's own time, from `presk bench` without `--calibrate`, less this is
+the host's (its buffers, copies and views), provided both run the same
+kernels. They do under a plan that states every nest's lanes: `--calibrate`
+runs a nest no plan states on one lane, where the native backend of `presk
+run`, `train` and `bench` gives it its type's natural width.
 
 ```sh
 presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 --const D=16 --const H=2 --const L=2 \
      --dim B=2 --dim T=8 --calibrate out/profile.json
+```
+
+`--host-profile` (0.10.0 step 5, D95) times the native backend's host by
+phase, under `--plan` (or the realization's default layout without one),
+where `--calibrate` gives only the kernels' share. The host reads the clock
+around each region of its work and the executor around what of a launch is
+not the kernel's code; regions do not nest, so each phase's time is its
+own, and what no region covers, the interpreter of the host program, is the
+call's time less every phase. Only the clock is read: every buffer, kernel
+and launch is the one a call without the flag makes. `--repeat` calls are
+timed so and as many not, alternated, after `--warmup` calls (at least one,
+since the first compiles); each is timed as `presk bench` times a call, the
+copy of its arguments and the drop of its result included. Printed: both
+medians and the timers' cost (their difference); whether a call with the
+timers and one without give the same bits (exit code 1 if not); the
+process's minor page faults a call, pages touched for the first time (read
+from `/proc/self/stat` before and after a call, on Linux); and a
+table, each phase's mean a call, its share, the megabytes it moved and its
+regions a call, in six groups. Since step 6 (D96) a value's elements are
+shared by its copies, views and stacks, so the phases of groups 3 and 4
+count the bytes they still copy (none on a machine buffer), and `free` the
+bytes a drop releases:
+
+| group | phases |
+|---|---|
+| `kernels` | the kernels' own code: each launch timed around the executor, as `--calibrate` times it, less what follows under `threads` |
+| `find` (1) | `site`: a `let`'s site named and its type found; `groups`: a function's fusion groups cloned at its call; `layout`: a nest's kind and its layout in the plan; `key`: the cache key formatted and the kernel looked up; `lower`: lowering and compiling (first launches; none after the warm-up) |
+| `buffers` (2) | `alloc`: output buffers allocated; `convert`: inputs converted to a kernel's type; `free`: a function's values freed when it returns, and the result |
+| `views` (3) | `slice`: a stacked tree's layer sliced, a scan's results stacked, a slice set or scattered (views and parts since step 6); `axes`: merged, split or reshaped axes, copied |
+| `copies` (4) | `entry`: the entry's arguments typed (a leaf in another type converted); `operands`: a launch's operands read out of the environment; `as-tensor`: the same taken again as tensors; `args`: a call's arguments, a closure's captures; `tuples`: tuples, records, projections, fields, a tree's leaves around a primitive mapped over them; `fold`: a fold's arguments and a scan's accumulators. Copies until step 6 |
+| `threads` (5) | `dispatch`: the executor's dispatch (addresses, the split's size); `start-join`: a divided launch's time less its longest piece's, its workers' start (their wake, since step 6's pool) and join |
+| `left` (6) | `dropout`: masks drawn on the host; `host-prims`: initializers, `sample`, `zeros_like`, `split_key`; `interpreter`: the rest, by difference |
+
+A last line gives the launches a call, those divided and their threads, and
+the kernels as `--calibrate` counts them (code, dispatch and threads) against
+the host. `make host-profile` runs it on the course GPT (`experiments`
+chapter).
+
+```sh
+presk bench corpus/nlp/05_gpt.psk --entry GPT.apply --dim B=16 --dim T=256 \
+     --plan @plans/forward.json --weights out/course_probe_f32/final.psk.d \
+     --threads 10 --warmup 1 --repeat 7 --host-profile
 ```
 
 `--calibrate FILE.json --space calib` (0.7.0 step 4) calibrates the **layout
@@ -889,7 +984,7 @@ presk refit ~/presk-data/ra4-0.8.0-calibration/out/profile.json --recost experim
 
 ```text
 presk plan FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …] [--realize R]
-           --profile P.json [--nest NEST] [--space full|small] [--cost] [--seed S] [--out PLAN.json]
+           --profile P.json [--nest NEST …] [--space full|small] [--cost] [--seed S] [--out PLAN.json]
 ```
 
 Chooses a layout for every nest of an entry **statically**, from the layout
@@ -909,7 +1004,10 @@ how many points lie within `1 + u` of it — the ones the model cannot tell
 from the best, `u` being its median relative residual — and the layout
 chosen; `--cost` also prints every point's prediction, and the last lines
 give the time spent costing and the wall time. `--space small` narrows every
-space to the daily subset of `presk autotune`. The plan names the profile it
+space to the daily subset of `presk autotune`. `--nest` restricts the plan
+to the nests it names, `<function>/%<let>`, the option repeated or the names
+separated by commas (several since 0.10.0 step 2); a name the entry does not
+launch is refused, exit code 2. The plan names the profile it
 was chosen against (question 64: a plan is not portable). A plan states one
 layout per nest. A nest launched at one shape gets the best prediction, a tie
 broken by the order of the space. A nest launched at several (a module
@@ -923,7 +1021,21 @@ shape, which `presk run` refused (condition 3). A nest whose type the
 profile was not calibrated in is left to the default layout and named on a
 last line; when no nest can be priced (`--realize bf16` under a profile
 calibrated in `f32` and `f64`), `presk plan` refuses, exit code 2, and writes
-nothing, where it wrote an empty plan. The plan is the model's choice, not the best one
+nothing, where it wrote an empty plan. The plan names the nests of the
+program its realization makes: since 0.10.0 step 4b a gradient keeps its
+fusion groups under `bf16` and not under `f32` or `f64` (`language`
+chapter, "Dead code after differentiation"), so a gradient's plan made
+under one of them is refused under the other (`E7002`, a nest the program
+lacks or computes inside a group). Since 0.10.0 step 7 (D97) a product
+whose value one `add` alone reads, in the product's type, at every shape it
+is launched at, takes that `add` as its epilogue (`"epilogue": true`, the
+`realize` chapter's "The bias as an epilogue"), over the layout chosen
+without it, wherever that layout lowers with it; a line `-- N products take
+the add that alone reads them as their epilogue: …` names them. The model
+prices a nest alone and has no term for it, so no prediction moves: the
+epilogue saves the `add`'s launch and its pass over the output, and adds no
+arithmetic. On the course GPT that is `Linear.apply/%3`, a linear layer's
+product and its bias. The plan is the model's choice, not the best one
 measured. Under 0.7.0's model that pick was 2.2–3.0 times slower than the
 best point on the course GPT's attention at batch 16, because the model
 could not see a register tile (D62). Under 0.8.0's frozen model it is within
@@ -948,7 +1060,7 @@ the one 0.7.0 made (`make ra4-dev`, D64).
 
 ```text
 presk autotune FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …] [--realize R]
-               [--space full|small] [--repeat 7] [--profile P.json] [--nest NEST] [--interp]
+               [--space full|small] [--repeat 7] [--profile P.json] [--nest NEST …] [--interp]
                [--top N --random N] [--seed S] [--shard K/N] --out DIR
 ```
 
@@ -970,7 +1082,10 @@ the tiles `{1, 4} × {8, 16}`, no k-block or 128, the orders `IJ`, `JI`,
 `KIJ`, `IKJ`, `IJK`, the splits none, `(0, p)` and `(1, p)` with `p` all
 the machine's workers; `full` adds the other tiles, k-blocks and orders, the
 split at depth 2 and half the workers. With `--profile`, each point also
-records the model's prediction.
+records the model's prediction. `--nest`, as `presk plan`'s, restricts the
+sweep to the nests it names, every shape each is launched at: since 0.10.0
+step 2 it takes several, so that one sweep holds a gradient's derivatives
+of `dot` (T3, below).
 
 Beside each nest's space, 0.6.0's point is measured and checked too: the
 default layout with its split left to the executor, as a run without a plan
@@ -989,7 +1104,10 @@ every shard, and shard 0 records it and 0.6.0's point. Together, with
 same splits.
 
 `DIR` is one day of measurement: one file per nest, `<nest>.jsonl` with `/`
-and `%` replaced by `_`, a JSON line per point (`entry`, `config` — the
+and `%` replaced by `_`, holding every shape the nest is launched at (until
+0.10.0 step 2 a nest at several shapes kept only its last shape's lines, a
+case no sweep until then had: every archived sweep holds all its points),
+a JSON line per point (`entry`, `config` — the
 constants then the dims, `B=16,T=256` —, `nest`, `op`, the primitive, `ein`,
 `dot`, `softmax`, … or `fused`, `shape`, `dtype`, `layout`, `key`,
 `baseline`, `timed`, the `seconds` of every timed launch, `median`, `mad`,
@@ -998,7 +1116,8 @@ first — the model's `group`, its inputs `cost` (since 0.8.0 step 2 with
 `loads` and `spill`), the `terms` of its prediction, `λ`, spawn, the work,
 the loads when the model has the term, and the three traffic bounds, and the
 `bound` that set it), and
-`sweep.json` (the entry, the configuration, the dims, the space, the sample
+`sweep.json` (the entry, the configuration, the dims, the nests `--nest`
+named since 0.10.0 step 2, `null` for every nest, the space, the sample
 and the shard if any, the number of points and of baselines, the time spent
 measuring, costing, capturing and checking
 on the interpreter, the wall time, the machine description, `u`, and
@@ -1111,7 +1230,9 @@ the tool, not by hand:
   (0.8.0 step 1, D65). The ratio with the capture that runs the entry, which
   0.7.0 measured, is printed beside it.
 - **O** holds when the model's pick is within 1.25× of the best measured on
-  every contraction nest (`ein` or `dot`) at `--at`.
+  every contraction nest (`ein` or `dot`, and since 0.10.0 step 2 the
+  derivatives of `dot`, `dot_vjp_l` and `dot_vjp_r`) at `--at`. M stays the
+  `ein`s'.
 - **P** holds when the best point of `--gemm` at `--gemm-at` (`gemm`,
   `N=1024`) is at least 3× faster than 0.6.0's point.
 - **Q**, plan 0.8.0's (§3.6), holds when on every contraction nest of every
@@ -1130,7 +1251,16 @@ the tool, not by hand:
   statements. Q is decided on days that record the capture of shapes (0.8.0
   step 1, D65). For earlier days, 0.7.0's, it is decided only with
   `--statement-q`, which costs their static side with the capture that runs
-  the entry, and their reports are otherwise 0.7.0's.
+  the entry, and their reports are otherwise 0.7.0's. Its contraction nests
+  are O's.
+
+A nest the day holds at several shapes in one configuration and type, as a
+gradient's derivatives of a linear layer's product, is named with its
+operands in the statements and the tables that have no operands column
+(`` `Linear.apply.vjp/%11` at [16, 256, 384] [1536, 384] ``; 0.10.0 step 2;
+`Linear.apply.bwd/%11` since step 4).
+A nest at one shape is named as before, so every earlier report comes back
+byte for byte.
 
 Then come the counts per decision class (`tile`, `kblock`, `order`,
 `lanes`, `split`, `pack`, `passes`, `form`), per nest and class, and the
@@ -1281,6 +1411,53 @@ presk rank out/ra4-f1/day1 out/ra4-f1/day2 --frozen ra4-model-0.8.0 --check out/
      --at D=1024,H=16,B=1,T=384 --out docs/ra4-f1a-2026-09-25.md
 presk rank out/ra4-f1/day1 out/ra4-f1/day2 --frozen ra4-model-0.8.0 --check out/ra4-f1/check \
      --at D=1024,H=8,B=2,T=512 --out docs/ra4-f1b-2026-09-25.md
+```
+
+**T3** (plan 0.10.0 §3.5, step 2, D90) is RA4's third fresh test: the
+derivatives of `dot`, contraction nests since 0.10.0 step 1, which the
+frozen model has never seen. It sweeps the course GPT's gradient
+(`experiments/gpt_grad.psk`, entry `loss_grad`) at `B = 16`, `T = 256`, in
+`f32`, over the whole space, on the ten X925 cores, priced by the frozen
+model's profile itself (`RA4_T3_PROFILE`, by default `RA4_FROZEN`), neither
+changed nor refitted. A day is one sweep of the four nests `RA4_T3_NESTS`
+names: `Linear.apply.vjp/%11` (`dot_vjp_l`) and `%12` (`dot_vjp_r`), each at
+the three shapes of the block's products, and the head's `GPT.apply.vjp/%28`
+and `%29`, eight nests and shapes, 11 028 points (the days of D90, archived,
+name them so; since 0.10.0 step 4 the sweeps are the `.bwd`s, `RA4_T3_NESTS`
+names `Linear.apply.bwd/%11`, …, and re-pricing the archived days takes
+`--remat recompute`). The targets are F2's:
+
+- `make ra4-t3-dry` prices the four nests and sweeps the one the model
+  predicts longest, at its three shapes, into `out/ra4-t3/dry`, then sizes a
+  day into `out/ra4-t3/dry/day.md` against `RA4_T3_BUDGET` hours (8).
+- `make ra4-t3` and `make ra4-t3-day2` are the two days, into
+  `out/ra4-t3/day1` and `day2`, with the checks before a fresh day.
+- `make ra4-t3-check` is statement L on the kernel interpreter, in
+  `RA4_T3_SHARDS` shards (80) over every core, never beside a timed run.
+- `make ra4-t3-rank`, which ends day two, is `presk rank --frozen
+  ra4-model-0.8.0 --entry loss_grad --at B=16,T=256 --type f32` into
+  `out/ra4-t3.md`: O and Q on the eight derivative nests, L with the check,
+  N on the configuration. M is the `ein`s', and the sweep holds none.
+
+A day too long for the budget would be swept on a sample, `RA4_T3_SAMPLE`,
+which leaves Q undecided. A trial on a tiny configuration:
+
+```sh
+make ra4-t3-day2 RA4_TRIAL=1 RA4_T3_DIR=out/ra4-t3-trial RA4_T3_CONSTS="D=32 H=2" RA4_T3_SHAPE=B=2,T=16 \
+     RA4_T3_SPACE=small
+```
+
+T3 was measured on 2026-09-29 in this order: the dry run (1 h 50 min, a day
+estimated at 2 h 51 min, the space whole), day one (3 h 05 min), the check
+(80 shards, 7 h 06 min), and day two on day one's date (`RA4_SAME_DATE=1`,
+3 h 05 min), then ranked. Each piece is archived read-only in
+`~/presk-data/ra4-t3-0.10.0` (D90). The report, `out/ra4-t3.md`, is kept as
+`docs/ra4-t3-2026-09-29.md`: O holds, and Q fails on the head's two nests
+(`experiments` chapter, §8's addendum).
+
+```sh
+presk rank out/ra4-t3/day1 out/ra4-t3/day2 --frozen ra4-model-0.8.0 --check out/ra4-t3/check \
+     --entry loss_grad --at B=16,T=256 --type f32 --out docs/ra4-t3-2026-09-29.md
 ```
 
 ## `presk data chars | encode | pack | lm-windows | info | diff | export`

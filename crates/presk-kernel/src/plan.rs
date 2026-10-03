@@ -90,21 +90,36 @@ pub fn lower_launch(l: &Launch, layout: &Layout, workers: Option<usize>) -> Resu
     let kind = launch_kind(l);
     layout.check(&kind)?;
     let eff = layout.resolve(&kind);
+    // The epilogue (0.10.0 step 7): the `add` the capture noted, its operand
+    // the kernel's third input.
+    let epi = match (eff.epilogue, &l.epilogue) {
+        (Some(true), Some(at)) => Some(at),
+        (Some(true), None) => return Err(format!("an epilogue, and no `add` that `{}` can take was captured with it", l.nest)),
+        _ => None,
+    };
     let mut kernels = match &l.what {
         LaunchOp::Fused { steps, out } => vec![crate::lower::fused(steps, &l.operands, out, l.dtype)?.kernel],
         LaunchOp::Prim(op) => match (eff.pack, Contraction::of(op, &l.operands, l.order)) {
             (Some(true), Some(c)) => {
                 let pack = crate::lower::pack_panel(&c, l.dtype, &l.operands[1])?.kernel;
                 let panel = Operand { axes: c.panel_axes(&l.operands[1]), kind: crate::ir::BufKind::Real };
-                let body = crate::lower::emit_contraction(&c.packed(), l.dtype, &[l.operands[0].clone(), panel], &eff)?.kernel;
+                let mut ins = vec![l.operands[0].clone(), panel];
+                ins.extend(epi.map(|a| a.operand.clone()));
+                let body = crate::lower::emit_contraction_with(&c.packed(), l.dtype, &ins, &eff, epi.map(|a| &a.epilogue))?.kernel;
                 vec![pack, body]
             }
+            (_, Some(c)) if epi.is_some() => {
+                let mut ins = l.operands.clone();
+                ins.extend(epi.map(|a| a.operand.clone()));
+                vec![crate::lower::emit_contraction_with(&c, l.dtype, &ins, &eff, epi.map(|a| &a.epilogue))?.kernel]
+            }
+            (_, None) if epi.is_some() => return Err(format!("an epilogue, and `{}` is not a contraction nest at these operands", op.name())),
             _ => vec![crate::lower::lower_planned(op, &l.operands, l.dtype, l.order, &eff).unwrap_or_else(|| Err(format!("`{}`: no kernel", op.name())))?.kernel],
         },
     };
     // Integer weights are marked as the host marks them.
     let main = kernels.len() - 1;
-    for (spec, b) in kernels[main].inputs.iter_mut().zip(&l.inputs) {
+    for (spec, b) in kernels[main].inputs.iter_mut().zip(l.inputs.iter().chain(epi.map(|a| &a.input))) {
         if let presk_rt::Buf::Quant(q) = b {
             spec.kind = crate::ir::BufKind::Quant { bits: q.bits, over: q.over };
         }
@@ -132,6 +147,32 @@ pub fn split_as(kernels: &[Kernel], split: Split, workers: Option<usize>) -> Res
     let main = kernels.len() - 1;
     kernels[main].threads = threads_of(Some(split), &kernels[main], workers, false)?;
     Ok(kernels)
+}
+
+/// The kernels accumulate a contraction in the arithmetic type of its
+/// storage (`bf16` in `f32`) whatever the realization's `accum` declares,
+/// and condition 7 reads the declared type: a declared accumulation type
+/// other than the storage's arithmetic type would admit layouts whose bits
+/// differ from the default's (D97). Such a realization is refused on the
+/// kernel and native backends (`E7002`, plan 0.10.0 step 8), by their
+/// `prepare`, before anything runs, until the kernels honour `accum`
+/// (question 67). Not by [`check_plan`], which runs whatever the executor:
+/// the reference interpreter computes exactly and reads no realization.
+pub fn check_accum(realize: &presk_rt::Realization) -> Result<(), RtError> {
+    for (site, declared) in &realize.accum {
+        let storage = realize.dtype_at(site);
+        if *declared != storage.arith() {
+            return Err(RtError {
+                code: "E7002",
+                message: format!(
+                    "the realization accumulates `{site}` in {declared}, and the kernels accumulate its {storage} storage in {}: a declared accumulation type other than the storage's arithmetic type is honoured by no kernel (question 67)",
+                    storage.arith()
+                ),
+                span: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Checks a plan against the program it is run on, before anything runs:
@@ -166,11 +207,21 @@ pub fn check_plan(plan: &Plan, core: &Program) -> Result<(), RtError> {
                 return Err(fail(nest, format!("%{var} of `{fname}` is {what}, and only a primitive or a fusion group is a nest")));
             }
         };
-        let contraction = matches!(op, Some(PrimOp::Dot | PrimOp::Matmul | PrimOp::Ein { .. }));
+        let contraction = matches!(op, Some(PrimOp::Dot | PrimOp::Matmul | PrimOp::Ein { .. } | PrimOp::DotVjpL | PrimOp::DotVjpR));
         let softmax = matches!(op, Some(PrimOp::Softmax { .. }));
         let named = layout.stated();
-        if !contraction && let Some(d) = named.iter().find(|d| ["form", "tile", "kblock", "order", "pack"].contains(d)) {
+        if !contraction && let Some(d) = named.iter().find(|d| ["form", "tile", "kblock", "order", "pack", "epilogue"].contains(d)) {
             return Err(fail(nest, format!("`{d}` is a decision of a contraction nest, and %{var} is {}", describe(op))));
+        }
+        // An epilogue (0.10.0 step 7): the product's value read by one `add`
+        // alone, launched by itself, in the product's type.
+        if layout.epilogue == Some(true) {
+            let e = presk_core::fusion::epilogue(func, &groups, l.var).map_err(|why| fail(nest, format!("an epilogue, and {why}")))?;
+            let add = format!("{fname}/%{}", e.add.0);
+            let (dp, da) = (plan.realization.dtype_at(nest), plan.realization.dtype_at(&add));
+            if dp != da {
+                return Err(fail(nest, format!("an epilogue adds in the product's kernel, in its type, {dp}, and the `add` that reads it, `{add}`, is typed {da}")));
+            }
         }
         if !softmax && layout.passes.is_some() {
             return Err(fail(nest, format!("`passes` is a decision of a softmax nest, and %{var} is {}", describe(op))));
@@ -241,9 +292,40 @@ mod tests {
     }
 
     #[test]
+    fn the_derivatives_of_a_dot_are_recognized() {
+        let seq = ReductionOrder::Sequential;
+        // x[batch, seq, 384] · w[384, 1536]: its cotangent is [batch, seq, 1536].
+        let (x, w, ct) = (t(&[("batch", 16), ("seq", 256), ("model", 384)]), t(&[("i", 384), ("o", 1536)]), t(&[("batch", 16), ("seq", 256), ("o", 1536)]));
+        // dot_vjp_l: ct · wᵀ, NT, the batch outer, seq the I, 384 the J, 1536 summed.
+        let l = Contraction::of(&PrimOp::DotVjpL, &[ct.clone(), w.clone()], seq).expect("dot_vjp_l is a contraction");
+        assert_eq!((l.name.as_str(), l.outer.clone(), l.i, l.j, l.k, l.ks.clone(), l.nt, l.dot), ("dot_vjp_l", vec![16], 256, 384, 1536, vec![1536], true, false));
+        // The output's axes as 0.9.0's lowering names them: the cotangent's leading axes, then w's first.
+        assert_eq!(l.out, t(&[("batch", 16), ("seq", 256), ("i", 384)]).axes);
+        // dot_vjp_r: xᵀ · ct over batch and seq, flattened: K = 16 · 256, a k-block on seq.
+        let r = Contraction::of(&PrimOp::DotVjpR, &[x.clone(), ct.clone()], seq).expect("dot_vjp_r is a contraction");
+        assert_eq!((r.name.as_str(), r.outer.len(), r.i, r.j, r.k, r.ks.clone(), r.nt), ("dot_vjp_r", 0, 384, 1536, 4096, vec![16, 256], false));
+        let NestKind::Contraction(c) = nest_kind(&PrimOp::DotVjpR, &[x.clone(), ct.clone()], seq, Dtype::F32, Dtype::F32) else { panic!("dot_vjp_r is a contraction") };
+        assert_eq!((c.k, c.k_inner, c.dot), (4096, 256, false));
+        // Their defaults are 0.9.0's kernels: one accumulator, no lanes.
+        let d = Layout::default_for(&NestKind::Contraction(c));
+        assert_eq!((d.tile, d.lanes, d.pack), (Some((1, 1)), Some(1), Some(false)));
+        // A k-block divides the innermost summed axis, not only their product.
+        let small = [t(&[("batch", 2), ("seq", 16), ("model", 8)]), t(&[("batch", 2), ("seq", 16), ("o", 8)])];
+        let NestKind::Contraction(c) = nest_kind(&PrimOp::DotVjpR, &small, seq, Dtype::F32, Dtype::F32) else { panic!("dot_vjp_r is a contraction") };
+        let kb32 = Layout { kblock: Some(presk_rt::layout::KBlock::Width(32)), ..Layout::default() };
+        assert!(kb32.check(&NestKind::Contraction(c)).unwrap_err().contains("innermost"), "K = 32, and seq = 16");
+        assert!(Layout::space(&NestKind::Contraction(c)).iter().all(|l| l.kblock != Some(presk_rt::layout::KBlock::Width(32))));
+        // Not the dot pattern: a right operand of rank three, a vector, an interleaved order.
+        let w3 = t(&[("i", 384), ("a", 4), ("b", 4)]);
+        assert!(Contraction::of(&PrimOp::DotVjpL, &[t(&[("batch", 16), ("a", 4), ("b", 4)]), w3], seq).is_none());
+        assert!(Contraction::of(&PrimOp::DotVjpR, &[t(&[("model", 384)]), t(&[("o", 1536)])], seq).is_none());
+        assert!(Contraction::of(&PrimOp::DotVjpL, &[ct, w], ReductionOrder::Interleaved { partials: 4 }).is_none());
+    }
+
+    #[test]
     fn a_stated_layout_is_checked_then_resolved() {
         use presk_rt::layout::{Contraction as C, Form, KBlock, Split};
-        let wide = NestKind::Contraction(C { dot: true, i: 16, j: 384, k: 384, nt: false, accum_is_storage: true, width: 4 });
+        let wide = NestKind::Contraction(C { dot: true, i: 16, j: 384, k: 384, k_inner: 384, nt: false, accum_is_storage: true, width: 4 });
         let json = |s: &str| Layout::from_json(&serde_json::from_str(s).unwrap()).unwrap();
         let native = Layout::default();
         let interp = Layout { lanes: Some(1), ..Layout::default() };
@@ -253,12 +335,12 @@ mod tests {
         let l = lowered(&json(r#"{ "tile": [4, 16], "kblock": 32, "order": "KJI", "split": { "depth": 1, "workers": 10 } }"#), &native, &wide).unwrap();
         assert_eq!((l.form, l.tile, l.kblock, l.lanes, l.split), (Some(Form::Tiled), Some((4, 16)), Some(KBlock::Width(32)), Some(4), Some(Split::At { depth: 1, workers: 10 })));
         // The NT scores ein: lanes with the pack only.
-        let ein = NestKind::Contraction(C { dot: false, i: 16, j: 16, k: 64, nt: true, accum_is_storage: true, width: 4 });
+        let ein = NestKind::Contraction(C { dot: false, i: 16, j: 16, k: 64, k_inner: 64, nt: true, accum_is_storage: true, width: 4 });
         assert_eq!(lowered(&json(r#"{ "tile": [1, 8] }"#), &native, &ein).unwrap().lanes, Some(1));
         assert_eq!(lowered(&json(r#"{ "tile": [1, 8], "pack": true }"#), &native, &ein).unwrap().lanes, Some(4));
         assert!(lowered(&json(r#"{ "tile": [1, 8], "lanes": 4 }"#), &native, &ein).unwrap_err().contains("condition 4"));
         // The bf16 dot of odd width: one accumulator per element, and no row-wise form.
-        let narrow = NestKind::Contraction(C { dot: true, i: 16, j: 92, k: 384, nt: false, accum_is_storage: false, width: 1 });
+        let narrow = NestKind::Contraction(C { dot: true, i: 16, j: 92, k: 384, k_inner: 384, nt: false, accum_is_storage: false, width: 1 });
         let l = lowered(&Layout::default(), &native, &narrow).unwrap();
         assert_eq!((l.form, l.tile, l.lanes), (Some(Form::Tiled), Some((1, 1)), Some(1)));
         assert!(lowered(&json(r#"{ "form": "row-wise" }"#), &native, &narrow).unwrap_err().contains("condition 7"));

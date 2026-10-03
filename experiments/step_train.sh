@@ -13,6 +13,10 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
+# What a gradient does with its forward pass's values (`--remat`, 0.10.0 step
+# 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
+# recorded (the re-measurement after defect 3f, D93).
+REMAT=${REMAT:-store}
 MODEL=corpus/nlp/05_gpt.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 SOLVED=${SOLVED:-out/step_1e-3.json}
@@ -26,7 +30,7 @@ train() { # name realize-spec
     [ -f "out/curve_train_$1/final.psk.d" ] && return
     "$PRESK" train "$MODEL" "${CONSTS[@]}" --data out/civil_train_T256.psk.d \
         --steps "$STEPS" --epochs 10 --log-every 100 --backend native \
-        --realize "$2" --ckpt "out/curve_train_$1" > "out/curve_train_$1.log" 2>&1
+        --realize "$2" --remat "$REMAT" --ckpt "out/curve_train_$1" > "out/curve_train_$1.log" 2>&1
 }
 train step_1e-3 "@$SOLVED"
 train step_recipe "@out/step_recipe.json"

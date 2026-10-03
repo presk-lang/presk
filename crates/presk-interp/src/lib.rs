@@ -6,6 +6,7 @@
 //! their dimensions instantiated; randomness comes from splittable ChaCha
 //! keys so that every run is reproducible from `--seed`.
 
+pub mod defined;
 pub mod eval;
 pub mod key;
 pub mod prims;

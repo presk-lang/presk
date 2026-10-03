@@ -738,6 +738,18 @@ impl KernelExec for TimedExec {
         self.inner.workers()
     }
 
+    fn set_profiling(&mut self, on: bool) {
+        self.inner.set_profiling(on)
+    }
+
+    fn overhead(&self) -> crate::profile::Overhead {
+        self.inner.overhead()
+    }
+
+    fn parallel(&mut self, n: usize, f: &(dyn Fn(usize) + Sync)) {
+        self.inner.parallel(n, f)
+    }
+
     fn run(&mut self, idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()> {
         let t0 = Instant::now();
         let r = self.inner.run(idx, k, inputs, out);

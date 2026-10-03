@@ -1,0 +1,41 @@
+---
+source: crates/presk-cli/tests/run_diag.rs
+assertion_line: 74
+expression: snap
+input_file: tests/diag/run_vocab.psk
+---
+$ presk run tests/diag/run_vocab.psk --entry lookup --dim V=0 --dim T=0
+[E7003] Error: `lookup` is refused at the dimensions given: `embed` has no row to read: its indices are below 0 (`V` = 0)
+    ,-[ tests/diag/run_vocab.psk:11:62 ]
+    |
+ 11 | fn lookup(w : ℝ[V, 4], t : idx[V][seq: T]) -> ℝ[seq: T, 4] = embed(w, t)
+    |                                                              ^^^^^|^^^^^  
+    |                                                                   `------- undefined at the dimensions given
+----'
+
+$ presk run tests/diag/run_vocab.psk --entry loss --dim V=0 --dim T=0
+[E7003] Error: `loss` is refused at the dimensions given: `cross_entropy` has no index to choose: the last axis of its operand has length 0 (`V` = 0)
+    ,-[ tests/diag/run_vocab.psk:12:69 ]
+    |
+ 12 | fn loss(x : ℝ[seq: T, vocab: V], t : idx[V][seq: T]) -> ℝ[seq: T] = cross_entropy(x, t)
+    |                                                                     ^^^^^^^^^|^^^^^^^^^  
+    |                                                                              `----------- undefined at the dimensions given
+----'
+
+$ presk run tests/diag/run_vocab.psk --entry pick --dim V=0 --dim T=3
+[E7003] Error: `pick` is refused at the dimensions given: `argmax` has no index to choose: the last axis of its operand has length 0 (`V` = 0)
+    ,-[ tests/diag/run_vocab.psk:13:54 ]
+    |
+ 13 | fn pick(x : ℝ[seq: T, vocab: V]) -> idx[V][seq: T] = argmax(x)
+    |                                                      ^^^^|^^^^  
+    |                                                          `------ undefined at the dimensions given
+----'
+
+$ presk run tests/diag/run_vocab.psk --entry draw --dim V=0 --dim T=3
+[E7003] Error: `draw` is refused at the dimensions given: `sample` has no index to choose: the last axis of its operand has length 0 (`V` = 0)
+    ,-[ tests/diag/run_vocab.psk:14:75 ]
+    |
+ 14 | fn draw(key : key, x : ℝ[seq: T, vocab: V]) -> idx[V][seq: T] uses Rand = sample(key, x)
+    |                                                                           ^^^^^^^|^^^^^^  
+    |                                                                                  `-------- undefined at the dimensions given
+----'

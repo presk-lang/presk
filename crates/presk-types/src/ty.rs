@@ -52,6 +52,9 @@ pub enum ModRef {
 pub enum Ty {
     Real(Shape),
     Idx { bound: DimExpr, shape: Shape },
+    /// `bool[S]`: a tensor of truth values, a mask (plan 0.10.0 step 7b; the
+    /// reference's rule T-Bool). Not the hyperparameter `bool`.
+    Truth(Shape),
     Nat,
     Int,
     Rat,
@@ -78,6 +81,7 @@ impl Ty {
         match self {
             Ty::Real(s) => Ty::Real(s.subst(map)),
             Ty::Idx { bound, shape } => Ty::Idx { bound: bound.subst(map), shape: shape.subst(map) },
+            Ty::Truth(s) => Ty::Truth(s.subst(map)),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
             Ty::Params(m) => Ty::Params(m.subst(map)),
             Ty::Module(m) => Ty::Module(m.subst(map)),
@@ -87,12 +91,12 @@ impl Ty {
     }
 
     pub fn is_tensor(&self) -> bool {
-        matches!(self, Ty::Real(_) | Ty::Idx { .. })
+        matches!(self, Ty::Real(_) | Ty::Idx { .. } | Ty::Truth(_))
     }
 
     pub fn shape(&self) -> Option<&Shape> {
         match self {
-            Ty::Real(s) | Ty::Idx { shape: s, .. } => Some(s),
+            Ty::Real(s) | Ty::Idx { shape: s, .. } | Ty::Truth(s) => Some(s),
             _ => None,
         }
     }
@@ -202,6 +206,7 @@ impl Ty {
         match self {
             Ty::Real(s) => format!("ℝ{}", s.display(n)),
             Ty::Idx { bound, shape } => format!("idx[{}]{}", bound.display(&*n.dim), shape.display(n)),
+            Ty::Truth(s) => format!("bool{}", s.display(n)),
             Ty::Nat => "nat".into(),
             Ty::Int => "int".into(),
             Ty::Rat => "rat".into(),

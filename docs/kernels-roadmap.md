@@ -350,6 +350,48 @@ kernel` and the tutorial quote. Every timing taken since 0.3.0 would then
 include less work. So it wants its own step, with a measurement before and
 after, not a place inside the C export's steps.
 
+**Measured on the course GPT (2026-09-28, D87).** The work is larger than
+a duplicated forward pass. Each `.vjp` recomputes its callee's forward
+pass at every level of calls, so in `loss_grad` at `B = 16`, `T = 256` a
+block's linear products run six times and attention's five. The gradient
+executes 590 GFLOP of `dot` and `ein` where the forward pass is 97; 386 of
+its 2 220 launches are dead. In time, those forward-type contractions take
+1.4 s of the C gradient's 12.1 under a plan, since they run at the plan's
+400–570 GFLOP/s. The derivatives of `dot` take 9.7 s, at 18 GFLOP/s,
+outside the layout space: they come first, and removing the recomputation
+second. Removing it wants more than dead-code elimination: a gradient
+that keeps the values its forward pass computed.
+
+**Done, the dead code, in 0.10.0 step 3 (2026-09-30, D91).** A pass after
+differentiation (`presk_core::ad::prune`) removes what a gradient computes
+and never reads: forward values its sweep does not read, cotangents no
+caller reads (a `.vjp`'s result narrows to what its callers read), and
+values read for their shape only (`sum_to` between equal types, a
+template pointed at another value of its type). It keeps every fusion
+group of what the result reads, since a group holds `bf16`'s
+intermediates in `f32`, and holds what would change one. The course GPT's
+gradient: 2 220 launches, 1 616 after, 12 of them dead (386 before), the
+12 held for groups; its arena 1.22 GB, 1.02 GB after. `presk train` calls
+the objective's `value_vjp` once a step, where it called the objective,
+then its `.vjp`. What is left is the recomputation itself, each `.vjp`'s
+forward pass that its sweep reads: step 4's residuals.
+
+**Done, the recomputation, in 0.10.0 step 4 (2026-09-30, D92).** A
+gradient keeps what its forward pass computed: each `.vjp` is split into a
+`.fwd` that returns its value and its residuals and a `.bwd` that reads
+them (`presk_core::ad::store`, `--remat store`, the default), a fold
+stacking its layers' residuals. The course GPT's gradient: 1 182
+launches, its `dot` and `ein` 150.1 GFLOP where they were 311.9, its arena
+3.04 GB (1.02). What is left: the values the recomputing copy computed in
+other fusion groups than the forward pass, which `bf16`'s exactness makes
+the `.fwd` compute again (in the course GPT, 33.8 GFLOP of attention's
+`a · v` and the feed-forward's first product, most of it because of the
+launches step 3 holds for `bf16`'s groups: without them the gradient runs
+15 % faster in C, the same `f32` bits); a scan that copies each layer's
+residuals into its slot, where a fold writing them in place would not; and
+the native host's copies of the values it reads (two of them removed, the
+rest step 6's).
+
 ## What the C export's speed says (2026-09-27, 0.9.0 step 9)
 
 Statement C4 timed the exported course GPT against the native backend on
@@ -375,3 +417,37 @@ ten-thread gap less the one-thread one, and a thread pool in
 `presk-cranelift` would close it; the code generator's share is what
 remains. None of it changes a bit, so each is a change to measure, not to
 check.
+
+**Measured on ten X925 cores (2026-09-28, D87).** Each side's kernels
+were timed launch by launch, under the same plan, on the forward pass:
+- the native backend takes 697–710 ms, of which its kernels 362 (`presk
+  bench --calibrate`, each launch's thread starts included) and its host
+  335–348;
+- the C program takes 281–285 ms, of which its kernels 268–274 and its
+  host 7–17.
+
+So Cranelift's code is 1.3× GCC's, spawns included, and the host is about
+four fifths of the gap. The host's cost is not page faults, whose count
+does not grow with the calls; its copies and its per-launch work are
+candidates, not measured apart.
+
+## What is left between the native backend and the C program (2026-10-02, 0.10.0 step 8)
+
+0.10.0 removed the native host's share (step 6, D96: values sharing their
+buffers, views, a free list, a pool of workers), so at the version's final
+measurement (D100, `docs/pytorch-baseline-0.10.0.md`) the forward pass of
+the course GPT under its plan is all kernels on the native side: 340.4 ms,
+of which its kernels 339.9 and its host 0.6, against the C program's 223.5
+(its kernels 211.7, its host 11.8), with the C program's threads waiting as
+the native pool's. The same kernels, so the 1.61× is the code generator:
+Cranelift on each loop nest as PSK-Kernel states it, against GCC `-O2`
+on the C text, every kernel inlined into its caller and scheduled after
+register allocation only (D97's addendum: where GCC ran short of vector
+registers a product's sum lived on the stack). T4 asked 1.3× and fails on
+it, as decision 2 of plan 0.10.0 accepted: the kernels' code was not the
+version's. The candidates, none measured: the register tile's inner loop
+unrolled and its sums kept in registers by construction in the lowering,
+which Cranelift's allocator would then not have to discover; a backend
+whose code generator schedules and allocates as GCC's does (LLVM, at the
+seam the C export already uses); or the C export as the fast path, its
+bits the native backend's (C1).

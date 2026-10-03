@@ -25,8 +25,10 @@ use presk_types::elab::ElabProgram;
 use presk_types::ty::Shape;
 use rug::Float;
 
+pub mod elems;
 pub mod layout;
 pub mod quant;
+pub use elems::{Elems, FreeList, Pooled};
 pub use layout::{Layout, NestKind, Plan};
 pub use quant::{AxisRef, QBuf, QTensor, Quant, QuantScheme};
 
@@ -101,13 +103,16 @@ impl Dtype {
     }
 
     /// The unit roundoff `u` of this type: half an ulp of 1, and the constant
-    /// every first-order error rule is written in terms of (step 4).
+    /// every first-order error rule is written in terms of (step 4). A type
+    /// of `p` bits of significand has `u = 2^-p`: 2^-53, 2^-24, and 2^-8 for
+    /// `bf16`'s 8 (7 stored and the implicit one). It was 2^-9 until 0.10.0
+    /// step 8, every `bf16` rounding counted at half its size (the language
+    /// reference's chapter 4).
     pub fn unit_roundoff(self) -> f64 {
         match self {
             Dtype::F64 => f64::EPSILON / 2.0,
             Dtype::F32 => f32::EPSILON as f64 / 2.0,
-            // bf16 keeps 8 bits of significand, so u = 2^-9.
-            Dtype::Bf16 => 2f64.powi(-9),
+            Dtype::Bf16 => 2f64.powi(-8),
         }
     }
 }
@@ -237,14 +242,47 @@ impl Realization {
         if let Some(d) = self.storage.get(site) {
             return *d;
         }
-        site.rsplit_once('/').and_then(|(f, _)| self.functions.get(f)).copied().unwrap_or(self.default)
+        if let Some(d) = site.rsplit_once('/').and_then(|(f, _)| self.functions.get(f)) {
+            return *d;
+        }
+        match fwd_base(site) {
+            Some(base) => self.dtype_at(&base),
+            None => self.default,
+        }
     }
 
     /// The accumulator type of a site's contraction. It defaults to the
     /// *arithmetic* type of the storage, so `bf16` storage accumulates in
     /// `f32` unless something says otherwise — the idiom, not a surprise.
     pub fn accum_at(&self, site: &str) -> Dtype {
-        self.accum.get(site).copied().unwrap_or_else(|| self.dtype_at(site).arith())
+        if let Some(d) = self.accum.get(site) {
+            return *d;
+        }
+        match fwd_base(site) {
+            Some(base) if !self.storage.contains_key(site) && !site.rsplit_once('/').is_some_and(|(f, _)| self.functions.contains_key(f)) => self.accum_at(&base),
+            _ => self.dtype_at(site).arith(),
+        }
+    }
+
+    /// Whether a fusion group can compute a value otherwise than its site
+    /// would alone under this realization (plan 0.10.0 step 4b, D94). A
+    /// group computes every member in its root site's arithmetic type and
+    /// stores only the root, and never spans two functions; so it computes
+    /// otherwise under a `bf16` site, whose arithmetic type is `f32`, and
+    /// under a site typed apart from the rest of its function, a `storage`
+    /// entry other than the type the site would take without it. Otherwise
+    /// every site of a function computes and stores in one type, and how its
+    /// `let`s are grouped changes no bit: differentiation need not keep the
+    /// groups (`presk_core::ad::Options::groups`). Integer weights, the
+    /// accumulators and the order are the contractions', which no group
+    /// holds.
+    pub fn groups_visible(&self) -> bool {
+        let bf16 = self.default == Dtype::Bf16 || self.storage.values().chain(self.functions.values()).any(|d| *d == Dtype::Bf16);
+        bf16 || self.storage.iter().any(|(site, d)| {
+            let mut without = self.clone();
+            without.storage.remove(site);
+            without.dtype_at(site) != *d
+        })
     }
 
     /// Whether every site of this realization has one type and additions keep
@@ -304,17 +342,19 @@ impl Realization {
     }
 }
 
-/// The data of a tensor.
+/// The data of a tensor. A machine buffer's elements are shared by its
+/// clones ([`Elems`], plan 0.10.0 step 6): a value read, passed or put in a
+/// tuple is not copied.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Buf {
     /// Exact reals of the reference interpreter (MPFR at its precision).
     Exact(Vec<Float>),
-    F64(Vec<f64>),
-    F32(Vec<f32>),
+    F64(Elems<f64>),
+    F32(Elems<f32>),
     /// Storage-only sixteen-bit floats, held as their raw bits. Arithmetic on
     /// them happens in `f32`; only the traffic is halved.
-    Bf16(Vec<u16>),
-    I64(Vec<i64>),
+    Bf16(Elems<u16>),
+    I64(Elems<i64>),
     /// Integers with a scale per channel (0.6.0 step 5b, D44): a parameter a
     /// realization quantises. Read anywhere as `f32(q)·s`.
     Quant(std::sync::Arc<QBuf>),
@@ -337,10 +377,24 @@ impl Buf {
     }
 
     /// Every element as `f64` (exact reals rounded once).
+    /// Elements `lo..hi` as `f64`: `to_f64()[lo..hi]`, without converting
+    /// the rest (a stacked fold's slice, 0.10.0 step 4, where the stack holds
+    /// every layer's residuals).
+    pub fn range_f64(&self, lo: usize, hi: usize) -> Vec<f64> {
+        match self {
+            Buf::Exact(v) => v[lo..hi].iter().map(|x| x.to_f64()).collect(),
+            Buf::F64(v) => v[lo..hi].to_vec(),
+            Buf::F32(v) => v[lo..hi].iter().map(|x| *x as f64).collect(),
+            Buf::Bf16(v) => v[lo..hi].iter().map(|x| bf16_to_f32(*x) as f64).collect(),
+            Buf::I64(v) => v[lo..hi].iter().map(|x| *x as f64).collect(),
+            Buf::Quant(q) => (lo..hi).map(|e| q.value(e) as f64).collect(),
+        }
+    }
+
     pub fn to_f64(&self) -> Vec<f64> {
         match self {
             Buf::Exact(v) => v.iter().map(|x| x.to_f64()).collect(),
-            Buf::F64(v) => v.clone(),
+            Buf::F64(v) => v.to_vec(),
             Buf::F32(v) => v.iter().map(|x| *x as f64).collect(),
             Buf::Bf16(v) => v.iter().map(|x| bf16_to_f32(*x) as f64).collect(),
             Buf::I64(v) => v.iter().map(|x| *x as f64).collect(),
@@ -351,7 +405,7 @@ impl Buf {
     /// A buffer of `n` reals in the machine type `d`, rounded once from `f64`.
     pub fn of(d: Dtype, v: &[f64]) -> Buf {
         match d {
-            Dtype::F64 => Buf::F64(v.to_vec()),
+            Dtype::F64 => Buf::F64(v.to_vec().into()),
             Dtype::F32 => Buf::F32(v.iter().map(|x| *x as f32).collect()),
             Dtype::Bf16 => Buf::Bf16(v.iter().map(|x| f32_to_bf16(*x as f32)).collect()),
         }
@@ -360,9 +414,9 @@ impl Buf {
     /// Zeros of the machine type `d`.
     pub fn zeros(d: Dtype, n: usize) -> Buf {
         match d {
-            Dtype::F64 => Buf::F64(vec![0.0; n]),
-            Dtype::F32 => Buf::F32(vec![0.0; n]),
-            Dtype::Bf16 => Buf::Bf16(vec![0u16; n]),
+            Dtype::F64 => Buf::F64(vec![0.0; n].into()),
+            Dtype::F32 => Buf::F32(vec![0.0; n].into()),
+            Dtype::Bf16 => Buf::Bf16(vec![0u16; n].into()),
         }
     }
 
@@ -394,8 +448,17 @@ impl Tensor {
     }
 
     pub fn scalar_f64(x: f64) -> Tensor {
-        Tensor { axes: vec![], data: Buf::F64(vec![x]) }
+        Tensor { axes: vec![], data: Buf::F64(vec![x].into()) }
     }
+}
+
+/// A site or nest of `g.fwd`, the forward pass a gradient keeps the
+/// residuals of (plan 0.10.0 step 4), is the site of `g` of the same number:
+/// `g.fwd`'s bindings are `g`'s. So a realization or a plan that states it
+/// of `g` states it of `g.fwd`, unless it names `g.fwd`'s own.
+pub fn fwd_base(site: &str) -> Option<String> {
+    let (f, rest) = site.rsplit_once('/')?;
+    f.strip_suffix(".fwd").map(|g| format!("{g}/{rest}"))
 }
 
 /// A runtime value: the interpreter's value shapes, with machine or exact buffers.
@@ -411,6 +474,10 @@ pub enum Value {
     Key(Key),
     Tuple(Vec<Value>),
     Record(Vec<(String, Value)>),
+    /// A leaf with no axis to stack along (a key, a scalar), stacked by a
+    /// scanned `fold`: one value per layer (the interpreter's
+    /// `Value::Stacked`).
+    Stacked(Vec<Value>),
 }
 
 #[derive(Clone, Debug)]
@@ -428,7 +495,7 @@ pub fn err<T>(code: &'static str, message: impl Into<String>) -> Result<T> {
 
 impl From<presk_interp::RunError> for RtError {
     fn from(e: presk_interp::RunError) -> Self {
-        RtError { code: "E7001", message: e.message, span: e.span }
+        RtError { code: e.code.unwrap_or("E7001"), message: e.message, span: e.span }
     }
 }
 
@@ -443,7 +510,7 @@ impl Value {
     pub fn from_interp(v: &IValue) -> Result<Value> {
         Ok(match v {
             IValue::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::Exact(t.data.clone()) }),
-            IValue::Idx { bound, t } => Value::Idx { bound: *bound, t: Tensor { axes: t.axes.clone(), data: Buf::I64(t.data.clone()) } },
+            IValue::Idx { bound, t } => Value::Idx { bound: *bound, t: Tensor { axes: t.axes.clone(), data: Buf::I64(t.data.clone().into()) } },
             IValue::Nat(n) => Value::Nat(*n),
             IValue::Int(n) => Value::Int(*n),
             IValue::F64(x) => Value::F64(*x),
@@ -451,6 +518,7 @@ impl Value {
             IValue::Key(k) => Value::Key(k.clone()),
             IValue::Tuple(vs) => Value::Tuple(vs.iter().map(Value::from_interp).collect::<Result<_>>()?),
             IValue::Record(fs) => Value::Record(fs.iter().map(|(n, v)| Ok((n.clone(), Value::from_interp(v)?))).collect::<Result<_>>()?),
+            IValue::Stacked(vs) => Value::Stacked(vs.iter().map(Value::from_interp).collect::<Result<_>>()?),
             IValue::Closure { .. } => return err("E7001", "a function value cannot cross the backend seam"),
         })
     }
@@ -475,7 +543,7 @@ impl Value {
                 t: presk_interp::Tensor {
                     axes: t.axes.clone(),
                     data: match &t.data {
-                        Buf::I64(v) => v.clone(),
+                        Buf::I64(v) => v.to_vec(),
                         other => other.to_f64().into_iter().map(|x| x as i64).collect(),
                     },
                 },
@@ -487,6 +555,7 @@ impl Value {
             Value::Key(k) => IValue::Key(k.clone()),
             Value::Tuple(vs) => IValue::tuple(vs.iter().map(|v| v.to_interp(prec)).collect()),
             Value::Record(fs) => IValue::record(fs.iter().map(|(n, v)| (n.clone(), v.to_interp(prec))).collect()),
+            Value::Stacked(vs) => IValue::Stacked(std::sync::Arc::new(vs.iter().map(|v| v.to_interp(prec)).collect())),
         }
     }
 
@@ -528,6 +597,7 @@ impl Value {
             Value::Key(_) => "key",
             Value::Tuple(_) => "tuple",
             Value::Record(_) => "record",
+            Value::Stacked(_) => "stacked value",
         }
     }
 
@@ -641,7 +711,9 @@ pub struct Prepared {
 /// An executor of PSK-Core entries.
 pub trait Backend {
     fn name(&self) -> &'static str;
-    /// Bind an entry to concrete dimensions and a realization.
+    /// Bind an entry to concrete dimensions and a realization. An entry
+    /// undefined at the dimensions is refused here, before anything is
+    /// computed ([`presk_interp::defined::check`], `E7003`).
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared>;
     /// Run a prepared entry.
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value>;
@@ -663,8 +735,8 @@ pub struct InterpBackend<'p> {
 }
 
 impl<'p> InterpBackend<'p> {
-    pub fn new(prog: &'p Program, elab: &'p ElabProgram, bits: u32, seed: u64) -> Self {
-        InterpBackend { interp: Interp::new(prog, elab, bits, seed), prec: bits }
+    pub fn new(prog: &'p Program, elab: &'p ElabProgram, bits: u32) -> Self {
+        InterpBackend { interp: Interp::new(prog, elab, bits), prec: bits }
     }
 }
 
@@ -678,6 +750,7 @@ impl Backend for InterpBackend<'_> {
     }
 
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared> {
+        presk_interp::defined::check(self.interp.prog, self.interp.elab, entry, dims, None)?;
         Ok(Prepared { func: entry, dims: dims.clone(), realize: realize.clone(), handle: 0 })
     }
 
@@ -731,7 +804,7 @@ pub fn params_from_data(template: &Value, d: &presk_data::Value) -> Result<Value
     match (template, d) {
         (Value::Record(fs), presk_data::Value::Record(ds)) if fs.len() == ds.len() => Ok(Value::Record(fs.iter().zip(ds).map(|((n, t), (_, x))| Ok((n.clone(), params_from_data(t, x)?))).collect::<Result<_>>()?)),
         (Value::Tuple(ts), presk_data::Value::Tuple(ds)) if ts.len() == ds.len() => Ok(Value::Tuple(ts.iter().zip(ds).map(|(t, x)| params_from_data(t, x)).collect::<Result<_>>()?)),
-        (Value::Real(t), presk_data::Value::Real(xs)) if t.numel() == xs.len() => Ok(Value::Real(Tensor { axes: t.axes.clone(), data: Buf::F64(xs.clone()) })),
+        (Value::Real(t), presk_data::Value::Real(xs)) if t.numel() == xs.len() => Ok(Value::Real(Tensor { axes: t.axes.clone(), data: Buf::F64(xs.clone().into()) })),
         _ => err("E9005", "the checkpoint does not have the structure of the model's parameters"),
     }
 }

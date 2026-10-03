@@ -70,7 +70,7 @@ fn pow2_scales_are_exact() {
 fn int4_packs_two_to_a_byte() {
     // Odd length, both signs, the extremes.
     let v = vec![7.0, -7.0, 0.0, 3.0, -1.0, 5.0, -4.0];
-    let t = Tensor { axes: vec![ax(None, 7), ax(None, 1)], data: Buf::F64(v.clone()) };
+    let t = Tensor { axes: vec![ax(None, 7), ax(None, 1)], data: Buf::F64(v.clone().into()) };
     let qt = QTensor::quantize(&t, &q(4, AxisRef::Pos(0), QuantScheme::Absmax)).unwrap();
     assert_eq!(qt.data.len(), 4);
     assert_eq!(qt.scales, vec![1.0]);
@@ -83,7 +83,7 @@ fn int4_packs_two_to_a_byte() {
 /// scale, and never divides by it.
 #[test]
 fn a_zero_channel_stays_zero() {
-    let t = Tensor { axes: vec![ax(None, 3), ax(None, 2)], data: Buf::F64(vec![0.0, 1.0, 0.0, -2.0, 0.0, 0.5]) };
+    let t = Tensor { axes: vec![ax(None, 3), ax(None, 2)], data: Buf::F64(vec![0.0, 1.0, 0.0, -2.0, 0.0, 0.5].into()) };
     let qt = QTensor::quantize(&t, &q(8, AxisRef::Pos(0), QuantScheme::Absmax)).unwrap();
     assert_eq!(qt.scales[0], 0.0);
     let Buf::F32(d) = qt.dequantize().data else { panic!() };
@@ -286,7 +286,7 @@ fn pow2_scales_of_tiny_channels_end() {
             continue;
         }
         for bits in [8u8, 4] {
-            let t = Tensor { axes: vec![ax(None, 2), ax(None, 1)], data: Buf::F64(vec![m, -m / 3.0]) };
+            let t = Tensor { axes: vec![ax(None, 2), ax(None, 1)], data: Buf::F64(vec![m, -m / 3.0].into()) };
             let qt = QTensor::quantize(&t, &q(bits, AxisRef::Pos(0), QuantScheme::Pow2)).unwrap();
             match old(m, ((1 << (bits - 1)) - 1) as f64) {
                 Some(s) => {

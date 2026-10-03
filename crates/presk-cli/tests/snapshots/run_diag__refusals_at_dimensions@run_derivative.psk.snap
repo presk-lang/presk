@@ -1,0 +1,14 @@
+---
+source: crates/presk-cli/tests/run_diag.rs
+assertion_line: 74
+expression: snap
+input_file: tests/diag/run_derivative.psk
+---
+$ presk run tests/diag/run_derivative.psk --entry slope --dim T=0
+[E7003] Error: `slope` is refused at the dimensions given: in `average`, the derivative of `mean` averages over no element: the axis `seq` of its operand has length 0 (`T` = 0)
+   ,-[ tests/diag/run_derivative.psk:7:46 ]
+   |
+ 7 | fn average(y : ℝ[seq: T, model: 4]) -> ℝ[] = mean(y)
+   |                                              ^^^|^^^  
+   |                                                 `----- undefined at the dimensions given
+---'

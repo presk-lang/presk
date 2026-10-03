@@ -37,20 +37,20 @@ dim B
 dim T <= 1024
 type Tokens = idx[50257][batch: B, seq: T]
 type Acts = ℝ[batch: B, seq: T, model: 768]
-type Mask = ℝ[seq: T, seq2: T]
+type Mask = bool[seq: T, seq2: T]
 module SelfAttention {
   use wq : Linear{768, 768}
   use wk : Linear{768, 768}
   use wv : Linear{768, 768}
   use wo : Linear{768, 768}
-  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
+  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
 }
 module Block {
   use attn : SelfAttention
   use mlp : MLP{768, 3072}
   use ln1 : LayerNorm{768}
   use ln2 : LayerNorm{768}
-  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : ℝ[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
+  fn apply(x : ℝ[batch: B, seq: T, model: 768], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 768]
 }
 module Embedding {
   param tok : ℝ[50257, 768]  init

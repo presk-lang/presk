@@ -14,6 +14,10 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
+# What a gradient does with its forward pass's values (`--remat`, 0.10.0 step
+# 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
+# recorded (the re-measurement after defect 3f, D93).
+REMAT=${REMAT:-store}
 MODEL=corpus/nlp/05_gpt.psk
 OUT=${1:-out/j_step.md}
 SOLVED=${SOLVED:-out/step_1e-3.json}
@@ -32,7 +36,7 @@ declare -A T1 T4
 timed() { # realize steps -> seconds
     local s e
     s=$(date +%s.%N)
-    "$PRESK" train "$MODEL" --steps "$2" --backend native --realize "$1" --ckpt out/j_step_tmp >/dev/null 2>&1
+    "$PRESK" train "$MODEL" --steps "$2" --backend native --realize "$1" --remat "$REMAT" --ckpt out/j_step_tmp >/dev/null 2>&1
     e=$(date +%s.%N)
     python3 -c "print(f'{$e - $s:.2f}')"
 }
@@ -42,7 +46,7 @@ for spec in "${SPECS[@]}"; do
     echo "$spec steps=1 ${T1[$spec]} s, steps=4 ${T4[$spec]} s"
 done | tee out/j_step_times.txt
 
-"$PRESK" calibrate --step "$MODEL" --weights "$CKPT" --warmup 10 --samples 2 --from 4000 \
+"$PRESK" calibrate --step "$MODEL" --weights "$CKPT" --warmup 10 --samples 2 --from 4000 --remat "$REMAT" \
     --reference f64 --realize f64 --realize "@$SOLVED" --realize f32 --realize "@$RECIPE" \
     2>/dev/null | tee out/j_step_gaps.txt
 fi

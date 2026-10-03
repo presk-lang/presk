@@ -156,7 +156,7 @@ fn sig_types<'a>(params: &'a [ParamSig], ret: &'a Option<Ty>) -> Vec<&'a Ty> {
 fn uses_prefix(tys: &[&Ty], p: crate::ty::PrefixVar) -> Option<crate::ty::PrefixVar> {
     fn has(t: &Ty, p: crate::ty::PrefixVar) -> bool {
         match t {
-            Ty::Real(s) | Ty::Idx { shape: s, .. } => s.prefix == Some(p),
+            Ty::Real(s) | Ty::Idx { shape: s, .. } | Ty::Truth(s) => s.prefix == Some(p),
             Ty::Tuple(ts) => ts.iter().any(|t| has(t, p)),
             Ty::Fn { params, ret } => params.iter().any(|t| has(t, p)) || has(ret, p),
             _ => false,
