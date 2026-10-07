@@ -513,22 +513,29 @@ fn leaf_bits(v: &Value) -> Vec<u64> {
 /// reference path of step 5a substituted for them — so running on the integers must be
 /// **bit-identical** to running on their dequantised `f32` values, on both
 /// executors, scalar and in lanes, in `f32` and in `f64`. The integers are
-/// storage; nothing about the arithmetic may change.
+/// storage; nothing about the arithmetic may change. Each case gives the axis
+/// the matrices are quantised over, and where the kernels' views have the
+/// scales constant: `(over, span)`.
 #[test]
 fn integer_weights_load_as_their_values() {
     chdir_root();
-    type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], usize);
+    type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], i64, (usize, usize));
     let cases: &[Case] = &[
-        ("tests/examples/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)], 0),
+        ("tests/examples/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)], -2, (0, 1)),
         // Odd widths: an `int4` row of 13 starts every other row mid-byte.
-        ("tests/quant/odd.psk", &[], "L.apply", &[("B", 3)], 0),
+        ("tests/quant/odd.psk", &[], "L.apply", &[("B", 3)], -2, (0, 1)),
+        // A matrix read through `split` of the axis its scales are constant
+        // along, and of the other one (D104, plan 0.10.1 step 6): the
+        // native backend read past the scales.
+        ("tests/quant/split.psk", &[], "M.apply", &[("B", 3)], -2, (0, 2)),
+        ("tests/quant/split.psk", &[], "M.apply", &[("B", 3)], -1, (2, 1)),
     ];
-    for (rel, consts, entry, dims, over) in cases {
-        integer_weights_case(rel, consts, entry, dims, *over);
+    for (rel, consts, entry, dims, axis, over) in cases {
+        integer_weights_case(rel, consts, entry, dims, *axis, *over);
     }
 }
 
-fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], over: usize) {
+fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u64)], axis: i64, (over, span): (usize, usize)) {
     use presk_rt::quant::{dequantize_params, param_paths, quantize_params, quantized_leaves};
     use presk_rt::{AxisRef, Quant, QuantScheme};
     let (prog, core) = prepare(rel, consts);
@@ -536,11 +543,11 @@ fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[
     let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(Dtype::F64)).collect();
     for (bits, scheme) in [(8u8, QuantScheme::Absmax), (8, QuantScheme::Pow2), (4, QuantScheme::Absmax), (4, QuantScheme::Pow2)] {
-        // Every matrix, stacked ones included, over its second-to-last axis.
+        // Every matrix, stacked ones included, over the case's axis.
         let mut r = Realization::uniform(Dtype::F32);
         for p in param_paths(&args[0]) {
             if p == "w" || p.ends_with(".w") {
-                r.quant.insert(p, Quant { bits, over: AxisRef::Pos(-2), scheme });
+                r.quant.insert(p, Quant { bits, over: AxisRef::Pos(axis), scheme });
             }
         }
         assert!(!r.quant.is_empty(), "{:?}", r.quant.keys());
@@ -567,7 +574,7 @@ fn integer_weights_case(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[
                 b.set_default_lanes(n);
                 let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
                 let got = leaf_bits(&presk_rt::Backend::call(&mut b, &p, ints.clone()).unwrap());
-                assert!(b.kernels.iter().any(|k| k.inputs.iter().any(|s| s.kind == presk_kernel::ir::BufKind::Quant { bits, over })), "{rel} int{bits}: no kernel loaded integers");
+                assert!(b.kernels.iter().any(|k| k.inputs.iter().any(|s| s.kind == presk_kernel::ir::BufKind::Quant { bits, over, span })), "{rel} int{bits}: no kernel loaded integers");
                 assert_eq!(got, expected, "int{bits} {scheme:?} {d}, {n} lane(s): native on integers against native on f32(q·s)");
             }
             let mut b = presk_kernel::KernelBackend::new(&core, &prog, &r);

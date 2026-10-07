@@ -343,12 +343,14 @@ impl Realization {
 }
 
 /// The data of a tensor. A machine buffer's elements are shared by its
-/// clones ([`Elems`], plan 0.10.0 step 6): a value read, passed or put in a
-/// tuple is not copied.
+/// clones ([`Elems`], plan 0.10.0 step 6), and so are exact ones, the
+/// interpreter's own buffer ([`presk_interp::Data`], plan 0.10.1 step 2): a
+/// value read, passed or put in a tuple is not copied, nor one crossing the
+/// seam.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Buf {
     /// Exact reals of the reference interpreter (MPFR at its precision).
-    Exact(Vec<Float>),
+    Exact(presk_interp::Data<Float>),
     F64(Elems<f64>),
     F32(Elems<f32>),
     /// Storage-only sixteen-bit floats, held as their raw bits. Arithmetic on
@@ -506,11 +508,12 @@ impl From<presk_data::DataError> for RtError {
 }
 
 impl Value {
-    /// The interpreter's value, exactly (no rounding).
+    /// The interpreter's value, exactly (no rounding): its exact buffers
+    /// shared, not copied (plan 0.10.1 step 2).
     pub fn from_interp(v: &IValue) -> Result<Value> {
         Ok(match v {
             IValue::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::Exact(t.data.clone()) }),
-            IValue::Idx { bound, t } => Value::Idx { bound: *bound, t: Tensor { axes: t.axes.clone(), data: Buf::I64(t.data.clone().into()) } },
+            IValue::Idx { bound, t } => Value::Idx { bound: *bound, t: Tensor { axes: t.axes.clone(), data: Buf::I64(t.data.to_vec().into()) } },
             IValue::Nat(n) => Value::Nat(*n),
             IValue::Int(n) => Value::Int(*n),
             IValue::F64(x) => Value::F64(*x),
@@ -523,13 +526,15 @@ impl Value {
         })
     }
 
-    /// The interpreter's value at `prec` bits: exact buffers as they are,
-    /// machine buffers injected exactly.
+    /// The interpreter's value at `prec` bits: exact buffers as they are
+    /// (shared when every element is already at `prec` bits, plan 0.10.1
+    /// step 2), machine buffers injected exactly.
     pub fn to_interp(&self, prec: u32) -> IValue {
         match self {
             Value::Real(t) => IValue::Real(presk_interp::Tensor {
                 axes: t.axes.clone(),
                 data: match &t.data {
+                    Buf::Exact(v) if v.iter().all(|x| x.prec() == prec) => v.clone(),
                     Buf::Exact(v) => v.iter().map(|x| Float::with_val(prec, x)).collect(),
                     Buf::F64(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                     Buf::F32(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
@@ -543,7 +548,7 @@ impl Value {
                 t: presk_interp::Tensor {
                     axes: t.axes.clone(),
                     data: match &t.data {
-                        Buf::I64(v) => v.to_vec(),
+                        Buf::I64(v) => v.to_vec().into(),
                         other => other.to_f64().into_iter().map(|x| x as i64).collect(),
                     },
                 },
@@ -563,12 +568,16 @@ impl Value {
     /// copied, each real rounded in place to `prec` bits — the value
     /// `with_val` gives, and no change at the precision it was made at. A
     /// parameter tree then crosses the seam into the interpreter without a
-    /// second copy (0.6.0 step 8: BERT-large's 335M exact parameters).
+    /// second copy (0.6.0 step 8: BERT-large's 335M exact parameters). A
+    /// buffer already at `prec` bits is not written, so that one another
+    /// value shares stays shared (plan 0.10.1 step 2).
     pub fn into_interp(self, prec: u32) -> IValue {
         match self {
             Value::Real(Tensor { axes, data: Buf::Exact(mut v) }) => {
-                for x in &mut v {
-                    x.set_prec(prec);
+                if !v.iter().all(|x| x.prec() == prec) {
+                    for x in v.iter_mut() {
+                        x.set_prec(prec);
+                    }
                 }
                 IValue::Real(presk_interp::Tensor { axes, data: v })
             }
@@ -648,7 +657,7 @@ impl Value {
     pub fn dist2_f64(&self, other: &Value) -> f64 {
         fn exact(b: &Buf, prec: u32) -> Vec<Float> {
             match b {
-                Buf::Exact(v) => v.clone(),
+                Buf::Exact(v) => v.to_vec(),
                 other => other.to_f64().into_iter().map(|x| Float::with_val(prec, x)).collect(),
             }
         }

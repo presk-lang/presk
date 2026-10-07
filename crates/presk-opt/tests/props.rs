@@ -231,7 +231,7 @@ fn inputs(seed: u64) -> Vec<Value<Float>> {
     let mut t = || Value::Real(Tensor { axes: axes.clone(), data: (0..6).map(|_| Float::with_val(128, next())).collect() });
     let a = t();
     let b = t();
-    let s = Value::Real(Tensor { axes: vec![], data: vec![Float::with_val(128, next())] });
+    let s = Value::Real(Tensor { axes: vec![], data: vec![Float::with_val(128, next())].into() });
     vec![a, b, s]
 }
 

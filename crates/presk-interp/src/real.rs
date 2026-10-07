@@ -37,6 +37,9 @@ pub trait Real: Clone + Debug + PartialEq {
 
     fn is_zero(&self) -> bool;
     fn is_negative(&self) -> bool;
+    /// Whether `x + (+0)` is `x` itself: not for `−0`, whose sum with `+0` is
+    /// `+0`, and not for a NaN, which no rule should be asked about.
+    fn plus_zero_is_self(&self) -> bool;
     fn cmp(&self, o: &Self) -> Ordering;
     fn to_f64(&self) -> f64;
     /// Decimal rendering with `digits` significant digits.
@@ -112,6 +115,9 @@ impl Real for Float {
     }
     fn is_negative(&self) -> bool {
         self.is_sign_negative() && !Float::is_zero(self)
+    }
+    fn plus_zero_is_self(&self) -> bool {
+        !self.is_nan() && !(Float::is_zero(self) && self.is_sign_negative())
     }
     fn cmp(&self, o: &Self) -> Ordering {
         self.partial_cmp(o).unwrap_or(Ordering::Equal)

@@ -318,7 +318,7 @@ fn synthesize(interp: &mut Interp<Float>, ty: &Ty, dims: &Dims, key: &Key, defau
         Ty::Truth(shape) => {
             let axes = interp.axes_of_with(shape, dims, prefix)?;
             let n: usize = axes.iter().map(|a| a.len).product();
-            Ok(Value::Idx { bound: 2, t: Tensor { axes, data: vec![1; n] } })
+            Ok(Value::Idx { bound: 2, t: Tensor { axes, data: vec![1; n].into() } })
         }
         Ty::Key => Ok(Value::Key(key.clone())),
         Ty::Tuple(ts) => {

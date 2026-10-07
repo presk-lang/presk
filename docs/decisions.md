@@ -9977,3 +9977,916 @@ and 44 GB at 128 bits on one feature. At the ratios above its envelope on
 two features would take some 16 hours, and its solve some 33, with a
 reverse sweep that took 42 GB on two blocks. The paper's other owed
 result, an MLPerf second row, is not this measurement.
+
+## D102 — The ε-to-quality curve measured again at the tag `v0.10.0`: every budget inside, the quality axis flat within 2.0·10⁻⁴; statement D's realization at 10⁻³ measures 2.1·10⁻⁵ with 2.00× less traffic, and the foil's row of it 2.5·10⁻⁷ (2026-10-03)
+
+D100 left the curve of the `precision` chapter as it was measured on
+2026-09-30 (D93), and named why it was stale: its solver columns are of
+the program before 0.10.0's step 7b, whose attention added its mask where
+it now reads it (one narrowable site fewer), and of `bf16`'s unit
+roundoff before step 8 (2⁻⁹, half its value), so the solver priced a
+`bf16` site at half its error; solved again on D93's envelope, the three
+loosest budgets chose other assignments. Whether to measure it again
+before the paper cites it was the user's (presk !50); the user decided on
+2026-10-03, after the tag, to measure it.
+
+**How.** `make curve` on the tagged tree (`1b8a6c8`, `presk 0.10.0`, the
+release binary built there), alone on falicon, 08:08 to 08:33 on
+2026-10-03: 25 minutes, where the Makefile said two hours (the eight
+training runs, three at a time on six threads each, now take 420 ms a
+step in `f64`, 559 under the realization solved at 10⁻³). Its inputs are
+D93's: `make gpt-trained`'s weights (`out/gpt_trained/final.psk.d`, of
+2026-09-30, not trained again), the Code civil's split into 90 % and
+10 %, the same initialisation, seed and batch order. Every output of
+D93's run was first moved into `out/curve-d93-2026-09-30/` (kept,
+git-ignored), since `curve.sh` reuses a training run whose weights
+exist. One difference of protocol: the gradient's policy is `--remat
+store`, `make curve`'s default since step 4 and the tagged compiler's,
+where D93 ran `REMAT=recompute` so that the gradient's fix was its only
+change from D48–D55. In `f64` the two policies compute the same bits
+(T1): the all-`f64` run's final weights are D93's byte for byte (`cmp`),
+and its validation loss is D93's to every digit printed.
+
+| budget | sites narrowed (`bf16`) | traffic vs all-`f64` | measured gap | validation loss | vs all-`f64` |
+|---|---|---|---|---|---|
+| all-`f64` | 0 | 1.00× | | 2.7736101 (2.7736101) | |
+| 10⁻¹ | 65, 21 in `bf16` (66, 31) | 2.69× (2.95×) | 3.72·10⁻⁴ (1.15·10⁻⁴) | 2.7738077 | +1.98·10⁻⁴ (+1.92·10⁻⁴) |
+| 10⁻² | 65, 7 (64) | 2.22× (2.39×) | 3.60·10⁻⁵ (3.76·10⁻⁵) | 2.7736061 | −4.0·10⁻⁶ (< 10⁻⁷) |
+| 10⁻³ | 65, 3 (66, 3) | 2.00× (2.08×) | 2.12·10⁻⁵ (1.89·10⁻⁶) | 2.7736036 | −6.5·10⁻⁶ (+1.3·10⁻⁶) |
+| 10⁻⁴ | 63, 1 (64) | 1.98× (1.98×) | 1.87·10⁻⁶ (1.87·10⁻⁶) | 2.7736114 | +1.3·10⁻⁶ (+1.3·10⁻⁶) |
+| 10⁻⁵ | 56, 0 (56) | 1.60× (1.62×) | 4.85·10⁻¹⁰ (1.87·10⁻⁶) | 2.7736101 | 0 (+1.3·10⁻⁶) |
+| 10⁻⁶ | 15, 0 (15) | 1.30× (1.32×) | 1.35·10⁻⁸ (1.35·10⁻⁸) | 2.7736101 | 0 (< 10⁻⁷) |
+| 10⁻⁷ | 7, 0 (7) | 1.06× (1.05×) | 3.73·10⁻⁹ (3.73·10⁻⁹) | 2.7736101 | 0 (< 10⁻⁷) |
+
+In parentheses D93's. The bound column, all-`f64`'s `cond` bound, is the
+same 2.5754·10⁻¹³; the solver's output is `out/curve.md` and its
+realizations `out/curve_*.json`.
+
+**What it shows.**
+- **Every budget is inside**, by measurement against the exact reference
+  at 128 bits, and the traffic falls monotonically as the budget loosens,
+  as before. The knee in error is still between 10⁻² and 10⁻³.
+- **The loosest budgets narrow less to `bf16`**, as the corrected unit
+  roundoff says they should: 21 sites at 10⁻¹ where 31, and 2.69× less
+  traffic where 2.95×; 2.22× where 2.39× at 10⁻². Every site is still
+  narrowed from `f64` at the three loosest budgets (65 of 65).
+- **Statement D holds** (the realization solved at 10⁻³ relative, which
+  `presk solve` prints as 4.522·10⁻³ absolute; solved again after the run,
+  the same realization file): it measures
+  **2.12·10⁻⁵** with **2.00×** less traffic, where D93's measured
+  1.89·10⁻⁶ with 2.08×. The assignment is another: 62 sites in `f32` and
+  3 in `bf16` where 63 and 3, different ones, the solver's greedy order
+  under the new prices; it is inside by two orders of magnitude where
+  D93's was by three, and still the largest gap the curve accepts below
+  10⁻¹.
+- **The measured gap is not monotone in the budget**, as before: 10⁻⁵'s
+  assignment, which keeps every site in `f32`, measures 4.85·10⁻¹⁰, below
+  10⁻⁶'s and 10⁻⁷'s, whose assignments keep fewer sites narrowed but
+  others. The constraint is on being inside, not on being tight.
+- **The quality axis is flat**, within **1.98·10⁻⁴** of all-`f64`: the
+  most narrowed, 10⁻¹, ends 1.98·10⁻⁴ above it; 10⁻² and 10⁻³ end 4.0·10⁻⁶
+  and 6.5·10⁻⁶ below it, 10⁻⁴ 1.3·10⁻⁶ above, and the three tightest on
+  it to seven digits. The yardstick is D93's seed spread, 0.092 (all-`f64`
+  at seeds 0, 1, 2; not trained again, the `f64` run being D93's bit for
+  bit), about 465 times the widest of them.
+
+**The foil** (`make foil`, D53, D93), which reads the curve's all-`f64`
+weights and statement D's realization, was run again right after, 08:34
+to 08:36, D93's outputs first moved into `out/foil-d93-2026-09-30/`.
+Every row is D93's to every digit but two columns: statement D's row,
+whose realization is the new one, measures **2.50·10⁻⁷** from the exact
+loss of the two held-out windows (D93's 4.68·10⁻⁸, `f32`'s gap there), its
+accuracy the same 0.242442 and its loss +8.5·10⁻⁸ against `f32`'s
+(−2.3·10⁻⁸); and every pass over the 461 held-out windows takes 1.4 to
+3.3 s where it took 3.8 to 11.7, the native backend of 0.10.0. So D's
+realization, solved on one checkpoint, is 2.5·10⁻⁷ from the exact loss on
+the held-out one against 2.1·10⁻⁵ where it was solved: the measurement
+transfers, the number does not, as D53 found.
+
+**The record.** The manual's `precision` chapter (the curve's table and
+its paragraphs, the solved realization's line, and the estimate's two
+sentences that still said 6.2·10³× and 1.7–17× against its own table,
+3.2× and 1.1·10⁴× since step 8, which the language reference's check of
+0.10.0 found, presk-specs !63), `experiments` (statement D's row, the
+foil's table, §10's quality line), `coverage` (statement D and the foil's
+rows), `status` ("Since 0.10.0"; the curve no longer under "does not
+have"), `language` (the `bf16` gradients' launch counts the same check
+found stale: 577 and 412 for MiniGPT, 1 598 and 1 140 for the course GPT,
+where 583, 424, 1 616 and 1 182), the tutorial's and the Makefile's
+"about two hours" (now about half an hour), and the CHANGELOG
+("Unreleased"). D93's tables stay as written. The paper's results note
+(presk-paper-001) cites D93's statement D and curve; it takes this
+decision's figures in its own session.
+
+## D103 — The paper's run at the tag `v0.10.0`: D93's chain reproduced to every digit but two figures — J′ 1.75× under `--remat store` (the policy not what moved it: all-`f32` 1.76× under `recompute`), and BERT-large's `bf16` logits, moved since 0.7.0 (D58): 5.3·10⁻² where D53 had 1.1·10⁻¹ (2026-10-03)
+
+The paper (presk-paper-001, `docs/results-2026-10-02.md` §4) takes its
+numbers from a run at the tag, since step 8 moved `bf16`'s unit roundoff
+and every report names the compiler's version. D102 measured the curve and
+the foil at the tag; this is the rest of that list, run at the user's
+request on 2026-10-03, after the tag.
+
+**How.** On `main` at `e0bfa6a`, whose code is the tag's (`git diff
+v0.10.0 e0bfa6a -- crates/` touches the manual alone), the release binary
+built there, on falicon, one target at a time, from 09:01 to 11:17. Every
+output the run rewrites was first moved aside, kept and git-ignored: D93's
+into `out/d93-2026-09-30/`, BERT's of 2026-09-22 (D53) into
+`out/bert/d53-2026-09-22/`, with BERT's `presk bench` files, which the
+table script would otherwise have mixed into today's tables. The
+gradient's policy is `--remat store`, the tag's default, where D93 ran
+`REMAT=recompute`. The two other all-`f64` seeds `make step-train` reads,
+which no target trains, were trained again as the curve trains them
+(`--seed 1`, `2`). The timing, `make j-step`, ran alone, the machine at a
+load of 1.0, and once more under `REMAT=recompute` to separate the policy
+from the compiler.
+
+| target | time | what came out |
+|---|---|---|
+| `make gpt-trained` | 3.5 min | the weights D93's byte for byte (`cmp`) |
+| `make precision` | 6.5 min | D51's table as step 8 measured it (D100): `f64` 1.3·10⁻¹⁵, `rss` 9.7×, `cond` 1.9·10⁹×; `f32` 4.2·10⁻⁷, 17×, 3.2·10⁹×; `bf16` 7.8·10⁻³, 3.2×, 7.0·10⁸×; solved at 10⁻³ 69 sites, 2.09×, 1.204·10⁻⁷, `rss` 1.1·10⁴×, `cond` 4.0·10¹¹× |
+| `make quant-table` | 1.4 min | D93's byte for byte (K: 2.73·10⁻⁵) |
+| `make step-table` | 5.6 min | every gap D93's to every digit (all-`f32` 2.990·10⁻⁴, the recipe 4.391·10⁻², solved at 10⁻³ 3.001·10⁻⁴, all-`bf16` 0.78; AdamW's 545); see below for what moved |
+| seeds 1 and 2 | 4 min | D93's byte for byte |
+| `make step-train` | 7.8 min | D93's to every digit (the solved step 5.47·10⁻⁶ from the `f64` run's weights, the recipe 1.14·10⁻², the seeds 1.22) |
+| `make plan-check`, `make opt-examples` | seconds | 11 of 11 the same kernels; every `cmp` equal |
+| BERT at two blocks (`L=2`, exact, gaps, split) | 52 min | the exact logits, `f64`, `f32`, `int8`, `int4` and the split byte for byte; `bf16` moved (below) |
+| `make c-conformance` | 12.5 min | 14 and 5 tests pass |
+| BERT at 24 blocks, the gaps against D53's exact logits | 10 min | `f64`, `f32`, `int8`, `int4` byte for byte; `bf16` moved (below) |
+| `make j-step` | 11 min | J′ holds, 1.75× (below) |
+| `j_step.sh` under `REMAT=recompute` | 14 min | the uniform rows: all-`f64` 31.6 s, all-`f32` 18.0 s, 1.76×; the solved step, keyed by the stored gradient's functions, types none of a recomputing gradient's `.vjp`s: 28.0 s, 1.13×, no measure of J′ (below) |
+
+Not run: `make delta-p` (D98, nothing since moves it), `make
+pytorch-baseline` (D100's run of record, on `8827c52`, whose code differs
+from the tag's by `fbf4b76` alone, which it does not run), `make
+compile-times` (D101, on version 0.10.0's tree), and BERT's exact logits at
+24 blocks (D53's, 1 h 58 min and 44 GB, reused: the interpreter's output at
+two blocks is byte for byte the same, so nothing moved it).
+
+**J′ at the tag** (`make j-step`; `D = 384`, six blocks, the realizations
+solved at `D = 64` above; per step the four-step time minus the one-step
+time over three):
+
+| | D93 (`recompute`, 0.10.0-dev) | the tag (`store`) | the tag (`recompute`) |
+|---|---|---|---|
+| all-`f64` | 44.2 s | 24.4 s | 31.6 s |
+| solved at 10⁻³ | 22.7 s, 1.95× | 13.9 s, **1.75×** | 28.0 s, 1.13× (its realization keyed by `.fwd`, `.bwd`) |
+| all-`f32` | 23.4 s, 1.89× | 14.0 s, 1.75× | 18.0 s, 1.76× |
+| the recipe | 25.1 s, 1.76× | 16.6 s, 1.47× | 20.1 s, 1.58× (keyed alike) |
+| update gap of the solved step | 6.759·10⁻⁵ | 6.759·10⁻⁵ | 6.759·10⁻⁵ |
+
+**J′ holds** (at least 1.3× and inside its budget): the solved step is
+1.75× faster than all-`f64` per step, its update gap 6.8·10⁻⁵, its floor
+4.8·10⁻⁵, every gap D93's to every digit. Every step is faster than D93's
+(all-`f64` 1.8 times, the solved step 1.6 times), all-`f64` more than the
+narrowed ones, so the ratio falls. The policy is not what moved it. Timed again
+under `REMAT=recompute` at the tag, all-`f64` takes 31.6 s and all-`f32`
+18.0 s, 1.76×, where `store` gives 1.75× and D93 measured 1.89× on
+0.10.0-dev (`eec2099`, step 4's tree): storing the residuals saves both
+types alike (1.30× and 1.29×), and the compiler's steps since D93's run (4b
+to 8: the host fixed, the epilogue, the masks) sped all-`f64` up more than
+all-`f32` (1.40× against 1.30×). The solved step runs level with all-`f32`,
+as in D93 (13.9 s against 14.0), its 21 functions all `f32`. A realization
+is keyed by function, and the stored gradient's functions are `.fwd`,
+`.bwd` and `.fwd_step`: under `recompute` the solved step types none of
+the `.vjp`s, which stay in `f64`, and measures 1.13× (the recipe, keyed
+alike, 1.58×). That run measures the mismatch, not J′: a step is solved
+under the policy it runs under, as `presk solve --step` already requires
+of its envelope (D93).
+
+**BERT-large's `bf16` logits moved, by 0.7.0.** At two blocks every output
+of 2026-09-22 is reproduced byte for byte but the native `bf16` logits: 732
+of 768 differ, and their gap to the exact logits falls from 4.56·10⁻² to
+6.60·10⁻³ (inside 10⁻² now). Bisected on the release builds of the tags
+(`v0.6.0` gives the old output; `v0.7.0`, `v0.8.0`, `v0.9.0` the new), then
+`git bisect` between `v0.6.0` and `v0.7.0`: the first commit is `398df38`,
+"One contraction builder for dot and ein" (plan 0.7.0 step 2, D58), whose
+record says it: "a `bf16` `dot` whose `J` is not a multiple of eight is now
+tiled `[1, 1]`, one accumulator per element in `f32`, as the reference's
+condition 7 requires", where it accumulated through its `bf16` output.
+BERT's SQuAD head is `Linear{D, 2}`, `J = 2`. At 24 blocks, against D53's
+exact logits (reused), the `bf16` gap is **5.28·10⁻²** where D53 measured
+1.06·10⁻¹, still outside 10⁻²; `f64` 1.5·10⁻¹⁴, `f32` 1.1·10⁻⁵, `int8`
+weights 5.7·10⁻², `int4` 2.0, and the split on two blocks (representation
+1.09·10⁻² and 2.17·10⁻¹), byte for byte D53's. So D53's `bf16` figure was
+stale since 0.7.0, which no later check caught: BERT's native outputs are
+no test's (its `bf16` gap is reported, not asserted, D58), and `make bert`
+is five hours. The tables at the tag are `out/bert_L2.md` and
+`out/bert-0.10.0.md`; they carry no timing, BERT's `presk bench` not having
+been run again.
+
+**What else moved, the policy's.** The step's calibration has 524 sites in
+21 functions where D93's had 455 in 16, the stored gradient's `.fwd` and
+`.bwd` functions; the solved steps type 21 functions where 16, all `f32`
+at 10⁻³ and one `bf16` at 10⁻²; their estimates 3.155·10⁻⁴ (3.109·10⁻⁴).
+The step table's predicted seconds per step, the roofline's over the step's
+sites, read about four times D93's (2.67·10⁻² against 6.36·10⁻³ for
+all-`f64`), its ratios 1.01× for `f32` and the solved steps as before and
+0.41× for `bf16` and the recipe (0.49×, 0.53×). Why the stored step's
+prediction is four times the recomputing one's, when the measured step is
+faster, is not looked into: no command reads that column, and the paper
+quotes the measured times.
+
+**The record.** The manual's `coverage` chapter, BERT's `bf16` row (5.3·10⁻²,
+with D53's beside it and the cause); J′ in `precision` (the table and its paragraph), `experiments` (statement J′'s row and paragraph) and `coverage` (its row); `status` ("Since 0.10.0") and the CHANGELOG ("Unreleased"). The paper's figures that
+move: J′ (1.95× → 1.75×, with all-`f32` and the recipe), RQ5's `bf16`
+(1.1·10⁻¹ → 5.3·10⁻²); every other figure of its §4 list is reproduced at
+the tag. presk-paper-001 takes them in its own session.
+
+**Addendum (2026-10-03, after the merge): D49's quant table at the tag.**
+The paper (§4) quotes D49's table, which D93 measured again and which no
+target makes, so the run above did not reach it. Its command, D93's
+(`presk solve corpus/nlp/05_gpt.psk --precision out/gpt256_env.json
+--budget 1e-3 --quant --sites 12 --weights out/gpt_trained/final.psk.d`),
+was run on the tag's code (`420f023`), one minute; the log is
+`out/paper-run/solve_quant.log`, D93's `out/solve_quant.log`. The float
+assignment it solves first is D102's (65 sites, 2.00×, 2.122·10⁻⁵). The
+per-matrix bounds, signed sums and root-sum-squares are D93's to every
+digit printed, the weights and the gradient being the same, and the solver
+again quantises the nine matrices in `int8` (7.67× fewer weight bytes,
+estimated 1.551·10⁻³). The measurement with the weights quantised, on top
+of that float assignment, is **2.986·10⁻⁴** (D93: 3.215·10⁻⁴). So the
+table's `int8` row reads: the bound 2.55·10⁻¹ is **855 times** the
+measurement (790 in D93), the signed sum 3.26·10⁻⁴ within 9 % of it (2 %),
+the root-sum-square 1.55·10⁻³ 5.2 times it (4.8). The linearisation is
+still right and the bound still vacuous. The `int4` row (4.94·10⁻²) was
+not measured again: no record names the command that measured it.
+
+## D104 — The second model of RQ5: the Llama 2 decoder at the 7B configuration's width, one of its 32 blocks, run exactly and natively on its initialization — only `f32` inside 10⁻², `int8` weights 1.6× to 1.9× faster than `f32`; no solve fits in the machine, the split runs on no block, and the native backend computes a quantised parameter read through `split` wrongly (2026-10-04)
+
+The paper owes a second model with a measured budget, beyond BERT-large
+(presk-paper-001, `docs/results-2026-10-02.md` §5: "a budget on a model the
+project did not write"). `coverage/` holds one other transcription,
+`llama.psk`, the decoder MLPerf uses for Llama 2 70B, written at the 7B
+configuration and checked since 0.4.0, never run. This runs it by BERT's
+protocol (D53) and, where the machine affords it, would have solved a budget
+on its loss; it does not afford it (below). Run at the user's request on
+2026-10-04, from the presk session's prompt
+(`presk-project/docs/prompt-mlperf-second-row-2026-10-04.md`).
+
+**The model.** `coverage/llama.psk` with `G = 32`: every query head its own
+key head, so that the width (4 096), the heads (32 of 128), SwiGLU's width
+(11 008) and the vocabulary (32 000) are Llama 2 7B's published
+configuration; the file's `G = 8` is 70B's grouping on 7B's widths, which
+no published model has. One of its 32 blocks (the dry run, below). Its one
+departure from the real model is unchanged: a learned position table in
+place of RoPE, whose rotation needs `concat`. So 466 104 320 parameters at
+one block and `T = 384`, 263 720 960 with no block; at its 32 blocks,
+without the position table, the file counts 6 738 415 616, Llama 2 7B's
+published count exactly. Two changes to the file: an entry `loss`, the mean
+next-token cross-entropy as `corpus/nlp/05_gpt.psk` writes its own without
+the key (a scalar, which `presk solve` needs, D101); and the head drawn as
+the other matrices, `normal(std = 0.02)`, as Hugging Face's
+`LlamaPreTrainedModel` initializes every linear map, where the file had
+`zeros`: a zero head makes every logit zero, so a gap relative to `max|y|`
+divides by zero and the solver has no sensitivity to rank. `make coverage`
+now runs the decoder at tiny constants too, on the reference and natively,
+`Llama.apply` and `loss` (the loss: 4.5822256906846817 exact,
+4.5822256906846821 natively in `f64`).
+
+**The data.** One sequence of 384 token ids uniform over the vocabulary
+(`experiments/llama_ids.py 32000 384 2 0`; 379 distinct ids in [37, 31 807]),
+the parameters drawn from `--seed 0`. No tokenizer, no text, no trained
+weights, as BERT's features have none: a model at its initialization does
+not care which tokens they are.
+
+**How.** `experiments/llama.sh` (`make llama`), BERT's `bert.sh` stage by
+stage: `exact`, `gaps`, `split`, `time`, plus `kgaps` (below) and `solve`,
+which runs `make compile-times`' commands under the model key
+`llama-7b-L<N>` (`compile_times.sh` gains it, and keeps `/usr/bin/time`'s
+report, the peak memory, beside each command's output); `make llama` runs
+every stage but `solve`, which `STAGES=solve` asks for. On the branch
+`llama-row` from `main` at `d4193dc`, whose `crates/` differ from the tag
+`v0.10.0` in six manual files only; the release binary was built on
+2026-10-03 after the last code change (`fbf4b76`), so it is the tagged
+compiler. On falicon, alone, each stage in a `systemd-run` scope capped at
+108 GB with no swap, so that a stage that outgrows the machine is killed
+alone (`out/llama/run.sh`), from 14:01 to 21:52 (7 h 50 min), after a dry run from 12:45 to 14:00. GB below are 2³⁰ bytes, as
+`bert.sh` reports them.
+
+**The dry run** (`out/llama_probe/`, on 16 tokens, before anything long):
+
+| command | blocks | wall | peak |
+|---|---|---|---|
+| the exact logits, 128 bits | 1 | 6 min 37 s | 85.0 GB |
+| the same, capped at 100 GB | 2 | killed after 2 min, drawing the parameters | > 100 GB |
+| `presk calibrate --precision` on `loss`, one sequence | 1 | 24 min 54 s, 70 sites | 70.1 GB |
+| `presk solve --budget 1e-3`, capped at 108 GB | 1 | killed after 18 min, as its reverse sweep began (87 → 107 GB in 30 s) | > 108 GB |
+| native `f32` | 1 | 1 min 29 s | 71.3 GB |
+| the kernel interpreter, `int8` on every matrix | 1 | 3 min 51 s | 105.4 GB |
+| `presk quantize`, `int8`, capped at 108 GB | 1 | killed after 2 min 24 s | > 108 GB |
+| `presk quantize`, `int8` | 0 | 5 min 29 s | 74.1 GB |
+
+So, by the prompt's rule (the largest `L` of 2 and 1 at which the exact run
+fits in 100 GB and ends within about three hours): **one block** for the
+exact logits, the gaps and the time. **No solve**: it does not fit at one
+block even on 16 tokens, and 384 only add to it. The exact interpreter holds
+the parameters twice at 128 bits (its own and the synthesized inputs
+`presk run` keeps, D53), some 200 bytes a parameter in all: 85 GB at one
+block of this width, where BERT's 24 blocks of width 1 024, with 0.72 times
+as many parameters, took 44. A solve adds a reverse sweep over them. **The split at no block** (`stack{0}`: the embeddings, the final
+norm and the head, 264 M parameters, the model's two largest matrices among
+them): `presk quantize` holds the parameters three times, the drawn ones,
+the interpreter's and the dequantised ones, and at one block of this width
+that is more than the machine has. BERT's split also ran on fewer blocks
+than its gaps (2 of 24).
+
+**The exact logits**: 12 288 000 of them (384 positions × 32 000), the
+largest 6.882, in 1 h 54 min 37 s and 87.6 GB. The first 16 positions are,
+to every printed digit, the 16-token probe's: the causal mask is exact, and
+the draw does not depend on `T`.
+
+**The gaps**, `max|ŷ − y| / max|y|` over the 12 288 000 logits:
+
+| realization | gap | inside 10⁻² | BERT-large (D53, D103) |
+|---|---|---|---|
+| `f64` | 1.27·10⁻¹⁴ | yes | 1.5·10⁻¹⁴ |
+| `f32` | 6.18·10⁻⁶ | yes | 1.1·10⁻⁵ |
+| `bf16` | 2.45·10⁻² | no | 5.3·10⁻² |
+| `int8` weights but `wo`, `f32` arithmetic | 4.85·10⁻² | no | 5.7·10⁻² |
+| `int4` weights but `wo`, `f32` arithmetic | 7.14·10⁻¹ | no | 2.0 |
+| `int8` weights, every matrix (the kernel interpreter) | 5.27·10⁻² | no | — |
+| `int4` weights, every matrix (the kernel interpreter) | 7.57·10⁻¹ | no | — |
+
+Each native run took 2 min 50 s to 3 min 26 s, most of it drawing the
+parameters exactly; the quantised ones peaked at 105.7 GB. The kernel
+interpreter's took 51 and 54 min and 105.8 GB. With `wo` quantised too,
+the `int8` gap is 5.27·10⁻² (4.85·10⁻² without) and the `int4` one 0.757
+(0.714): K's whole scheme is 5.3·10⁻² from this decoder's logits, where it
+is 5.7·10⁻² from BERT's.
+
+**The native backend's defect.** At tiny constants the native `int8`
+logits were NaN. One matrix at a time, the culprit is `wo`, the one
+parameter the file reads through `split` (its rows as `(groups, per, hd)`).
+The minimal case is two lines: `w : ℝ[hh: 8, model: 4]` quantised over
+`hh`, `split(axis hh, g: 2, hd: 4, w)` contracted over `hd`, gives values
+up to 10³⁰ natively, different from one run to the next, where the kernel
+interpreter gives the right ones; a parameter declared with the three axes
+and contracted over two is right, so it is the split, on either `over`, in
+`int8` and `int4`. Most likely `scale_strides` (`presk-kernel/src/ir.rs`)
+reads `over` as an axis of the kernel's view while it is an axis of the
+stored parameter: once `split` cuts the `over` axis in two, the second piece
+counts as a channel axis and the scale's index runs past the scales, through
+an unchecked load. Not fixed here (no change to the crates in this
+measurement); a later plan's. So the native `int8` and `int4` rows quantise
+nine of the ten matrices and keep `wo` in `f32` (the realizations
+`out/llama/int8.json`, `int4.json`), and the `kgaps` stage gives the whole
+scheme on the kernel interpreter, which the native backend must equal: the
+two compute their transcendental functions with different libraries (the
+`native` chapter), so their outputs differ in the last place, on BERT as on
+this decoder: on the nine-matrix realizations at tiny constants by one
+`f32` unit at most (5.96·10⁻⁸ at 0.5), the native rows sound but for
+`wo`.
+
+**The split** at no block (`presk quantize`, relative to the largest exact
+logit there, 6.917; `out/llama/split_L0_T384_*.txt`):
+
+| realization | the weights' rounding | the arithmetic | total | BERT-large, two blocks (D53) |
+|---|---|---|---|---|
+| `int8` weights | 1.18·10⁻² | 3.3·10⁻⁶ | 1.18·10⁻² | 1.09·10⁻², 9.6·10⁻⁷ |
+| `int4` weights | 2.25·10⁻¹ | 2.9·10⁻⁶ | 2.25·10⁻¹ | 2.17·10⁻¹, 8.7·10⁻⁷ |
+
+Each took 1 h 22 min (two exact runs and a native one) and 76.4 GB. With no
+block, `wo` is not there to leave out: the scheme is K's whole, on the
+token table, the position table and the head. The weights' rounding is the
+whole of the quantised gap, the kernels adding a few 10⁻⁶, as on BERT.
+
+**The time** per sequence of 384 tokens, one block (`presk bench`, the median
+of two calls, the better of the scalar and four-lane code):
+
+| realization | batch 1, one core | batch 20, per sequence |
+|---|---|---|
+| `f64` | 122.0 s | 14.48 s |
+| `f32` | 83.0 s | 8.48 s |
+| `bf16` | 86.8 s | 6.79 s |
+| `int8` weights but `wo`, `f32` arithmetic | **52.2 s** | **4.56 s** |
+
+`int8` weights are **1.59×** faster than `f32` at batch 1 and **1.86×** at
+batch 20 (BERT-large: 2.2× at both); `f32`'s four-lane code is again slower
+than its scalar code at batch 20, and `bf16` faster than `f32` there only.
+As on BERT, the blocked kernel reads the whole weight matrix again for
+every row of its result, so what it streams is the matrices' bytes, and
+`int8` streams a quarter of them (`docs/kernels-roadmap.md`). One block is
+not the model: the head and the token table are 56 % of these parameters
+and 4 % of the 7B's.
+
+**What it says, beside BERT's row and beside K and D.** A second
+architecture, at a published width, the project did not design — a
+pre-normalized decoder with `RMSNorm`, SwiGLU, a causal mask, no biases and
+a 32 000-token head — runs exactly at 128 bits and natively, one block at a
+time, and its realizations sit where BERT's do: `f64` at 10⁻¹⁴, `f32` the
+one narrowed type inside 10⁻², `bf16` and `int8` weights near 3–5·10⁻²,
+`int4` weights useless; the quantised gaps are the weights' (the split).
+K's scheme, inside 10⁻² on the GPT's loss, is outside it on this decoder's
+logits by five, as on BERT's by six. And `int8` weights buy 1.6× to 1.9×
+over `f32`, inside 10⁻¹ and not 10⁻². What it does not say: anything about
+a trained Llama (no trained weights, whose activations carry outliers an
+initialization lacks; no text; no perplexity), anything at the 32 blocks
+(the exact reference holds one), rotary positions, MLPerf's constants (its
+Llama 2 is the 70B, two orders of magnitude past the exact reference here),
+or a budget **solved** on a model the project did not write: D, solved and
+discharged on the course GPT, has no second model, because the solve holds
+more than this machine has at one block of this width.
+
+**Not run.** The solve (above). `presk calibrate` at 384 tokens (about 7 h
+by the probe's ratio, 3.8 times the reference): it feeds the solve and the
+bound only. The exact logits at two blocks (more than 100 GB).
+
+**The record.** The report `docs/llama-7b-2026-10-04.md`, every number with
+its command and file; the table `out/llama.md`, rebuilt from the outputs by
+`STAGES= ./experiments/llama.sh`; the outputs under `out/llama/` and the dry
+run's under `out/llama_probe/`, git-ignored, archived but for the logits as
+`presk-project/data/llama-7b-0.10.0.tar.xz` (the `.time` files, the bench
+and split outputs, the logs and every logits file's SHA-256: the logits are
+258 MB each, a deterministic output of the tagged compiler, and stay on
+falicon). The manual: `coverage`, a section "The decoder, run" after
+BERT's, its table's decoder row and the head's sentence; `experiments` §10
+and `status` the pointers; the tutorial's `make` table. The paper's side
+(Table 1's row, RQ5's paragraph, the sentences of §1, §6 and §8 that say "no
+second model") is the paper session's.
+
+## D105 — Version 0.10.1 opened: the exact interpreter holds each parameter once and frees a value after its last use, so that a budget can be solved on the Llama 2 decoder at the 7B width; no output may change (2026-10-05)
+
+D104 ran the decoder of `coverage/llama.psk` at Llama 2 7B's width on one of
+its 32 blocks, exactly and natively, but `presk solve` was killed at 108 GB
+on that block even on 16 tokens, so the paper's RQ5 has no budget solved on
+a model the project did not write. On 2026-10-05 the user asked for the work
+of cutting the exact interpreter's duplicate copies to be sized, then for it
+to be done as version **0.10.1**: a patch of 0.10.0 that changes how much the
+interpreter holds and no value it computes. The plan is
+`presk-specs/implementation/presk-plan-0.10.1.md`, from the presk session's
+prompt `presk-project/docs/prompt-0.10.1-interpreter-memory-2026-10-05.md`.
+
+**Why the interpreter holds too much** (read at `d4193dc`, measured on
+falicon under `out/mem_probe/`). An exact real at 128 bits is 64 bytes: a
+`rug::Float` of 32 bytes in its `Vec` and 32 of limbs on the heap. Three
+causes multiply it.
+1. *Every read is a copy.* `Interp::call` fetches the operands of a
+   primitive, a call, a fold and a tuple by cloning them out of `env`.
+   Tuples and records are shared since 0.6.0 step 8 (D53's BERT), but a
+   tensor owns its `Vec<Float>`: a field read of a weight, a call's tensor
+   argument and a fold's slice of a stacked parameter are deep copies.
+2. *Nothing is freed before a function returns.* `env` keeps every `let`;
+   in a `.vjp` every partial cotangent stays alive to the end of the
+   sweep. This is what kills the solve.
+3. *The seam copies.* `presk_rt::Value::from_interp` copies every leaf;
+   `presk-train`'s `args_on_data` keeps the drawn inputs and passes the
+   backend a copy; `presk solve` clones the arguments twice more and keeps
+   the sweep's cotangent of θ, which only `--quant` reads.
+
+Each block of the decoder adds 128 bytes a parameter to the exact run's
+peak (two copies), 64 to `calibrate`'s, 195 to `quantize`'s. A prototype of
+cause 2's fix, about 25 lines (not committed; its diff is
+`out/mem_probe/liveness-prototype.diff`), took the solve on the decoder at
+`D = 1024`, `V = 32 000`, `T = 16` and no block from 74.4 GB to 25.4 GB, with
+every output of `run`, `calibrate`, `solve` and `quantize` byte-identical at
+zero, one and two blocks; at one and two blocks, where `main`'s solve was
+killed at 60 GB, it held 256–274 bytes a block parameter. Liveness alone
+leaves the copies of causes 1 and 3: projected to the 7B width at one block,
+about 160 GB. With shared buffers too, about 75–85 GB for the solve on 384
+tokens and 40 GB for the exact run. These are projections, which step 4
+measures before anything long.
+
+**The statements**, fixed before the work:
+
+| # | Statement | Asked |
+|---|---|---|
+| U1 | No output changes: the test set's entries on the three executors in `f64`, `f32` and `bf16`, the goldens, `make check-examples`, `make coverage`, BERT at two blocks, `make precision`, `make quant-table` and `make step-table` against D103's outputs, the decoder's dry run and D104's native gaps, byte for byte against `v0.10.0` | every bit |
+| U2 | Memory at the probe's constants (`D = 1024`, `V = 32 000`, `T = 16`, `L = 0, 1, 2`) | the exact run one copy per block parameter (64 bytes), the solve no more than two plus its transients; the table before and after |
+| U3 | The exact reference no slower: BERT's two blocks on `squad_loss` (616.9 s, D101) and the course GPT's window (178.6 s), alone, on an X925 core | within 3 % or faster |
+| U4 | The decoder's solve at the 7B width, one block, 384 tokens, under 100 GB, discharged; the envelope, the measured gap, the sites, the traffic and the bound | measured and reported |
+| U5 | If step 6 is kept: the native backend equals the kernel interpreter, up to the two `libm`s, on a quantised parameter read through `split` | holds |
+
+**The steps** (the plan's §4): liveness in the evaluator (1); shared
+copy-on-write exact buffers, in `presk_interp::Tensor` and
+`presk_rt::Buf::Exact`, so that a clone is a pointer copy (2); the solve
+keeping only what it reads (3); a dry run at the 7B width as the gate (4); a
+reverse sweep without the parameters' cotangent, only if the gate asks for
+it and only if no site's sensitivity moves (5); D104's native defect, a
+quantised parameter read through `split`, fixed (6, recommended; the user
+may drop it); the checks (7); the decoder's solve measured, D106 (8); the
+documentation checked at the version (9).
+
+**What it leaves out.** A packed 128-bit real in place of `rug::Float`,
+which would halve the 64 bytes again (the roadmap, if step 4 shows it is the
+next limit); the pure-Rust `Real`; the GPU; the kernels' speed; the paper's
+side. If U1 holds, every number of the paper, taken at `v0.10.0` (D102,
+D103), stands at 0.10.1, and whether the artifact moves to `v0.10.1` is the
+user's call.
+
+Version `0.10.1-dev`.
+
+**Addendum (2026-10-05): steps 1–3 done.** On the branch
+`0.10.1-steps-1-3`, five commits, each with `make test` passing.
+
+- **Step 1, liveness.** `Interp::call` computes once per function, from
+  `Rhs::vars`, the variables each `let` reads last, and removes them from
+  the environment after that `let`; a `let` nothing reads goes at once, an
+  unread parameter at the call's start, the result never; the statistics
+  read the `let`'s operands before. The operands of a call, an application,
+  a fold, a tuple and a record are moved out of the environment at their
+  last read, so a callee holds the only reference to what its caller no
+  longer reads; a primitive's and a closure's are cloned, since the term
+  sums and the closure table read them after. `Interp::live` (off by
+  default) counts the reals bound in the environments of the calls in
+  progress; the test: a chain of additions and its gradient hold a bounded
+  number of tensors however long the chain (one more a link, and three more
+  a link for the gradient, at 0.10.0), a product chain's gradient at most
+  two more a link, its residuals (ten storing and five recomputing at
+  0.10.0), under both `--remat` policies.
+- **Step 2, shared buffers.** `presk_interp::Tensor`'s elements are a
+  `Data<T>`, a range of an allocation behind a reference count, read
+  through `Deref` to a slice; a write through `DerefMut` to elements another
+  value shares, or to a range of a larger allocation, copies them first.
+  A field read, a call's argument, a fold's accumulator and residuals and a
+  reshape copy nothing, and a fold's layer of a stacked parameter is a view
+  of it. `presk_rt::Buf::Exact` holds the same `Data<Float>`: `from_interp`
+  shares, `to_interp` shares at the run's precision, `into_interp` writes no
+  element already at it. Two more copies the probe found are gone with
+  it. An initializer of `stack{L}(M)` copied every layer into the stack
+  while the layers were alive: `stack_params` and a scan now move their
+  parts' reals into the stack, leaf by leaf. And a gradient assembles a
+  parameter tree's cotangent field by field, each on `zeros_like θ`
+  (`set_field`, then `add`): every one of those trees was a
+  parameter-sized tree of exact zeros, three or four copies of θ alive at
+  once in the solve's sweep. `zeros_like` now gives the zeros of a length
+  one shared buffer, `add` gives `x + 0` as `x` itself where MPFR gives
+  `x` (not for `−0`, whose sum is `+0`, nor for a NaN:
+  `Real::plus_zero_is_self`), and the scatter of a stack of one layer is
+  that layer. No free list and no stack of parts, which the native host's
+  `Elems` have (D96): the probe did not ask for them.
+- **Step 3.** `presk solve` keeps the sweep's cotangent of θ only under
+  `--quant`, and drops the sweep's result once the sensitivities are read.
+
+**U1 holds** on what the steps can move, against `v0.10.0`'s release
+binary (built on 2026-10-03 after the tag's last code change, kept as
+`out/u1/presk-0.10.0`):
+- 31 entries of the test set, the examples, `tests/data`'s gradients, the
+  course GPT, BERT and the decoder at tiny constants
+  (`out/u1/entries.txt`), each on the exact interpreter at 128 and 256
+  bits, with `--json` (its inputs printed), and on the kernel interpreter
+  and the native backend in `f64`, `f32` and `bf16`, under `--remat store`
+  and `recompute`: 558 outputs, every one byte-identical
+  (`out/u1/entries.sh`);
+- `make precision`, the quant table, the step table, D103's `solve
+  --quant`, `make coverage` and `make check-examples`, with each binary:
+  every output file and log identical, but for cargo's build time and the
+  wall time `calibrate --step` prints (`out/u1/targets.sh`);
+- BERT-large at two blocks (`bert.sh`'s `exact`, `gaps` and `split` stages,
+  `L = 2`): the exact logits, the five native gaps' outputs and the two
+  splits identical to D103's files in `out/bert/`; the exact run's peak 4.9
+  GB where it was 11.0;
+- the probe's outputs (below) identical to `main`'s, and its solves to the
+  prototype's, but for the names of the files they write.
+The decoder's dry run at the 7B width and D104's native outputs are step
+4's.
+
+**U2** (`out/mem_probe/probe_bin.sh`, the decoder at `D = 1024`, `V = 32
+000`, `T = 16`, each command in a 60 GB scope; peak at no block, and bytes
+a block parameter from zero to one block and one to two; 12 847 104
+parameters a block, 65 553 408 outside them):
+
+| command | no block: 0.10.0 | step 1 | steps 1–3 | a block parameter: 0.10.0 | step 1 | steps 1–3 |
+|---|---|---|---|---|---|---|
+| `presk run --bits 128` | 13.7 GB | 11.7 GB | 4.0 GB | 128, 128 B | 128, 128 B | 67, 64 B |
+| the same, on `loss` | 13.7 GB | 11.7 GB | 4.0 GB | 128, 128 B | 128, 128 B | 66, 64 B |
+| `presk run --backend native --realize f32` | 10.3 GB | 10.3 GB | 5.4 GB | 160, 160 B | 160, 160 B | 80, 80 B |
+| `presk calibrate --precision` | 13.8 GB | 7.9 GB | 4.0 GB | 64, 64 B | 120, 128 B | 69, 64 B |
+| `presk solve --budget 1e-3` | killed | 25.4 GB | 9.8 GB | killed at 60 GB | 256, 256 B | 148, 177 B |
+| `presk quantize`, `int8` | 18.6 GB | 16.6 GB | 8.8 GB | 195, 205 B | 195, 205 B | 132, 141 B |
+
+**U2 holds** for the exact run: one copy, 64 bytes a block parameter, and a
+third of 0.10.0's peak with no block (the parameters outside the blocks
+held once, 4.0 GB). `presk solve` fits at every `L`, where 0.10.0's was
+killed at 60 GB (it needed 74.4 GB with no block, uncapped,
+`solve_trace.rss`): at one block 148 bytes a block parameter, the parameters
+and their cotangent and 20 bytes of transients; from one block to two 177,
+the scatter of each layer's cotangent into a stack of two layers' zeros
+before it is added (a stack of one layer is its layer, above), a transient
+the reverse fold makes per layer. `quantize` holds two copies, the drawn
+parameters and the dequantised ones, which its split runs exactly; the
+native run the exact draw, which `presk run` keeps for its output, and its
+machine copies. Step 1 alone took the solve to 25.4 GB with no block, the
+shared buffers and zeros to 9.8.
+
+**U3**, a first reading (`out/u1/u3.sh`, `out/u1/u3/`): the exact
+reference alone on the machine, pinned to cpu 10, which its capacity
+(1024, the machine's largest) was taken to mark as an X925 core; its part
+number says an A725 (step 7 found it, and measured U3 again on an X925),
+as
+`compile_times.sh` runs it, `v0.10.0`'s binary and the binary of steps 1–3
+(before the shared zeros, which a forward pass does not reach) in the order
+old, new, new, old; each run's result the same, digit for digit:
+
+| | `v0.10.0` | 0.10.1 | | peak |
+|---|---|---|---|---|
+| the course GPT, one window (`loss`, course constants) | 317.0 s, 321.0 s | 315.8 s, 312.4 s | −1.5 % | 1.74 → 0.78 GB |
+| BERT-large's two blocks, `squad_loss` | 1 053.8 s, 1 058.4 s | 1 021.8 s, 1 020.4 s | −3.3 % | 10.5 → 4.0 GB |
+
+On that A725 core both take about 1.7 times D101's 178.6 s and 616.9 s,
+which ran on the X925 cores; step 7's reading, on an X925 core, is U3's.
+
+**Addendum (2026-10-05): step 6 done, D104's native defect fixed.** On the
+branch `0.10.1-step-6`, after steps 1–3, `make test` passing. **The cause was the one D104
+named.** The host marked a kernel input of integer weights
+`BufKind::Quant { bits, over }` with `over` the axis of the *stored*
+parameter the scales are constant along; the native backend and the C
+export found an element's scale by strides over the kernel's *view* with
+that axis's number (`BufSpec::scale_strides`). Every program until D104
+read its quantised matrices as declared, or as the slice of a stacked one
+(whose `over` the slice moves), so the two agreed. The decoder reads `wo :
+ℝ[headhd: D, model: D]` through two `split`s as `(groups, per, hd,
+model)`: quantised over `headhd`, the kernel's strides put the scales'
+axis at `groups` and indexed them by `per`, `hd` and `model`, past the `D`
+scales, through a load Cranelift does not check; quantised over `model`,
+they read another row's scale. The kernel interpreter finds a scale from
+the element's flat index (`QBuf::value`), which a reshape does not move,
+and was right.
+
+**The fix.** The kind is `Quant { bits, over, span }`, the scales constant
+along the `span` axes of the view from `over`. `BufKind::of_quant` finds
+them from the stored parameter's own split, the scales' axis's length
+(`q.k`) and the elements after it (`q.inner`): the stored axis itself when
+the view keeps it (span 1: every kind, kernel and key of 0.10.0's programs
+as it was), the run of axes `split` made of it otherwise. A view with no
+such run, as after a `merge` of that axis with another, is not marked, and
+the host hands the kernel the weights' values, `f32(q)·s`, as it does every
+kernel it does not mark. The scales' strides, the C export's recorded store
+and the textual form (`int8/0..2` for a span of two) follow; the kernel
+interpreter is unchanged.
+
+**U5 holds.**
+- D104's two-line case is `tests/quant/split.psk`: `w : ℝ[hh: 8, model:
+  4]` read as `split(axis hh, g: 2, hd: 4, w)` and contracted over `g` and
+  `hd`. Quantised over `hh` and over `model`, in `int8` and `int4`: at
+  0.10.0 the native outputs reached 10³⁴ where the kernel interpreter's
+  are 1.9, different on every run, or read the wrong row's scales; now they
+  are the kernel interpreter's, digit for digit. The native test of integer
+  weights runs it both ways, native on the integers against native on their
+  values, scalar and in lanes, in `f32` and `f64`, and the kernel
+  interpreter, and checks the kinds marked (`(0, 2)` and `(2, 1)`).
+- The decoder at `make coverage`'s tiny constants, every matrix quantised,
+  `wo` too (`int8_all.json`, `int4_all.json`): the native logits were NaN,
+  all 3 200; now they are within 5.96·10⁻⁸ of the kernel interpreter's,
+  2 264 and 2 286 of 3 200 identical, as the realizations without `wo` were
+  and are (8.94·10⁻⁸ and 5.96·10⁻⁸): the two backends' `libm`s (the
+  `native` chapter). Every output those realizations give, on both
+  backends, is 0.10.0's byte for byte.
+
+**Addendum (2026-10-05): step 4, the gate.** D104's dry run again at the
+7B width (`G = 32`) on 16 tokens, at one block and two, with the binary of
+steps 1–3 and 6 (`out/llama_gate/gate.sh`; each command in its own 108 GB
+scope, alone; the outputs in `out/llama_gate/`):
+
+| command | blocks | 0.10.0 (D104) | 0.10.1 |
+|---|---|---|---|
+| the exact logits, 128 bits | 1 | 6 min 37 s, 85.0 GB | 5 min 11 s, **29.0 GB** |
+| the same | 2 | killed at 100 GB, drawing the parameters | 8 min 16 s, **41.1 GB** |
+| native `f32` | 1 | 1 min 29 s, 71.3 GB | 46 s, 36.7 GB |
+| native `f32` | 2 | — | 1 min 09 s, 52.9 GB |
+| `presk calibrate --precision` on `loss` | 1 | 24 min 54 s, 70.1 GB | 22 min 22 s, 30.5 GB |
+| the same | 2 | — | 36 min 40 s, 42.5 GB |
+| `presk solve --budget 1e-3` | 1 | killed at 108 GB after 18 min | **50 min 43 s, 71.2 GB**, discharged |
+| the same | 2 | — | killed at 108 GB after 68 min |
+| `presk quantize`, `int8` | 1 | killed at 108 GB | 10 min 18 s, 61.1 GB |
+| the same | 2 | — | 17 min 23 s, 87.7 GB |
+| the same | 0 | 5 min 29 s, 74.1 GB | 4 min 10 s, 35.0 GB |
+| the kernel interpreter, `int8` on every matrix | 1 | 3 min 51 s, 105.4 GB | 2 min 50 s, 36.2 GB |
+
+U1 again: the exact logits, the native logits, the calibration's output
+and envelope (but for its date and data path), the split at no block and
+the kernel interpreter's logits are D104's dry run's, byte for byte.
+
+The one-block solve on 16 tokens: 56 narrowable sites, 54 away from `f64`,
+1.65× less traffic than all-`f64`, the estimate 1.07·10⁻², measured
+1.13·10⁻⁵ against the exact loss (10.89) with no widening, inside the budget
+of 1.09·10⁻² absolute.
+
+**The projection to 384 tokens, and step 5 not done.** The solve's peak
+holds the parameters, their cotangent and the transients of the head and
+the block; what grows with the tokens is the forward pass's values the
+sweep keeps and a few of their cotangents. D104 measured that share
+already: at 0.10.0, which kept every value of a function until it
+returned, the exact run held 87.6 GB at 384 tokens and 85.0 at 16, so the
+whole forward pass's values at 384 tokens are about 2.6 GB, and a logit-
+sized tensor 0.8. The one-block solve projects to about 76–80 GB at 384
+tokens, under the 90 GB the plan set for step 5: **step 5 is not done**,
+and no 64-token point was taken, its three hours buying a figure this
+bound gives.
+
+**How many blocks.** The solve does not fit at two blocks (killed at 108
+GB on 16 tokens): **its row is one block**, as D104's gaps. The exact logits
+fit at two (41.1 GB on 16 tokens; at 384, by D104's 1 h 55 min at one block
+and the ratio of the two here, about three hours): so the exact logits and
+the native gaps are taken at two blocks too, after the solve, the whole
+scheme with them now that step 6 fixed `wo`. The split stays where it can
+be taken in hours: at one block, which now fits (61.1 GB on 16 tokens),
+the whole scheme, where D104's ran at no block; at two blocks (87.7 GB on
+16 tokens) it would take two exact runs of about three hours per scheme,
+for a finding the split at one block and at no block already give.
+
+**Addendum (2026-10-05): step 7, the checks of record**, on the version's
+tree (presk `4610f5e`, the branch of step 6) and its release binary
+(`out/u1/presk-final`, the binary of step 8), alone on the machine
+(`out/u1/step7.sh`, logs in `out/u1/step7/`):
+- `make test`, 255 passed, none failed; `make check-examples`; `make
+  coverage`; `make c-conformance` (C1, C2, C3, C5 and the SCoP mode with
+  Polly, integer weights on both checkpoints); `cargo doc -p
+  presk-manual`, no warning.
+- **U1 holds in full**, against `v0.10.0`'s release binary: the 558
+  outputs; `make precision`, the quant and step tables, D103's `solve
+  --quant`, `make coverage`, `make check-examples` (but for cargo's build
+  lines and the wall time `calibrate --step` prints); BERT-large at two
+  blocks, its eight outputs against D103's files; D104's native logits of
+  the decoder at one block and 384 tokens in `f64`, `f32`, `bf16` and
+  `int8` and `int4` but `wo`, each file's SHA-256 the archived one
+  (`llama/SHA256SUMS-logits`); and step 4's outputs above.
+- **U1 on the tutorial** (2026-10-07, step 9; `out/u1/tutorial.sh`): `make
+  tutorial` with `v0.10.0`'s binary, then with the version's (`presk
+  0.10.1`, built from the branch of step 9), alone, each passing. Of the
+  logs' 1 432 lines, with the binary's path and `presk --help`'s version
+  line set aside, 676 differ, every one a time or a figure fitted from
+  times: the durations of pytest, `presk train` and `train.py`, the bench
+  tables, the kernel profile's measured kernels and its roofline, the two
+  layout calibrations' 300 measured points each and their fits,
+  `presk-opt`'s and the plan's costs under those profiles, the tiny
+  RA4 sweep's statements M, N, O and Q and its ablation, and the C
+  program's timings. Every value, gradient, checkpoint, solve, export and
+  check the chapter quotes is the same line.
+- **U3 holds**, on an X925 core this time (`out/u1/u3_x925.sh`, cpu 15:
+  part `0xd85`; cpu 10, steps 1–3's reading, is an A725, `0xd87`), old and
+  new alternating, every result the same:
+
+| | `v0.10.0` | 0.10.1 | |
+|---|---|---|---|
+| the course GPT, one window, four runs each | 176.8, 177.9, 177.3, 177.8 s | 179.2, 178.5, 179.6, 179.1 s | **+0.9 %** |
+| BERT-large's two blocks on `squad_loss`, two runs each | 596.9, 599.8 s | 580.0, 585.1 s | **−2.6 %** |
+
+  Within 3 % on the course GPT and faster on BERT, whose copies weighed
+  more; the absolute times are D101's (178.6 s, 616.9 s). Unpinned, as
+  D101 ran it (`out/u1/u3-unpinned/`), the course GPT read +4.4 % (178.2
+  → 186.0 s) and BERT −3.1 %, but two unpinned runs of one binary differed
+  by 3.5 %: the scheduler, not the code, so the pinned reading is U3's.
+- U2 was measured alone at steps 1–3 (above); step 6 does not touch the
+  exact interpreter, and the probe's commands quantise no matrix read
+  through `split`, so it stands for the version's binary.
+
+## D106 — The second model of RQ5 solved: a budget of 10⁻³ on the Llama 2 decoder's loss at the 7B configuration's width, one of its 32 blocks, solved and discharged on 384 tokens — 52 of 56 sites narrowed, 1.99× less traffic, measured 4.3·10⁻⁶ against 1.1·10⁻² — in 14 h and 72 GB, where 0.10.0 could not hold it; the whole quantisation scheme run natively (2026-10-07)
+
+D104 ran the decoder of `coverage/llama.psk` at Llama 2 7B's width (`G = 32`)
+on one of its 32 blocks, exactly and natively, and solved no budget: `presk
+solve` held more than the machine's 119 GB. Version 0.10.1 (D105) made the
+exact interpreter hold each parameter once and free each value after its
+last use; this is the measurement it was made for, step 8 of plan 0.10.1,
+completing D104's row.
+
+**How.** On falicon, alone, from 2026-10-05 19:35 to 2026-10-07 09:04, with
+0.10.1's binary (`presk 0.10.1-dev`, built from presk `4610f5e`, the
+version's code), each stage in a `systemd-run` scope capped at 108 GB with
+no swap, the resident memory of each `presk` sampled every ten seconds
+(`out/llama/run-0.10.1.sh`, its log `run-0.10.1.log`, `rss-0.10.1.log`).
+The model and the data are D104's: one sequence of 384 random token ids,
+the parameters from seed 0, the head drawn as the other matrices. The solve
+is `experiments/llama.sh`'s `solve` stage (`STAGES=solve L=1`), which runs
+`make compile-times`' commands under the key `llama-7b-L1` with one sample:
+`presk check`, `presk calibrate --precision` on `loss`, `presk solve
+--budget 1e-3 --bits 128`, the exact reference alone, then `presk check
+--precision` on the solved realization.
+
+**The solve** (`out/llama/compile_times_T384/`, `bound_L1_T384.txt`; the
+report `compile_times_L1_T384.md`):
+
+| command | wall | peak |
+|---|---|---|
+| `presk check` | 0.006 s | — |
+| `presk calibrate --precision`, one sequence | 8 h 23 min 13 s | 32.0 GB |
+| `presk solve --budget 1e-3` | **14 h 06 min 51 s** | **71.7 GB** |
+| the exact reference, `presk run --bits 128` on `loss` | 1 h 53 min 48 s | 29.3 GB |
+| `presk check --precision` on the solved realization | under a second | — |
+
+The loss is 11.1761830595 exactly (to the digits printed). The budget is
+10⁻³ relative, 1.118·10⁻² absolute. Of the 56 narrowable sites, 52 are
+assigned away from `f64`, 50 to `f32` and 2 to `bf16`, two scalar
+constants: the head width 128 as a real before its square root
+(`Attention.apply/%15`), exact in `bf16`, and the norm's ε = 10⁻⁵
+(`RMSNorm.apply/%5`), which `bf16` rounds to 1.0014·10⁻⁵:
+4.14·10⁹ bytes of traffic
+against 8.23·10⁹ all-`f64`, **1.99× less**. The first-order estimate,
+1.098·10⁻², spends 98 % of the budget; the gap **measured** against the
+exact loss is **4.32·10⁻⁶**, with no widening round, inside the budget by
+a factor of 2 600. The bound on that realization (`presk check
+--precision`, the `cond` rule) is 6.24·10⁵, 5.58·10⁴ relative: vacuous,
+eleven orders above the measurement (statement F, the propagated bound
+within 10³ of the measurement on half the course entries, fails at 0.10.0);
+the discharge is the measurement's.
+
+**Beside the other two.** BERT-large's two blocks on their SQuAD loss
+(D101): 63 sites away from `f64`, 2.00×, measured 5.1·10⁻⁷ under
+6.3·10⁻³, in 2 h 54 min. The course GPT at statement D's budget (D102):
+65 sites, 2.00×, measured 2.1·10⁻⁵. So a budget of 10⁻³ is solved and
+discharged on all three, the two the project did not write included, each
+narrowing nearly every site and halving the traffic, and each measured far
+inside it. The solve takes about 7.4 times the reference's time and
+calibrate 4.4 times on one sequence (D101, on two samples: 17 and 8.2 for
+BERT, 15 and 8.4 for the course GPT).
+
+**The memory, as the gate projected.** 71.7 GB at 384 tokens against 71.2
+on 16 (D105's gate): the parameters and their cotangent at 64 bytes each,
+55.6 GB of it for the 466 104 320 parameters, and the activations' share
+half a gigabyte. At 0.10.0 the same solve was killed
+at 108 GB on 16 tokens; the exact reference holds 29.3 GB where it held
+87.6.
+
+**The whole quantisation scheme, natively** (step 6 of the plan, D105):
+`int8` and `int4` on every matrix, `wo` included, which D104 could run only
+on the kernel interpreter:
+
+| | gap to the exact logits | the kernel interpreter's (D104) | native against kernel interpreter |
+|---|---|---|---|
+| `int8`, every matrix | 5.273·10⁻² | 5.273·10⁻² | at most 1.9·10⁻⁵ (2.8·10⁻⁶ of the largest logit) |
+| `int4`, every matrix | 0.7565 | 0.7565 | at most 1.8·10⁻⁵ |
+
+(`out/u5/compare_all.py`; D104's table rounds the `int4` row twice, to
+7.57·10⁻¹: it is 0.75646.) No NaN where 0.10.0 gave every logit NaN
+natively. `presk bench` on that
+scheme, the better of scalar and four lanes, one run's `f32` beside it:
+**47.0 s** at batch 1 against `f32`'s 80.9, **1.72×**, and **4.02 s** a
+sequence at batch 20 against 9.40, **2.34×** (D104, without `wo`: 1.59× and
+1.86×; the batch-20 `f32` row is 11 % slower than D104's, run to run, so
+the ratio within a run is the figure).
+
+**Two blocks** (step 4 allowed the exact logits there: 41.1 GB on 16
+tokens): the exact logits of the sequence at two of the 32 blocks in 3 h 36
+min and 41.4 GB, max|y| 7.21; the native gaps (`out/llama_L2.md`):
+
+| realization | one block (D104) | two blocks |
+|---|---|---|
+| `f64` | 1.3·10⁻¹⁴ | 1.6·10⁻¹⁴ |
+| `f32` | 6.2·10⁻⁶ | 7.8·10⁻⁶ |
+| `bf16` | 2.5·10⁻² | 3.4·10⁻² |
+| `int8` weights but `wo` | 4.9·10⁻² | 5.6·10⁻² |
+| `int4` weights but `wo` | 0.71 | 0.94 |
+| `int8`, every matrix | 5.3·10⁻² | 5.7·10⁻² |
+| `int4`, every matrix | 0.76 | 0.98 |
+
+The one-block rows of every matrix are this version's native ones (above),
+which equal D104's kernel interpreter's; at two blocks each took under
+three minutes and 51.6 GB natively (`native_L2_T384_int{8,4}_all.txt`
+against `exact_L2_T384.txt`, by `out/u5/compare_384.py`'s reading at
+`L = 2`). A second block widens each gap by 8 % (`int8` on every matrix)
+to 37 % (`bf16`) and changes no verdict: `f32` is again the one narrowed
+realization inside 10⁻², and K's whole scheme is 5.7·10⁻² from the logits.
+
+The solve does not fit at two blocks (killed at 108 GB on 16 tokens, D105).
+
+**The split at one block**, the whole scheme, where D104's ran at no block
+(`presk quantize --backend native`, relative to the largest exact logit at
+one block, 6.882; `out/llama/split_L1_T384_int{8,4}_all.txt`):
+
+| realization | the weights' rounding | the arithmetic | total | storage | no block (D104) | BERT-large, two blocks (D53) |
+|---|---|---|---|---|---|---|
+| `int8`, every matrix | 5.27·10⁻² | 6.4·10⁻⁶ | 5.27·10⁻² | 4.00× less | 1.18·10⁻², 3.3·10⁻⁶ | 1.09·10⁻², 9.6·10⁻⁷ |
+| `int4`, every matrix | 7.56·10⁻¹ | 6.1·10⁻⁶ | 7.56·10⁻¹ | 7.99× less | 2.25·10⁻¹, 2.9·10⁻⁶ | 2.17·10⁻¹, 8.7·10⁻⁷ |
+
+They took 4 h 12 min and 3 h 42 min (two exact runs and a native one each),
+63.5 and 63.2 GB, where 0.10.0's was killed at 108 GB on 16 tokens. The
+weights' rounding is again the whole of the quantised gap: the total equals
+it to the digits printed, and it is the native gap above, the kernels
+adding 6·10⁻⁶, twice what they add with no block. The block's seven
+matrices, rounded too, multiply the rounding's effect on the logits by 4.5
+in `int8` and 3.4 in `int4`, to five times BERT's at two blocks in `int8`
+and three and a half in `int4`; what in the block does it (its widths, the
+normalization before each half rather than after, the rounding of `wo`) is
+not measured here. The split at two blocks (87.7 GB on 16 tokens, two exact
+runs of 3 h 36 min a scheme) is not taken: one block and none already say where the gap
+comes from.
+
+**What it says.** A budget is solved and discharged on a model the project
+did not write, at a published configuration's width: the paper's RQ5 has
+its second model, and statement D its third. The decoder's realizations sit
+where BERT's do — only `f32` inside 10⁻² on the logits, `bf16` and `int8`
+weights a few 10⁻² away, the quantised gaps the weights' rounding — and the
+solved mix halves the traffic at a measured cost three orders below its
+budget. What it does not say, as D104 did not: anything about a trained
+Llama (no trained weights, no text, no perplexity), the 32 blocks (the
+solve holds one), rotary positions, or MLPerf's Llama 2, the 70B; and the
+solve's budget is on the loss of one sequence, whose envelope is that
+sequence's.
+
+**The record.** The report `docs/llama-7b-solve-2026-10-07.md`, every
+number with its command and file, and the solve's row of the setup table
+`docs/compile-times-2026-10-05-llama.md` (key `llama-7b-L1`, which the
+paper's `tables/setup.py` reads). The outputs under `out/llama/`
+(`run-0.10.1.*`, `compile_times_T384/`, `bound_L1_T384.*`,
+`native_L{1,2}_T384_*`, `bench_L1_T384_B*_int8_all.txt`, `split_L1_T384_*`,
+the rss log) and `out/llama_gate/` (D105's gate), archived but for the
+logits as `presk-project/data/llama-7b-0.10.1.tar.xz`, with every logits
+file's SHA-256; D104's archive is unchanged. The whole scheme's gaps are
+`out/u5/compare_all.py`'s. `experiments/llama.sh` runs what this run ran by
+hand: the whole scheme natively in `gaps`, the split of the whole scheme at
+`SPLIT_L` blocks (default 1; `SPLIT_L=0` reads D104's), the bench with
+every matrix in `int8`; its table, `out/llama.md` (one block) and
+`out/llama_L2.md` (two), rebuilt from the outputs. The manual's `coverage`
+chapter ("The decoder, run" gains the solve, the whole scheme, two blocks
+and the split at one), `status`, `precision` and `experiments` §10. The
+paper's side (Table 1's row, RQ5's paragraph, the sentences that say no
+budget was solved on a second model) is the paper session's.

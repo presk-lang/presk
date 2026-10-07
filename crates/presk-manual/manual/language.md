@@ -922,8 +922,8 @@ Launches, counted by the C export's recorder, keeping the groups (what
 | Gradient | `recompute`, `bf16` | `store`, `bf16` | `recompute`, `f32` | `store`, `f32` |
 |---|---|---|---|---|
 | `mse_grad` (`mlp.psk`, `D = 4`, `B = 2`) | 28 | 24 | 26 | 23 |
-| `loss_grad` (`tests/plan/minigpt_grad.psk`, the tiny constants) | 583 | 424 | 563 | 385 |
-| `loss_grad` (`experiments/gpt_grad.psk`, the course GPT) | 1 616 | 1 182 | 1 548 | 1 012 |
+| `loss_grad` (`tests/plan/minigpt_grad.psk`, the tiny constants) | 577 | 412 | 563 | 385 |
+| `loss_grad` (`experiments/gpt_grad.psk`, the course GPT) | 1 598 | 1 140 | 1 548 | 1 012 |
 
 What a realization states by function names the functions of the program
 as it is: `presk solve --step` names `.fwd` and `.bwd` functions under
@@ -958,6 +958,19 @@ ten units of roundoff at `--bits` (`make delta-p`; the `precision` chapter,
   names are set from the binding's type, so primitives select axes by name
   (`mean axis model`, `softmax axis seq2`, `index seq: -1`) exactly as the
   types say.
+- **Memory** (0.10.1, D105). An exact real at 128 bits is 64 bytes, and a
+  model's parameters are most of what a run holds, so the interpreter
+  holds each value once and no longer than it is read. A tensor's elements
+  are shared by every value that reads them and copied only when one is
+  written, so a field of a parameter record, a call's argument, a stacked
+  layer a fold reads and the values that cross to the other executors
+  cost no copy; a value is freed after the binding that reads it last,
+  and a call is handed the values its caller reads there for the last
+  time; zeros are one buffer per length, and adding them gives the other
+  operand itself where MPFR gives it. Every result is the same, bit for
+  bit, as before (U1): `presk run --bits 128` holds each parameter once
+  where 0.10.0 held it twice, and `presk solve` holds the parameters and
+  their cotangent, where it kept every partial cotangent of its sweep.
 - **Dimensions** are runtime values: a call instantiates the callee's
   dimensions from `dim_args`; the entry's dimensions come from `--dim`;
   initializers (`zeros`, `positions`, `causal_mask`) materialize shapes from

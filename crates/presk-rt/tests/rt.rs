@@ -7,7 +7,7 @@ use rug::Float;
 #[test]
 fn exact_values_round_trip() {
     let x = Float::with_val(256, 1) / Float::with_val(256, 3);
-    let iv = presk_interp::Value::record(vec![("w".into(), presk_interp::Value::Real(presk_interp::Tensor { axes: vec![Axis { name: Some("model".into()), len: 1 }], data: vec![x.clone()] }))]);
+    let iv = presk_interp::Value::record(vec![("w".into(), presk_interp::Value::Real(presk_interp::Tensor { axes: vec![Axis { name: Some("model".into()), len: 1 }], data: vec![x.clone()].into() }))]);
     let v = Value::from_interp(&iv).unwrap();
     let Value::Real(t) = v.field("w").unwrap() else { panic!() };
     assert!(matches!(t.data, Buf::Exact(_)));
@@ -21,7 +21,7 @@ fn exact_values_round_trip() {
 #[test]
 fn realizations_round_once() {
     let x = Float::with_val(256, 1) / Float::with_val(256, 3);
-    let v = Value::Real(Tensor { axes: vec![], data: Buf::Exact(vec![x]) });
+    let v = Value::Real(Tensor { axes: vec![], data: Buf::Exact(vec![x].into()) });
     let Value::Real(t64) = v.realize(Dtype::F64) else { panic!() };
     let Value::Real(t32) = v.realize(Dtype::F32) else { panic!() };
     assert_eq!(t64.data, Buf::F64(vec![1.0 / 3.0].into()));
@@ -34,7 +34,7 @@ fn realizations_round_once() {
 #[test]
 fn indices_and_scalars() {
     let iv = presk_interp::Value::tuple(vec![
-        presk_interp::Value::Idx { bound: 64, t: presk_interp::Tensor { axes: vec![Axis { name: Some("seq".into()), len: 2 }], data: vec![3, 7] } },
+        presk_interp::Value::Idx { bound: 64, t: presk_interp::Tensor { axes: vec![Axis { name: Some("seq".into()), len: 2 }], data: vec![3, 7].into() } },
         presk_interp::Value::Nat(5),
         presk_interp::Value::F64(0.25),
     ]);

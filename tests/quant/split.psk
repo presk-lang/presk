@@ -1,0 +1,13 @@
+-- split.psk — a quantised parameter read through `split` (D104, plan 0.10.1
+-- step 6): `w`'s axis `hh` read as two, `g` and `hd`, as the Llama decoder
+-- reads its output projection. Quantised over `hh`, the scales are constant
+-- along both; over `model`, along `model` alone, in the view's third axis.
+-- The native backend found an element's scale by the stored axis's number in
+-- the view, and read past the scales.
+dim B
+
+module M {
+  param w : ℝ[hh: 8, model: 4] init = normal(std = 0.5)
+  fn apply(x : ℝ[batch: B, g: 2, hd: 4]) -> ℝ[batch: B, model: 4] =
+    ein[batch, model](x * split(axis hh, g: 2, hd: 4, w))
+}

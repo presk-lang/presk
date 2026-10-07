@@ -19,7 +19,7 @@
 # the realization.
 #
 #   QUALITY=0 ./experiments/curve.sh   the solver columns only (minutes)
-#   STEPS=600 JOBS=3                   the training runs (hours; the default)
+#   STEPS=600 JOBS=3                   the training runs (half an hour since 0.10.0; the default)
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}

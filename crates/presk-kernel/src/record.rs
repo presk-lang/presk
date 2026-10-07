@@ -139,7 +139,7 @@ impl Store {
         match spec.kind {
             BufKind::Idx => Store::I64,
             BufKind::Real => Store::of(dtype),
-            BufKind::Quant { bits, over } => Store::Quant { bits, k: spec.dims[over], inner: spec.dims[over + 1..].iter().product() },
+            BufKind::Quant { bits, over, span } => Store::Quant { bits, k: spec.dims[over..over + span].iter().product(), inner: spec.dims[over + span..].iter().product() },
         }
     }
 }

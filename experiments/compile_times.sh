@@ -15,6 +15,10 @@
 #                  initialization, on its SQuAD loss (`squad_loss`, a scalar for `presk
 #                  solve`, D101) over SQuAD-shaped features (experiments/bert.sh's) with
 #                  an answer's span (bert_features.py --span)
+#   llama-7b-L<N>  the Llama 2 decoder of coverage/llama.psk at the 7B configuration's width
+#                  (G = 32), N of its 32 blocks, at its initialization, on its next-token
+#                  loss (`loss`) over random token ids (experiments/llama.sh's, T = LLAMA_T,
+#                  default 384; D104)
 #
 # It is a measurement: run it on the measurement machine when it is quiet, like
 # `make j-step`, and never while another experiment runs. The report goes to
@@ -31,7 +35,7 @@ MODELS=${MODELS:-gpt-course gpt-reduced minigpt bert-large-L2}
 SAMPLES=${SAMPLES:-2}
 DATE=${DATE:-$(date -u +%F)}
 OUT=${1:-docs/compile-times-$DATE.md}
-D=out/compile_times
+D=${CT_OUT:-out/compile_times}
 mkdir -p "$D"
 [ -x "$PRESK" ] || { echo "no $PRESK: cargo build --release -p presk"; exit 1; }
 
@@ -47,12 +51,13 @@ if [[ " $MODELS " == *" bert-large-L2 "* ]] && [ ! -s out/bert/features_loss.psk
     "$PRESK" data pack --type '(idx[30522][seq: 384], idx[2][seq: 384], ℝ[seq2: 384], idx[384][ends: 2])' out/bert/features_loss.txt -o out/bert/features_loss.psk.d >/dev/null
 fi
 
-# timed NAME CMD...: runs the command, keeps its output in $D/NAME.txt, prints the wall seconds.
+# timed NAME CMD...: runs the command, keeps its output in $D/NAME.txt, prints the wall seconds;
+# /usr/bin/time's report, the peak resident memory with it, goes to $D/NAME.time (D104).
 timed() {
     local name=$1; shift
     local s e
     s=$(date +%s.%N)
-    "$@" > "$D/$name.txt" 2>&1
+    /usr/bin/time -v -o "$D/$name.time" "$@" > "$D/$name.txt" 2>&1
     local rc=$?
     e=$(date +%s.%N)
     [ $rc -eq 0 ] || { echo "  $name failed (exit $rc): see $D/$name.txt" >&2; echo "failed"; return; }
@@ -71,6 +76,9 @@ describe() {
                        LABEL="the tiny MiniGPT (V = 64, D = 16, H = 2, L = 2, B = 2, T = 8)";;
         bert-large-L2) FILE=coverage/bert.psk; CONSTS=(--const L=2); ENTRY=squad_loss; DIMS=(--dim T=384); DATA=out/bert/features_loss.psk.d; WEIGHTS=-;
                        LABEL="BERT-large at MLPerf's constants, L = 2 of 24, one feature, its SQuAD loss";;
+        llama-7b-L*)   FILE=coverage/llama.psk; CONSTS=(--const G="${LLAMA_G:-32}" --const L="${1#llama-7b-L}" ${LLAMA_CONSTS:-}); ENTRY=loss; DIMS=(--dim T="${LLAMA_T:-384}");
+                       DATA=${LLAMA_OUT:-out/llama}/ids_loss_T${LLAMA_T:-384}.psk.d; WEIGHTS=-;
+                       LABEL="the Llama 2 decoder at the 7B configuration's width, L = ${1#llama-7b-L} of 32, T = ${LLAMA_T:-384}, its next-token loss";;
         *) echo "unknown model $1"; exit 1;;
     esac
 }
@@ -111,7 +119,7 @@ done
       echo "| $m | ${LABELS[$m]} | ${CHECK[$m]} | ${SOLVE[$m]} | ${CALIBRATE[$m]} | ${EXACT[$m]} |"
   done
   echo
-  echo "The outputs of every command are under \`out/compile_times/\` (not committed). A time is of the"
+  echo "The outputs of every command are under \`$D/\` (not committed). A time is of the"
   echo "command as the paper's reader would run it, the front end, the JIT and the reading of the data"
   echo "included; \`presk solve\` includes the reference run it verifies against."
 } > "$OUT"

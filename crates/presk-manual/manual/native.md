@@ -67,9 +67,17 @@ record answers both (D34):
 
 A parameter a realization quantises (`precision` chapter) reaches the
 kernels as integers: `presk dump --stage kernel` shows such an input as
-`int8/o[…]` or `int4/o[…]`, `o` the axis its scales are constant along, and the kernel loads
-each element as `f32(q)·s` — in four lanes at a time when it has them — which
-is bit-for-bit the value the reference path substitutes (D45).
+`int8/o[…]` or `int4/o[…]`, `o` the axis of the kernel's view its scales are
+constant along, and the kernel loads each element as `f32(q)·s` — in four
+lanes at a time when it has them — which is bit-for-bit the value the
+reference path substitutes (D45). A program that reads the parameter through
+`split` of that axis gives the kernel several axes for it, shown `int8/o..p`
+(axes `o` to `p − 1`): the Llama decoder reads its output projection so. A
+view in which no run of axes is that axis, as after a `merge` of it with
+another, reaches the kernel as the weights' values, `f32(q)·s`, which is
+what every load of them computes. (Until 0.10.1 the native backend and the C
+export took the stored axis's number for the view's, and read past the
+scales on such a program: D104's defect, fixed by D105.)
 
 `bf16` is **storage only**: buffers hold sixteen bits, arithmetic is `f32`,
 and conversion is a shift on the way in and one round to nearest even on the

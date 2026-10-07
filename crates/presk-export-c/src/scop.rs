@@ -914,7 +914,7 @@ mod tests {
     #[test]
     fn integer_weights_and_lanes_are_refused() {
         let mut k = dot();
-        k.inputs[1].kind = BufKind::Quant { bits: 8, over: 0 };
+        k.inputs[1].kind = BufKind::Quant { bits: 8, over: 0, span: 1 };
         assert!(scop_fn(&k, "q").unwrap_err().contains("integer weights"));
         let mut k = dot();
         k.lanes = 4;

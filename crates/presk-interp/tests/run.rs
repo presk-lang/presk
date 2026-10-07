@@ -231,7 +231,7 @@ fn optimizer_schedule_and_step() {
     let (prog, core) = prepare("tests/data/train_ok.psk", &[]);
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     let step = core.find("adamw.step").unwrap();
-    let tensor = |x: f64| Value::Real(presk_interp::Tensor { axes: vec![Axis { name: None, len: 64 }, Axis { name: None, len: 4 }], data: vec![Float::with_val(128, x); 256] });
+    let tensor = |x: f64| Value::Real(presk_interp::Tensor { axes: vec![Axis { name: None, len: 64 }, Axis { name: None, len: 4 }], data: vec![Float::with_val(128, x); 256].into() });
     let tree = |x: f64| Value::record(vec![("w".to_string(), tensor(x))]);
     let out = interp.call(step, Default::default(), vec![tree(1.0), Value::tuple(vec![tree(0.0), tree(0.0)]), tree(0.5), Value::Nat(1), Value::Nat(10)]).unwrap();
     let leaf = |v: &Value<Float>| -> f64 {
@@ -292,8 +292,8 @@ fn ad_through_fold_matches_finite_differences() {
     // The extra argument: d loss / d scale.
     let gs = run(rel, &[], "scale_grad", &[("B", 2)], bits);
     let s = scalar(&scale);
-    let sp = Value::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(bits, &s + &h)] });
-    let sm = Value::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(bits, &s - &h)] });
+    let sp = Value::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(bits, &s + &h)].into() });
+    let sm = Value::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(bits, &s - &h)].into() });
     let fp = scalar(&interp.call(loss, dims.clone(), vec![theta.clone(), x.clone(), sp]).unwrap());
     let fm = scalar(&interp.call(loss, dims.clone(), vec![theta.clone(), x.clone(), sm]).unwrap());
     let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
@@ -568,4 +568,81 @@ fn ad_through_fold_with_open_prefix() {
         }
     }
     assert_eq!(checked, 2 * (16 + 4));
+}
+
+/// A chain of `n` links: `chain` adds a value to itself `n` times, `prod`
+/// multiplies by `x` `n` times and sums; their gradients through `grad`.
+fn chain_source(n: usize) -> String {
+    let mut s = String::from("dim N\n\nfn chain(x : ℝ[n: N]) -> ℝ[n: N] =\n  let a0 = x + x\n");
+    for i in 1..n {
+        s.push_str(&format!("  let a{i} = a{} + a{}\n", i - 1, i - 1));
+    }
+    s.push_str(&format!("  a{}\n\nfn prod(x : ℝ[n: N]) -> ℝ[] =\n  let a0 = x * x\n", n - 1));
+    for i in 1..n {
+        s.push_str(&format!("  let a{i} = a{} * x\n", i - 1));
+    }
+    s.push_str(&format!("  sum(a{})\n\n", n - 1));
+    s.push_str("fn chain_grad(x : ℝ[n: N]) -> ℝ[n: N] =\n  grad(λ y. sum(chain(y)))(x)\n\n");
+    s.push_str("fn prod_grad(x : ℝ[n: N]) -> ℝ[n: N] =\n  grad(λ y. prod(y))(x)\n");
+    s
+}
+
+/// The most reals the environments held at once while `entry` ran on `N`
+/// elements, with the gradient stored or recomputed.
+fn peak_live(n: usize, entry: &str, remat: presk_core::ad::Remat) -> usize {
+    let mut sm = SourceMap::new();
+    let id = sm.add(format!("chain{n}.psk"), chain_source(n));
+    let (program, diags) = parse_file(&sm, id);
+    assert!(diags.iter().all(|d| !d.is_error()), "{}", render_all(&diags, &sm, false));
+    let (prog, diags) = elab::elaborate(&mut sm, id, program, &Options::default());
+    assert!(diags.iter().all(|d| !d.is_error()), "{}", render_all(&diags, &sm, false));
+    let (typed, diags) = check::check(&sm, &prog);
+    assert!(diags.iter().all(|d| !d.is_error()), "{}", render_all(&diags, &sm, false));
+    let (mut core, diags) = presk_core::lower(&prog, &typed);
+    assert!(diags.is_empty(), "{}", render_all(&diags, &sm, false));
+    let diags = presk_core::ad::transform_as(&mut core, presk_core::ad::Options { remat, groups: true });
+    assert!(diags.is_empty(), "{}", render_all(&diags, &sm, false));
+    let opts = RunOptions { entry: entry.into(), dims: vec![("N".into(), 100)], seed: 0, bits: 64, digits: 12 };
+    let (func, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, 64);
+    interp.live = Some(Default::default());
+    interp.call(func, dims, inputs.into_iter().map(|(_, v)| v).collect()).unwrap();
+    let live = interp.live.unwrap();
+    assert_eq!(live.now, 0, "{entry}: every binding is freed when the entry returns");
+    live.peak
+}
+
+/// The evaluator frees a value after the `let` that reads it last (plan
+/// 0.10.1 step 1): a chain of additions, and its gradient, hold a bounded
+/// number of tensors however long the chain (two and four; at 0.10.0, one
+/// more a link, and three more a link for the gradient); a product chain's
+/// gradient, whose reverse sweep reads every forward value, at most two
+/// more a link, the residuals of its product (at 0.10.0, ten storing and
+/// five recomputing, every partial cotangent bound until the sweep
+/// returned).
+#[test]
+fn liveness_bounds_what_a_chain_holds() {
+    for remat in [presk_core::ad::Remat::Store, presk_core::ad::Remat::Recompute] {
+        for entry in ["chain", "chain_grad"] {
+            let (short, long) = (peak_live(8, entry, remat), peak_live(32, entry, remat));
+            assert_eq!(short, long, "{entry} ({remat:?}): {short} reals at 8 links, {long} at 32");
+            assert!(long <= 4 * 100, "{entry} ({remat:?}): {long} reals at once");
+        }
+        let (short, long) = (peak_live(8, "prod_grad", remat), peak_live(32, "prod_grad", remat));
+        assert!(long - short <= 2 * 24 * 100, "prod_grad ({remat:?}): {short} reals at 8 links, {long} at 32");
+    }
+}
+
+/// The shared zeros (plan 0.10.1 step 2): the evaluator gives `x + 0` as `x`
+/// itself only where MPFR gives `x`, so never for `−0`, whose sum with `+0`
+/// is `+0`, nor for a NaN.
+#[test]
+fn adding_zero_is_the_value_itself_but_for_minus_zero_and_nan() {
+    use presk_interp::Real;
+    let zero = Float::with_val(128, 0);
+    for x in [Float::with_val(128, 1.5), Float::with_val(128, -2), Float::with_val(128, 0), Float::with_val(128, f64::INFINITY), Float::with_val(128, f64::NEG_INFINITY), Float::with_val(128, -0.0), Float::with_val(128, f64::NAN)] {
+        let sum = Real::add(&x, &zero);
+        let same = sum.prec() == x.prec() && (sum.is_nan() && x.is_nan() || sum == x && sum.is_sign_negative() == x.is_sign_negative());
+        assert_eq!(x.plus_zero_is_self(), same && !x.is_nan(), "{x:?}");
+    }
 }

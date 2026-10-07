@@ -71,12 +71,74 @@ pub struct Interp<'p, R: Real> {
     /// output elements. They cost a second and third evaluation of every
     /// contraction, which is why they are recorded only when asked for.
     pub terms: Option<BTreeMap<String, TermSums>>,
+    /// When set, the reals bound in the environments of the calls in
+    /// progress, now and at most: what the tests of liveness count (plan
+    /// 0.10.1 step 1). A value bound twice counts twice.
+    pub live: Option<Live>,
+    /// Per function, the variables each `let` reads last ([`Deaths`]),
+    /// computed at its first call.
+    deaths: Vec<Option<std::sync::Arc<Deaths>>>,
+    /// The zeros `zeros_like` gives, one buffer per length, shared by every
+    /// value that holds them and freed with the last ([`Interp::shared_zeros`]).
+    zeros: std::sync::Mutex<HashMap<usize, crate::value::WeakData<R>>>,
     _r: std::marker::PhantomData<R>,
+}
+
+/// The reals bound in the environments of the calls in progress (plan
+/// 0.10.1 step 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Live {
+    pub now: usize,
+    pub peak: usize,
+}
+
+/// When each variable of a function is read for the last time (plan 0.10.1
+/// step 1, D105): the evaluator frees a value then, rather than when the
+/// function returns. A `.vjp` keeps every partial cotangent otherwise, which
+/// is what kept `presk solve` from fitting on one block of the Llama 2
+/// decoder at the 7B width (D104).
+#[derive(Debug, Default)]
+struct Deaths {
+    /// The parameters nothing reads.
+    unread: Vec<VarId>,
+    /// After each `let`, the variables it reads last, and its own when
+    /// nothing reads it; never the function's result.
+    after: Vec<Vec<VarId>>,
+}
+
+impl Deaths {
+    fn of(func: &Func) -> Deaths {
+        let mut last: HashMap<VarId, usize> = HashMap::new();
+        for (i, l) in func.body.lets.iter().enumerate() {
+            for v in l.rhs.vars() {
+                last.insert(v, i);
+            }
+        }
+        let result = func.body.result;
+        let mut after: Vec<Vec<VarId>> = vec![Vec::new(); func.body.lets.len()];
+        for (v, i) in &last {
+            if *v != result {
+                after[*i].push(*v);
+            }
+        }
+        for (i, l) in func.body.lets.iter().enumerate() {
+            if l.var != result && !last.contains_key(&l.var) {
+                after[i].push(l.var);
+            }
+        }
+        // In the order of the variables, so that a run frees them in the
+        // same order every time.
+        for a in &mut after {
+            a.sort_by_key(|v| v.0);
+        }
+        let unread = func.params.iter().map(|p| p.var).filter(|v| *v != result && !last.contains_key(v)).collect();
+        Deaths { unread, after }
+    }
 }
 
 impl<'p, R: Real> Interp<'p, R> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32) -> Self {
-        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, sums: None, elems: None, ops: None, terms: None, _r: std::marker::PhantomData }
+        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, sums: None, elems: None, ops: None, terms: None, live: None, deaths: Vec::new(), zeros: Default::default(), _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.
@@ -118,13 +180,18 @@ impl<'p, R: Real> Interp<'p, R> {
         if func.params.len() != args.len() {
             return err(format!("`{}` called with {} arguments, {} expected", func.name, args.len(), func.params.len()));
         }
+        let deaths = self.deaths_of(f);
         let mut env: HashMap<VarId, Value<R>> = HashMap::new();
         for (p, a) in func.params.iter().zip(args) {
-            env.insert(p.var, a);
+            self.bind(&mut env, p.var, a);
+        }
+        for v in &deaths.unread {
+            self.unbind(&mut env, v);
         }
         let mut closures: HashMap<VarId, (FuncId, Vec<Value<R>>)> = HashMap::new();
-        for l in &func.body.lets {
-            let v = self.rhs(&l.rhs, &l.ty, &dims, &env, &closures).map_err(|e| RunError {
+        for (li, l) in func.body.lets.iter().enumerate() {
+            let dying = &deaths.after[li];
+            let v = self.rhs(&l.rhs, &l.ty, &dims, &mut env, &closures, dying).map_err(|e| RunError {
                 code: e.code,
                 span: e.span.or(Some(l.span)),
                 // Name the function once, from the innermost frame.
@@ -183,23 +250,73 @@ impl<'p, R: Real> Interp<'p, R> {
                     }
                 }
             }
-            env.insert(l.var, v);
+            self.bind(&mut env, l.var, v);
+            // Freed after the `let` that reads them last, the statistics
+            // above having read this one's operands (plan 0.10.1 step 1).
+            for d in dying {
+                self.unbind(&mut env, d);
+                closures.remove(d);
+            }
         }
-        env.remove(&func.body.result).ok_or_else(|| RunError { code: None, message: "result variable undefined".into(), span: Some(func.span) })
+        let out = self.unbind(&mut env, &func.body.result).ok_or_else(|| RunError { code: None, message: "result variable undefined".into(), span: Some(func.span) });
+        if let Some(live) = self.live.as_mut() {
+            live.now -= env.values().map(count_reals).sum::<usize>();
+        }
+        out
     }
 
-    fn rhs(&mut self, rhs: &Rhs, ty: &Ty, dims: &Dims, env: &HashMap<VarId, Value<R>>, closures: &HashMap<VarId, (FuncId, Vec<Value<R>>)>) -> Result<Value<R>> {
-        let look = |v: &VarId| -> Result<&Value<R>> { env.get(v).ok_or_else(|| RunError { code: None, message: format!("variable %{} undefined", v.0), span: None }) };
-        let get = |v: &VarId| -> Result<Value<R>> { look(v).cloned() };
+    /// The variables each `let` of `f` reads last, computed once.
+    fn deaths_of(&mut self, f: FuncId) -> std::sync::Arc<Deaths> {
+        let i = f.0 as usize;
+        if self.deaths.len() <= i {
+            self.deaths.resize(i + 1, None);
+        }
+        let prog = self.prog;
+        self.deaths[i].get_or_insert_with(|| std::sync::Arc::new(Deaths::of(prog.func(f)))).clone()
+    }
+
+    fn bind(&mut self, env: &mut HashMap<VarId, Value<R>>, var: VarId, v: Value<R>) {
+        if let Some(live) = self.live.as_mut() {
+            live.now += count_reals(&v);
+            live.peak = live.peak.max(live.now);
+        }
+        if let Some(old) = env.insert(var, v)
+            && let Some(live) = self.live.as_mut()
+        {
+            live.now -= count_reals(&old);
+        }
+    }
+
+    fn unbind(&mut self, env: &mut HashMap<VarId, Value<R>>, var: &VarId) -> Option<Value<R>> {
+        let v = env.remove(var)?;
+        if let Some(live) = self.live.as_mut() {
+            live.now -= count_reals(&v);
+        }
+        Some(v)
+    }
+
+    /// The values of `args`, each moved out of the environment at its last
+    /// read (`dying`, its last occurrence in `args`) and cloned otherwise:
+    /// a callee then holds the only reference to what its caller no longer
+    /// reads, and frees it when it is done with it.
+    fn take(&mut self, env: &mut HashMap<VarId, Value<R>>, args: &[VarId], dying: &[VarId]) -> Result<Vec<Value<R>>> {
+        let mut out = Vec::with_capacity(args.len());
+        for (i, v) in args.iter().enumerate() {
+            let last = dying.contains(v) && !args[i + 1..].contains(v);
+            let x = if last { self.unbind(env, v) } else { env.get(v).cloned() };
+            out.push(x.ok_or_else(|| RunError { code: None, message: format!("variable %{} undefined", v.0), span: None })?);
+        }
+        Ok(out)
+    }
+
+    /// One right-hand side. The operands of a call, an application, a fold,
+    /// a tuple and a record are moved out of `env` at their last read
+    /// (`dying`); a primitive's and a closure's are cloned, since the
+    /// statistics and the closure table read them from `env` after.
+    fn rhs(&mut self, rhs: &Rhs, ty: &Ty, dims: &Dims, env: &mut HashMap<VarId, Value<R>>, closures: &HashMap<VarId, (FuncId, Vec<Value<R>>)>, dying: &[VarId]) -> Result<Value<R>> {
         match rhs {
-            Rhs::Lit(Lit::Nat(n)) => Ok(Value::Nat(*n)),
-            Rhs::Lit(Lit::Float(s)) => Ok(Value::F64(s.parse().map_err(|_| RunError { code: None, message: format!("bad float literal `{s}`"), span: None })?)),
-            Rhs::Prim { op, args } => {
-                let vals: Vec<Value<R>> = args.iter().map(get).collect::<Result<_>>()?;
-                self.prim(op, &vals, ty, dims)
-            }
             Rhs::Call { f, dim_args, args } => {
-                let vals: Vec<Value<R>> = args.iter().map(get).collect::<Result<_>>()?;
+                let vals = self.take(env, args, dying)?;
                 let mut callee_dims = Dims::new();
                 for (v, e) in dim_args {
                     // A dimension the callee never uses at run time may be unconstrained
@@ -209,27 +326,46 @@ impl<'p, R: Real> Interp<'p, R> {
                         callee_dims.insert(*v, n);
                     }
                 }
-                self.call(*f, callee_dims, vals)
+                return self.call(*f, callee_dims, vals);
             }
-            Rhs::Tuple(vs) => Ok(Value::tuple(vs.iter().map(get).collect::<Result<_>>()?)),
-            // A projection or a field clones the element it selects and
-            // nothing else (0.6.0 step 8).
-            Rhs::Proj(v, i) => match look(v)? {
-                Value::Tuple(vs) => vs.get(*i).cloned().ok_or_else(|| RunError { code: None, message: format!("tuple has no element {i}"), span: None }),
-                other => err(format!("projection on a {}", other.kind())),
-            },
-            Rhs::Record(fields) => Ok(Value::record(fields.iter().map(|(n, v)| Ok((n.clone(), get(v)?))).collect::<Result<_>>()?)),
-            Rhs::Field(v, name) => match look(v)? {
-                Value::Record(fs) => fs.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).ok_or_else(|| RunError { code: None, message: format!("record has no field `{name}`"), span: None }),
-                other => err(format!("field `{name}` of a {}", other.kind())),
-            },
-            Rhs::Closure { f, captured } => Ok(Value::Closure { f: *f, captured: captured.iter().map(get).collect::<Result<_>>()? }),
-            Rhs::Grad(_) => err("`grad` reached the interpreter: run automatic differentiation first"),
+            Rhs::Tuple(vs) => return Ok(Value::tuple(self.take(env, vs, dying)?)),
+            // A stack of parameters, its parts moved into it (no statistic
+            // reads a stack's operands).
+            Rhs::Prim { op: PrimOp::StackParams { n }, args } if !args.is_empty() => {
+                if args.len() != *n as usize {
+                    return err("stack_params: wrong number of parts");
+                }
+                let vals = self.take(env, args, dying)?;
+                return self.stack_trees(vals);
+            }
+            Rhs::Record(fields) => {
+                let vars: Vec<VarId> = fields.iter().map(|(_, v)| *v).collect();
+                let vals = self.take(env, &vars, dying)?;
+                return Ok(Value::record(fields.iter().map(|(n, _)| n.clone()).zip(vals).collect()));
+            }
+            Rhs::Apply { fun, args } => {
+                let (f, captured) = match closures.get(fun) {
+                    Some(c) => c.clone(),
+                    None => match env.get(fun).cloned() {
+                        Some(Value::Closure { f, captured }) => (f, captured),
+                        Some(other) => return err(format!("applying a {}", other.kind())),
+                        None => return err(format!("variable %{} undefined", fun.0)),
+                    },
+                };
+                let mut all = captured;
+                all.extend(self.take(env, args, dying)?);
+                // A lambda shares the dimensions of the function it was lifted from.
+                return self.call(f, dims.clone(), all);
+            }
             Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, scan } => {
                 let count = self.dim(n, dims)? as usize;
-                let sts: Vec<Value<R>> = stacked.iter().map(get).collect::<Result<_>>()?;
-                let ex: Vec<Value<R>> = extra.iter().map(get).collect::<Result<_>>()?;
-                let mut acc = get(init)?;
+                let mut ins: Vec<VarId> = stacked.clone();
+                ins.push(*init);
+                ins.extend(extra.iter().copied());
+                let mut vals = self.take(env, &ins, dying)?;
+                let ex: Vec<Value<R>> = vals.split_off(stacked.len() + 1);
+                let mut acc = vals.pop().expect("the fold's initial value");
+                let sts = vals;
                 let mut callee_dims = Dims::new();
                 for (v, e) in dim_args {
                     if let Ok(n) = self.dim(e, dims) {
@@ -259,28 +395,37 @@ impl<'p, R: Real> Interp<'p, R> {
                     // No iteration: the stack of none, from the fold's type.
                     let stacked = match (parts.is_empty(), ty) {
                         (true, Ty::Tuple(ts)) if ts.len() == 2 => self.empty_stack(&ts[1], dims)?,
-                        _ => self.stack_trees(&parts)?,
+                        _ => self.stack_trees(parts)?,
                     };
-                    Ok(Value::tuple(vec![acc, stacked]))
-                } else {
-                    Ok(acc)
+                    return Ok(Value::tuple(vec![acc, stacked]));
                 }
+                return Ok(acc);
             }
-            Rhs::Apply { fun, args } => {
-                let (f, captured) = match closures.get(fun) {
-                    Some(c) => c.clone(),
-                    None => match get(fun)? {
-                        Value::Closure { f, captured } => (f, captured),
-                        other => return err(format!("applying a {}", other.kind())),
-                    },
-                };
-                let mut all = captured;
-                for a in args {
-                    all.push(get(a)?);
-                }
-                // A lambda shares the dimensions of the function it was lifted from.
-                self.call(f, dims.clone(), all)
+            _ => {}
+        }
+        let env: &HashMap<VarId, Value<R>> = env;
+        let look = |v: &VarId| -> Result<&Value<R>> { env.get(v).ok_or_else(|| RunError { code: None, message: format!("variable %{} undefined", v.0), span: None }) };
+        let get = |v: &VarId| -> Result<Value<R>> { look(v).cloned() };
+        match rhs {
+            Rhs::Lit(Lit::Nat(n)) => Ok(Value::Nat(*n)),
+            Rhs::Lit(Lit::Float(s)) => Ok(Value::F64(s.parse().map_err(|_| RunError { code: None, message: format!("bad float literal `{s}`"), span: None })?)),
+            Rhs::Prim { op, args } => {
+                let vals: Vec<Value<R>> = args.iter().map(get).collect::<Result<_>>()?;
+                self.prim(op, &vals, ty, dims)
             }
+            // A projection or a field clones the element it selects and
+            // nothing else (0.6.0 step 8).
+            Rhs::Proj(v, i) => match look(v)? {
+                Value::Tuple(vs) => vs.get(*i).cloned().ok_or_else(|| RunError { code: None, message: format!("tuple has no element {i}"), span: None }),
+                other => err(format!("projection on a {}", other.kind())),
+            },
+            Rhs::Field(v, name) => match look(v)? {
+                Value::Record(fs) => fs.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).ok_or_else(|| RunError { code: None, message: format!("record has no field `{name}`"), span: None }),
+                other => err(format!("field `{name}` of a {}", other.kind())),
+            },
+            Rhs::Closure { f, captured } => Ok(Value::Closure { f: *f, captured: captured.iter().map(get).collect::<Result<_>>()? }),
+            Rhs::Grad(_) => err("`grad` reached the interpreter: run automatic differentiation first"),
+            Rhs::Call { .. } | Rhs::Tuple(_) | Rhs::Record(_) | Rhs::Apply { .. } | Rhs::Fold { .. } => unreachable!("evaluated above"),
         }
     }
 
@@ -324,7 +469,34 @@ impl<'p, R: Real> Interp<'p, R> {
     }
 
     pub(crate) fn zeros_like_tensor(&self, t: &Tensor<R>) -> Tensor<R> {
-        Tensor { axes: t.axes.clone(), data: vec![R::from_u64(0, self.prec); t.numel()] }
+        Tensor { axes: t.axes.clone(), data: vec![R::from_u64(0, self.prec); t.numel()].into() }
+    }
+
+    /// Zeros of `t`'s axes, the elements shared with every other value of
+    /// zeros of that length while one is alive (plan 0.10.1 step 2). A
+    /// gradient assembles a parameter tree's cotangent field by field, each
+    /// on `zeros_like θ` (`set_field`, then `add`): with zeros of their own,
+    /// every field of every one of those trees was a parameter-sized tensor
+    /// of exact zeros, three or four copies of θ at once in `presk solve`'s
+    /// sweep. A write to them copies them first, as to any shared buffer.
+    pub(crate) fn shared_zeros(&self, t: &Tensor<R>) -> Tensor<R> {
+        let n = t.numel();
+        let mut zeros = self.zeros.lock().unwrap_or_else(|e| e.into_inner());
+        let data = match zeros.get(&n).and_then(|w| w.upgrade()) {
+            Some(z) => z,
+            None => {
+                let z = crate::value::Data::from(vec![R::from_u64(0, self.prec); n]);
+                zeros.insert(n, z.downgrade());
+                z
+            }
+        };
+        Tensor { axes: t.axes.clone(), data }
+    }
+
+    /// Whether `t`'s elements are the shared zeros of their length.
+    pub(crate) fn is_shared_zeros(&self, t: &Tensor<R>) -> bool {
+        let zeros = self.zeros.lock().unwrap_or_else(|e| e.into_inner());
+        zeros.get(&t.data.len()).and_then(|w| w.upgrade()).is_some_and(|z| z.same(&t.data))
     }
 
     /// The sums of terms of one sum or contraction, by evaluating it again on

@@ -16,7 +16,7 @@
 #   make corpus-gpt       tokenize the Code civil and train the course GPT (reduced constants: the full size is the wall 0.4.0 has to break)
 #   make gpt-trained      the corpus GPT trained 600 steps at D = 64: the weights of the precision targets
 #   make precision        envelope, bound, sensitivity and solve on the corpus GPT (0.5.0, 0.6.0 step 6)
-#   make curve            the epsilon-to-quality curve: seven budgets solved, each trained from scratch (about two hours)
+#   make curve            the epsilon-to-quality curve: seven budgets solved, each trained from scratch (about half an hour since 0.10.0)
 #   make quant-table      int8/int4 gaps split into representation and arithmetic, statement K (0.6.0 step 5d)
 #   make step-table       one training step under each realization against the exact step (0.6.0 step 7b)
 #   make j-step           statement J′: the solved step at course scale, time and update gap
@@ -25,9 +25,10 @@
 #   make compile-times    the time presk check, calibrate, solve and the exact reference take per model, into docs/compile-times-<date>.md (the paper's setup table; a quiet machine)
 #   make foil             MLPerf's accuracy rule and a budget on one model (0.6.0 step 8)
 #   make bert             BERT-large inference at MLPerf's constants (about five hours; L=2 for minutes)
+#   make llama            the Llama 2 decoder at the 7B width, one block: exact logits, gaps, split, time (D104, D106; about thirteen hours, up to 64 GB, alone)
 #   make experiment       exact versus almost: the realization gap of float32/float64 training (manual, `experiments`)
 #   make experiment-gpt   the course GPT trained by presk and by PyTorch on the same data (manual, `experiments` §3)
-#   make coverage         presk check on the MLPerf transcriptions (manual, `coverage`)
+#   make coverage         presk check on the MLPerf transcriptions, BERT and Llama run at tiny constants (manual, `coverage`)
 #   make plan-check       a default plan lowers every example entry to the same kernels (0.7.0 step 1)
 #   make c-conformance    the C export: every entry of the plan-check set and the course GPT exported, built, run, bit for bit, under the default layout and under plans, on GCC, Clang and for x86-64; presk serve's tokens from the exported generation loop; integer weights on the trained checkpoints; every nest in the SCoP mode against Polly (0.9.0 steps 3–8)
 #   make c-speed          statement C4: the exported course GPT's forward at B = 16 against the native backend's, one thread and every thread (0.9.0 step 5; a quiet machine)
@@ -87,7 +88,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: delta-p compile-times c-conformance c-speed pytorch-baseline host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: delta-p compile-times c-conformance c-speed pytorch-baseline host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -254,14 +255,20 @@ train-examples: build
 
 # The MLPerf transcriptions of the manual's `coverage` chapter: what the shape
 # fragment can say. Both type-check; since 0.6.0 step 8 BERT-large also runs,
-# here at tiny constants on the reference and natively (`make bert` runs it at
-# MLPerf's own).
+# and since D104 the Llama decoder, here at tiny constants on the reference and
+# natively (`make bert` runs BERT at MLPerf's own, `make llama` the decoder at
+# Llama 2 7B's width).
 BERT_TINY = --const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16
+LLAMA_TINY = --const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16
 coverage: build
 	$(PRESK) check coverage/bert.psk --summary | head -12
 	$(PRESK) check coverage/llama.psk --summary | head -12
 	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --bits 128 --digits 6 | cut -c1-120
 	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
+	$(PRESK) run coverage/llama.psk --entry Llama.apply $(LLAMA_TINY) --bits 128 --digits 6 | cut -c1-120
+	$(PRESK) run coverage/llama.psk --entry Llama.apply $(LLAMA_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
+	$(PRESK) run coverage/llama.psk --entry loss $(LLAMA_TINY) --bits 128 --digits 17
+	$(PRESK) run coverage/llama.psk --entry loss $(LLAMA_TINY) --backend native --realize f64 --digits 17
 
 # The three experiments of the manual's `experiments` chapter (needs `make venv`).
 # The third trains the course GPT against PyTorch on the same model and data:
@@ -366,6 +373,19 @@ foil:
 bert:
 	$(CARGO) build --release -p presk
 	./experiments/bert.sh out/bert.md
+
+# The second model of the paper's RQ5 (D104): the Llama 2 decoder of
+# coverage/llama.psk at the 7B configuration's width (G = 32), L of its 32
+# blocks, on its initialization and random token ids, by `bert`'s protocol —
+# the exact logits of one sequence of 384 tokens, the gaps of seven
+# realizations, the split of the whole quantisation scheme, the time — and a
+# budget of 1e-3 on its next-token loss solved, timed as `compile-times`
+# times it, which `STAGES=solve` asks for: at the tag it did not fit on
+# falicon (D104), since 0.10.1 it takes 14 h and 72 GB (D106). Alone on the
+# measurement machine: about thirteen hours, and up to 64 GB at L = 1.
+llama:
+	$(CARGO) build --release -p presk
+	./experiments/llama.sh out/llama.md
 
 # A budget on one training step's update (plan 0.6.0 step 7b, D52): the gap
 # table at D = 64 (needs `make gpt-trained` and out/gpt_prof.json), statement

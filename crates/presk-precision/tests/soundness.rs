@@ -224,7 +224,7 @@ fn sensitivities_come_off_one_reverse_sweep() {
     let opts = RunOptions { entry: "loss".into(), dims: vec![("B".into(), 4)], seed: 0, bits: 128, digits: 17 };
     let (_, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let mut args: Vec<IValue> = inputs.iter().map(|(_, v)| v.clone()).collect();
-    args.push(IValue::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(128, 1)] }));
+    args.push(IValue::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(128, 1)].into() }));
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     interp.sums = Some(Default::default());
     interp.call(vjp, fdims, args).unwrap();
@@ -273,7 +273,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
     let mut sb: Interp<Float> = Interp::new(&core, &prog, 128);
     sb.sums = Some(Default::default());
     let mut vargs = args.clone();
-    vargs.push(IValue::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(128, 1)] }));
+    vargs.push(IValue::Real(presk_interp::Tensor { axes: vec![], data: vec![Float::with_val(128, 1)].into() }));
     sb.call(vjp, fdims.clone(), vargs).unwrap();
     let sens = sensitivity::from_run(&core, entry, &adjoints, &sb.sums.take().unwrap());
 

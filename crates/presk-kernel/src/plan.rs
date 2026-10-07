@@ -120,8 +120,10 @@ pub fn lower_launch(l: &Launch, layout: &Layout, workers: Option<usize>) -> Resu
     // Integer weights are marked as the host marks them.
     let main = kernels.len() - 1;
     for (spec, b) in kernels[main].inputs.iter_mut().zip(l.inputs.iter().chain(epi.map(|a| &a.input))) {
-        if let presk_rt::Buf::Quant(q) = b {
-            spec.kind = crate::ir::BufKind::Quant { bits: q.bits, over: q.over };
+        if let presk_rt::Buf::Quant(q) = b
+            && let Some(kind) = crate::ir::BufKind::of_quant(q, &spec.dims)
+        {
+            spec.kind = kind;
         }
     }
     kernels[main].threads = threads_of(eff.split, &kernels[main], workers, false)?;

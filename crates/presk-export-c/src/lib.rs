@@ -1018,15 +1018,15 @@ mod tests {
         let at = vec![Expr::Iv(0), Expr::Iv(1)];
         let body = |value: Expr| vec![Stmt::For { var: 0, bound: 3, body: vec![Stmt::For { var: 1, bound: 4, body: vec![Stmt::Store { buf: 2, index: at.clone(), value }] }] }];
         let add = Expr::Bin(BinOp::Add, bx(load(0, at.clone())), bx(load(1, at.clone())));
-        let k = kernel(Dtype::F32, vec![buf(&[3, 4], BufKind::Real), buf(&[3, 4], BufKind::Quant { bits: 8, over: 0 })], buf(&[3, 4], BufKind::Real), body(add.clone()));
+        let k = kernel(Dtype::F32, vec![buf(&[3, 4], BufKind::Real), buf(&[3, 4], BufKind::Quant { bits: 8, over: 0, span: 1 })], buf(&[3, 4], BufKind::Real), body(add.clone()));
         let text = kernel_fn(&k, "k").unwrap();
         assert!(text.contains("static void k(const float *restrict in0, const int8_t *restrict in1, float *restrict out, const float *restrict sc1, int64_t lo, int64_t hi)"), "{text}");
         assert!(text.contains("out[i0 * 4 + i1] = in0[i0 * 4 + i1] + (float)in1[i0 * 4 + i1] * sc1[i1];"), "{text}");
-        let k = kernel(Dtype::F64, vec![buf(&[3, 4], BufKind::Real), buf(&[3, 4], BufKind::Quant { bits: 4, over: 1 })], buf(&[3, 4], BufKind::Real), body(add));
+        let k = kernel(Dtype::F64, vec![buf(&[3, 4], BufKind::Real), buf(&[3, 4], BufKind::Quant { bits: 4, over: 1, span: 1 })], buf(&[3, 4], BufKind::Real), body(add));
         let text = kernel_fn(&k, "k").unwrap();
         assert!(text.contains("const uint8_t *restrict in1"), "{text}");
         assert!(text.contains("out[i0 * 4 + i1] = in0[i0 * 4 + i1] + (double)((float)presk_int4(in1, i0 * 4 + i1) * sc1[i0]);"), "{text}");
-        let e = kernel_fn(&kernel(Dtype::F32, vec![buf(&[4], BufKind::Quant { bits: 2, over: 0 })], buf(&[4], BufKind::Real), vec![]), "k").unwrap_err();
+        let e = kernel_fn(&kernel(Dtype::F32, vec![buf(&[4], BufKind::Quant { bits: 2, over: 0, span: 1 })], buf(&[4], BufKind::Real), vec![]), "k").unwrap_err();
         assert!(e.contains("int2"), "{e}");
     }
 }

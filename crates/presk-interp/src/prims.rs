@@ -43,14 +43,14 @@ fn broadcast_to<T: Clone>(x: &Tensor<T>, target: &[Axis]) -> Option<Tensor<T>> {
         let off: usize = map.iter().zip(&xs).map(|(p, s)| idx[*p] * s).sum();
         data.push(x.data[off].clone());
     }
-    Some(Tensor { axes: target.to_vec(), data })
+    Some(Tensor { axes: target.to_vec(), data: data.into() })
 }
 
 /// Sum `x` down to `target` (the adjoint of `broadcast_to`).
 fn sum_to<R: Real>(x: &Tensor<R>, target: &[Axis], zero: &R) -> Option<Tensor<R>> {
     let map = align(target, &x.axes)?;
     let tstrides = {
-        let t = Tensor { axes: target.to_vec(), data: Vec::<R>::new() };
+        let t = Tensor { axes: target.to_vec(), data: Vec::<R>::new().into() };
         t.strides()
     };
     let n: usize = target.iter().map(|a| a.len).product();
@@ -59,7 +59,7 @@ fn sum_to<R: Real>(x: &Tensor<R>, target: &[Axis], zero: &R) -> Option<Tensor<R>
         let off: usize = map.iter().zip(&tstrides).map(|(p, s)| idx[*p] * s).sum();
         data[off] = data[off].add(&x.data[flat]);
     }
-    Some(Tensor { axes: target.to_vec(), data })
+    Some(Tensor { axes: target.to_vec(), data: data.into() })
 }
 
 /// The result axes of an elementwise binary operation.
@@ -117,6 +117,30 @@ impl<R: Real> Interp<'_, R> {
         Ok(Value::Real(Tensor { axes, data: xa.data.iter().zip(&xb.data).map(|(x, y)| f(x, y)).collect() }))
     }
 
+    /// `a + b`. A leaf of the shared zeros ([`Interp::shared_zeros`]) added
+    /// to a tensor of the same axes gives that tensor itself, its elements
+    /// shared: `x + (+0)` is `x` exactly in MPFR at the precision `x` has,
+    /// but for `−0`, whose sum is `+0`, and a NaN, which the arithmetic is
+    /// left to (`Real::plus_zero_is_self`). So a cotangent assembled field by
+    /// field holds each field once (plan 0.10.1 step 2).
+    fn add(&self, a: &Value<R>, b: &Value<R>) -> Result<Value<R>> {
+        match (a, b) {
+            (Value::Real(x), Value::Real(y)) if x.axes == y.axes => {
+                if self.is_shared_zeros(y) && x.data.iter().all(|e| e.plus_zero_is_self() && e.prec() == self.prec) {
+                    return Ok(a.clone());
+                }
+                if self.is_shared_zeros(x) && y.data.iter().all(|e| e.plus_zero_is_self() && e.prec() == self.prec) {
+                    return Ok(b.clone());
+                }
+            }
+            (Value::Record(_) | Value::Tuple(_), Value::Record(_) | Value::Tuple(_)) => {
+                return a.zip_leaves(b, &mut |x, y| self.add(x, y).map_err(|e| e.message)).map_err(|m| crate::eval::RunError { code: None, message: m, span: None });
+            }
+            _ => {}
+        }
+        self.binary(a, b, &|x, y| x.add(y), "add")
+    }
+
     fn unary(&self, a: &Value<R>, f: &dyn Fn(&R) -> R, what: &str) -> Result<Value<R>> {
         match a {
             Value::Record(_) | Value::Tuple(_) => Ok(a.map_leaves(&mut |x| self.unary(x, f, what).unwrap_or_else(|_| x.clone()))),
@@ -162,7 +186,7 @@ impl<R: Real> Interp<'_, R> {
         let a = |i: usize| -> Result<&Value<R>> { args.get(i).ok_or_else(|| crate::eval::RunError { code: None, message: format!("`{}`: missing argument {i}", op.name()), span: None }) };
         let name = op.name();
         match op {
-            PrimOp::Add => self.binary(a(0)?, a(1)?, &|x, y| x.add(y), "add"),
+            PrimOp::Add => self.add(a(0)?, a(1)?),
             PrimOp::Sub => self.binary(a(0)?, a(1)?, &|x, y| x.sub(y), "sub"),
             PrimOp::Mul => self.binary(a(0)?, a(1)?, &|x, y| x.mul(y), "mul"),
             PrimOp::Div => self.binary(a(0)?, a(1)?, &|x, y| x.div(y), "div"),
@@ -304,7 +328,7 @@ impl<R: Real> Interp<'_, R> {
                 }
                 let mut axes = idx.axes.clone();
                 axes.push(Axis { name: None, len: v });
-                Ok(Value::Real(Tensor { axes, data }))
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
             }
             PrimOp::Embed => {
                 let table = self.tensor(a(0)?, &name)?;
@@ -322,7 +346,7 @@ impl<R: Real> Interp<'_, R> {
                     }
                     data.extend_from_slice(&table.data[i as usize * d..(i as usize + 1) * d]);
                 }
-                Ok(Value::Real(Tensor { axes, data }))
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
             }
             PrimOp::EmbedVjp => {
                 let table = self.tensor(a(0)?, &name)?;
@@ -330,10 +354,11 @@ impl<R: Real> Interp<'_, R> {
                 let ct = self.tensor(a(2)?, &name)?;
                 let d = table.axes[1].len;
                 let mut out = self.zeros_like_tensor(table);
+                let od: &mut [R] = &mut out.data;
                 for (p, &i) in idx.data.iter().enumerate() {
                     for j in 0..d {
                         let o = i as usize * d + j;
-                        out.data[o] = out.data[o].add(&ct.data[p * d + j]);
+                        od[o] = od[o].add(&ct.data[p * d + j]);
                     }
                 }
                 Ok(Value::Real(out))
@@ -350,7 +375,7 @@ impl<R: Real> Interp<'_, R> {
                     }
                     data.push(sm.data[p * v + t as usize].ln().neg());
                 }
-                Ok(Value::Real(Tensor { axes: y.axes.clone(), data }))
+                Ok(Value::Real(Tensor { axes: y.axes.clone(), data: data.into() }))
             }
             PrimOp::CrossEntropyVjp => {
                 let logits = self.tensor(a(0)?, &name)?;
@@ -359,11 +384,12 @@ impl<R: Real> Interp<'_, R> {
                 let v = logits.axes.last().unwrap().len;
                 let mut sm = self.softmax(logits, logits.rank() - 1);
                 let one = self.real(1);
+                let sd: &mut [R] = &mut sm.data;
                 for (p, &t) in y.data.iter().enumerate() {
                     let o = p * v + t as usize;
-                    sm.data[o] = sm.data[o].sub(&one);
+                    sd[o] = sd[o].sub(&one);
                     for j in 0..v {
-                        sm.data[p * v + j] = sm.data[p * v + j].mul(&ct.data[p]);
+                        sd[p * v + j] = sd[p * v + j].mul(&ct.data[p]);
                     }
                 }
                 Ok(Value::Real(sm))
@@ -373,7 +399,7 @@ impl<R: Real> Interp<'_, R> {
                 let v = t.axes.last().ok_or_else(|| crate::eval::RunError { code: None, message: "argmax: scalar argument".into(), span: None })?.len;
                 let n = t.numel() / v.max(1);
                 let data: Vec<i64> = (0..n).map(|p| (0..v).max_by(|&i, &j| t.data[p * v + i].cmp(&t.data[p * v + j])).unwrap_or(0) as i64).collect();
-                Ok(Value::Idx { bound: v as u64, t: Tensor { axes: t.axes[..t.rank() - 1].to_vec(), data } })
+                Ok(Value::Idx { bound: v as u64, t: Tensor { axes: t.axes[..t.rank() - 1].to_vec(), data: data.into() } })
             }
             PrimOp::Sample => {
                 // From its key (plan 0.10.0 step 7b; the reference's
@@ -401,7 +427,7 @@ impl<R: Real> Interp<'_, R> {
                     }
                     data.push(pick as i64);
                 }
-                Ok(Value::Idx { bound: v as u64, t: Tensor { axes: t.axes[..t.rank() - 1].to_vec(), data } })
+                Ok(Value::Idx { bound: v as u64, t: Tensor { axes: t.axes[..t.rank() - 1].to_vec(), data: data.into() } })
             }
             PrimOp::IndexConst { axis, index } => match a(0)? {
                 Value::Real(t) => Ok(Value::Real(self.select(t, axis, *index)?)),
@@ -414,12 +440,13 @@ impl<R: Real> Interp<'_, R> {
                 let len = tmpl.axes[p].len as i64;
                 let i = if *index < 0 { len + index } else { *index } as usize;
                 let mut out = self.zeros_like_tensor(tmpl);
+                let od: &mut [R] = &mut out.data;
                 let strides = tmpl.strides();
                 for (flat, idx) in ct.indices().enumerate() {
                     let mut full: Vec<usize> = idx.clone();
                     full.insert(p, i);
                     let off: usize = full.iter().zip(&strides).map(|(x, s)| x * s).sum();
-                    out.data[off] = ct.data[flat].clone();
+                    od[off] = ct.data[flat].clone();
                 }
                 Ok(Value::Real(out))
             }
@@ -436,18 +463,18 @@ impl<R: Real> Interp<'_, R> {
                 axes.push(Axis { name: Some("heads".into()), len: *h as usize });
                 axes.push(seq.clone());
                 axes.push(Axis { name: Some("hd".into()), len: *hd as usize });
-                let mut out = Tensor { axes, data: Vec::with_capacity(t.numel()) };
+                let mut data = Vec::with_capacity(t.numel());
                 let nlead: usize = lead.iter().map(|x| x.len).product::<usize>().max(1);
                 for l in 0..nlead {
                     for hh in 0..*h as usize {
                         for s in 0..seq.len {
                             for d in 0..*hd as usize {
-                                out.data.push(t.data[(l * seq.len + s) * (*h * *hd) as usize + hh * *hd as usize + d].clone());
+                                data.push(t.data[(l * seq.len + s) * (*h * *hd) as usize + hh * *hd as usize + d].clone());
                             }
                         }
                     }
                 }
-                Ok(Value::Real(out))
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
             }
             PrimOp::MergeHeads { h, hd } => {
                 let t = self.tensor(a(0)?, &name)?;
@@ -460,19 +487,19 @@ impl<R: Real> Interp<'_, R> {
                 let mut axes = lead.to_vec();
                 axes.push(seq.clone());
                 axes.push(Axis { name: Some("model".into()), len: (*h * *hd) as usize });
-                let mut out = Tensor { axes, data: Vec::with_capacity(t.numel()) };
+                let mut data = Vec::with_capacity(t.numel());
                 let nlead: usize = lead.iter().map(|x| x.len).product::<usize>().max(1);
                 let (h, hd) = (*h as usize, *hd as usize);
                 for l in 0..nlead {
                     for s in 0..seq.len {
                         for hh in 0..h {
                             for d in 0..hd {
-                                out.data.push(t.data[((l * h + hh) * seq.len + s) * hd + d].clone());
+                                data.push(t.data[((l * h + hh) * seq.len + s) * hd + d].clone());
                             }
                         }
                     }
                 }
-                Ok(Value::Real(out))
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
             }
             PrimOp::Positions { axis, len } => {
                 let n = self.dim(len, dims)?;
@@ -487,13 +514,13 @@ impl<R: Real> Interp<'_, R> {
                         data.push(i64::from(j <= i));
                     }
                 }
-                Ok(Value::Idx { bound: 2, t: Tensor { axes: vec![Axis { name: Some(axis.clone()), len: n }, Axis { name: Some(format!("{axis}2")), len: n }], data } })
+                Ok(Value::Idx { bound: 2, t: Tensor { axes: vec![Axis { name: Some(axis.clone()), len: n }, Axis { name: Some(format!("{axis}2")), len: n }], data: data.into() } })
             }
             PrimOp::Zeros { ty } | PrimOp::Ones { ty } => {
                 let axes = self.axes_of(shape_of(ty)?, dims)?;
                 let n: usize = axes.iter().map(|x| x.len).product();
                 let v = if matches!(op, PrimOp::Zeros { .. }) { self.real(0) } else { self.real(1) };
-                Ok(Value::Real(Tensor { axes, data: vec![v; n] }))
+                Ok(Value::Real(Tensor { axes, data: vec![v; n].into() }))
             }
             PrimOp::Normal { ty, std } => {
                 let axes = self.axes_of(shape_of(ty)?, dims)?;
@@ -538,7 +565,7 @@ impl<R: Real> Interp<'_, R> {
                     let mut rng = key.rng();
                     (0..n).map(|_| if uniform01(&mut rng) < keep { R::from_f64(scale, self.prec) } else { self.real(0) }).collect()
                 };
-                Ok(Value::Real(Tensor { axes, data }))
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
             }
             PrimOp::SplitKey { n } => {
                 let key = self.key_of(a(0)?)?;
@@ -578,7 +605,7 @@ impl<R: Real> Interp<'_, R> {
                 if args.is_empty() {
                     return self.empty_stack(ty, dims);
                 }
-                self.stack_trees(args)
+                self.stack_trees(args.to_vec())
             }
             PrimOp::ScatterParams { index } => {
                 let (tmpl, ct) = (a(0)?, a(1)?);
@@ -592,6 +619,9 @@ impl<R: Real> Interp<'_, R> {
                     let c = ct_leaves.get(k).cloned();
                     k += 1;
                     match (leaf, c) {
+                        // A stack of one layer scattered into is that layer:
+                        // its elements shared, not copied into zeros.
+                        (Value::Real(t), Some(Value::Real(c))) if c.numel() == t.numel() && *index == 0 => Value::Real(Tensor { axes: t.axes.clone(), data: c.data.clone() }),
                         (Value::Real(t), Some(Value::Real(c))) => {
                             let mut out = self.zeros_like_tensor(t);
                             let slice = c.numel();
@@ -617,7 +647,7 @@ impl<R: Real> Interp<'_, R> {
                 Ok(self.scalar(acc))
             }
             PrimOp::ZerosLike => Ok(a(0)?.map_leaves(&mut |leaf| match leaf {
-                Value::Real(t) => Value::Real(self.zeros_like_tensor(t)),
+                Value::Real(t) => Value::Real(self.shared_zeros(t)),
                 other => other.clone(),
             })),
             PrimOp::SetField { name: field } => match a(0)? {
@@ -664,7 +694,7 @@ impl<R: Real> Interp<'_, R> {
                 data.push(acc);
             }
         }
-        Ok(Value::Real(Tensor { axes, data }))
+        Ok(Value::Real(Tensor { axes, data: data.into() }))
     }
 
     /// Move axis `p` to the last position.
@@ -683,7 +713,7 @@ impl<R: Real> Interp<'_, R> {
             let off: usize = perm.iter().zip(&idx).map(|(&src, &i)| strides[src] * i).sum();
             data.push(t.data[off].clone());
         }
-        Tensor { axes, data }
+        Tensor { axes, data: data.into() }
     }
 
     /// Contract the last `k` axes of `x` with the first `k` axes of `y`
@@ -708,7 +738,7 @@ impl<R: Real> Interp<'_, R> {
                 data.push(acc);
             }
         }
-        Ok(Value::Real(Tensor { axes, data }))
+        Ok(Value::Real(Tensor { axes, data: data.into() }))
     }
 
     /// Contract the first `lead` axes of `x` with the first `lead` axes of `y`:
@@ -733,7 +763,7 @@ impl<R: Real> Interp<'_, R> {
                 data.push(acc);
             }
         }
-        Ok(Value::Real(Tensor { axes, data }))
+        Ok(Value::Real(Tensor { axes, data: data.into() }))
     }
 
     /// Einstein summation over named axes.
@@ -776,7 +806,7 @@ impl<R: Real> Interp<'_, R> {
             }
             data.push(acc);
         }
-        Ok(Value::Real(Tensor { axes: out_axes, data }))
+        Ok(Value::Real(Tensor { axes: out_axes, data: data.into() }))
     }
 
     fn reduce_axis(&self, t: &Tensor<R>, p: usize) -> Tensor<R> {
@@ -795,7 +825,7 @@ impl<R: Real> Interp<'_, R> {
             }
             data.push(acc);
         }
-        Tensor { axes, data }
+        Tensor { axes, data: data.into() }
     }
 
     fn softmax(&self, t: &Tensor<R>, p: usize) -> Tensor<R> {
@@ -806,6 +836,7 @@ impl<R: Real> Interp<'_, R> {
         }
         let strides = t.strides();
         let mut out = t.clone();
+        let od: &mut [R] = &mut out.data;
         let mut outer: Vec<usize> = t.dims();
         outer.remove(p);
         for idx in Indices::new(outer) {
@@ -828,7 +859,7 @@ impl<R: Real> Interp<'_, R> {
                 z = z.add(e);
             }
             for (o, e) in offs.iter().zip(exps) {
-                out.data[*o] = e.div(&z);
+                od[*o] = e.div(&z);
             }
         }
         out
@@ -847,6 +878,7 @@ impl<R: Real> Interp<'_, R> {
         let n = t.axes[p].len;
         let strides = t.strides();
         let mut out = t.clone();
+        let od: &mut [R] = &mut out.data;
         let mut outer: Vec<usize> = t.dims();
         outer.remove(p);
         for idx in Indices::new(outer) {
@@ -872,7 +904,7 @@ impl<R: Real> Interp<'_, R> {
                 z = z.add(&t.data[o].sub(&mx).exp());
             }
             for &o in &offs {
-                out.data[o] = if mb.data[o] != 0 { t.data[o].sub(&mx).exp().div(&z) } else { self.real(0) };
+                od[o] = if mb.data[o] != 0 { t.data[o].sub(&mx).exp().div(&z) } else { self.real(0) };
             }
         }
         Ok(out)
@@ -891,6 +923,13 @@ impl<R: Real> Interp<'_, R> {
     fn select_pos<T: Clone>(&self, t: &Tensor<T>, p: usize, i: usize) -> Tensor<T> {
         let mut axes = t.axes.clone();
         axes.remove(p);
+        if p == 0 {
+            // Along the leading axis, a range of the elements: a view, not a
+            // copy (a fold's layer of a stacked parameter, plan 0.10.1 step
+            // 2).
+            let chunk: usize = axes.iter().map(|a| a.len).product();
+            return Tensor { axes, data: t.data.view(i * chunk, chunk) };
+        }
         let strides = t.strides();
         let dims: Vec<usize> = axes.iter().map(|a| a.len).collect();
         let mut data = Vec::with_capacity(dims.iter().product());
@@ -900,7 +939,7 @@ impl<R: Real> Interp<'_, R> {
             let off: usize = full.iter().zip(&strides).map(|(x, s)| x * s).sum();
             data.push(t.data[off].clone());
         }
-        Tensor { axes, data }
+        Tensor { axes, data: data.into() }
     }
 
     /// Slice `i` along the leading axis of every tensor leaf of a stacked
@@ -925,21 +964,21 @@ impl<R: Real> Interp<'_, R> {
         let tensor = |s: &presk_types::ty::Shape| -> Result<Tensor<()>> {
             let axes = self.axes_of(s, dims)?;
             let n: usize = axes.iter().map(|x| x.len).product();
-            Ok(Tensor { axes, data: vec![(); n] })
+            Ok(Tensor { axes, data: vec![(); n].into() })
         };
         Ok(match ty {
             Ty::Params(m) => self.tree_value(&self.elab.params_tree(m), &mut Vec::new(), dims)?,
             Ty::Real(s) => {
                 let t = tensor(s)?;
-                Value::Real(Tensor { data: vec![self.real(0); t.data.len()], axes: t.axes })
+                Value::Real(Tensor { data: vec![self.real(0); t.data.len()].into(), axes: t.axes })
             }
             Ty::Idx { bound, shape } => {
                 let t = tensor(shape)?;
-                Value::Idx { bound: self.dim(bound, dims)?, t: Tensor { data: vec![0; t.data.len()], axes: t.axes } }
+                Value::Idx { bound: self.dim(bound, dims)?, t: Tensor { data: vec![0; t.data.len()].into(), axes: t.axes } }
             }
             Ty::Truth(s) => {
                 let t = tensor(s)?;
-                Value::Idx { bound: 2, t: Tensor { data: vec![0; t.data.len()], axes: t.axes } }
+                Value::Idx { bound: 2, t: Tensor { data: vec![0; t.data.len()].into(), axes: t.axes } }
             }
             Ty::Tuple(ts) => Value::tuple(ts.iter().map(|t| self.empty_stack(t, dims)).collect::<Result<_>>()?),
             _ => Value::Stacked(std::sync::Arc::new(Vec::new())),
@@ -952,7 +991,7 @@ impl<R: Real> Interp<'_, R> {
                 let mut axes = lead.clone();
                 axes.extend(self.axes_of(s, dims)?);
                 let n: usize = axes.iter().map(|x| x.len).product();
-                Ok(Value::Real(Tensor { axes, data: vec![self.real(0); n] }))
+                Ok(Value::Real(Tensor { axes, data: vec![self.real(0); n].into() }))
             }
             ParamsTree::Leaf(other) => err(format!("stack_params: a parameter of type `{other:?}`")),
             ParamsTree::Node(fields) => Ok(Value::record(fields.iter().map(|(n, s)| Ok((n.clone(), self.tree_value(s, lead, dims)?))).collect::<Result<Vec<_>>>()?)),
@@ -971,53 +1010,72 @@ impl<R: Real> Interp<'_, R> {
     /// keeps every layer's key (defect 3f of the reference's chapter 5, 0.10.0
     /// step 4: the first was kept for all, and every layer's reverse sweep
     /// drew layer 0's dropout mask).
-    pub(crate) fn stack_trees(&self, parts: &[Value<R>]) -> Result<Value<R>> {
+    pub(crate) fn stack_trees(&self, parts: Vec<Value<R>>) -> Result<Value<R>> {
+        // The parts are moved into the stack, leaf by leaf: a part's reals
+        // are moved out of their buffer when no other value shares it, so a
+        // stack of parameters drawn layer by layer holds them once, not
+        // twice, while it is built (plan 0.10.1 step 2).
         match &parts[0] {
             Value::Real(first) => {
                 let mut axes = vec![Axis { name: None, len: parts.len() }];
                 axes.extend(first.axes.iter().cloned());
                 let mut data = Vec::with_capacity(first.numel() * parts.len());
                 for p in parts {
-                    let t = self.tensor(p, "stack_params")?;
-                    data.extend(t.data.iter().cloned());
+                    self.tensor(&p, "stack_params")?;
+                    if let Value::Real(t) = p {
+                        data.extend(t.data.into_vec());
+                    }
                 }
-                Ok(Value::Real(Tensor { axes, data }))
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
             }
             Value::Idx { bound, t: first } => {
                 let mut axes = vec![Axis { name: None, len: parts.len() }];
                 axes.extend(first.axes.iter().cloned());
                 let mut data = Vec::with_capacity(first.numel() * parts.len());
-                for p in parts {
+                for p in &parts {
                     match p {
                         Value::Idx { t, .. } => data.extend(t.data.iter().copied()),
                         other => return err(format!("stack: expected an index tensor, found a {}", other.kind())),
                     }
                 }
-                Ok(Value::Idx { bound: *bound, t: Tensor { axes, data } })
+                Ok(Value::Idx { bound: *bound, t: Tensor { axes, data: data.into() } })
             }
             Value::Record(fs) => {
-                let mut out = Vec::new();
-                for (i, (n, _)) in fs.iter().enumerate() {
-                    let subs: Vec<Value<R>> = parts.iter().map(|p| match p {
-                        Value::Record(g) => g[i].1.clone(),
-                        other => other.clone(),
-                    }).collect();
-                    out.push((n.clone(), self.stack_trees(&subs)?));
+                let names: Vec<String> = fs.iter().map(|(n, _)| n.clone()).collect();
+                let mut columns: Vec<Vec<Value<R>>> = vec![Vec::with_capacity(parts.len()); names.len()];
+                for p in parts {
+                    match p {
+                        Value::Record(g) => {
+                            let g = std::sync::Arc::try_unwrap(g).unwrap_or_else(|g| (*g).clone());
+                            for (c, (_, v)) in columns.iter_mut().zip(g) {
+                                c.push(v);
+                            }
+                        }
+                        other => columns.iter_mut().for_each(|c| c.push(other.clone())),
+                    }
+                }
+                let mut out = Vec::with_capacity(names.len());
+                for (n, c) in names.into_iter().zip(columns) {
+                    out.push((n, self.stack_trees(c)?));
                 }
                 Ok(Value::record(out))
             }
             Value::Tuple(vs) => {
-                let mut out = Vec::new();
-                for i in 0..vs.len() {
-                    let subs: Vec<Value<R>> = parts.iter().map(|p| match p {
-                        Value::Tuple(g) => g[i].clone(),
-                        other => other.clone(),
-                    }).collect();
-                    out.push(self.stack_trees(&subs)?);
+                let mut columns: Vec<Vec<Value<R>>> = vec![Vec::with_capacity(parts.len()); vs.len()];
+                for p in parts {
+                    match p {
+                        Value::Tuple(g) => {
+                            let g = std::sync::Arc::try_unwrap(g).unwrap_or_else(|g| (*g).clone());
+                            for (c, v) in columns.iter_mut().zip(g) {
+                                c.push(v);
+                            }
+                        }
+                        other => columns.iter_mut().for_each(|c| c.push(other.clone())),
+                    }
                 }
-                Ok(Value::tuple(out))
+                Ok(Value::tuple(columns.into_iter().map(|c| self.stack_trees(c)).collect::<Result<_>>()?))
             }
-            _ => Ok(Value::Stacked(std::sync::Arc::new(parts.to_vec()))),
+            _ => Ok(Value::Stacked(std::sync::Arc::new(parts))),
         }
     }
 }

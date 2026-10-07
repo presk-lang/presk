@@ -390,7 +390,7 @@ used. One holds, two fail, and one cannot be asked of anything that exists.
 
 | # | Statement | Asked | Measured | |
 |---|---|---|---|---|
-| D | the solved realization's **measured** gap is inside a 1e-3 budget | ≤ 4.52e-3 | **1.05e-7** (0.5.0, D41; since D93, on the weights of the corrected gradient, **1.89·10⁻⁶** with 2.08× less traffic) | holds |
+| D | the solved realization's **measured** gap is inside a 1e-3 budget | ≤ 4.52e-3 | **1.05e-7** (0.5.0, D41; on the weights of the corrected gradient **1.89·10⁻⁶** with 2.08× less traffic, D93, and at the tag `v0.10.0` **2.12·10⁻⁵** with 2.00×, D102) | holds |
 | E | the solved realization is faster per step than all-`f64` | ≥ 1.5× | **0.96×** | fails |
 | F | the propagated bound is within 10³ of the measured gap on half the entries | ≥ 11 of 21 | **10 of 21**, median 1.8e3 | fails |
 | G | the vectorized GEMM's gap is inside its declared order's bound | — | — | not askable |
@@ -400,7 +400,8 @@ program becomes an assignment whose distance from the exact denotation is
 *measured*, not asserted, and the measurement is inside the budget by four
 orders of magnitude at 0.5.0, and by more than three at D93's
 re-measurement (1.89·10⁻⁶ under the same relative budget of 10⁻³, on a loss
-of about 2.8). No other compiler can run this check, because no other
+of about 2.8), and by two at the tag `v0.10.0`, whose solver prices `bf16`
+at its corrected unit roundoff (2.1·10⁻⁵, D102). No other compiler can run this check, because no other
 compiler keeps the exact denotation to measure against.
 
 **E fails, and the reason is the version's own finding turned against it.**
@@ -462,21 +463,24 @@ is held out.
 
 | realization | gap to the exact loss | representation | arithmetic | check (s) | accuracy | vs `f32` | 99 % | 99.9 % | loss vs `f32` | pass (s) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `f64` | 3.18·10⁻¹⁶ | 0 | 3.18·10⁻¹⁶ | 0.10 | 0.242442 | 0 | yes | yes | +7.2·10⁻¹⁰ | 11.7 |
-| `f32` | 4.68·10⁻⁸ | 0 | 4.68·10⁻⁸ | 0.07 | 0.242442 | — | yes | yes | — | 4.8 |
-| `bf16` | 1.71·10⁻³ | 0 | 1.71·10⁻³ | 0.10 | 0.242425 | −7.0·10⁻⁵ | yes | yes | +2.3·10⁻⁵ | 3.8 |
-| `int8`, `f32` elsewhere | 3.90·10⁻⁵ | 3.89·10⁻⁵ | 6.56·10⁻⁸ | 0.08 | 0.242493 | +2.1·10⁻⁴ | yes | yes | +2.1·10⁻⁵ | 5.0 |
-| `int8` `pow2` | 2.97·10⁻⁵ | 3.00·10⁻⁵ | 2.98·10⁻⁷ | 0.08 | 0.242348 | −3.8·10⁻⁴ | yes | yes | −2.5·10⁻⁵ | 4.7 |
-| `int4`, `f32` elsewhere | 3.99·10⁻⁴ | 3.99·10⁻⁴ | 2.67·10⁻⁷ | 0.07 | 0.241289 | −4.8·10⁻³ | yes | **no** | +2.3·10⁻⁴ | 4.5 |
-| `int4` `pow2` | 8.66·10⁻⁴ | 8.66·10⁻⁴ | 4.65·10⁻⁷ | 0.08 | 0.243416 | +4.0·10⁻³ | yes | yes | +1.2·10⁻³ | 5.2 |
-| solved at 10⁻³ (statement D's) | 4.68·10⁻⁸ | 0 | 4.68·10⁻⁸ | 0.11 | 0.242442 | 0 | yes | yes | −2.3·10⁻⁸ | 8.7 |
+| `f64` | 3.18·10⁻¹⁶ | 0 | 3.18·10⁻¹⁶ | 0.10 | 0.242442 | 0 | yes | yes | +7.2·10⁻¹⁰ | 1.7 |
+| `f32` | 4.68·10⁻⁸ | 0 | 4.68·10⁻⁸ | 0.08 | 0.242442 | — | yes | yes | — | 1.4 |
+| `bf16` | 1.71·10⁻³ | 0 | 1.71·10⁻³ | 0.07 | 0.242425 | −7.0·10⁻⁵ | yes | yes | +2.3·10⁻⁵ | 1.7 |
+| `int8`, `f32` elsewhere | 3.90·10⁻⁵ | 3.89·10⁻⁵ | 6.56·10⁻⁸ | 0.06 | 0.242493 | +2.1·10⁻⁴ | yes | yes | +2.1·10⁻⁵ | 1.5 |
+| `int8` `pow2` | 2.97·10⁻⁵ | 3.00·10⁻⁵ | 2.98·10⁻⁷ | 0.09 | 0.242348 | −3.8·10⁻⁴ | yes | yes | −2.5·10⁻⁵ | 1.5 |
+| `int4`, `f32` elsewhere | 3.99·10⁻⁴ | 3.99·10⁻⁴ | 2.67·10⁻⁷ | 0.06 | 0.241289 | −4.8·10⁻³ | yes | **no** | +2.3·10⁻⁴ | 1.5 |
+| `int4` `pow2` | 8.66·10⁻⁴ | 8.66·10⁻⁴ | 4.65·10⁻⁷ | 0.06 | 0.243416 | +4.0·10⁻³ | yes | yes | +1.2·10⁻³ | 1.5 |
+| solved at 10⁻³ (statement D's) | 2.50·10⁻⁷ | 0 | 2.50·10⁻⁷ | 0.07 | 0.242442 | 0 | yes | yes | +8.5·10⁻⁸ | 3.3 |
 
 The exact loss of the two windows, 2.7921108, takes 7.6 s at 128 bits, once.
 A check is one native run of those windows in the realization; a pass is one
 run of the accuracy entry over the 461 held-out windows. Both are wall times
 of one `presk run`, start-up included. One prediction is 3.5·10⁻⁵ of `f32`'s
-28 612 correct ones. (This table is D93's, on the all-`f64` run of the curve
-trained with the right gradient; D53's, on a checkpoint defect 3f trained
+28 612 correct ones. (This table is D102's, at the tag `v0.10.0`, statement
+D's realization the curve's of that day; D93's, on the same all-`f64` run of
+the curve trained with the right gradient, had every other row to every
+digit, the passes 3.8–11.7 s, and statement D's realization at 4.68·10⁻⁸;
+D53's, on a checkpoint defect 3f trained
 wrong (D92), had `f32` right on 18 615 predictions and every realization
 within seven of it.)
 
@@ -524,7 +528,7 @@ what J was really asking. Three hold and two fail.
 | H | the vector kernel is **bit-identical** to the scalar blocked one, in `f32` and `f64` | every bit | every bit, on both executors, integer weights included | holds |
 | I | a 1024³ `f32` matmul at 3× the scalar figure of 0.4.0 (47–56 GFLOP/s) | ≥ 3× | lanes **1.15–1.25×** over scalar (before D46); on falicon after it 41–46 GFLOP/s, below 1× | fails, retired |
 | J | the solved realization at a 10⁻³ budget faster per training step than all-`f64`, on the corpus GPT | ≥ 1.3× | **1.06×** at `D = 64`, **1.13×** at course scale | fails |
-| J′ | the same, with the budget binding the training step's **update** and the solver free over the whole step, at course scale | ≥ 1.3×, inside 10⁻³ | **1.99×**, 2.02× re-measured; 2.2·10⁻⁴; on the corrected gradient (D93) **1.95×**, 3.0·10⁻⁴ | holds |
+| J′ | the same, with the budget binding the training step's **update** and the solver free over the whole step, at course scale | ≥ 1.3×, inside 10⁻³ | **1.99×**, 2.02× re-measured; 2.2·10⁻⁴; on the corrected gradient (D93) 1.95×, 3.0·10⁻⁴; at the tag `v0.10.0`, under `--remat store` (D103), **1.75×**, 3.0·10⁻⁴ | holds |
 | K | `int8` weights, per channel, inside a 10⁻² budget on the corpus GPT's loss, with trained weights | ≤ 10⁻² | **3.23·10⁻⁶**; 1.46·10⁻⁴ on held-out windows; on weights trained with the corrected gradient (D93) **2.73·10⁻⁵**, 3.90·10⁻⁵ held out | holds |
 
 **H holds, and it is the claim the design supports.** 0.5.0's G asked for a
@@ -568,7 +572,11 @@ found to have made every training of this model use a wrong gradient under
 dropout since 0.5.0: the step solved on weights trained right, and with
 the right gradient, is again sixteen functions `f32`, 1.95× faster per step
 than all-`f64` (44.2 s against 22.7, every step faster than in 0.6.0), and
-3.0·10⁻⁴ and 6.8·10⁻⁵ from the exact and the `f64` step. Two limits, stated in D53. The solved step is level with
+3.0·10⁻⁴ and 6.8·10⁻⁵ from the exact and the `f64` step. At the tag
+`v0.10.0` (D103), under `--remat store`, it is 1.75× (24.4 s against 13.9),
+level with all-`f32` again, every gap the same: the compiler's steps since
+sped all-`f64` up more than all-`f32`, and the policy moves neither ratio
+(all-`f32` 1.76× under `recompute`). Two limits, stated in D53. The solved step is level with
 all-`f32`: the budget licenses leaving `f64` and the time objective refuses
 `bf16`, which the profile predicts slower, so J′ is faster than `f64` and not
 than FP32, MLPerf's reference. And at course scale the discharge is against
@@ -1081,6 +1089,27 @@ and refuses any other at once since D101. BERT's `squad`, which returns its
 logits, was refused that way, so its row is measured on `squad_loss`, the
 loss `run_squad.py` trains it on (the `coverage` chapter).
 
+**A second model, after the tag.** The Llama 2 decoder of
+`coverage/llama.psk`, at the 7B configuration's width and one of its 32
+blocks, ran by BERT's protocol on 2026-10-04 (D104, `make llama`, the
+`coverage` chapter's *The decoder, run*): its exact logits in 1 h 55 min
+and 87.6 GB, `f32` the one narrowed type inside 10⁻² (6.2·10⁻⁶), `int8`
+weights 1.6× to 1.9× faster than `f32` and 4.9·10⁻² away, the quantised
+gap the weights' rounding. It had no solve: at the tag `presk solve` held
+more than the machine has at one block of that width, even on 16 tokens.
+On the way it found a defect of the native backend, a quantised parameter
+read through `split` computed wrongly.
+
+**The second model's budget, at 0.10.1.** Version 0.10.1 holds each
+exact value once (D105) and fixes that defect, and on 2026-10-05–07 the
+decoder's budget was solved (D106, the `coverage` chapter's *The decoder,
+run*): `presk solve --budget 1e-3` on its next-token loss, one block, 384
+tokens, in 14 h 07 min and 71.7 GB, 52 of 56 sites narrowed, 1.99× less
+traffic than all-`f64`, measured 4.3·10⁻⁶ against 1.1·10⁻², beside
+BERT's two blocks above (5.1·10⁻⁷, 2.00×) and statement D's course GPT
+(2.1·10⁻⁵, 2.00×, D102). Every output 0.10.0 gives is 0.10.1's, so every
+number of this chapter stands.
+
 **What T2 says.** A training step of the course GPT in C is level with
 PyTorch's on these cores, where 0.9.0 left it 12× behind. In order of what
 each bought on the C step: the derivatives of `dot` in the layout space
@@ -1137,8 +1166,9 @@ for deciding, the whole gradient's capture, on nests whose sweep is short.
   where the interpreter reaches: BERT-large's inference, not a course-scale
   training step, where J′ was measured against `f64` (question 62).
 - **Quality beyond this scale.** The ε curve's quality axis is flat after
-  600 steps of a `D = 64` GPT, within 1.9·10⁻⁴ against a seed spread of
-  0.092 (D93; 1.2·10⁻³ and 0.13 in D50, on a gradient defect 3f made wrong). There is no trained BERT, no SQuAD and no F1 here, so MLPerf's own
+  600 steps of a `D = 64` GPT, within 2.0·10⁻⁴ against a seed spread of
+  0.092 (D102, at the tag; 1.9·10⁻⁴ in D93; 1.2·10⁻³ and 0.13 in D50, on a
+  gradient defect 3f made wrong). There is no trained BERT, no SQuAD and no F1 here, so MLPerf's own
   threshold on its own benchmark was not applied; §5 applies the rule to the
   corpus GPT instead.
 - **Verified transformations** (the KV cache), **parallelism** beyond threads

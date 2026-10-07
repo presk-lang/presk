@@ -261,7 +261,7 @@ pub(crate) fn since(t0: Instant) -> f64 {
 /// The bytes a buffer holds.
 pub fn buf_bytes(b: &Buf) -> u64 {
     (match b {
-        Buf::Exact(v) => std::mem::size_of_val(v.as_slice()),
+        Buf::Exact(v) => std::mem::size_of_val(&v[..]),
         // The length alone: reading a stack's elements would lay its parts
         // out in one allocation.
         Buf::F64(v) => v.len() * 8,

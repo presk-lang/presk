@@ -115,10 +115,23 @@ module Llama {
   param pos : ℝ[T, D]                init = normal(std = 0.02)
   use blocks : stack{L}(Block)
   use norm   : RMSNorm{D}
-  param head : ℝ[D, V]               init = zeros
+  -- Initialized as the other matrices, as Hugging Face's LlamaPreTrainedModel
+  -- initializes every linear map (`initializer_range` 0.02). Until D104 it was
+  -- `zeros`, which makes every logit zero at initialization: the gap of a
+  -- realization to the exact logits is then relative to max|y| = 0, and
+  -- `presk solve` has no sensitivity to rank sites by.
+  param head : ℝ[D, V]               init = normal(std = 0.02)
 
   fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
     let mask = causal_mask(seq: T)
     let h = embed(tok, ids) + embed(pos, positions(seq: T))
     norm.apply(blocks.apply(h, mask)) · head
 }
+
+-- The next-token loss, as corpus/nlp/05_gpt.psk writes its own without the
+-- key (this model draws nothing): the mean cross-entropy of the logits at
+-- each position against the token that follows it, given as `y`. A scalar,
+-- which `presk solve` needs to rank its sites (D101); D104 measures it.
+fn loss(θ : params Llama, batch : (Tokens, Tokens)) -> ℝ[] =
+  let (x, y) = batch
+  mean(cross_entropy(Llama.apply(θ, x), y))

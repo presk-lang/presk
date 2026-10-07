@@ -17,4 +17,4 @@ pub mod value;
 pub use eval::{Interp, RunError, TermSums};
 pub use real::Real;
 pub use run::{RunOptions, RunOutput, run};
-pub use value::{Tensor, Value};
+pub use value::{Data, Tensor, Value};

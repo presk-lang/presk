@@ -3,28 +3,28 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/presk-lang/presk"
 
 [workspace.dependencies]
-presk-syntax = { path = "crates/presk-syntax", version = "=0.10.0" }
-presk-types = { path = "crates/presk-types", version = "=0.10.0" }
-presk-core = { path = "crates/presk-core", version = "=0.10.0" }
-presk-interp = { path = "crates/presk-interp", version = "=0.10.0" }
-presk-data = { path = "crates/presk-data", version = "=0.10.0" }
-presk-train = { path = "crates/presk-train", version = "=0.10.0" }
-presk-rt = { path = "crates/presk-rt", version = "=0.10.0" }
-presk-kernel = { path = "crates/presk-kernel", version = "=0.10.0" }
-presk-realize = { path = "crates/presk-realize", version = "=0.10.0" }
-presk-cranelift = { path = "crates/presk-cranelift", version = "=0.10.0" }
-presk-serve = { path = "crates/presk-serve", version = "=0.10.0" }
-presk-export-pytorch = { path = "crates/presk-export-pytorch", version = "=0.10.0" }
-presk-export-c = { path = "crates/presk-export-c", version = "=0.10.0" }
-presk-opt = { path = "crates/presk-opt", version = "=0.10.0" }
-presk-precision = { path = "crates/presk-precision", version = "=0.10.0" }
+presk-syntax = { path = "crates/presk-syntax", version = "=0.10.1" }
+presk-types = { path = "crates/presk-types", version = "=0.10.1" }
+presk-core = { path = "crates/presk-core", version = "=0.10.1" }
+presk-interp = { path = "crates/presk-interp", version = "=0.10.1" }
+presk-data = { path = "crates/presk-data", version = "=0.10.1" }
+presk-train = { path = "crates/presk-train", version = "=0.10.1" }
+presk-rt = { path = "crates/presk-rt", version = "=0.10.1" }
+presk-kernel = { path = "crates/presk-kernel", version = "=0.10.1" }
+presk-realize = { path = "crates/presk-realize", version = "=0.10.1" }
+presk-cranelift = { path = "crates/presk-cranelift", version = "=0.10.1" }
+presk-serve = { path = "crates/presk-serve", version = "=0.10.1" }
+presk-export-pytorch = { path = "crates/presk-export-pytorch", version = "=0.10.1" }
+presk-export-c = { path = "crates/presk-export-c", version = "=0.10.1" }
+presk-opt = { path = "crates/presk-opt", version = "=0.10.1" }
+presk-precision = { path = "crates/presk-precision", version = "=0.10.1" }
 clap = { version = "4", features = ["derive"] }
 ariadne = "0.5"
 indexmap = "2"

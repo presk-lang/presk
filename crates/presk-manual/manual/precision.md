@@ -232,7 +232,7 @@ in the independence of the roundings, which no worst-case rule can see.
 So the budget is **discharged by measurement** (D41) and the bound stays the
 weaker artefact, printed as such; the statistical estimate is accurate on a
 uniform realization and is what a proposal should use. On a mixed one it is
-6.2·10³ times high, because a single magnitude per site charges every
+1.1·10⁴ times high (6.2·10³ before step 8's `bf16` unit roundoff), because a single magnitude per site charges every
 attention logit the rounding of the largest one — finer magnitudes, not a
 better rule for the sum, would close that. Questions 56 and 58 carry the
 recommendation to the specification.
@@ -345,7 +345,8 @@ weights of the corrected gradient), budget 10⁻³ (`make precision` at
 
 (0.5.0's figures, D41, on weights trained then, with a smaller envelope:
 1.29·10⁶ bytes against 3.45·10⁶, 2.67×, a measured gap of 1.05·10⁻⁷
-against 4.5·10⁻³. D93's curve, at 10⁻³: 2.08× and 1.89·10⁻⁶.)
+against 4.5·10⁻³. The curve at the tag `v0.10.0`, at 10⁻³: 2.00× and
+2.1·10⁻⁵, D102; D93's, 2.08× and 1.89·10⁻⁶.)
 
 On a program small enough to search exhaustively, the greedy proposal is
 **exactly optimal** at a 10⁻³ budget and 1.057× off at 10⁻⁶. That comparison
@@ -378,33 +379,37 @@ the only thing that differs between two rows is the realization:
 | budget | traffic, vs all-`f64` | measured gap | inside | validation loss | vs all-`f64` |
 |---|---|---|---|---|---|
 | all-`f64` | 1.00× | | | 2.77361 | |
-| 1e-1 | 2.95× less | 1.15e-4 | yes | 2.77380 | +1.9e-4 |
-| 1e-2 | 2.39× less | 3.76e-5 | yes | 2.77361 | < 1e-7 |
-| 1e-3 | 2.08× less | 1.89e-6 | yes | 2.77361 | +1.3e-6 |
+| 1e-1 | 2.69× less | 3.72e-4 | yes | 2.77381 | +2.0e-4 |
+| 1e-2 | 2.22× less | 3.60e-5 | yes | 2.77361 | −4.0e-6 |
+| 1e-3 | 2.00× less | 2.12e-5 | yes | 2.77360 | −6.5e-6 |
 | 1e-4 | 1.98× less | 1.87e-6 | yes | 2.77361 | +1.3e-6 |
-| 1e-5 | 1.62× less | 1.87e-6 | yes | 2.77361 | +1.3e-6 |
-| 1e-6 | 1.32× less | 1.35e-8 | yes | 2.77361 | < 1e-7 |
-| 1e-7 | 1.05× less | 3.73e-9 | yes | 2.77361 | < 1e-7 |
+| 1e-5 | 1.60× less | 4.85e-10 | yes | 2.77361 | 0 |
+| 1e-6 | 1.30× less | 1.35e-8 | yes | 2.77361 | 0 |
+| 1e-7 | 1.06× less | 3.73e-9 | yes | 2.77361 | 0 |
 
 **Every point is inside its budget**, by measurement against the exact
 reference, and the traffic falls monotonically as the budget loosens. The
-measured gap is not monotone in the budget — 10⁻³, 10⁻⁴ and 10⁻⁵ chose
-assignments of about the same error — because the greedy proposal changes
+measured gap is not monotone in the budget — 10⁻⁵'s assignment, every
+site it narrows in `f32`, measures 4.9·10⁻¹⁰, below 10⁻⁶'s and 10⁻⁷'s —
+because the greedy proposal changes
 shape between budgets and the constraint is on being inside, not on being
 tight.
 
-**The quality axis is flat.** Every realization trains to within 1.9·10⁻⁴
-of all-`f64`: the most narrowed, 66 sites at 10⁻¹, 31 of them in `bf16`,
-ends 1.9·10⁻⁴ above it, three budgets end on its validation loss to seven
-digits, and the rest 1.3·10⁻⁶ above. The yardstick is the seed: all-`f64`
-trained at seeds 0, 1 and 2 reaches 2.7736, 2.7584 and 2.6813, a spread of
-0.092, five hundred times anything a budget did. So there is no knee in
+**The quality axis is flat.** Every realization trains to within 2.0·10⁻⁴
+of all-`f64`: the most narrowed, 65 sites at 10⁻¹, 21 of them in `bf16`,
+ends 2.0·10⁻⁴ above it, 10⁻² and 10⁻³ end 4.0·10⁻⁶ and 6.5·10⁻⁶ below it,
+10⁻⁴ 1.3·10⁻⁶ above, and the three tightest on it to seven digits. The
+yardstick is the seed: all-`f64` trained at seeds 0, 1 and 2 reaches
+2.7736, 2.7584 and 2.6813, a spread of 0.092, some 465 times anything a
+budget did. So there is no knee in
 quality to identify on this model at this length of training: down to a
-budget of 10⁻¹ on the forward loss — every activation site narrowed, half
+budget of 10⁻¹ on the forward loss — every activation site narrowed, a third
 of them to `bf16` — precision costs nothing a validation loss can see. The
 knee in *error* is still where it was, between 10⁻² and 10⁻³ in traffic.
 
-This table is D93's: until 0.10.0 step 4 every training of this model used
+This table is D102's, measured at the tag `v0.10.0` on 2026-10-03 (`make
+curve`, 25 minutes). It follows D93's of 2026-09-30, measured again after
+the gradient defect 3f: until 0.10.0 step 4 every training of this model used
 a wrong gradient under dropout (defect 3f, D92), and the curve measured
 then (D50) read the same conclusions from wider numbers, every realization
 within 1.2·10⁻³ of all-`f64`'s 3.0263 against a seed spread of 0.13. With
@@ -412,17 +417,18 @@ the gradient right the runs stay closer together: the step solved at 10⁻³
 ends 5.5·10⁻⁶ from the `f64` run's weights where it ended 5.0·10⁻³
 ("A budget on the training step", below).
 
-The solver's columns are those of the program and the unit roundoff of
-D93's day, and both have moved since; the curve was not measured again
-(`make curve`, two hours). Since 0.10.0 step 7b the attention reads its mask
-instead of adding it, one site fewer: 65 narrowable, where the table's 66.
-Since step 8 `bf16`'s unit roundoff is 2⁻⁸, where it was 2⁻⁹, so the
-greedy proposal prices a `bf16` site at twice its former error: solved
-again on the same envelope, the three loosest budgets choose other
-assignments (at 10⁻¹, 21 sites in `bf16` where 0.10.0-dev chose 32, and a
-measured gap of 2.2·10⁻⁴ where it was 1.2·10⁻⁴; at 10⁻² and 10⁻³, 7.8·10⁻⁶
-and 2.1·10⁻⁵ where they were 3.1·10⁻⁷ and 1.9·10⁻⁶), every one inside its
-budget, and the four tightest the same ones.
+Between D93's table and this one, two things moved the solver's columns.
+Since 0.10.0 step 7b the attention reads its mask instead of adding it,
+one site fewer: 65 narrowable, where D93's 66. Since step 8 `bf16`'s unit
+roundoff is 2⁻⁸, where it was 2⁻⁹, so the greedy proposal prices a `bf16`
+site at twice its former error, and the loosest budgets narrow less to
+`bf16`: 21 sites at 10⁻¹ where 31, 2.69× less traffic where 2.95×.
+Statement D's realization, solved at 10⁻³, is another assignment, 62
+sites in `f32` and 3 in `bf16`, measuring 2.1·10⁻⁵ where D93's measured
+1.9·10⁻⁶, inside by two orders of magnitude where it was by three. The
+training runs use `--remat store`, the default, where D93's used
+`recompute`; in `f64` the two compute the same bits, and the all-`f64`
+run's weights are D93's byte for byte.
 
 Two limits, stated. The model is the course's at reduced constants, because
 seven runs at course scale would take days here; and 600 steps is short of
@@ -586,20 +592,22 @@ each weight by a known `δ = ŵ − w`, so to first order the loss moves by
 
 | all matrices | bound `Σ|g|·|δ|` | signed `Σ g·δ` | `√Σ (g·δ)²` | measured |
 |---|---|---|---|---|
-| `int8` | 2.55·10⁻¹ | 3.26·10⁻⁴ | 1.55·10⁻³ | 3.22·10⁻⁴ |
+| `int8` | 2.55·10⁻¹ | 3.26·10⁻⁴ | 1.55·10⁻³ | 2.99·10⁻⁴ |
 | `int4` | 4.62 | 5.79·10⁻² | 2.79·10⁻² | 4.94·10⁻² |
 
-The signed first-order prediction is within two per cent of the
-measurement in `int8` and seventeen in `int4`; the worst-case bound is 790
-times too large (D93's weights; on 0.6.0's, D49, within five and nine per
-cent, and 230 times). The linearisation is right, and
+The signed first-order prediction is within nine per cent of the
+measurement in `int8` and seventeen in `int4`; the worst-case bound is 855
+times too large (at the tag `v0.10.0`, D103's addendum, the `int8`
+measurement on top of D102's float assignment; D93's, on the same weights,
+3.22·10⁻⁴, within two per cent and 790 times, the `int4` row D93's; on
+0.6.0's weights, D49, within five and nine per cent, and 230 times). The linearisation is right, and
 what makes a deterministic bound vacuous is only its refusal to let
 independent roundings cancel — the same diagnosis as D39, now with the
 number that decides it (D49, question 58). The proposal uses the
 root-sum-square, which is within a factor of two, never negative, and cannot
 make a set of parameters look free because their signs happen to cancel. At
 a 10⁻³ budget the solver quantises all nine matrices in `int8`, the weights
-7.7× smaller than in `f64`, estimated 1.55·10⁻³ and measured 3.22·10⁻⁴,
+7.7× smaller than in `f64`, estimated 1.55·10⁻³ and measured 2.99·10⁻⁴,
 accepted without widening (on 0.6.0's weights five `int8` and four `int4`,
 11× smaller, measured 3.11·10⁻³). `--scheme pow2` takes
 power-of-two scales.
@@ -749,17 +757,21 @@ this size, and `f64` is within 10⁻¹² of it wherever both were measured):
 
 | realization | s / step | vs all-`f64` | update gap | storage floor | gradient gap |
 |---|---|---|---|---|---|
-| all-`f64` | 44.2 | 1.00× | — | — | — |
-| solved at 10⁻³ | 22.7 | **1.95×** | 6.8·10⁻⁵ | 4.8·10⁻⁵ | 3.9·10⁻⁷ |
-| all-`f32` | 23.4 | 1.89× | 4.8·10⁻⁵ | 4.8·10⁻⁵ | 3.9·10⁻⁷ |
-| the recipe | 25.1 | 1.76× | 6.5·10⁻³ | 4.8·10⁻⁵ | 4.1·10⁻³ |
+| all-`f64` | 24.4 | 1.00× | — | — | — |
+| solved at 10⁻³ | 13.9 | **1.75×** | 6.8·10⁻⁵ | 4.8·10⁻⁵ | 3.9·10⁻⁷ |
+| all-`f32` | 14.0 | 1.75× | 4.8·10⁻⁵ | 4.8·10⁻⁵ | 3.9·10⁻⁷ |
+| the recipe | 16.6 | 1.47× | 6.5·10⁻³ | 4.8·10⁻⁵ | 4.1·10⁻³ |
 
-**Statement J′ holds**: 1.95× faster per training step than all-`f64`, and
-inside its budget by measurement at both scales. (D93's measurement, on
-0.10.0-dev under `--remat recompute`, with the realizations solved on the
-weights of the corrected gradient; D52 measured 1.99×, 59.7 s against 30.0,
-on 0.6.0 and on weights defect 3f trained wrong, and 2.02× at the end of
-0.6.0. Every step is faster than then; the ratio is where it was.) The solved step is all-`f32`
+**Statement J′ holds**: 1.75× faster per training step than all-`f64`, and
+inside its budget by measurement at both scales. (The measurement at the
+tag `v0.10.0`, under `--remat store`, D103. D93 measured 1.95×, 44.2 s
+against 22.7, on 0.10.0-dev under `--remat recompute`, with the same gaps;
+D52 measured 1.99×, 59.7 s against 30.0, on 0.6.0 and on weights defect 3f
+trained wrong, and 2.02× at the end of 0.6.0. Every step is faster than
+then, all-`f64` the most, so the ratio fell; the policy moves neither:
+under `recompute` at the tag all-`f32` is 1.76×. The realization is keyed
+by function, and a stored gradient's functions are `.fwd` and `.bwd`, so a
+step is solved under the policy it runs under.) The solved step is all-`f32`
 by function and runs level with all-`f32`; the recipe is slower than `f32` at
 this size, the `bf16` conversions costing more than the traffic saves. J
 failed at 1.13× in step 7 for a reason of scope, not of speed, and J′ is the
@@ -849,10 +861,17 @@ measurements leave for later, and where each is recorded:
   inference at its own constants, two hours for one feature, but not a
   course-scale training step, where J′ was discharged against native `f64`,
   whose own distance to the exact step is measured only where both run.
+  Since 0.10.1 it holds each value once (D105), and reaches a budget solved
+  on one block of the Llama 2 decoder at the 7B width: the exact loss of
+  384 tokens in 1 h 54 min and 29 GB, `presk solve --budget 1e-3` in 14 h
+  and 72 GB, 52 of 56 sites narrowed, measured 4.3·10⁻⁶ against 1.1·10⁻²
+  (D106, the `coverage` chapter). The time is the next limit: the
+  reference is one thread on MPFR, and the solve takes 7.4 times it.
 - **The statistical model, to propose** (question 58). The root-sum-square
-  propagation is within 1.7–17× of the measured gap on uniform realizations
-  and 6.2·10³× high on a mixed one (D93; 3.7–10× and 2.4·10³× on 0.6.0's
-  weights, D51), because one magnitude per site is too
+  propagation is within 3.2–17× of the measured gap on uniform realizations
+  and 1.1·10⁴× high on a mixed one (`make precision` at 0.10.0; 1.7–17× and
+  6.2·10³× before step 8's `bf16` unit roundoff, D93; 3.7–10× and 2.4·10³×
+  on 0.6.0's weights, D51), because one magnitude per site is too
   coarse; finer magnitudes, per row or per channel, are named and not built,
   and the solver still proposes with sensitivities (D41, D51).
 - **The state a training budget is stated at** (question 61), and the

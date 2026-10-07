@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.10.0 prints (timings vary from one run and one machine
+shown is what version 0.10.1 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.10.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)
+Presk compiler (0.10.1: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)
 
 Usage: presk <COMMAND>
 
@@ -1274,13 +1274,14 @@ not reach yet.
 | `make calibrate` | `presk bench --calibrate` on the tiny MiniGPT's entries, then the entries timed with the profile |
 | `make corpus`, `make corpus-gpt` | the NLP-course ladder on the French civil code, and the course GPT |
 | `make sched` | the fusion groups of the corpus GPT, the launches they remove, and a 1024³ matmul |
-| `make coverage` | `presk check` on the MLPerf transcriptions, and BERT-large at tiny constants on the reference and natively (`coverage` chapter) |
+| `make coverage` | `presk check` on the MLPerf transcriptions, and BERT-large and the Llama decoder at tiny constants on the reference and natively (`coverage` chapter) |
 | `make experiment-gpt` | the course GPT trained by `presk train` and by the exported `train.py` |
 | `make bench` | `presk bench` on the tiny MiniGPT: forward, loss, optimizer step, on every backend |
 | `make gpt-trained`, `make precision` | the corpus GPT trained for 600 steps; its envelope, bound, sensitivities and solved realization (`precision` chapter) |
-| `make curve` | the ε-to-quality curve: seven budgets, each solved and trained from scratch (about two hours) |
+| `make curve` | the ε-to-quality curve: seven budgets, each solved and trained from scratch (about half an hour since 0.10.0) |
 | `make quant-table`, `make step-table`, `make j-step`, `make step-train`, `make foil` | the experiments of 0.6.0: integer weights, the training step's budget, statement J′ at course scale, the trajectory, and MLPerf's rule beside a budget (`precision` and `experiments` chapters) |
 | `make bert` | BERT-large inference at MLPerf's constants (about five hours; `L=2 make bert` for a quick version) |
+| `make llama` | the Llama 2 decoder at the 7B configuration's width, one block: its exact logits, the gaps of seven realizations, the split of the whole quantisation scheme, the time (`coverage` chapter, D104, D106; about thirteen hours, up to 64 GB, alone); `STAGES=solve` adds the budget's solve (14 h, 72 GB) |
 | `make plan-check` | a plan stating the default layout lowers every example entry to the same kernels, byte for byte |
 | `make calibrate-ra4`, `make ra4-small` | the layout cost model calibrated on a GEMM, pinned; the RA4 sweep's daily subset on this chapter's attention, two runs ranked (step 17) |
 | `make ra4`, `make ra4-check`, `make ra4-20`, `make ra4-day2` | the RA4 measurement of 0.7.0: the course GPT's attention, the GEMM and a BERT-shaped sample, every point checked on the kernel interpreter, the 20-core sweep, the second run and the report (`experiments` chapter §7; a night) |

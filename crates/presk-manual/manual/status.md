@@ -1163,7 +1163,7 @@ November, steps 3–8 after it; the CUDA export comes after the version.
 | 6 | The native host fixed in the order step 5 gave, each change measured apart, pinned, against `main`'s binary of the same day (`make host-profile CONFIGS=10`): values sharing their buffers (`presk_rt::Elems`, behind a reference count: the copies 5.2 s → 10 ms of the gradient); views (a stacked layer's slice a view of its stack, a scan's stack its parts: the slices 0.69 s, 1.8 s once the copies' pages fell on them, → 0.4 ms); buffers reused (a free list by length, outputs not zeroed, poisoned in debug builds; `zeros_like` shared: the gradient's fresh pages 3.3 million → none); dropout masks drawn in pieces on the workers, bit for bit, ones outside training (the step's 0.95 s → 0.08); a pool of workers on `std`, spinning about 2 ms (the threads 38 → 0.6 ms of the forward pass; unpinned, the kernels 755 → 326 ms, level with pinned, so the workers are not pinned); the entry's arguments in their type shared (`adamw.step` 44 → 16 ms); keys left out (0.2 %). Pinned, the forward pass 661 → 332 ms, the gradient 8.2 → 1.32 s, the training step 7.8 → 1.43 s. **T4 holds** (`docs/pytorch-baseline-0.10.0-step-6.md`): the forward pass 1.16× the C program's, the step like for like 1.17×, `presk train` 1.26× beside; T2 1.13×. T1 against `main`'s binary (114 comparisons), C1, `plan-check` (D96) | done (2026-10-01) |
 | 7 | The bias as its product's epilogue: a ninth layout decision, `"epilogue": true` on a contraction nest whose value one `add` alone reads, launched by itself and of the product's type; the product's `let` launches nothing and the `add`'s launches the product's kernel, which adds the operand once each element's sum is done (in `f64` and `f32` in its register before the store; in `bf16` stored, read back, added to and stored again; under a spill in the last block of `K`; in the row-wise form one more sweep), so exact; unstated, the two nests as before, byte for byte; no point of a nest's space (`presk autotune` does not sweep it, no archived ranking moves), `presk plan` states it wherever it applies, over the layout it chose; refused (`E7002`) where it does not apply; the recorder follows it, so the C export prints it (spec question 77). Every point of the products of `tests/plan/epilogue.psk` (3 208) and of the derivative nests given an operand (4 280) with the epilogue gives the product's and the `add`'s bits on both executors; T1 against `main`'s binary on 184 outputs and training runs, under plans stating it too; C1 under them. Measured (`docs/pytorch-baseline-0.10.0-step-7.md`): the 36 bias launches of a forward pass, about 10 ms on each side; T2 1.02×; T4 1.16× on the forward pass and 1.305× on the step, at its threshold, the C gradient 113 ms faster of which 100 ms GCC's inlining of the program's other kernels. The C flags: `-O3` −4 % to +2 %, `-mcpu=native` nothing, C1 under both; `-O2` kept. Found: OpenMP's sleeping workers cost the C program 16–18 % (`OMP_WAIT_POLICY=active`); condition 7 admits a spill under a declared `bf16` accumulation the kernels do not honour (D97). Then the follow-up the user asked for: a product's inner loop is at the edge of the vector registers, and where GCC ran short (out of line, or after its scheduling before register allocation) a sum lived on the stack, 30 % of the product; so every kernel is now always inlined and `model.c` compiled on GCC without that scheduling (a pragma), stable and faster, no bit moved; libgomp's threads sleep after 0.1 ms, the native ones after 2 ms, and the baseline times the C program both ways (`GOMP_SPINCOUNT=8M`). The run of record (`docs/pytorch-baseline-0.10.0-step-7-followup.md`): T2 1.01×; T4 with the threads waiting alike 1.47× on the forward pass and 1.57× on the step, the kernels' code Cranelift's against GCC's (1.56×), judged at step 8 (D97's addendum) | done (2026-10-01) |
 | 7b | The language's four decisions of 2026-09-29 (the reference, draft v0.6), in the compiler. An entry refused before it runs at the dimensions where an operation of its body is undefined (`E7003`): a `mean` over no element, a selection outside its axis, `embed`, `cross_entropy`, `argmax` and `sample` over an empty vocabulary, and their derivatives, through the functions it calls, the closures it applies and every `fold` of count at least 1, in `bind_run` and in every backend's `prepare` (so `train` and `serve` too); a parameter type with no value refused alike; an unmasked softmax over an empty axis computes nothing, where the interpreter panicked and the kernels read out of bounds. `sample(key, logits)`: every draw from its key, the interpreter's, the kernel backend's and the C program's private streams gone with the backends' seed; `presk serve` gives token `i` the child `i` of the key `--seed` names, to a generation function that takes a key, and the interpreter and the native backend now draw the same tokens; the C runtime gains the key (`presk_key`, `presk-interp`'s `Key` byte for byte), an entry's key a field of its inputs, `generate.c` a child per token; the PyTorch export takes the key and draws with PyTorch's generator. `bool[S]`: `causal_mask` a mask, `softmax(axis a, x, where = m)` on every executor (the masked kernel, in three passes and in two, selections only, so still static control for the SCoP mode), the C and PyTorch exports; a mask an index tensor of bound 2 at run time, all true when synthesized, `idx[2]` in a `.psk.d`; no tensor holds `−∞`, the envelope's special case gone. The course GPT, the tutorial and the Llama transcription rewritten, the examples synchronized; the attention 0.7.0's and 0.8.0's sweeps measured frozen in `experiments/ra4_attention.psk` for the archived days. Four premises of the plan did not hold, amended at the step. **T6 holds**: 147 outputs and training runs identical to `main`'s binary, only `next_token`'s draws moving; C1; the archived rankings byte for byte (D99) | done (2026-10-02) |
-| 8 | Documentation, the final measurement, version `0.10.0`, tag | done (2026-10-02): seven code items, one commit each — a function that calls itself and a module that includes itself refused (`E2016`, the reference's requirement "No recursion"; they overflowed the analyses' stack); W4's field, `generate = name`, naming an `inference serve`'s generation function (`E2010` for a name that is no function of the file or whose signature does not fit); a stack of no layer, its parameters and a scan of no iteration built from their type on both executors and in the C export (they panicked); a mask printed as truth values by `presk run`, from the entry's signature; a declared accumulation type the kernels do not honour refused by the kernel and native backends (`E7002`); `bf16`'s unit roundoff 2⁻⁸, not 2⁻⁹; the gap +∞ at a non-finite difference (a realization that overflowed was measured on the other elements, and `presk solve` could accept it). Against `main`'s binary, 154 outputs and training runs identical, only a mask's printing moving; C1, `plan-check`, the archived rankings byte for byte. The final measurement on the version's tree (`docs/pytorch-baseline-0.10.0.md`): **T2 holds**, the C training step 0.99× PyTorch's; **T4 fails**, 1.52× and 1.60×, the kernels' code; T5 2.49 GB storing, 0.91 recomputing. `docs/spec-questions.md` marked from the reference's chapter 8; the reconciliations' documentation items; the manual brought to 0.10.0 as implemented (`experiments` §10, this chapter closed, `cli` against each command's `--help`, `diagnostics` against the codes the source emits); CHANGELOG 0.10.0; spec questions 76–77 copied to `presk-specs`; tutorial refreshed; version `0.10.0` (D100). Tag `v0.10.0` by the user, after the reference's Status paragraphs at 0.10.0 |
+| 8 | Documentation, the final measurement, version `0.10.0`, tag | done (2026-10-02): seven code items, one commit each — a function that calls itself and a module that includes itself refused (`E2016`, the reference's requirement "No recursion"; they overflowed the analyses' stack); W4's field, `generate = name`, naming an `inference serve`'s generation function (`E2010` for a name that is no function of the file or whose signature does not fit); a stack of no layer, its parameters and a scan of no iteration built from their type on both executors and in the C export (they panicked); a mask printed as truth values by `presk run`, from the entry's signature; a declared accumulation type the kernels do not honour refused by the kernel and native backends (`E7002`); `bf16`'s unit roundoff 2⁻⁸, not 2⁻⁹; the gap +∞ at a non-finite difference (a realization that overflowed was measured on the other elements, and `presk solve` could accept it). Against `main`'s binary, 154 outputs and training runs identical, only a mask's printing moving; C1, `plan-check`, the archived rankings byte for byte. The final measurement on the version's tree (`docs/pytorch-baseline-0.10.0.md`): **T2 holds**, the C training step 0.99× PyTorch's; **T4 fails**, 1.52× and 1.60×, the kernels' code; T5 2.49 GB storing, 0.91 recomputing. `docs/spec-questions.md` marked from the reference's chapter 8; the reconciliations' documentation items; the manual brought to 0.10.0 as implemented (`experiments` §10, this chapter closed, `cli` against each command's `--help`, `diagnostics` against the codes the source emits); CHANGELOG 0.10.0; spec questions 76–77 copied to `presk-specs`; tutorial refreshed; version `0.10.0` (D100). Tag `v0.10.0` on 2026-10-03 on `1b8a6c8`, after the reference's Status paragraphs at 0.10.0 (presk-specs !63) |
 
 ### What 0.10.0 was judged on
 
@@ -1275,8 +1275,7 @@ fusion groups kept per function rather than for the whole program;
 dropout masks drawn inside the kernel; the C program's own pool of
 workers; the CUDA export, decided for after this version (plan §8). The
 findings the reference's chapters 3, 4 and 5 and δ_p left for a later plan
-(D100). The curve of the `precision` chapter measured again under
-`bf16`'s corrected unit roundoff.
+(D100).
 
 **The shape of the result.** 0.10.0 tested RA4 a third time, on nests the
 frozen model had never seen, and it held on quality and failed on cost
@@ -1286,3 +1285,105 @@ chosen layouts, is as fast as PyTorch's on the same CPU cores, and every
 change that made it so moved no bit (T1; the two gradient defects fixed on
 the way, 3a and 3f, moved what they had to); the native backend is within
 1.6× of it, the difference its code generator's.
+
+## Since 0.10.0
+
+- **The ε-to-quality curve measured again at the tag** (2026-10-03, D102;
+  `make curve`, then `make foil`; the `precision` chapter, "The curve").
+  On the tagged tree, under `--remat store`, from D93's weights: every
+  budget inside, the traffic monotone, the quality axis flat within
+  2.0·10⁻⁴ against a seed spread of 0.092. Since step 7b the attention has
+  65 narrowable sites, and since step 8 the solver prices `bf16` at its
+  corrected unit roundoff, so the loosest budgets narrow less to it (21
+  sites at 10⁻¹ where 31). Statement D's realization, solved at 10⁻³,
+  measures 2.12·10⁻⁵ with 2.00× less traffic (D93: 1.89·10⁻⁶, 2.08×), and
+  2.5·10⁻⁷ on the foil's held-out windows (4.7·10⁻⁸). The all-`f64` run is
+  D93's bit for bit. The `bf16` gradients' launch counts of the `language`
+  chapter, stale since steps 7b and 8, are measured again (577 and 412 for
+  MiniGPT, 1 598 and 1 140 for the course GPT).
+- **The paper's run at the tag** (2026-10-03, D103): `make gpt-trained`,
+  `precision`, `quant-table`, `step-table`, `step-train`, `plan-check`,
+  `opt-examples`, `c-conformance`, BERT at two blocks and its gaps at 24,
+  and `make j-step`, on the tagged code. Every output is D93's (or step
+  8's, D100) to every digit but two. **J′ holds at 1.75×** under `--remat
+  store` (D93: 1.95×), every gap the same; the policy does not move the
+  ratio (all-`f32` 1.76× under `recompute`), the compiler's steps since
+  D93 having sped all-`f64` up most. **BERT-large's `bf16` logits** are
+  5.3·10⁻² from the exact ones at 24 blocks, where D53 measured 1.1·10⁻¹:
+  moved by 0.7.0's step 2 (D58, found by bisection), whose `bf16` products
+  of an output width not a multiple of eight accumulate in `f32`.
+- **A second model for the paper's RQ5** (2026-10-04, D104; `make llama`,
+  the `coverage` chapter's *The decoder, run*). `coverage/llama.psk` with
+  `G = 32`, Llama 2 7B's published width, one of its 32 blocks, on its
+  initialization and 384 random tokens: the exact logits in 1 h 55 min
+  and 87.6 GB; `f64` 1.3·10⁻¹⁴, `f32` 6.2·10⁻⁶, `bf16` 2.5·10⁻², `int8`
+  weights 4.9·10⁻² and `int4` 0.71 from them, only `f32` inside 10⁻²; on
+  no block the quantised gap is the weights' rounding (1.2·10⁻² and
+  0.23 against a few 10⁻⁶ of arithmetic); `int8` weights 1.59× faster
+  than `f32` at batch 1 and 1.86× at batch 20. No solve: it was killed
+  at 108 GB on one block and 16 tokens. The file gained an entry `loss`,
+  and its head is drawn as the other matrices (it was `zeros`, which made
+  every logit zero). **A defect found on the way**: the native backend
+  computed a quantised parameter that the program reads through `split`
+  wrongly, with values that changed from run to run (`wo` here; the
+  kernel interpreter was right); the native rows keep `wo` in `f32`, the
+  kernel interpreter's quantise it. Fixed in 0.10.1 (step 6), which also
+  solves the budget (D106).
+
+## Version 0.10.1
+
+From 2026-10-05 to 2026-10-07: a patch of 0.10.0, plan
+`presk-specs/implementation/presk-plan-0.10.1.md` (D105, D106). The exact
+interpreter holds each parameter once and frees a value after its last use,
+so that `presk solve` fits on one block of the Llama 2 decoder at the 7B
+width (D104: killed at 108 GB on 16 tokens); then that solve is measured.
+No output may change.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements U1–U5, the sizing facts (D105); version `0.10.1-dev` | done (2026-10-05) |
+| 1 | Liveness in the exact evaluator: each variable removed from the environment after the `let` that reads it last, the operands of a call, a fold, a tuple and a record moved there; `Interp::live` counts the reals bound, and a chain's gradient holds a bounded number of tensors (D105) | done (2026-10-05) |
+| 2 | Shared copy-on-write exact buffers, `presk_interp::Data`, and `presk_rt::Buf::Exact` with them: a clone, a field read, a call's argument, a fold's layer (a view) and the seam copy nothing; a stack built by moving its parts; zeros shared, and a sum with them the other operand itself where MPFR gives it, so that a gradient's cotangent of θ holds each field once (D105) | done (2026-10-05) |
+| 3 | `presk solve` keeps the sweep's cotangent of θ only under `--quant`. Steps 1–3 measured: U1 holds (558 outputs of the test set on the three executors, the precision, quant and step tables, `coverage`, BERT at two blocks, byte for byte); U2, the exact run one copy (64 bytes a block parameter, 128 at 0.10.0), the solve fitting where it was killed (148 bytes a block parameter at one block); U3 read first on an A725 core taken for an X925, 1.5 % and 3.3 % faster (step 7 measured it again on an X925) (D105) | done (2026-10-05) |
+| 4 | The gate: D104's dry run at the 7B width on 16 tokens. One block: the exact run 29.0 GB (85.0 at 0.10.0), `calibrate` 30.5 (70.1), **the solve 71.2 GB in 51 min, discharged** (killed at 108 at 0.10.0), `quantize` 61.1 (killed); two blocks: the exact run 41.1 GB, the solve killed at 108; every output D104's dry run's. The solve projected to about 80 GB at 384 tokens; the row one block (D105) | done (2026-10-05) |
+| 5 | Conditional: a reverse sweep without the parameters' cotangent | not done: the gate projected the solve under 90 GB (D105) |
+| 6 | The native backend on a quantised parameter read through `split` (D104's defect): the scales found in the kernel's view, a kind `Quant { bits, over, span }`, the C export's recorded store with it; D104's two-line case a test (`tests/quant/split.psk`); U5 holds, the decoder's logits at tiny constants with every matrix quantised within 6·10⁻⁸ of the kernel interpreter's, where they were NaN (D105) | done (2026-10-05) |
+| 7 | The checks of record on the version's tree: `make test` (255), `check-examples`, `coverage`, `c-conformance`, `cargo doc`; U1 in full (558 outputs, the targets, BERT at two blocks, D104's native logits at 384 tokens, byte for byte); U3 on an X925 core, the course GPT +0.9 %, BERT −2.6 % (D105) | done (2026-10-05) |
+| 8 | The decoder's solve at the 7B width, one block, 384 tokens: `calibrate` 8 h 23 min and 32.0 GB, **the solve 14 h 07 min and 71.7 GB**, 52 of 56 sites narrowed (50 to `f32`, two constants to `bf16`), **1.99×** less traffic, **measured 4.3·10⁻⁶ against 1.1·10⁻²** with no widening, the bound 6.2·10⁵ vacuous. The whole scheme natively at one block (`int8` 5.3·10⁻², `int4` 0.76, the kernel interpreter's gaps; `int8` on every matrix 1.72× and 2.34× faster than `f32`); the exact logits and native gaps at two blocks (41.4 GB; `f32` 7.8·10⁻⁶, `bf16` 3.4·10⁻²); the split at one block, the whole scheme, the weights' rounding the whole gap (D106) | done (2026-10-07) |
+| 9 | Documentation and version `0.10.1`: D106; the reports `docs/llama-7b-solve-2026-10-07.md` and `docs/compile-times-2026-10-05-llama.md` (key `llama-7b-L1`); the manual's `coverage`, `status`, `precision`, `experiments` and `language` chapters; `experiments/llama.sh` runs the whole scheme; U1 on `make tutorial`; `make test`, `check-examples`, `coverage`, `cargo doc`; the reference's Status at 0.10.1 (presk-specs) | done (2026-10-07) |
+
+### What 0.10.1 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| U1 | No output changes, byte for byte against `v0.10.0`: the test set on the three executors in three types, the goldens, the examples, `make coverage`, BERT at two blocks, `make precision`, `quant-table`, `step-table`, the decoder's dry run and native gaps | every bit | **holds**: 558 outputs, the targets, BERT's eight outputs, D104's native logits by SHA-256, the gate's outputs, `make tutorial` but for its times (D105) |
+| U2 | Memory at the decoder's probe constants (`D = 1024`, `T = 16`, zero to two blocks) | the exact run one copy per block parameter; the solve at most two plus its transients | **holds**: the exact run 64 bytes a block parameter (128 at 0.10.0), 4.0 GB with no block (13.7); the solve 148 bytes a block parameter at one block, 177 from one to two (killed at 0.10.0) (D105) |
+| U3 | The exact reference no slower (BERT's two blocks on `squad_loss`, the course GPT's window) | within 3 % | **holds** on an X925 core: the course GPT +0.9 %, BERT −2.6 % (D105) |
+| U4 | The decoder's solve at the 7B width, one block, 384 tokens, under 100 GB | measured and reported | **measured**: 14 h 07 min, 71.7 GB, discharged, 4.3·10⁻⁶ against 1.1·10⁻² (D106) |
+| U5 | The native backend equals the kernel interpreter on a quantised parameter read through `split` | holds | **holds**: at tiny constants within 6·10⁻⁸, at the 7B width within 1.9·10⁻⁵ of the logits, the same gaps (D105, D106) |
+
+## What 0.10.1 has, and what it does not
+
+**Has.** An exact interpreter that holds each value once. A variable leaves
+the environment after the `let` that reads it last, and the operands of a
+call, a fold, a tuple and a record are moved into it at their last read; a
+tensor's elements are shared by its clones and copied only on a write
+another value could see, a stacked layer is a view, a stack is built by
+moving its parts, and zeros are shared, a sum with them the other operand
+itself where MPFR gives it (the `language` chapter, *Running programs:
+the reference interpreter*, "Memory"). The executors' seam shares the same buffers. Every output is
+0.10.0's, bit for bit, and the reference no slower. On one block of the
+Llama 2 decoder at the 7B width, the exact logits hold 29 GB where they
+held 85, and a budget is solved and discharged where the solve was killed
+at 108 GB: the paper's RQ5 has a second model with a budget solved on it
+(`coverage` chapter). The native backend and the C export compute a
+quantised parameter read through `split` (the `native` chapter), so K's
+whole scheme runs natively on the decoder.
+
+**Does not have.** A solve at two blocks of that width (killed at 108 GB:
+the parameters and their cotangent at 64 bytes each are most of it); a
+packed 128-bit real, which would halve the 64 bytes and which the gate did
+not make the next limit; a reverse sweep without the parameters' cotangent
+(step 5, not needed); anything of 0.10.0's list it did not name. The
+exact reference stays one thread on MPFR: the solve takes 14 hours on one
+block, 7.4 times its reference.

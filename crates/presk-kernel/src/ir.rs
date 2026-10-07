@@ -18,24 +18,58 @@ pub enum BufKind {
     /// Indices, `i64`.
     Idx,
     /// A parameter stored as integers with a scale per channel, the scales
-    /// constant along axis `over` (0.6.0 step 5b, D44). A `Load` or `VLoad`
-    /// of it yields `f32(q)·s` in the kernel's arithmetic type. The lowering
-    /// never produces it: it emits ordinary real loads, and the host marks
-    /// an input it hands integer weights to, so no kernel shape needs to
-    /// know about quantisation.
-    Quant { bits: u8, over: usize },
+    /// constant along the `span` axes from axis `over` of the kernel's view
+    /// (0.6.0 step 5b, D44). A `Load` or `VLoad` of it yields `f32(q)·s` in
+    /// the kernel's arithmetic type. The lowering never produces it: it
+    /// emits ordinary real loads, and the host marks an input it hands
+    /// integer weights to ([`BufKind::of_quant`]), so no kernel shape needs
+    /// to know about quantisation. `span` is one unless the program reads
+    /// the parameter through `split` of the axis the scales are constant
+    /// along, as the Llama decoder reads its output projection (D104,
+    /// plan 0.10.1 step 6).
+    Quant { bits: u8, over: usize, span: usize },
+}
+
+impl BufKind {
+    /// The kind of a kernel input of integer weights `q` read through a view
+    /// of axes `dims`, the elements in their stored order: the run of the
+    /// view's axes that is the stored axis the scales are constant along,
+    /// found by the elements after it (`q.inner`) and its length (`q.k`).
+    /// The stored axis itself when the view keeps it (a parameter, the slice
+    /// of a stacked one); several when `split` cut it (D104). `None` when no
+    /// run of the view's axes is exactly that axis, as after a `merge` of it
+    /// with another: the host then hands the kernel the weights' values,
+    /// `f32(q)·s`, which is what every load of them computes.
+    pub fn of_quant(q: &presk_rt::QBuf, dims: &[usize]) -> Option<BufKind> {
+        if q.over < dims.len() && dims[q.over] == q.k && dims[q.over + 1..].iter().product::<usize>() == q.inner {
+            return Some(BufKind::Quant { bits: q.bits, over: q.over, span: 1 });
+        }
+        let mut a = dims.len();
+        let mut p = 1;
+        while p < q.inner {
+            a = a.checked_sub(1)?;
+            p *= dims[a];
+        }
+        let end = a;
+        let mut k = 1;
+        while k < q.k {
+            a = a.checked_sub(1)?;
+            k *= dims[a];
+        }
+        (p == q.inner && k == q.k).then_some(BufKind::Quant { bits: q.bits, over: a, span: end - a })
+    }
 }
 
 impl BufSpec {
     /// The strides of the scales of a [`BufKind::Quant`] buffer, one per
-    /// axis, zero along `over`: the scale of element `ix` is at
-    /// `Σ ix_a · sstride_a`.
+    /// axis, zero along the `span` axes from `over`: the scale of element
+    /// `ix` is at `Σ ix_a · sstride_a`.
     pub fn scale_strides(&self) -> Vec<usize> {
-        let BufKind::Quant { over, .. } = self.kind else { return vec![0; self.dims.len()] };
+        let BufKind::Quant { over, span, .. } = self.kind else { return vec![0; self.dims.len()] };
         let mut s = vec![0; self.dims.len()];
         let mut acc = 1;
         for a in (0..self.dims.len()).rev() {
-            if a != over {
+            if !(over..over + span).contains(&a) {
                 s[a] = acc;
                 acc *= self.dims[a];
             }
@@ -372,7 +406,8 @@ fn spec(s: &BufSpec, dtype: Dtype) -> String {
     let t = match s.kind {
         BufKind::Real => dtype.to_string(),
         BufKind::Idx => "i64".into(),
-        BufKind::Quant { bits, over } => format!("int{bits}/{over}"),
+        BufKind::Quant { bits, over, span: 1 } => format!("int{bits}/{over}"),
+        BufKind::Quant { bits, over, span } => format!("int{bits}/{over}..{}", over + span),
     };
     format!("{t}[{}]", axes.join(", "))
 }

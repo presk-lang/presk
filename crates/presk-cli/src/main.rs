@@ -1391,9 +1391,11 @@ fn solve_precision(file: &Path, env_path: &Path, budget: f64, weights: Option<&P
     vargs.push(presk_rt::Value::Real(presk_rt::Tensor { axes: vec![], data: presk_rt::Buf::F64(vec![1.0].into()) }));
     let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
     // The same sweep's cotangent of the parameters, `∂L/∂θ`, prices the
-    // parameter menu (0.6.0 step 5d).
+    // parameter menu (0.6.0 step 5d); kept only when `--quant` asks for it,
+    // and the sweep's result dropped once read: it is parameter-sized (plan
+    // 0.10.1 step 3).
     let (sens, grad_theta) = match presk_rt::Backend::prepare(&mut sb, vjp, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut sb, &p, vargs)) {
-        Ok(g) => (sensitivity::from_run(&core, entry, &adjoints, &sb.interp.sums.take().unwrap_or_default()), params_cotangent(&g, &args[0])),
+        Ok(g) => (sensitivity::from_run(&core, entry, &adjoints, &sb.interp.sums.take().unwrap_or_default()), if quant.is_some() { params_cotangent(&g, &args[0]) } else { None }),
         Err(e) => {
             eprintln!("presk solve: the objective does not differentiate: {}", e.message);
             return ExitCode::from(1);

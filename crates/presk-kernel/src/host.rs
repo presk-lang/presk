@@ -844,7 +844,7 @@ impl<'p> KernelBackend<'p> {
         }
         let t = self.tick();
         let quant: Vec<Option<BufKind>> = ins.iter().map(|t| match &t.data {
-            Buf::Quant(q) => Some(BufKind::Quant { bits: q.bits, over: q.over }),
+            Buf::Quant(q) => BufKind::of_quant(q, &t.axes.iter().map(|a| a.len).collect::<Vec<_>>()),
             _ => None,
         }).collect();
         let key = format!("{op:?}+add{}|{dtype}|{}|{}|{}|{}|{:?}", if first { "" } else { " (second)" }, order.name(), layout.key(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&epi.out), quant);
@@ -1519,7 +1519,7 @@ impl<'p> KernelBackend<'p> {
         // dequantise (D44). The marking is part of the kernel, so it is part
         // of the key.
         let quant: Vec<Option<BufKind>> = ins.iter().map(|t| match &t.data {
-            Buf::Quant(q) => Some(BufKind::Quant { bits: q.bits, over: q.over }),
+            Buf::Quant(q) => BufKind::of_quant(q, &t.axes.iter().map(|a| a.len).collect::<Vec<_>>()),
             _ => None,
         }).collect();
         let key = format!("{op:?}|{dtype}|{}|{}|{}|{:?}", order.name(), layout.key(), operands.iter().map(|o| format!("{}{:?}", lower::show(&o.axes), o.kind)).collect::<Vec<_>>().join(";"), quant);

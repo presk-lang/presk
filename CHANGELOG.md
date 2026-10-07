@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.10.1 — 2026-10-07
+
+A patch of 0.10.0 that changes how much the exact interpreter holds and no
+value it computes (`presk-specs/implementation/presk-plan-0.10.1.md`,
+D105). At the tag, `presk run --bits 128` held every parameter twice at 64
+bytes a real, and `presk solve` kept every partial cotangent of its reverse
+sweep: on one block of the Llama 2 decoder at the 7B width it was killed at
+108 GB (D104). 0.10.1 holds each value once and frees it after its last
+use; the solve on that block fits, and is measured (D106). Judged on five
+statements fixed before the work: no output changes, byte for byte against
+`v0.10.0` (U1, holds); the exact run one copy per parameter and the solve
+at most two plus its transients (U2, holds); the exact reference no slower,
+within 3 % (U3, holds on an X925 core: the course GPT +0.9 %, BERT −2.6 %);
+the decoder's solve measured (U4); and the native backend equal to the
+kernel interpreter on a quantised parameter read through `split` (U5,
+holds). Every number the paper took at `v0.10.0` stands at 0.10.1.
+
+- The exact interpreter frees a value after its last use and holds each
+  parameter once (steps 1–3, D105): a value is removed from its
+  environment after the `let` that reads it last, and moved into a call
+  there; tensors share their elements copy-on-write
+  (`presk_interp::Data`), in the interpreter and across the seam to the
+  other executors (`presk_rt::Buf::Exact`); a stacked layer a fold reads is
+  a view; a stack is built by moving its layers; zeros are shared, and a
+  sum with them is the other operand itself where MPFR gives it.
+  `presk run --bits 128` holds 64 bytes a parameter where it held 128, and
+  `presk solve` needs 148 bytes a parameter of a block, and keeps the
+  cotangent of the parameters only under `--quant`. Every output is the
+  same, byte for byte: 558 outputs of the test set on the three executors,
+  the goldens, the examples, `make coverage`, `precision`, `quant-table`,
+  `step-table`, BERT at two blocks, D104's native logits, `make tutorial`
+  but for its times. `Interp::live` counts the reals bound, and a test
+  bounds what a chain and its gradient hold.
+- The native backend and the C export compute a quantised parameter read
+  through `split` right (step 6, D105): they found an element's scale by the
+  stored axis's number in the kernel's view, and read past the scales
+  (D104's defect: the Llama decoder's `wo`, NaN logits natively). A
+  kernel's integer input is `int8/o..p` in `presk dump --stage kernel`
+  when the axis the scales are constant along is read as several
+  (`BufKind::Quant { bits, over, span }`); `tests/quant/split.psk` is
+  D104's two-line case.
+- The Llama 2 decoder's budget solved (step 8, D106,
+  `docs/llama-7b-solve-2026-10-07.md`): `presk solve --budget 1e-3` on its
+  next-token loss at the 7B width, one block, 384 tokens, in 14 h 07 min and
+  71.7 GB (`calibrate` 8 h 23 min, the reference 1 h 54 min and 29.3 GB):
+  52 of 56 sites narrowed, 1.99× less traffic than all-`f64`, measured
+  4.3·10⁻⁶ against 1.1·10⁻², the bound 6.2·10⁵ vacuous. The whole
+  quantisation scheme natively at one block, `int8` 5.3·10⁻² and `int4`
+  0.76 from the exact logits, the kernel interpreter's gaps, `int8` on
+  every matrix 1.72× and 2.34× faster than `f32`; the exact logits at two
+  blocks (41.4 GB) and their native gaps; the split at one block, the
+  weights' rounding the whole of the quantised gap. The solve's row of the
+  setup table is `docs/compile-times-2026-10-05-llama.md` (key
+  `llama-7b-L1`). `experiments/llama.sh` runs the whole scheme natively, its
+  split at one block (`SPLIT_L`, default 1) and its bench on every matrix,
+  and its table still reads D104's files.
+- The manual at 0.10.1: the `language` chapter's interpreter memory,
+  `coverage`'s *The decoder, run* with the solve, the whole scheme, two
+  blocks and the split at one block; `status`, `precision`, `experiments`
+  §10, `native` (the integer weights read through `split`).
+
+Since the tag `v0.10.0`, before 0.10.1:
+
+- The ε-to-quality curve measured again at the tag `v0.10.0` (D102,
+  2026-10-03; `make curve`, then `make foil`), its solver columns having
+  been of the program before step 7b and of `bf16`'s former unit roundoff:
+  every budget inside, the quality axis flat within 2.0·10⁻⁴; the loosest
+  budgets narrow less to `bf16` (21 sites at 10⁻¹ where 31, 2.69× less
+  traffic where 2.95×); statement D's realization at 10⁻³ measures
+  2.12·10⁻⁵ with 2.00× less traffic (D93: 1.89·10⁻⁶, 2.08×), and 2.5·10⁻⁷
+  on the foil's held-out windows. The manual's figures that quoted D93's
+  curve follow, with two stale passages the language reference's check of
+  0.10.0 found (the estimate's ratios in `precision`, the `bf16` launch
+  counts in `language`).
+- The paper's run at the tag (D103, 2026-10-03): every output of D93's
+  chain reproduced at `v0.10.0` to every digit but two. J′ holds at
+  **1.75×** under `--remat store` (1.95× in D93), its gaps the same, the
+  policy moving neither ratio; BERT-large's `bf16` logits are 5.3·10⁻²
+  from the exact ones at 24 blocks (1.1·10⁻¹ in D53), moved since 0.7.0's
+  step 2 (D58, bisected). The manual's J′ and BERT figures follow.
+- The second model of the paper's RQ5 (D104, 2026-10-04; `make llama`,
+  `experiments/llama.sh`): the Llama 2 decoder of `coverage/llama.psk` at
+  the 7B configuration's width (`G = 32`), one of its 32 blocks, on its
+  initialization and 384 random tokens, by BERT-large's protocol. The exact
+  logits in 1 h 55 min and 87.6 GB; `f64` 1.3·10⁻¹⁴, `f32` 6.2·10⁻⁶,
+  `bf16` 2.5·10⁻², `int8` weights 4.9·10⁻² (5.3·10⁻² with `wo`, on the
+  kernel interpreter), `int4` 0.71 from them; the split on no block, the
+  weights' rounding the whole of the quantised gap; `int8` weights 1.59×
+  faster than `f32` at batch 1 and 1.86× at batch 20. No solve: it does not
+  fit in 119 GB at one block. `coverage/llama.psk` gains an entry `loss`
+  and draws its head as the other matrices (it was `zeros`);
+  `experiments/llama_ids.py`; `make coverage` runs the decoder at tiny
+  constants; `compile_times.sh` gains the key `llama-7b-L<N>` and keeps each
+  command's peak memory. Found on the way: the native backend computed a
+  quantised parameter read through `split` wrongly (fixed in 0.10.1,
+  above).
+
 ## 0.10.0 — 2026-10-02
 
 Make a training step pay (`presk-specs/implementation/presk-plan-0.10.0.md`),
