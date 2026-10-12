@@ -22,12 +22,14 @@
 //! program holds both and `generate.c`, `presk serve`'s loop over them.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use presk_rt::{Backend, Buf, Value};
 use presk_syntax::diag::{Diagnostic, has_errors};
 
-use super::{check_plan, color, parse_dims, render_all, typed_core};
+use presk_core::ad::Remat;
+use presk_syntax::SourceMap;
+
+use crate::{Report, Result, Stop};
 
 /// The options of `presk export --target c`.
 pub struct Options<'a> {
@@ -49,21 +51,17 @@ pub struct Options<'a> {
     /// Whether to export the generation loop (step 6).
     pub serve: bool,
     pub out: &'a Path,
+    /// The command's `--remat`.
+    pub remat: Remat,
 }
 
 /// The precision of the exact reference and of the inputs' synthesis: `presk
 /// run`'s default, so that the inputs are the ones it draws.
 const BITS: u32 = 256;
 
-pub fn export(o: &Options) -> ExitCode {
-    let mut dims = match parse_dims(o.dims) {
-        Ok(d) => d,
-        Err(c) => return c,
-    };
-    let (sm, prog, typed, mut core) = match typed_core(o.file, o.consts, false) {
-        Err(c) => return c,
-        Ok(x) => x,
-    };
+pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
+    let mut dims = crate::front::parse_dims(o.dims, report)?;
+    let (sm, prog, typed, mut core) = crate::front::typed_core(o.file, o.consts, false, report)?;
     // The plan, or the realization with the default layout, as `presk run`
     // takes them: a gradient keeps its fusion groups when its realization
     // can see them.
@@ -74,32 +72,28 @@ pub fn export(o: &Options) -> ExitCode {
     let plan = match plan {
         Ok(p) => p,
         Err(m) => {
-            eprintln!("presk: {m}");
-            return ExitCode::from(2);
+            report.line(&format!("presk: {m}"));
+            return Err(Stop(2));
         }
     };
-    let mut diags = crate::differentiate(&mut core, plan.realization.groups_visible());
-    diags.extend(crate::stored_vjps(&core, &plan.realization));
-    eprint!("{}", render_all(&diags, &sm, color()));
+    let mut diags = crate::ad::differentiate(&mut core, o.remat, plan.realization.groups_visible());
+    diags.extend(crate::ad::stored_vjps(&core, &plan.realization));
+    report.diagnostics(&diags, &sm);
     if has_errors(&diags) {
-        return ExitCode::from(1);
+        return Err(Stop(1));
     }
     if let Err(errs) = presk_core::verify(&core) {
         for e in errs {
-            eprintln!("presk: internal error (PSK-Core verification after AD): {e}");
+            report.line(&format!("presk: internal error (PSK-Core verification after AD): {e}"));
         }
-        return ExitCode::from(2);
+        return Err(Stop(2));
     }
-    let report = |code: &'static str, m: String| {
-        eprint!("{}", render_all(&[Diagnostic::error(code, m)], &sm, color()));
-        ExitCode::from(1)
-    };
 
     // ----- with --serve, the generation function and its greedy copy --------
     let fns = if o.serve {
         match presk_serve::prepare_serve(&mut core, &prog, &typed, o.entry) {
             Ok(f) => Some(f),
-            Err(e) => return report(e.code, e.message),
+            Err(e) => return Err(fail(report, &sm, e.code, e.message)),
         }
     } else {
         None
@@ -114,38 +108,36 @@ pub fn export(o: &Options) -> ExitCode {
         // parameters fix its length: a C program has one shape.
         let init_dims: Vec<String> = core.func(f.init).dims.iter().map(|d| prog.dim_name(*d)).collect();
         if !init_dims.contains(&f.seq_dim) {
-            return report("E8009", format!("`{entry}` is served over the whole context, which grows by a token at every step: `{}`'s parameters do not fix its length `{}`, and a C program has one shape. `--serve` exports a model whose parameters fix it, served over a sliding window of that many tokens", f.model, f.seq_dim));
+            return Err(fail(report, &sm, "E8009", format!("`{entry}` is served over the whole context, which grows by a token at every step: `{}`'s parameters do not fix its length `{}`, and a C program has one shape. `--serve` exports a model whose parameters fix it, served over a sliding window of that many tokens", f.model, f.seq_dim)));
         }
         match dims.iter().find(|(n, _)| *n == f.batch_dim) {
             Some((_, 1)) => {}
             Some((n, v)) => {
-                eprintln!("presk export --serve: `--dim {n}={v}`, but presk serve generates one sequence: {n} is 1");
-                return ExitCode::from(2);
+                report.line(&format!("presk export --serve: `--dim {n}={v}`, but presk serve generates one sequence: {n} is 1"));
+                return Err(Stop(2));
             }
             None => dims.push((f.batch_dim.clone(), 1)),
         }
     }
     let realize = plan.realization.clone();
-    if let Err(c) = check_plan(&plan, &core, &sm) {
-        return c;
-    }
+    crate::plan::check_plan(&plan, &core, &sm, report)?;
 
     // ----- the arguments, as `presk run` makes them -------------------------
     let opts = presk_interp::RunOptions { entry: entry.clone(), dims, seed: o.seed, bits: BITS, digits: 12 };
     let (func, fdims, inputs) = match presk_interp::run::prepare_run(&core, &prog, &opts) {
         Ok(x) => x,
         Err(e) if e.message.contains("unbound dimension") || e.message.contains("open prefix") => {
-            return report("E8003", format!("`{entry}` is exported at bound dimensions only: {}", e.message));
+            return Err(fail(report, &sm, "E8003", format!("`{entry}` is exported at bound dimensions only: {}", e.message)));
         }
         Err(e) => {
-            eprint!("{}", render_all(&[crate::interp_diag(e)], &sm, color()));
-            return ExitCode::from(1);
+            report.diagnostics(&[crate::entry::interp_diag(e)], &sm);
+            return Err(Stop(1));
         }
     };
     let names: Vec<String> = inputs.iter().map(|(n, _)| n.clone()).collect();
     let mut args: Vec<Value> = match inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<presk_rt::Result<_>>() {
         Ok(a) => a,
-        Err(e) => return report(e.code, e.message),
+        Err(e) => return Err(fail(report, &sm, e.code, e.message)),
     };
     // The first argument, the parameters of a module, is the weights: read
     // from the checkpoint given, or written from the ones synthesized, as
@@ -160,16 +152,16 @@ pub fn export(o: &Options) -> ExitCode {
         (Some(w), Some(_)) => {
             match presk_rt::load_params(w, &args[0]) {
                 Ok(v) => args[0] = v,
-                Err(e) => return report(e.code, format!("{}: {}", w.display(), e.message)),
+                Err(e) => return Err(fail(report, &sm, e.code, format!("{}: {}", w.display(), e.message))),
             }
             match presk_data::Reader::open(w) {
                 Ok(r) => Some(r.header().sample_ty.clone()),
-                Err(e) => return report(e.code, format!("{}: {}", w.display(), e.message)),
+                Err(e) => return Err(fail(report, &sm, e.code, format!("{}: {}", w.display(), e.message))),
             }
         }
         (Some(_), None) => {
-            eprintln!("presk export: --weights: the first argument of `{entry}` is not a parameter tree");
-            return ExitCode::from(2);
+            report.line(&format!("presk export: --weights: the first argument of `{entry}` is not a parameter tree"));
+            return Err(Stop(2));
         }
         (None, Some(m)) => Some(format!("params {m}")),
         (None, None) => None,
@@ -180,15 +172,15 @@ pub fn export(o: &Options) -> ExitCode {
     // they would be `f32(q·s)`, whose scales need not be the same.
     let read = args.clone();
     if let Err(e) = realize.quantize_args(&mut args) {
-        return report(e.code, e.message);
+        return Err(fail(report, &sm, e.code, e.message));
     }
 
     // ----- the native run, recorded -----------------------------------------
     let mut b = match presk_cranelift::native_backend(&core, &prog, &realize) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("presk export: the native backend is unavailable, and the C program is its copy: {}", e.message);
-            return ExitCode::from(2);
+            report.line(&format!("presk export: the native backend is unavailable, and the C program is its copy: {}", e.message));
+            return Err(Stop(2));
         }
     };
     b.set_plan(plan.clone());
@@ -199,21 +191,9 @@ pub fn export(o: &Options) -> ExitCode {
     let recorder = b.recorder.take();
     let native = match native {
         Ok(v) => v,
-        Err(e) => return report(e.code, e.message),
+        Err(e) => return Err(fail(report, &sm, e.code, e.message)),
     };
-    let finish = |recorder: Option<Box<presk_kernel::record::Recorder>>| match recorder.map(|r| r.finish()) {
-        Some(Ok(r)) => Ok(r),
-        Some(Err(r)) if r.code == presk_kernel::record::INTERNAL => {
-            eprintln!("presk: internal error of the recorder: {}", r.message);
-            Err(ExitCode::from(2))
-        }
-        Some(Err(r)) => Err(report(r.code, r.message)),
-        None => unreachable!("the recorder was set"),
-    };
-    let rec = match finish(recorder) {
-        Ok(r) => r,
-        Err(c) => return c,
-    };
+    let rec = finish(recorder, report, &sm)?;
     // The greedy copy, on the same backend, so that the two share kernels,
     // with the temperature `presk serve` gives it, 1.
     let greedy = match &fns {
@@ -228,12 +208,9 @@ pub fn export(o: &Options) -> ExitCode {
             });
             let recorder = b.recorder.take();
             if let Err(e) = ran {
-                return report(e.code, e.message);
+                return Err(fail(report, &sm, e.code, e.message));
             }
-            match finish(recorder) {
-                Ok(r) => Some(r),
-                Err(c) => return c,
-            }
+            Some(finish(recorder, report, &sm)?)
         }
         None => None,
     };
@@ -246,7 +223,7 @@ pub fn export(o: &Options) -> ExitCode {
         let mut ib = presk_rt::InterpBackend::new(&core, &prog, BITS);
         match ib.prepare(func, &fdims, &realize).and_then(|p| ib.call(&p, args.clone())) {
             Ok(v) => Some(v),
-            Err(e) => return report(e.code, e.message),
+            Err(e) => return Err(fail(report, &sm, e.code, e.message)),
         }
     };
 
@@ -291,13 +268,13 @@ pub fn export(o: &Options) -> ExitCode {
     let exported = match exported {
         Ok(x) => x,
         Err(m) => {
-            eprintln!("presk: internal error of the C export: {m}");
-            return ExitCode::from(2);
+            report.line(&format!("presk: internal error of the C export: {m}"));
+            return Err(Stop(2));
         }
     };
     if let Err(m) = write_all(o, &exported, &read, params_module.as_deref(), &native, exact.as_ref()) {
-        eprintln!("presk export: {m}");
-        return ExitCode::from(2);
+        report.line(&format!("presk export: {m}"));
+        return Err(Stop(2));
     }
     let split = if exported.split == 0 { "on one thread".to_string() } else { format!("{} of them divided among up to {} threads", exported.split, exported.max_workers) };
     let host = if o.straight_line {
@@ -315,7 +292,7 @@ pub fn export(o: &Options) -> ExitCode {
         0 => String::new(),
         n => format!(", {n} lea{} of integer weights quantized as {} read", if n == 1 { "f" } else { "ves" }, if n == 1 { "it is" } else { "they are" }),
     };
-    eprintln!(
+    report.line(&format!(
         "presk export: `{}` at {} in {}{}{quantized}: {} launches ({} dead, {split}) of {} kernels, {host}, an arena of {arena}{generate}, into {}; `make -C {} check` builds it and compares it with the native backend",
         entry,
         if meta.dims.is_empty() { "no dimension".to_string() } else { meta.dims.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ") },
@@ -326,8 +303,8 @@ pub fn export(o: &Options) -> ExitCode {
         exported.kernels,
         o.out.display(),
         o.out.display()
-    );
-    ExitCode::SUCCESS
+    ));
+    Ok(())
 }
 
 /// The options of `presk export --target c --mode scop` (step 8, D85).
@@ -339,49 +316,48 @@ pub struct ScopOptions<'a> {
     pub realize: &'a str,
     pub seed: u64,
     pub out: &'a Path,
+    /// The command's `--remat`.
+    pub remat: Remat,
 }
 
 /// `presk export --target c --mode scop` (plan 0.9.0 §3.7, step 8, D85):
 /// the entry's nests captured from their shapes as `presk plan` captures
-/// them (D65), each lowered at point zero ([`super::ra4::point_zero`]) and
+/// them (D65), each lowered at point zero ([`crate::layout::point_zero`]) and
 /// printed as a standalone C function between `#pragma scop` and `#pragma
 /// endscop` (`presk_export_c::scop`), with a driver that times each one.
 /// Each nest also runs natively at point zero on the inputs the driver
 /// draws, and `conformance/native.bin` holds its outputs, which `make check`
 /// compares with the C's, bit for bit.
-pub fn export_scop(o: &ScopOptions) -> ExitCode {
+pub fn export_scop(o: &ScopOptions, report: &mut dyn Report) -> Result<()> {
     use presk_export_c::scop;
     let realize = match presk_rt::Realization::parse(o.realize) {
         Ok(r) => r,
         Err(m) => {
-            eprintln!("presk: {m}");
-            return ExitCode::from(2);
+            report.line(&format!("presk: {m}"));
+            return Err(Stop(2));
         }
     };
     if !realize.quant.is_empty() {
-        eprintln!("presk export --mode scop: `{}` quantizes weights, and the SCoP mode prints nests over arrays of reals and indices: a nest reading integer weights loads `f32(q)·s` from packed integers and their scales", o.realize);
-        return ExitCode::from(2);
+        report.line(&format!("presk export --mode scop: `{}` quantizes weights, and the SCoP mode prints nests over arrays of reals and indices: a nest reading integer weights loads `f32(q)·s` from packed integers and their scales", o.realize));
+        return Err(Stop(2));
     }
     let plan = presk_rt::Plan::from_realization(realize.clone());
-    let captured = match super::ra4::capture(o.file, o.entry, o.dims, o.consts, &plan, o.seed, &[], super::ra4::Capture::Shapes) {
-        Ok(c) => c,
-        Err(c) => return c,
-    };
+    let captured = crate::layout::capture(o.file, o.entry, o.dims, o.consts, &plan, o.seed, &[], crate::layout::Capture::Shapes, o.remat, report)?;
     // One function per nest, shape and type, named after the nest.
     let mut taken: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut nests: Vec<scop::Nest> = Vec::new();
     for l in &captured.launches {
-        let zero = super::ra4::point_zero(&presk_kernel::plan::launch_kind(l));
+        let zero = crate::layout::point_zero(&presk_kernel::plan::launch_kind(l));
         let mut kernels = match presk_kernel::plan::lower_launch(l, &zero, None) {
             Ok(k) => k,
             Err(m) => {
-                eprintln!("presk: internal error: `{}` does not lower at point zero: {m}", l.nest);
-                return ExitCode::from(2);
+                report.line(&format!("presk: internal error: `{}` does not lower at point zero: {m}", l.nest));
+                return Err(Stop(2));
             }
         };
         let (Some(kernel), true) = (kernels.pop(), kernels.is_empty()) else {
-            eprintln!("presk: internal error: `{}` lowers to several kernels at point zero", l.nest);
-            return ExitCode::from(2);
+            report.line(&format!("presk: internal error: `{}` lowers to several kernels at point zero", l.nest));
+            return Err(Stop(2));
         };
         let base = presk_export_c::host::c_ident(&l.nest);
         let n = taken.entry(base.clone()).or_insert(0);
@@ -394,8 +370,8 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
     let mut exec = match presk_cranelift::NativeExec::new() {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("presk export: the native backend is unavailable, and `conformance/native.bin` is its outputs: {}", e.message);
-            return ExitCode::from(2);
+            report.line(&format!("presk export: the native backend is unavailable, and `conformance/native.bin` is its outputs: {}", e.message));
+            return Err(Stop(2));
         }
     };
     let mut native: Vec<u8> = Vec::new();
@@ -411,8 +387,8 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
         let refs: Vec<&Buf> = bufs.iter().collect();
         let mut out = presk_kernel::exec::output_buf(k);
         if let Err(e) = presk_kernel::KernelExec::run(&mut exec, i, k, &refs, &mut out) {
-            eprintln!("presk export: `{}` on the native backend: {}", n.nest, e.message);
-            return ExitCode::from(2);
+            report.line(&format!("presk export: `{}` on the native backend: {}", n.nest, e.message));
+            return Err(Stop(2));
         }
         match &out {
             Buf::F64(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
@@ -420,15 +396,12 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
             Buf::Bf16(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
             Buf::I64(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
             other => {
-                eprintln!("presk: internal error: `{}` gives a {} output", n.nest, other.dtype());
-                return ExitCode::from(2);
+                report.line(&format!("presk: internal error: `{}` gives a {} output", n.nest, other.dtype()));
+                return Err(Stop(2));
             }
         }
     }
-    let dims = match parse_dims(o.dims) {
-        Ok(d) => d,
-        Err(c) => return c,
-    };
+    let dims = crate::front::parse_dims(o.dims, report)?;
     let meta = scop::Meta {
         file: o.file.display().to_string(),
         entry: o.entry.to_string(),
@@ -442,11 +415,11 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
     let files = match scop::export(&meta, &nests) {
         Ok(f) => f,
         Err(m) => {
-            eprintln!("presk: internal error of the SCoP mode: {m}");
-            return ExitCode::from(2);
+            report.line(&format!("presk: internal error of the SCoP mode: {m}"));
+            return Err(Stop(2));
         }
     };
-    let written = (|| -> Result<(), String> {
+    let written = (|| -> std::result::Result<(), String> {
         for dir in ["nests", "conformance"] {
             let d = o.out.join(dir);
             std::fs::create_dir_all(&d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
@@ -459,12 +432,12 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
         std::fs::write(&path, &native).map_err(|e| format!("cannot write {}: {e}", path.display()))
     })();
     if let Err(m) = written {
-        eprintln!("presk export: {m}");
-        return ExitCode::from(2);
+        report.line(&format!("presk export: {m}"));
+        return Err(Stop(2));
     }
     let statics = nests.iter().filter(|n| scop::static_control(&n.kernel).is_ok()).count();
     let names = nests.iter().map(|n| n.nest.as_str()).collect::<std::collections::BTreeSet<_>>().len();
-    eprintln!(
+    report.line(&format!(
         "presk export: `{}` at {} in {}: {names} nests at {} shapes at point zero, a C function each, {statics} of them static-control parts and {} not (`nests.json` says why), into {}; `make -C {} check` builds them and compares each with the native backend",
         o.entry,
         if meta.dims.is_empty() { "no dimension".to_string() } else { meta.dims.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ") },
@@ -473,8 +446,27 @@ pub fn export_scop(o: &ScopOptions) -> ExitCode {
         nests.len() - statics,
         o.out.display(),
         o.out.display()
-    );
-    ExitCode::SUCCESS
+    ));
+    Ok(())
+}
+
+/// An error of the export as a diagnostic, reported: exit 1.
+fn fail(report: &mut dyn Report, sm: &SourceMap, code: &'static str, m: String) -> Stop {
+    report.diagnostics(&[Diagnostic::error(code, m)], sm);
+    Stop(1)
+}
+
+/// The recording a recorder made, or the error it found.
+fn finish(recorder: Option<Box<presk_kernel::record::Recorder>>, report: &mut dyn Report, sm: &SourceMap) -> Result<presk_kernel::record::Recording> {
+    match recorder.map(|r| r.finish()) {
+        Some(Ok(r)) => Ok(r),
+        Some(Err(r)) if r.code == presk_kernel::record::INTERNAL => {
+            report.line(&format!("presk: internal error of the recorder: {}", r.message));
+            Err(Stop(2))
+        }
+        Some(Err(r)) => Err(fail(report, sm, r.code, r.message)),
+        None => unreachable!("the recorder was set"),
+    }
 }
 
 /// The commit of the repository holding `file`, `-dirty` when its tree has
@@ -516,7 +508,7 @@ fn sample(values: &[&Value]) -> Vec<presk_data::Value> {
         .collect()
 }
 
-fn write_data(path: &Path, f: &presk_export_c::host::DataFile, leaves: Vec<presk_data::Value>) -> Result<(), String> {
+fn write_data(path: &Path, f: &presk_export_c::host::DataFile, leaves: Vec<presk_data::Value>) -> std::result::Result<(), String> {
     let layout = presk_data::Layout::from_type_text(&f.ty).map_err(|e| format!("{}: {e}", path.display()))?;
     let v = if leaves.len() == 1 && !f.ty.starts_with('(') { leaves.into_iter().next().unwrap() } else { presk_data::Value::Tuple(leaves) };
     v.check(&layout).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -524,7 +516,7 @@ fn write_data(path: &Path, f: &presk_export_c::host::DataFile, leaves: Vec<presk
     Ok(())
 }
 
-fn write_all(o: &Options, x: &presk_export_c::host::Exported, args: &[Value], params: Option<&str>, native: &Value, exact: Option<&Value>) -> Result<(), String> {
+fn write_all(o: &Options, x: &presk_export_c::host::Exported, args: &[Value], params: Option<&str>, native: &Value, exact: Option<&Value>) -> std::result::Result<(), String> {
     let conf = o.out.join("conformance");
     std::fs::create_dir_all(&conf).map_err(|e| format!("cannot create {}: {e}", conf.display()))?;
     for (name, text) in &x.files {

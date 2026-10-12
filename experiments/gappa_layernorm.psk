@@ -1,0 +1,34 @@
+-- gappa_layernorm.psk — the layer norm of tests/examples/layernorm/ behind a
+-- module that takes no dimension argument, for `make gappa` (D108).
+--
+-- Until 0.11.0 (D110) `presk check --precision` bound the dimensions the
+-- envelope names, the entry's `--dim`s and the file's `--const`s, and not
+-- a module's own `{D}`: on the entry `LayerNorm{8}.apply` the length of
+-- `mean axis model` was unknown to the propagation and fell back to 1 024
+-- terms (presk-precision/src/propagate.rs, `DEFAULT_TERMS`), so the mean's
+-- roundings were charged 128 times over and the bound on the entry was not
+-- its rule's (D108 records the two numbers). It binds them now, and the
+-- two entries give the same bound (presk-driver's tests); D108's record
+-- was made through this wrapper and stays as it is. Here the width is a constant
+-- of the file, so the entry `Norm.apply` has nothing to bind and the call
+-- binds `LayerNorm{D}` itself; the kernels launched are the same as the
+-- example's, which experiments/gappa.sh checks by comparing the two dumps.
+import "../tests/examples/layernorm/layernorm.psk" as norm
+
+const D : nat = 8          -- the width: --const D=8, 64, …
+
+module Norm {
+  use ln : norm.LayerNorm{D}
+
+  fn apply(x : ℝ[..., model: D], eps : f64 = 1e-5) -> ℝ[..., model: D] =
+    ln.apply(x, eps)
+}
+
+-- The same without recentering, the fallback the prompt names if Gappa
+-- cannot close the layer norm's quotient by the square root.
+module Rms {
+  use rms : norm.RMSNorm{D}
+
+  fn apply(x : ℝ[..., model: D], eps : f64 = 1e-6) -> ℝ[..., model: D] =
+    rms.apply(x, eps)
+}

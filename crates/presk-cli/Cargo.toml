@@ -26,6 +26,8 @@ presk-export-pytorch.workspace = true
 presk-export-c.workspace = true
 presk-opt.workspace = true
 presk-precision.workspace = true
+presk-driver.workspace = true
+presk-explain.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

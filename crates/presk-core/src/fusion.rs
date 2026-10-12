@@ -76,7 +76,7 @@ impl Plan {
 /// The largest expression tree a group may emit. A value read twice inside a
 /// group is computed twice rather than stored, which trades arithmetic for a
 /// round trip through memory; this keeps that trade bounded.
-const MAX_TREE: usize = 64;
+pub const MAX_TREE: usize = 64;
 
 /// Nodes of the tree the group would emit, counting a value once per read.
 fn tree_size(members: &HashSet<VarId>, by_var: &HashMap<VarId, &Let>, root: VarId) -> usize {
@@ -220,6 +220,76 @@ pub fn plan(func: &Func) -> Plan {
         plan.groups.insert(l.var, Group { root: l.var, members: ordered, inputs, steps, ty: l.ty.clone() });
     }
     plan
+}
+
+/// Why an element-wise value reaches memory, and so where a fusion group
+/// ends (plan 0.11.0 step 4, D114): what `presk explain` prints for each
+/// group's root and each element-wise value left alone. Read off a plan
+/// after the fact; [`plan`] does not record it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// It is the function's result.
+    Result,
+    /// Nothing reads it.
+    Unread,
+    /// A reader that is not element-wise reads it, a reduction, a
+    /// contraction, a call: the value is that reader's operand in memory.
+    Reader(VarId),
+    /// A reader of another type reads it, a type of PSK-Core being a
+    /// shape: a group is one loop nest over one shape.
+    Shape(VarId),
+    /// Its readers are not all in one group.
+    Shared(Vec<VarId>),
+    /// Its one reader's group would pass the expression tree's limit with
+    /// it ([`MAX_TREE`] nodes, a value read twice counted twice).
+    Size(VarId),
+}
+
+/// The element-wise `let`s of `func` that reach memory, each with why, in
+/// body order: every group's root, and every element-wise value in no group.
+pub fn stops(func: &Func, plan: &Plan) -> Vec<(VarId, Stop)> {
+    let body = &func.body;
+    let mut readers: HashMap<VarId, Vec<VarId>> = HashMap::new();
+    for l in &body.lets {
+        for v in uses_of(&l.rhs) {
+            let r = readers.entry(v).or_default();
+            if !r.contains(&l.var) {
+                r.push(l.var);
+            }
+        }
+    }
+    let by_var: HashMap<VarId, &Let> = body.lets.iter().map(|l| (l.var, l)).collect();
+    // The group each `let` is in, by its root.
+    let mut group_of: HashMap<VarId, VarId> = HashMap::new();
+    for (root, g) in &plan.groups {
+        for m in &g.members {
+            group_of.insert(*m, *root);
+        }
+    }
+    let mut out = Vec::new();
+    for l in &body.lets {
+        if plan.interior.contains(&l.var) || fusible(l).is_none() {
+            continue;
+        }
+        let why = if l.var == body.result {
+            Stop::Result
+        } else {
+            let rs = readers.get(&l.var).cloned().unwrap_or_default();
+            if rs.is_empty() {
+                Stop::Unread
+            } else if let Some(r) = rs.iter().find(|r| by_var.get(r).is_none_or(|c| fusible(c).is_none())) {
+                Stop::Reader(*r)
+            } else if let Some(r) = rs.iter().find(|r| by_var.get(r).is_some_and(|c| c.ty != l.ty)) {
+                Stop::Shape(*r)
+            } else if rs.len() > 1 && !rs.iter().all(|r| group_of.contains_key(r) && group_of.get(r) == group_of.get(&rs[0])) {
+                Stop::Shared(rs)
+            } else {
+                Stop::Size(rs[0])
+            }
+        };
+        out.push((l.var, why));
+    }
+    out
 }
 
 /// A contraction whose value one `add` alone reads, the `add` launched by

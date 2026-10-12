@@ -1,0 +1,513 @@
+---
+source: crates/presk-explain/tests/documents.rs
+expression: "document(\"layernorm\", \"tests/examples/layernorm/layernorm.psk\",\n\"LayerNorm{8}.apply\", &[\"batch=3\"], &[], (None, Some(\"f32\")),\n&[Target::Native])"
+---
+---
+title: "`LayerNorm{8}.apply` of `../../tests/examples/layernorm/layernorm.psk`, in f32, planned under the profile `data/x925-frozen.json`"
+subtitle: "What the Presk compiler does to one program: `presk explain`"
+---
+
+## The parameters
+
+| Parameter | Value | Where it comes from |
+|-------------------|------------------------------------|------------------------------------|
+| Program | `../../tests/examples/layernorm/layernorm.psk` | the command line |
+| Entry | `LayerNorm{8}.apply` | `--entry LayerNorm{8}.apply` |
+| Dimensions | `batch = 3` | `--dim batch=3` |
+| Constants | none | the files' |
+| Weights | the initialization, seed 0 | no `--weights` |
+| Realization | every site in `f32` | `--realize f32` |
+| Exact reference | MPFR at 128 bits | `--bits 128` |
+| Machine | the profile `tests/data/x925-frozen.json` | `--profile tests/data/x925-frozen.json` |
+| Threads | 10 | `--threads 10` |
+| Differentiation | `--remat store` | the command line |
+| Optimizer (e-graph) | off | no `--opt` |
+| Targets | native (Cranelift) | `--target native` |
+
+Compiler: presk 0.11.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+
+**The artifacts** it was made from or wrote:
+
+| What | Path | Provenance | SHA-256 |
+|-------------------|------------------------------------|--------------------|--------------------------|
+| the machine profile | `tests/data/x925-frozen.json` | given | `0a4ed24b1b666e13…` |
+| the envelope | `$DOC/artifacts/envelope.json` | computed in this run |  |
+| the layout plan | `$DOC/artifacts/plan.json` | computed in this run |  |
+
+`$DOC/artifacts/SHA256SUMS` holds the checksum of every file written there.
+
+## 0 Summary
+
+| What | Outcome | Kind | Where |
+|------------------|------------------------|------------------|------------------------|
+| Realization | every site in `f32` | parameter | §6 |
+| Bound, rule `cond` | 2.590e-6 (1.219e-6 relative) | bound | §6.4, conditional on the envelope's 1 sample |
+| Measured gap | 1.440e-7 against the exact reference | measurement | §6.4 |
+| Fusion | 10 launches without it, 5 with it: 5 saved | decision | §7 |
+| Layout plan | 5 nests, 19 points costed, 0 tiled, 0 split; predicted 0.046 µs a call over the nests it prices | decision, estimate | §8 |
+| Kernels | 4 distinct, 5 launches a call | fact | §9 |
+
+A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
+
+## 1 The source
+
+The entry's file and the files it imports, as the compiler reads them.
+
+**`../../tests/examples/layernorm/layernorm.psk`**
+
+```text
+  1  -- layernorm.psk — Layer normalization.
+  2  -- Illustrates: reductions over a named axis, vector params (gain/bias),
+  3  -- and the principle "numerical stability belongs to the compiler, not to the code".
+  4  
+  5  module LayerNorm{D : dim} {
+  6    param γ : ℝ[D]  init = ones     -- gain
+  7    param β : ℝ[D]  init = zeros    -- bias
+  8  
+  9    -- eps is NOT a numerical guard: the semantics is exact (division by the
+ 10    -- real standard deviation). It is a hyperparameter of the *model* (regularization), hence f64.
+ 11    -- The stability of sqrt and division is handled at compile time under the budget (§8.2),
+ 12    -- not here.
+ 13    fn apply(x : ℝ[..., model: D], eps : f64 = 1e-5) -> ℝ[..., model: D] =
+ 14      let μ  = mean(axis model, x)                 -- ℝ[...]
+ 15      let σ2 = mean(axis model, (x - μ)^2)         -- variance, reduction over `model`
+ 16      let x̂  = (x - μ) / sqrt(σ2 + real(eps))       -- real(eps): explicit f64 -> ℝ injection
+ 17      x̂ * γ + β                                     -- broadcast of γ, β over the leading axes
+ 18  }
+ 19  
+ 20  -- RMSNorm: variant without recentering, same reduction pattern.
+ 21  module RMSNorm{D : dim} {
+ 22    param γ : ℝ[D]  init = ones
+ 23  
+ 24    fn apply(x : ℝ[..., model: D], eps : f64 = 1e-6) -> ℝ[..., model: D] =
+ 25      let ms = mean(axis model, x^2)
+ 26      x / sqrt(ms + real(eps)) * γ
+ 27  }
+```
+
+Diagnostics: none (`presk check` reports no error and no warning).
+
+*Command:* `presk check ../../tests/examples/layernorm/layernorm.psk`
+
+## 2 Elaboration
+
+Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
+
+```text
+== ../../tests/examples/layernorm/layernorm.psk (main)
+module LayerNorm{D : dim} {
+  param γ : ℝ[D]  init
+  param β : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+module RMSNorm{D : dim} {
+  param γ : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+```
+
+**Types, regularity and effects**, as `presk check --summary` prints them:
+
+```text
+layernorm.psk LayerNorm.apply : ℝ[..., model: D]
+    let μ : ℝ[...]
+    let σ2 : ℝ[...]
+    let x̂ : ℝ[..., model: D]
+layernorm.psk RMSNorm.apply : ℝ[..., model: D]
+    let ms : ℝ[...]
+-- regularity and effects --
+LayerNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+RMSNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+LayerNorm.init : [key C∞] uses Rand
+RMSNorm.init : [key C∞] uses Rand
+```
+
+**Static assertions:** none.
+
+**The parameters** of `LayerNorm{8}.apply`, its first argument: 2 tensors, 16 reals at these dimensions.
+
+| Parameter | Reals |
+|----------|----------|
+| `γ` | 8 |
+| `β` | 8 |
+
+*Commands:*
+
+- `presk dump ../../tests/examples/layernorm/layernorm.psk --stage elab`
+- `presk check ../../tests/examples/layernorm/layernorm.psk --summary`
+
+## 3 PSK-Core
+
+PSK-Core is the program in A-normal form: one typed operation per line, the parameter trees explicit, a `stack{L}` a `fold`.
+
+**A site is named `<function>/%<n>`**, `n` the number of its variable, whether the `let` has a source name (`ms`) or not (`%5`). That name is the thread every later section follows: the envelope, the sensitivities and the realization are keyed by it, a nest is named by the site it computes, and the C program comments each launch with it.
+
+The functions `LayerNorm{8}.apply` reaches (1 of the program's 4):
+
+```text
+fn LayerNorm.apply{D}(θ : params LayerNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  μ : ℝ[...] = mean axis model x
+  %4 : ℝ[..., model: D] = sub x, μ
+  %5 : ℝ[..., model: D] = pow 2 %4
+  σ2 : ℝ[...] = mean axis model %5
+  %7 : ℝ[..., model: D] = sub x, μ
+  %8 : ℝ[] = real eps
+  %9 : ℝ[...] = add σ2, %8
+  %10 : ℝ[...] = sqrt %9
+  x̂ : ℝ[..., model: D] = div %7, %10
+  γ : ℝ[D] = θ.γ
+  %13 : ℝ[..., model: D] = mul x̂, γ
+  β : ℝ[D] = θ.β
+  %15 : ℝ[..., model: D] = add %13, β
+  return %15
+}
+```
+
+*Command:* `presk dump ../../tests/examples/layernorm/layernorm.psk --stage core`
+
+## 4 Differentiation
+
+Differentiation turns each `grad` into a reverse sweep: a `.vjp` that runs the function forward, keeps what the sweep needs (`--remat store`) or recomputes it (`--remat recompute`), and propagates the cotangents back.
+
+`LayerNorm{8}.apply` calls no `grad`, so its compiled program holds no derivative.
+
+## 5 The e-graph optimizer
+
+The optimizer saturates an e-graph of each function with the rewrite rules and extracts the cheapest form under its cost model.
+
+Not run: `--opt` is off.
+
+## 6 Precision: from a budget to a type per site
+
+A budget bounds the distance between what the machine computes and the mathematics. Four steps turn it into types: **measure** how large the values get (the envelope), **rank** where error matters (the sensitivities), **solve** for the cheapest types the estimate allows, then **discharge** the budget by running the candidate against the exact reference.
+
+### 6.1 The envelope
+
+The exact interpreter runs the entry once and records the largest |x| at every site, and at each sum and contraction what its terms add up to without cancelling: divided by the sum, its condition number.
+
+```text
+presk calibrate: 13 sites over 1 samples of `LayerNorm{8}.apply` at 128 bits
+  LayerNorm.apply/%5           4.9415e0
+  LayerNorm.apply/%4           2.2229e0
+  LayerNorm.apply/%7           2.2229e0
+  LayerNorm.apply/%11          2.1249e0
+  LayerNorm.apply/%13          2.1249e0
+presk calibrate: 2 sums and contractions, worst condition numbers Σ|xᵢwᵢ| / |Σxᵢwᵢ|:
+  LayerNorm.apply/%3           1.4505e0
+  LayerNorm.apply/%6           1.0000e0
+```
+
+The envelope holds 13 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
+
+*Command:* `presk calibrate --precision ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --bits 128 --out $DOC/artifacts/envelope.json`
+
+### 6.2 The sensitivities
+
+`‖∂L/∂v‖₁` at each site, from one reverse sweep: how much an error at the site moves the output.
+
+None: `LayerNorm{8}.apply` returns no scalar `ℝ[]`, and a sensitivity is `∂L/∂v` of a scalar `L`.
+
+### 6.3 The realization
+
+A realization gives each site a machine type; a site it does not name takes the default.
+
+Given: every site in `f32`.
+
+### 6.4 The bound and the measurement
+
+Under the realization, each rule's bound on the output's error, beside the gap measured against the exact reference.
+
+```text
+presk check --precision: `LayerNorm{8}.apply` under f32
+  magnitude   2.1249e0
+  bound    k         6.8752e-6  (3.24e-6 relative)     4.77e1× the measured gap
+  bound    normwise  4.9795e-6  (2.34e-6 relative)     3.46e1× the measured gap
+  bound    cond      2.5896e-6  (1.22e-6 relative)     1.80e1× the measured gap
+  estimate rss       1.6714e-6  (7.87e-7 relative)     1.16e1× the measured gap
+  measured             1.4403e-7  (6.78e-8 relative)  the kernel interpreter against the exact reference
+  envelope    $DOC/artifacts/envelope.json over 1 samples, 13 sites, initial weights
+site                              magnitude            k     relative    condition
+LayerNorm.apply/%15                 2.125e0     6.875e-6     3.235e-6            -
+LayerNorm.apply/%13                 2.125e0     6.689e-6     3.148e-6            -
+LayerNorm.apply/%11                 2.125e0     6.436e-6     3.029e-6            -
+LayerNorm.apply/%9                  1.094e0     5.675e-6     5.186e-6            -
+LayerNorm.apply/%6                  1.094e0     5.550e-6     5.072e-6      1.000e0
+LayerNorm.apply/%5                  4.941e0     3.423e-6     6.928e-7            -
+LayerNorm.apply/%10                 1.046e0     2.775e-6     2.652e-6            -
+LayerNorm.apply/%4                  2.223e0     7.037e-7     3.166e-7            -
+```
+
+The sound rule (`cond`) bounds the error by 2.590e-6, conditional on the envelope's 1 sample; the measurement is 1.440e-7, 1.8e1× under it.
+
+*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/layernorm/layernorm.psk --realize f32 --model all --sites 8 --measure`
+
+## 7 Fusion
+
+PSK-Realize groups the element-wise operations that can share one loop nest: an intermediate inside a group never reaches memory. `iN` is a group's input N, `sN` its step N.
+
+In the functions `LayerNorm{8}.apply` reaches, 3 groups, 5 `let`s fused away:
+
+```text
+fn LayerNorm.apply — 13 lets, 3 groups, 5 launches saved
+  %5 = sub(i0,i1);pow 2(s0) [2 inputs, 2 steps]
+  %10 = add(i0,i1);sqrt(s0) [2 inputs, 2 steps]
+  %15 = sub(i0,i1);div(s0,i2);mul(s1,i3);add(s2,i4) [5 inputs, 4 steps]
+```
+
+Over one call, fusion takes 10 launches to 5.
+
+**Where each group ends**, and why each element-wise value outside a group is alone: what reads it. A value joins its reader's group when every reader is in that group, is element-wise and of the same shape, and the group's expression stays under its size limit.
+
+| Value | Line |  | Reaches memory because |
+|-----------------------------|------------------------------------|-----------------|------------------------|
+| `LayerNorm.apply/%5` | `%5 : ℝ[..., model: D] = pow 2 %4` | ends a group of 2 | read by `σ2 : ℝ[...] = mean axis model %5`: a reduction |
+| `LayerNorm.apply/%10` | `%10 : ℝ[...] = sqrt %9` | ends a group of 2 | read by `x̂ : ℝ[..., model: D] = div %7, %10`, of another shape: a group is one loop nest over one shape |
+| `LayerNorm.apply/%15` | `%15 : ℝ[..., model: D] = add %13, β` | ends a group of 4 | the function's result |
+
+*Command:* `presk dump ../../tests/examples/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json`
+
+## 8 The machine and the layout plan
+
+Each nest has a space of layouts (vector lanes, a split over workers, for a contraction a register tile, a k-block, a loop order, packing). The plan takes the point the profile's cost model predicts fastest; "within 1 + u" counts the points the model cannot tell from the best.
+
+The profile describes the machine as the cost model sees it, and holds the constants fitted on its calibration.
+
+| Machine |  |
+|----------------|------------------------|
+| Workers | 10 (read from `cpu5`) |
+| L1, private | 64 KiB |
+| L2, private | 2048 KiB |
+| L3 | 8192 KiB, shared by 5 workers |
+| Vector registers | 32 × 16 bytes |
+| Cache line | 64 bytes |
+
+| Layout model |  |
+|------------------------|-------------------|
+| Starting a split launch (`spawn`) | 101.5 µs |
+| Bandwidth from L2, L3, memory | 214, 354, 711 GB/s |
+| Terms combined by | a p-norm, p = 1.059 |
+| Its error on the calibration (u) | 0.132 |
+| Rank correlation on the calibration | 0.984 |
+
+The plan, as `presk plan` prints it: each launch's operands, the points of its space that lower, the best prediction, and the layout chosen. The entry was captured from its shapes alone, on 10 workers.
+
+```text
+nest                         operands                        space     predicted          undecided  layout
+LayerNorm.apply/%3           [3, 8]                       3 points        0.01 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%5           [3, 8] [3]                   5 points        0.01 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%6           [3, 8]                       3 points        0.01 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%10          [3] []                       3 points        0.00 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%15          [3, 8] [3] [3] [8] [8]       5 points        0.02 µs    1 within 1 + u  lanes 1, split none
+-- 5 nests, 19 points costed; u = 0.132
+```
+
+*Every point's prediction, as `presk plan --cost` prints them, in `listings/plan-cost.txt` (25 lines).*
+
+**Why each nest takes its layout.** The chosen point (1), its two runners-up and the best point that splits the nest over workers, each prediction in its terms, in µs, its layout under it: `λ` a launch, `spawn` starting a split launch, then work, register loads, and the traffic from L2, L3 and memory, which the model combines by a p-norm, p = 1.059. `bound by` names the largest term. A split pays `spawn`, 101.5 µs, so it wins only when it divides more than that.
+
+```text
+LayerNorm.apply/%3 [3, 8] — 3 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0065    0.0000    0.0000    0.0042    0.0005    0.0012    0.0007    0.0004  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0014    0.0002    0.0006    0.0011    0.0005  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0014    0.0002    0.0006    0.0011    0.0005  spawn
+     lanes 1, split (0, 10)
+
+LayerNorm.apply/%5 [3, 8] [3] — 5 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0128    0.0000    0.0000    0.0077    0.0020    0.0021    0.0013    0.0006  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0026    0.0008    0.0009    0.0016    0.0008  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0026    0.0008    0.0009    0.0016    0.0008  spawn
+     lanes 1, split (0, 10)
+
+LayerNorm.apply/%6 [3, 8] — 3 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0065    0.0000    0.0000    0.0042    0.0005    0.0012    0.0007    0.0004  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0014    0.0002    0.0006    0.0011    0.0005  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0014    0.0002    0.0006    0.0011    0.0005  spawn
+     lanes 1, split (0, 10)
+
+LayerNorm.apply/%10 [3] [] — 3 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0039    0.0000    0.0000    0.0023    0.0002    0.0009    0.0005    0.0003  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0008    0.0001    0.0009    0.0016    0.0008  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0008    0.0001    0.0009    0.0016    0.0008  spawn
+     lanes 1, split (0, 10)
+
+LayerNorm.apply/%15 [3, 8] [3] [3] [8] [8] — 5 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0165    0.0000    0.0000    0.0096    0.0024    0.0030    0.0018    0.0009  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0032    0.0009    0.0018    0.0033    0.0016  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0032    0.0010    0.0018    0.0033    0.0016  spawn
+     lanes 1, split (0, 10)
+```
+
+*Command:* `PRESK_THREADS=10 presk plan ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+
+## 9 The kernels and the host
+
+PSK-Kernel is the loop nests the backends run: one kernel per distinct nest, under its type and its layout. The host program launches them, converting a value where a kernel reads it in another type.
+
+```text
+-- 4 kernels, 5 launches, f32
+-- fusion: 10 launches without it, 5 saved (50%)
+```
+
+Each kernel under the sites that launch it, as the host recorded them:
+
+```text
+// k0: 2 launches at LayerNorm.apply/%3 (μ), LayerNorm.apply/%6 (σ2)
+kernel mean axis model (%0 : f32[batch: 3, model: 8]) -> %1 : f32[batch: 3] {
+  for i0 in 0..3 {
+    s0 = 0
+    for i1 in 0..8 {
+      s0 = (s0 + %0[i0, i1])
+    }
+    %1[i0] = (s0 / 8)
+  }
+}
+// k1: 1 launch at LayerNorm.apply/%5 (fused)
+kernel fused 2 steps (%0 : f32[batch: 3, model: 8], %1 : f32[batch: 3]) -> %2 : f32[batch: 3, model: 8] {
+  for i0 in 0..3 {
+    for i1 in 0..8 {
+      %2[i0, i1] = ((%0[i0, i1] - %1[i0]) * (%0[i0, i1] - %1[i0]))
+    }
+  }
+}
+// k2: 1 launch at LayerNorm.apply/%10 (fused)
+kernel fused 2 steps (%0 : f32[batch: 3], %1 : f32[]) -> %2 : f32[batch: 3] {
+  for i0 in 0..3 {
+    %2[i0] = sqrt((%0[i0] + %1[]))
+  }
+}
+// k3: 1 launch at LayerNorm.apply/%15 (fused)
+kernel fused 4 steps (%0 : f32[batch: 3, model: 8], %1 : f32[batch: 3], %2 : f32[batch: 3], %3 : f32[8], %4 : f32[8]) -> %5 : f32[batch: 3, model: 8] {
+  for i0 in 0..3 {
+    for i1 in 0..8 {
+      %5[i0, i1] = ((((%0[i0, i1] - %1[i0]) / %2[i0]) * %3[i1]) + %4[i1])
+    }
+  }
+}
+```
+
+**The host**, as the C export prints it (§10): a function per Presk function, a fold a loop, each launch under the site it computes and each conversion where a kernel reads a value in another type.
+
+```c
+void presk_LayerNorm_8_apply(presk_arena *arena, const presk_LayerNorm_8_apply_in *in, presk_LayerNorm_8_apply_out *out)
+{
+    const float *theta_gamma = in->theta_gamma;
+    const float *theta_beta = in->theta_beta;
+    const float *x = in->x;
+    float *result = presk_alloc(arena, 24 * sizeof(float));
+    const size_t mark = presk_mark(arena);
+    /* LayerNorm.apply/%3 (μ) */
+    float *mu = presk_alloc(arena, 3 * sizeof(float));
+    k0(x, mu, 0, 3);
+    /* LayerNorm.apply/%5 (fused) */
+    float *t5 = presk_alloc(arena, 24 * sizeof(float));
+    k1(x, mu, t5, 0, 3);
+    /* LayerNorm.apply/%6 (σ2) */
+    float *sigma2 = presk_alloc(arena, 3 * sizeof(float));
+    k0(t5, sigma2, 0, 3);
+    /* LayerNorm.apply/%8 */
+    float *t8 = presk_alloc(arena, 1 * sizeof(float));
+    presk_fill(t8, PRESK_F32, in->eps, 1);
+    /* LayerNorm.apply/%10 (fused) */
+    float *t10 = presk_alloc(arena, 3 * sizeof(float));
+    k2(sigma2, t8, t10, 0, 3);
+    /* LayerNorm.apply/%15 (fused) */
+    k3(x, mu, t10, theta_gamma, theta_beta, result, 0, 3);
+    out->result = result;
+    presk_release(arena, mark);
+}
+```
+
+*Command:* `presk dump ../../tests/examples/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json`
+
+## 10 Targets
+
+**Native.** The Cranelift backend compiles each of the 4 kernels to machine code at its first launch, in process, and the host program of §9 runs them.
+
+## 11 Measured
+
+What one run measured on this machine: the realization natively against the exact reference, a call timed, each kernel's time beside the model's prediction, and the host's time by phase. The one section that changes from run to run.
+
+Not measured: `--measure` was not given. Every other section is deterministic; this one would hold times.
+
+## 12 Sites through every stage
+
+A site is named `<function>/%<n>` at every stage, which is what lets one value be followed from PSK-Core to the C.
+
+By default, the three largest shares of the solver's estimate (the three largest bounds without a solve), then the three nests of the most predicted time a call; `--site` names others.
+
+**`LayerNorm.apply/%5`**
+
+| Stage |  |
+|---------------|------------------------------------|
+| PSK-Core (§3) | `%5 : ℝ[..., model: D] = pow 2 %4` in `LayerNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 4.941e0, 24 elements |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | ends a group of 2: read by `σ2 : ℝ[...] = mean axis model %5`: a reduction |
+| Layout (§8) | nest `LayerNorm.apply/%5`, 5 points at `[3, 8] [3]`; chosen lanes 1, split none, 0.0128 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k1`: `kernel fused 2 steps (%0 : f32[batch: 3, model: 8], %1 : f32[batch: 3]) -> %2 : f32[batch: 3, model: 8]` |
+
+**`LayerNorm.apply/%15`**
+
+| Stage |  |
+|---------------|------------------------------------|
+| PSK-Core (§3) | `%15 : ℝ[..., model: D] = add %13, β` in `LayerNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 2.125e0, 24 elements |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | ends a group of 4: the function's result |
+| Layout (§8) | nest `LayerNorm.apply/%15`, 5 points at `[3, 8] [3] [3] [8] [8]`; chosen lanes 1, split none, 0.0165 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k3`: `kernel fused 4 steps (%0 : f32[batch: 3, model: 8], %1 : f32[batch: 3], %2 : f32[batch: 3], %3 : f32[8], %4 : f32[8]) -> %5 : f32[batch: 3, model: 8]` |
+
+**`LayerNorm.apply/%13`**
+
+| Stage |  |
+|---------------|------------------------------------|
+| PSK-Core (§3) | `%13 : ℝ[..., model: D] = mul x̂, γ` in `LayerNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 2.125e0, 24 elements |
+| Type (§6.3) | `f32`, follows `LayerNorm.apply/%15` |
+| Fusion (§7) | a member of the group that ends at `LayerNorm.apply/%15`: computed there, never stored |
+| Layout (§8) | nest `LayerNorm.apply/%15`, 5 points at `[3, 8] [3] [3] [8] [8]`; chosen lanes 1, split none, 0.0165 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k3`: `kernel fused 4 steps (%0 : f32[batch: 3, model: 8], %1 : f32[batch: 3], %2 : f32[batch: 3], %3 : f32[8], %4 : f32[8]) -> %5 : f32[batch: 3, model: 8]` |
+
+**`LayerNorm.apply/%3`**
+
+| Stage |  |
+|---------------|------------------------|
+| PSK-Core (§3) | `μ : ℝ[...] = mean axis model x` in `LayerNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 5.837e-1, 3 elements, condition number 1.450e0 |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | not an element-wise operation |
+| Layout (§8) | nest `LayerNorm.apply/%3`, 3 points at `[3, 8]`; chosen lanes 1, split none, 0.0065 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k0`: `kernel mean axis model (%0 : f32[batch: 3, model: 8]) -> %1 : f32[batch: 3]` |
+
+*Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (14 lines).*
+
+## Appendix: the commands
+
+The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
+
+```sh
+presk check ../../tests/examples/layernorm/layernorm.psk
+presk dump ../../tests/examples/layernorm/layernorm.psk --stage elab
+presk check ../../tests/examples/layernorm/layernorm.psk --summary
+presk dump ../../tests/examples/layernorm/layernorm.psk --stage core
+presk calibrate --precision ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --bits 128 --out $DOC/artifacts/envelope.json
+presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/layernorm/layernorm.psk --realize f32 --model all --sites 8 --measure
+presk dump ../../tests/examples/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump ../../tests/examples/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
+```

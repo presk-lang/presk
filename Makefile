@@ -33,6 +33,8 @@
 #   make c-conformance    the C export: every entry of the plan-check set and the course GPT exported, built, run, bit for bit, under the default layout and under plans, on GCC, Clang and for x86-64; presk serve's tokens from the exported generation loop; integer weights on the trained checkpoints; every nest in the SCoP mode against Polly (0.9.0 steps 3–8)
 #   make c-speed          statement C4: the exported course GPT's forward at B = 16 against the native backend's, one thread and every thread (0.9.0 step 5; a quiet machine)
 #   make pytorch-baseline the course GPT's forward pass and training step on three sides, native, C and PyTorch, into out/pytorch-baseline/report.md (D87; a quiet machine, about forty minutes)
+#   make gappa            one nest's bound proved in Gappa beside the compiler's bound and the measured gap: the layer norm in f32 at D = 8…64 on eight rows, into out/gappa/summary.md (D108; needs `gappa`, apt's; minutes, nothing timed)
+#   make pytorch-decoder  the Llama 2 decoder block at the 7B width, its forward pass natively and in PyTorch eager, ten X925 cores pinned, into out/pytorch-decoder/report.md (D107; alone, about three and a half hours)
 #   make host-profile     the native host's time by phase on the course GPT's forward pass, gradient and training step, into out/host-profile/report.md (0.10.0 step 5, D95; a quiet machine)
 #   make zig              zig from PyPI in .venv-zig: the Clang and the x86-64 cross-compiler of statement C3 (0.9.0 step 5)
 #   make llvm             LLVM's release for Linux on aarch64 in .llvm: the clang with Polly the SCoP mode's nests are checked with (0.9.0 step 8)
@@ -63,6 +65,9 @@
 #   make sync-examples    re-copy tests/examples from presk-specs and show the diff
 #   make snap             review pending insta snapshots
 #   make doc              build the user manual (crates/presk-manual) and open it
+#   make explain          presk explain on the tutorial's loss (a budget of 1e-3, the frozen profile, every target) into out/explain/loss (0.11.0)
+#   make explain-pdf      the PDF of a presk explain document, EXPLAIN=DIR (out/explain/loss by default): pandoc and lualatex (TeX Live 2026), DejaVu fonts
+#   make explain-manual   the tutorial's document regenerated into the manual's chapter explain_loss, which a test holds current
 #   make clean
 
 PRESK_SPECS_DIR ?= ../presk-specs
@@ -88,7 +93,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: delta-p compile-times c-conformance c-speed pytorch-baseline host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -157,6 +162,8 @@ tutorial: build
 	$(PRESK) run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6 --const L=1
 	$(PRESK) dump tutorial/04_grad.psk --stage core | sed -n '/^fn loss{/,/^}/p'
 	$(PRESK) dump tutorial/04_grad.psk --stage core-after-ad | grep '^fn'
+	$(PRESK) explain tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --out out/tutorial_explain
+	grep '^## ' out/tutorial_explain/explain.md
 	$(PRESK) export tutorial/06_tower.psk --target pytorch --mode readable --shapes=check \
 	    --conformance-entry Tower.apply --dim batch=2 -o out/tutorial_tower
 	$(PRESK) export tutorial/04_grad.psk --target pytorch --mode readable \
@@ -941,6 +948,40 @@ pytorch-baseline:
 	env -u CFLAGS $(CARGO) build --release -p presk
 	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) CFLAGS="$(CFLAGS)" C_WAIT="$(C_WAIT)" experiments/pytorch_baseline.sh $(BASELINE_OUT)
 
+# PyTorch eager on the Llama 2 decoder block (D107): D100's protocol on one
+# block of coverage/llama.psk at the 7B width, the forward pass at 384
+# tokens, batch 1 and 20, `f32` — the native backend in `f32` and with
+# `int8` weights on every matrix, under the default layouts and under the
+# frozen profile's plans, against PyTorch on the module the PyTorch export
+# writes (ten threads, and one at batch 1), on the ten X925 cores pinned
+# (RA4_CORES); then the native kernels alone under the `f32` plan and the
+# host by phase at batch 1. Into out/pytorch-decoder/report.md, outputs
+# that exist reused. Needs .venv; alone on the machine: the timed rows about
+# an hour and a half, the kernels alone two hours more, a native process
+# about 35 GB. `T=16` is its gate (about ten minutes).
+DECODER_OUT ?= out/pytorch-decoder
+pytorch-decoder:
+	$(CARGO) build --release -p presk
+	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) experiments/pytorch_decoder.sh $(DECODER_OUT)
+
+# One nest's bound proved in Gappa, beside the compiler's bound and the
+# measured gap (D108): `LayerNorm{D}.apply` in f32 at D = 8, 16, 32 and 64
+# on eight rows, each width's envelope, the four rules' bounds and the gap
+# (`presk calibrate`/`check --precision`), the kernels' order, and the Gappa
+# file experiments/gappa_layernorm.py writes from the envelope, queried then
+# checked as a proof; into out/gappa/summary.md. Needs `gappa` on the PATH
+# (Debian's package; GAPPA= another). Nothing timed, any machine: Gappa
+# takes seconds at D = 8 and about ten minutes at D = 64. WIDTHS=, BATCH=,
+# HYPS= (sites, input), REALIZE= (f32, f64, bf16) and OUT= select.
+gappa:
+	$(CARGO) build --release -p presk
+	WIDTHS="$(WIDTHS)" BATCH="$(BATCH)" HYPS="$(HYPS)" REALIZE="$(REALIZE)" OUT="$(GAPPA_OUT)" ./experiments/gappa.sh
+WIDTHS ?= 8 16 32 64
+BATCH ?= 8
+HYPS ?= sites input
+REALIZE ?= f32
+GAPPA_OUT ?= out/gappa
+
 # The native host measured (plan 0.10.0 step 5, D95): `presk bench
 # --host-profile` and `presk train --host-profile` on the course GPT under
 # the frozen profile's plans, ten X925 cores pinned and every core unpinned.
@@ -962,6 +1003,30 @@ snap:
 
 doc:
 	$(CARGO) doc -p presk-manual --no-deps --open
+
+# presk explain (plan 0.11.0): one compilation as a document. `explain`
+# writes the tutorial's `loss` under a budget of 1e-3 and the frozen X925
+# profile (its constants, without its samples), on ten threads, every
+# target; `explain-pdf` makes EXPLAIN/explain.pdf from EXPLAIN/explain.md
+# with pandoc 3.1.3 and lualatex from TeX Live 2026 (TEXLIVE=), in the
+# DejaVu fonts, whose monospace face has ℝ, θ, ∂ and the subscripts, and
+# fvextra's verbatim, which breaks a long listing's lines (the manual's
+# `dependencies` chapter). Nothing timed, any machine.
+EXPLAIN ?= out/explain/loss
+EXPLAIN_PROFILE ?= crates/presk-explain/tests/data/x925-frozen.json
+TEXLIVE ?= /usr/local/texlive/2026/bin/aarch64-linux
+explain:
+	$(PRESK) explain tutorial/07_train.psk --entry loss --dim B=4 --budget 1e-3 --profile $(EXPLAIN_PROFILE) --threads 10 --target native,c,pytorch --out $(EXPLAIN)
+
+explain-pdf:
+	@test -f $(EXPLAIN)/explain.md || $(MAKE) explain
+	cd $(EXPLAIN) && PATH="$(TEXLIVE):$$PATH" pandoc explain.md -o explain.pdf --pdf-engine=lualatex \
+	  -H $(CURDIR)/crates/presk-explain/pandoc/header.tex -V mainfont="DejaVu Serif" -V sansfont="DejaVu Sans" \
+	  -V monofont="DejaVu Sans Mono" -V geometry:margin=2cm -V fontsize=10pt -V colorlinks=true --toc --toc-depth=2
+	@echo "wrote $(EXPLAIN)/explain.pdf"
+
+explain-manual:
+	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk --test explain the_manual_holds_the_tutorial_s_document
 
 clean:
 	$(CARGO) clean

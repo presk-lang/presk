@@ -12,213 +12,36 @@
 //! nests: kernels of one entry are launched one after another, so a nest's
 //! time does not depend on another nest's layout.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use presk_kernel::cost::{Machine, planned_cost_under};
 use presk_kernel::exec::{output_buf, run_kernel};
-use presk_kernel::plan::{launch_kind, lower_launch, lower_launch_splits, split_as};
-use presk_kernel::{Kernel, KernelExec, Launch, LaunchOp, Threads};
-use presk_opt::profile::{LayoutFit, group_key};
-use presk_rt::layout::{BlockLoop, KBlock, Split};
+use presk_kernel::plan::{launch_kind, lower_launch, split_as};
+use presk_kernel::{Kernel, KernelExec, Launch, LaunchOp};
+use presk_opt::profile::LayoutFit;
+use presk_rt::layout::Split;
 use presk_rt::{Buf, Layout, NestKind};
 use serde_json::{Value as Json, json};
 
-use super::{color, core, parse_dims, render_all};
 
-/// Which layouts a sweep covers.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Space {
-    /// The reference's space (`Layout::space`) times every split.
-    Full,
-    /// The plan's daily subset: the tiles `{1, 4} × {8, 16}`, no k-block and
-    /// 128, the orders `IJ JI KIJ IKJ IJK`, the splits none, `(0, p_M)` and
-    /// `(1, p_M)`; every lane width, pack and pass count.
-    Small,
-}
+// The capture, the points, the prediction and the choice are the driver's
+// (`presk_driver::layout`, 0.11.0); the commands below print them.
+pub use presk_driver::layout::{Capture, Captured, Space, points, predict};
+use presk_driver::layout::{group, shape};
 
-impl Space {
-    pub fn parse(s: &str) -> Result<Space, String> {
-        match s {
-            "full" => Ok(Space::Full),
-            "small" => Ok(Space::Small),
-            other => Err(format!("--space {other}: `full` or `small`")),
-        }
-    }
-}
-
-/// The entry, run once under its default layout, its launches captured.
-pub struct Captured {
-    pub launches: Vec<Launch>,
-    pub machine: Machine,
-    pub seconds: f64,
-}
-
-/// How an entry is run to capture its launches.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Capture {
-    /// Natively: every launch's inputs hold the values the entry computes,
-    /// which timing a point on them needs (`presk autotune`).
-    Run,
-    /// The host program only (0.8.0 step 1, D65): every launch is lowered
-    /// and recorded, and no kernel is compiled or run, so the inputs of a
-    /// launch after the first are zeros of their shapes. Choosing statically
-    /// needs the launches' shapes, not their values (`presk plan`, `presk
-    /// reprice`, and the static side of statement N).
-    Shapes,
-}
-
-/// An executor that runs nothing ([`Capture::Shapes`]): every output stays
-/// the zeros it was allocated as.
-struct NoRun;
-
-impl KernelExec for NoRun {
-    fn name(&self) -> &'static str {
-        "shapes"
-    }
-
-    fn run(&mut self, _: usize, _: &Kernel, _: &[&Buf], _: &mut Buf) -> presk_rt::Result<()> {
-        Ok(())
-    }
-}
-
-/// An input of [`Capture::Shapes`], built from its shape: a tensor as zeros
-/// in the realization's type, a module's parameters by its initializer on
-/// `b`, which runs no kernel, so that they are zeros of their shapes too, and
-/// a scalar or a key as `presk run` synthesizes it. Nothing is computed in
-/// exact arithmetic.
-fn zeros(b: &mut presk_kernel::KernelBackend, realize: &presk_rt::Realization, s: &presk_interp::run::Shaped) -> presk_rt::Result<presk_rt::Value> {
-    use presk_interp::run::Shaped;
-    use presk_rt::{Tensor, Value};
-    let size = |axes: &[presk_interp::value::Axis]| axes.iter().map(|a| a.len).product::<usize>();
-    Ok(match s {
-        Shaped::Real(axes) => Value::Real(Tensor { axes: axes.clone(), data: Buf::zeros(realize.default, size(axes)) }),
-        Shaped::Idx { bound, axes } => Value::Idx { bound: *bound, t: Tensor { axes: axes.clone(), data: Buf::I64(vec![0; size(axes)].into()) } },
-        Shaped::Value(v) => Value::from_interp(v)?,
-        Shaped::Tuple(parts) => Value::Tuple(parts.iter().map(|p| zeros(b, realize, p)).collect::<presk_rt::Result<_>>()?),
-        Shaped::Params { init, dims, key } => {
-            let p = presk_rt::Backend::prepare(b, *init, dims, realize)?;
-            presk_rt::Backend::call(b, &p, vec![Value::Key(key.clone())])?
-        }
-    })
-}
-
-/// Runs `entry` once with the kernel backend capturing, natively or on the
-/// host program alone, and returns the launches of the nests `nests` names
-/// (every nest when it is empty; several since 0.10.0 step 2).
+/// [`presk_driver::layout::capture`], under the command's `--remat`,
+/// reported on standard error.
 #[allow(clippy::too_many_arguments)]
 pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], plan: &presk_rt::Plan, seed: u64, nests: &[String], mode: Capture) -> Result<Captured, ExitCode> {
-    let t0 = Instant::now();
-    let dims = parse_dims(dims)?;
-    let (sm, prog, mut core) = core(file, consts, false)?;
-    let realize = &plan.realization;
-    let mut diags = crate::differentiate(&mut core, realize.groups_visible());
-    diags.extend(crate::stored_vjps(&core, realize));
-    eprint!("{}", render_all(&diags, &sm, color()));
-    if presk_syntax::diag::has_errors(&diags) {
-        return Err(ExitCode::from(1));
-    }
-    let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits: 64, digits: 12 };
-    let fail = |d: presk_syntax::Diagnostic| {
-        eprint!("{}", render_all(&[d], &sm, color()));
-        ExitCode::from(1)
-    };
-    let mut b = match mode {
-        Capture::Run => presk_cranelift::native_backend(&core, &prog, realize).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?,
-        Capture::Shapes => {
-            // The native backend's defaults, its executor aside.
-            let mut b = presk_kernel::KernelBackend::with_exec(&core, &prog, realize, Box::new(NoRun));
-            b.default_layout.lanes = None;
-            b
-        }
-    };
-    // A realization with integer weights quantizes drawn values; zeros would
-    // have no scale.
-    let (func, fdims, args) = if mode == Capture::Shapes && realize.quant.is_empty() {
-        let (func, fdims, shaped) = presk_interp::run::prepare_shapes(&core, &prog, &opts).map_err(|e| fail(crate::interp_diag(e)))?;
-        let args = shaped.iter().map(|(_, s)| zeros(&mut b, realize, s)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
-        (func, fdims, args)
-    } else {
-        let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).map_err(|e| fail(crate::interp_diag(e)))?;
-        let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).map(|v| v.realize(realize.default))).collect::<presk_rt::Result<_>>().map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
-        realize.quantize_args(&mut args).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
-        (func, fdims, args)
-    };
-    b.capture = Some(Vec::new());
-    let p = presk_rt::Backend::prepare(&mut b, func, &fdims, realize).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
-    presk_rt::Backend::call(&mut b, &p, args).map_err(|e| fail(crate::run_diag(e.code, e.message, e.span)))?;
-    let mut launches = b.capture.take().unwrap_or_default();
-    if !nests.is_empty() {
-        launches.retain(|l| nests.contains(&l.nest));
-        if let Some(n) = nests.iter().find(|n| !launches.iter().any(|l| l.nest == **n)) {
-            eprintln!("presk: the entry launches no nest `{n}`");
-            return Err(ExitCode::from(2));
-        }
-    }
-    Ok(Captured { launches, machine: Machine::detect(), seconds: t0.elapsed().as_secs_f64() })
+    presk_driver::layout::capture(file, entry, dims, consts, plan, seed, nests, mode, crate::remat(), &mut crate::stderr()).map_err(crate::exit)
 }
 
-/// Point 0 of a nest: its default layout, scalar, on one worker, no pack —
-/// the kernel every other point is compared with, bit for bit.
-pub fn point_zero(kind: &NestKind) -> Layout {
-    let d = Layout::default_for(kind);
-    Layout { lanes: Some(1), split: Some(Split::None), pack: d.pack.map(|_| false), ..d }
-}
-
-/// The layouts of a nest's space that lower at this launch, each with its
-/// kernels: `space` narrowed to the daily subset if asked, times the splits
-/// the machine allows, each split checked against the kernel (condition 8).
-/// Point 0 comes first.
-pub fn points(l: &Launch, space: Space, workers: usize) -> Vec<(Layout, Vec<Kernel>)> {
-    let kind = launch_kind(l);
-    let mut base = Layout::space(&kind);
-    if space == Space::Small {
-        let orders: [&[BlockLoop]; 5] = [&[BlockLoop::I, BlockLoop::J], &[BlockLoop::J, BlockLoop::I], &[BlockLoop::K, BlockLoop::I, BlockLoop::J], &[BlockLoop::I, BlockLoop::K, BlockLoop::J], &[BlockLoop::I, BlockLoop::J, BlockLoop::K]];
-        base.retain(|p| {
-            p.tile.is_none_or(|(mi, nj)| [1, 4].contains(&mi) && [8, 16].contains(&nj))
-                && p.kblock.is_none_or(|k| matches!(k, KBlock::None | KBlock::Width(128)))
-                && p.order.as_ref().is_none_or(|o| orders.contains(&o.as_slice()))
-        });
-    }
-    let mut splits = vec![Split::None];
-    let depths: &[usize] = if space == Space::Small { &[0, 1] } else { &[0, 1, 2] };
-    let mut counts = if space == Space::Small { vec![workers] } else { vec![workers / 2, workers] };
-    counts.retain(|p| *p >= 2);
-    counts.dedup();
-    for d in depths {
-        for p in &counts {
-            splits.push(Split::At { depth: *d, workers: *p });
-        }
-    }
-    let zero = point_zero(&kind);
-    let mut out: Vec<(Layout, Vec<Kernel>)> = Vec::new();
-    if let Ok(ks) = lower_launch(l, &zero, Some(workers)) {
-        out.push((zero.clone(), ks));
-    }
-    // Each layout lowered once for all its splits (0.8.0 step 1).
-    for b in &base {
-        for (s, ks) in splits.iter().zip(lower_launch_splits(l, b, &splits, Some(workers))) {
-            let p = Layout { split: Some(*s), ..b.clone() };
-            if p == zero {
-                continue;
-            }
-            if let Ok(ks) = ks {
-                out.push((p, ks));
-            }
-        }
-    }
-    out
-}
-
-/// The model's prediction for a point: the sum over its kernels, `None` if a
-/// kernel's group was not calibrated.
-pub fn predict(fit: &LayoutFit, machine: &Machine, dtype: presk_rt::Dtype, kernels: &[Kernel]) -> Option<f64> {
-    kernels.iter().map(|k| {
-        let c = planned_cost_under(k, machine, &fit.rules);
-        fit.predict(&c, &group(dtype, k, c.workers))
-    }).sum()
+/// [`presk_driver::layout::load_fit`], reported on standard error.
+fn load_fit(profile: Option<&Path>) -> Result<Option<(LayoutFit, Option<Machine>)>, ExitCode> {
+    presk_driver::layout::load_fit(profile, &mut crate::stderr()).map_err(crate::exit)
 }
 
 /// What a point's line records per kernel (a pack's copy first): the model's
@@ -234,38 +57,6 @@ fn kernel_records(fit: Option<&LayoutFit>, machine: &Machine, dtype: presk_rt::D
             json!({ "group": g, "cost": c, "terms": terms, "bound": terms.map(|t| t.bound()) })
         })
         .collect()
-}
-
-/// A kernel's group: its type, lanes, and the workers its split states.
-fn group(dtype: presk_rt::Dtype, k: &Kernel, effective: usize) -> String {
-    let stated = match k.threads {
-        Threads::At { workers, .. } => workers,
-        Threads::One => 1,
-        Threads::Default => effective,
-    };
-    group_key(dtype.name(), k.lanes, stated)
-}
-
-/// `a[2, 6, 256, 64] b[…]`: a launch's operand shapes.
-fn shape(l: &Launch) -> String {
-    l.operands.iter().map(|o| format!("[{}]", o.axes.iter().map(|a| a.len.to_string()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(" ")
-}
-
-fn load_fit(profile: Option<&Path>) -> Result<Option<(LayoutFit, Option<Machine>)>, ExitCode> {
-    let Some(path) = profile else { return Ok(None) };
-    match presk_opt::Profile::load(path) {
-        Ok(p) => match p.layout {
-            Some(f) => Ok(Some((f, p.machine_desc))),
-            None => {
-                eprintln!("presk: {} has no layout cost model: calibrate it with `presk bench --calibrate {} --space calib`", path.display(), path.display());
-                Err(ExitCode::from(2))
-            }
-        },
-        Err(m) => {
-            eprintln!("presk: --profile: {m}");
-            Err(ExitCode::from(2))
-        }
-    }
 }
 
 // ----- presk plan -------------------------------------------------------------
@@ -285,155 +76,19 @@ pub fn plan(file: &Path, entry: &str, dims: &[String], consts: &[String], base: 
     // The machine the model was fitted on; the one the plan is for decides
     // which worker counts are well-formed.
     let model_machine = stored.unwrap_or_else(|| captured.machine.clone());
-    let t_cost = Instant::now();
-    // Each launch's points the model prices, best first, and its rows.
-    type Costed<'a> = (&'a Launch, Vec<(f64, Layout)>, Vec<String>);
-    let mut costed: Vec<Costed> = Vec::new();
-    let mut unpriced: Vec<&Launch> = Vec::new();
-    let mut total_points = 0usize;
-    for l in &captured.launches {
-        let pts = points(l, space, captured.machine.workers);
-        let space_size = pts.len();
-        total_points += space_size;
-        let mut scored: Vec<(f64, Layout)> = pts.into_iter().filter_map(|(p, ks)| predict(&fit, &model_machine, l.dtype, &ks).map(|t| (t, p))).collect();
-        scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let Some((best_t, best)) = scored.first() else {
-            // Points none of which a group of the model prices: a type the
-            // profile was not calibrated in (0.9.0, D82).
-            if space_size > 0 {
-                unpriced.push(l);
-            }
-            continue;
-        };
-        let kept = scored.iter().filter(|(t, _)| *t <= best_t * (1.0 + fit.u)).count();
-        let mut rows = Vec::new();
-        if cost {
-            for (t, p) in &scored {
-                rows.push(format!("  {:<28} {:>12.2} µs  {p}", l.nest, t * 1e6));
-            }
+    let planned = match presk_driver::layout::choose(&fit, &model_machine, &captured, space) {
+        Ok(p) => p,
+        Err(u) => {
+            eprintln!("presk plan: the profile's layout model prices no layout of `{entry}` in {}: {} was calibrated in {} only, and a plan stating no layout would be the default one", u.dtypes.join(", "), profile.display(), u.types.join(" and "));
+            return ExitCode::from(2);
         }
-        rows.push(format!("{:<28} {:<24} {:>5} points  {:>10.2} µs  {kept:>3} within 1 + u  {best}", l.nest, shape(l), space_size, best_t * 1e6));
-        costed.push((l, scored, rows));
-    }
-    let types: Vec<String> = {
-        let mut t: Vec<String> = fit.pi.keys().filter_map(|g| g.split('+').next()).map(String::from).collect();
-        t.dedup();
-        t
     };
-    if costed.is_empty() && !unpriced.is_empty() {
-        let dtypes: Vec<String> = unpriced.iter().map(|l| l.dtype.to_string()).collect::<BTreeSet<_>>().into_iter().collect();
-        eprintln!("presk plan: the profile's layout model prices no layout of `{entry}` in {}: {} was calibrated in {} only, and a plan stating no layout would be the default one", dtypes.join(", "), profile.display(), types.join(" and "));
-        return ExitCode::from(2);
-    }
-    // One layout per nest, since a plan states one per name. A nest launched
-    // at one shape takes that shape's best. At several, the first shape's
-    // best may not suit another (a tile that does not divide it, condition
-    // 3), and `presk run` would refuse the plan: the layout is the one the
-    // model prices at every shape whose predicted time, each shape's weighed
-    // by the times the entry launches it, is least (0.9.0, D82).
-    let mut layout: BTreeMap<String, Layout> = BTreeMap::new();
-    let mut rows: Vec<String> = Vec::new();
-    let nests: Vec<&str> = {
-        let mut n: Vec<&str> = Vec::new();
-        for (l, _, _) in &costed {
-            if !n.contains(&l.nest.as_str()) {
-                n.push(&l.nest);
-            }
-        }
-        n
-    };
-    let mut summary: HashMap<&str, String> = HashMap::new();
-    for nest in &nests {
-        // A nest the model cannot price at one of its shapes is left to the
-        // default layout, which suits every shape.
-        if unpriced.iter().any(|l| l.nest == *nest) {
-            continue;
-        }
-        let group: Vec<&Costed> = costed.iter().filter(|(l, _, _)| l.nest == *nest).collect();
-        if let [(_, scored, _)] = group.as_slice() {
-            layout.insert(nest.to_string(), scored[0].1.clone());
-            continue;
-        }
-        let others: Vec<HashMap<String, f64>> = group[1..].iter().map(|(_, s, _)| s.iter().map(|(t, p)| (p.key(), *t)).collect()).collect();
-        let weigh = |ts: &[f64]| -> f64 { ts.iter().zip(&group).map(|(t, (l, _, _))| t * l.count as f64).sum() };
-        let own = weigh(&group.iter().map(|(_, s, _)| s[0].0).collect::<Vec<_>>());
-        let mut chosen: Option<(f64, &Layout)> = None;
-        for (t0, p) in &group[0].1 {
-            let key = p.key();
-            let ts = std::iter::once(Some(*t0)).chain(others.iter().map(|m| m.get(&key).copied())).collect::<Option<Vec<f64>>>();
-            let Some(ts) = ts else { continue };
-            let total = weigh(&ts);
-            if chosen.is_none_or(|(b, _)| total < b) {
-                chosen = Some((total, p));
-            }
-        }
-        let counts = group.iter().map(|(l, _, _)| l.count.to_string()).collect::<Vec<_>>().join(" + ");
-        // A line for a nest whose shapes do not all choose the layout it
-        // takes.
-        match chosen {
-            Some((total, p)) => {
-                layout.insert(nest.to_string(), p.clone());
-                if group.iter().any(|(_, s, _)| s[0].1 != *p) {
-                    summary.insert(nest, format!("= {nest} at {} shapes, {counts} launches: {p}; {:.2} µs over them, {:.2} µs at each shape's own best", group.len(), total * 1e6, own * 1e6));
-                }
-            }
-            None => {
-                summary.insert(nest, format!("= {nest} at {} shapes: no layout the model prices at every one, left to the default", group.len()));
-            }
-        }
-    }
-    for (i, (l, _, r)) in costed.iter().enumerate() {
-        rows.extend(r.iter().cloned());
-        let last = !costed[i + 1..].iter().any(|(m, _, _)| m.nest == l.nest);
-        if last && let Some(line) = summary.get(l.nest.as_str()) {
-            rows.push(line.clone());
-        }
-    }
-    // The epilogues (plan 0.10.0 step 7): a product whose every launch can
-    // take the `add` that alone reads its value takes it, over the layout
-    // chosen without it. It saves the `add`'s launch and its pass over the
-    // output and adds no arithmetic; the model prices a nest alone, so it
-    // has no term for it, and no prediction moves.
-    let mut epilogues: Vec<String> = Vec::new();
-    for l in &captured.launches {
-        if epilogues.contains(&l.nest) {
-            continue;
-        }
-        let same: Vec<&Launch> = captured.launches.iter().filter(|m| m.nest == l.nest).collect();
-        if !same.iter().all(|m| m.epilogue.is_some()) {
-            continue;
-        }
-        let with = Layout { epilogue: Some(true), ..layout.get(&l.nest).cloned().unwrap_or_default() };
-        if same.iter().all(|m| lower_launch(m, &with, Some(captured.machine.workers)).is_ok()) {
-            layout.insert(l.nest.clone(), with);
-            epilogues.push(l.nest.clone());
-        }
-    }
-    let cost_seconds = t_cost.elapsed().as_secs_f64();
-    println!("{:<28} {:<24} {:>12} {:>13}  {:>17}  layout", "nest", "operands", "space", "predicted", "undecided");
-    for r in &rows {
-        println!("{r}");
-    }
-    let all_nests = captured.launches.iter().map(|l| l.nest.as_str()).collect::<BTreeSet<_>>().len();
-    let shapes = if all_nests == captured.launches.len() { String::new() } else { format!(" at {} shapes", captured.launches.len()) };
-    println!("-- {all_nests} nests{shapes}, {total_points} points costed in {cost_seconds:.3} s, the entry captured in {:.3} s; u = {:.3}", captured.seconds, fit.u);
-    if !epilogues.is_empty() {
-        println!("-- {} product{} the `add` that alone reads {} as {} epilogue: {}", epilogues.len(), if epilogues.len() == 1 { " takes" } else { "s take" }, if epilogues.len() == 1 { "it" } else { "them" }, if epilogues.len() == 1 { "its" } else { "their" }, epilogues.join(", "));
-    }
-    if !unpriced.is_empty() {
-        let mut names: Vec<String> = Vec::new();
-        for l in &unpriced {
-            let n = unpriced.iter().filter(|m| m.nest == l.nest).count();
-            let name = if n > 1 { format!("{} ({}, {n} shapes)", l.nest, l.dtype) } else { format!("{} ({})", l.nest, l.dtype) };
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-        println!("-- left to the default layout, the profile being calibrated in {} only: {}", types.join(" and "), names.join(", "));
+    for line in presk_driver::text::plan_rows(&captured, &planned, cost).into_iter().chain(presk_driver::text::plan_totals(&captured, &planned, fit.u, true)) {
+        println!("{line}");
     }
     println!("-- wall time {:.3} s", t0.elapsed().as_secs_f64());
     if let Some(path) = out {
-        let p = presk_rt::Plan { realization: base.realization.clone(), realization_ref: base.realization_ref.clone(), profile: Some(profile.display().to_string()), layout };
+        let p = presk_rt::Plan { realization: base.realization.clone(), realization_ref: base.realization_ref.clone(), profile: Some(profile.display().to_string()), layout: planned.layout };
         if let Err(e) = std::fs::write(path, p.to_json()) {
             eprintln!("presk plan: {}: {e}", path.display());
             return ExitCode::from(2);
@@ -1516,6 +1171,8 @@ fn statement_q(rows: &[Row], one_day: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use presk_driver::layout::point_zero;
+    use presk_opt::profile::group_key;
 
     fn tutorial() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tutorial/03_attention.psk")

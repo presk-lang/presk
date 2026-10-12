@@ -1,0 +1,1118 @@
+---
+source: crates/presk-explain/tests/documents.rs
+expression: "document(\"minigpt\", \"tests/examples/minigpt/minigpt.psk\", \"MiniGPT.apply\",\n&[\"B=2\", \"T=8\"], &[\"V=64\", \"D=16\", \"H=2\", \"L=2\"], (None, Some(\"f32\")),\n&[Target::Native])"
+---
+---
+title: "`MiniGPT.apply` of `../../tests/examples/minigpt/minigpt.psk`, in f32, planned under the profile `data/x925-frozen.json`"
+subtitle: "What the Presk compiler does to one program: `presk explain`"
+---
+
+## The parameters
+
+| Parameter | Value | Where it comes from |
+|-------------------|------------------------------------|------------------------------------|
+| Program | `../../tests/examples/minigpt/minigpt.psk` | the command line |
+| Entry | `MiniGPT.apply` | `--entry MiniGPT.apply` |
+| Dimensions | `B = 2`, `T = 8` | `--dim B=2` `--dim T=8` |
+| Constants | `V = 64`, `D = 16`, `H = 2`, `HD = 8`, `L = 2` | `--const V=64` `--const D=16` `--const H=2` `--const L=2` |
+| Weights | the initialization, seed 0 | no `--weights` |
+| Realization | every site in `f32` | `--realize f32` |
+| Exact reference | MPFR at 128 bits | `--bits 128` |
+| Machine | the profile `tests/data/x925-frozen.json` | `--profile tests/data/x925-frozen.json` |
+| Threads | 10 | `--threads 10` |
+| Differentiation | `--remat store` | the command line |
+| Optimizer (e-graph) | off | no `--opt` |
+| Targets | native (Cranelift) | `--target native` |
+
+Compiler: presk 0.11.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+
+**The artifacts** it was made from or wrote:
+
+| What | Path | Provenance | SHA-256 |
+|-------------------|------------------------------------|--------------------|--------------------------|
+| the machine profile | `tests/data/x925-frozen.json` | given | `0a4ed24b1b666e13…` |
+| the envelope | `$DOC/artifacts/envelope.json` | computed in this run |  |
+| the layout plan | `$DOC/artifacts/plan.json` | computed in this run |  |
+
+`$DOC/artifacts/SHA256SUMS` holds the checksum of every file written there.
+
+## 0 Summary
+
+| What | Outcome | Kind | Where |
+|------------------|------------------------|------------------|------------------------|
+| Realization | every site in `f32` | parameter | §6 |
+| Bound, rule `cond` | 0.000e0 (0.000e0 relative) | bound | §6.4, conditional on the envelope's 1 sample |
+| Measured gap | 0.000e0 against the exact reference | measurement | §6.4 |
+| Fusion | 106 launches without it, 69 with it: 37 saved | decision | §7 |
+| Layout plan | 23 nests, 2211 points costed, 4 tiled, 0 split; predicted 13.348 µs a call over the nests it prices | decision, estimate | §8 |
+| Kernels | 24 distinct, 69 launches a call | fact | §9 |
+
+A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
+
+## 1 The source
+
+The entry's file and the files it imports, as the compiler reads them.
+
+**`../../tests/examples/minigpt/minigpt.psk`**
+
+```text
+  1  -- minigpt.psk — A decoder-only GPT, complete and typed.
+  2  -- Illustrates: idx[V] for tokens, embeddings as a one-hot contraction (§3.5),
+  3  -- causal attention through typed ein[…], Transformer blocks, stack{N}, output head.
+  4  --
+  5  -- Depends on: ../layernorm/layernorm.psk (LayerNorm), ../mlp/mlp.psk (Linear).
+  6  import "../layernorm/layernorm.psk"  as norm
+  7  import "../mlp/mlp.psk"              as ff
+  8  
+  9  -- ── Hyperparameters (outside the graph: evaluated statically, cf. §1) ────────────
+ 10  const V  : nat = 50257     -- vocabulary size
+ 11  const D  : nat = 768       -- model dimension
+ 12  const H  : nat = 12        -- number of heads
+ 13  const HD : nat = D / H     -- dimension per head
+ 14  const L  : nat = 12        -- number of blocks
+ 15  static assert D % H == 0   -- decidable Presburger fragment (§3.1)
+ 16  
+ 17  -- ── Symbolic dimensions (resolved at use) ────────────────────────────────────────
+ 18  dim B                       -- batch size
+ 19  dim T <= 1024               -- context length, bounded
+ 20  
+ 21  -- ── Named types, to avoid "index soup" (§3.2) ────────────────────────────────────
+ 22  type Tokens = idx[V][batch: B, seq: T]                 -- input: indices, NOT reals
+ 23  type Acts   = ℝ[batch: B, seq: T, model: D]            -- activations
+ 24  type Mask   = bool[seq: T, seq2: T]                    -- which positions a position sees
+ 25  
+ 26  -- ─────────────────────────────────────────────────────────────────────────────────
+ 27  -- Causal multi-head attention.
+ 28  -- ─────────────────────────────────────────────────────────────────────────────────
+ 29  module SelfAttention {
+ 30    use wq, wk, wv, wo : ff.Linear{D, D}
+ 31  
+ 32    -- split_heads : ℝ[batch, seq, model: D] -> ℝ[batch, heads: H, seq, hd: HD]
+ 33    -- merge_heads : the inverse. Provided by the standard library; pure axis reshuffles.
+ 34    fn apply(x : Acts, mask : Mask) -> Acts =
+ 35      let q = split_heads(wq.apply(x))
+ 36      let k = split_heads(wk.apply(x))
+ 37      let v = split_heads(wv.apply(x))
+ 38  
+ 39      -- Typed contraction: the `hd` axis is reduced, `seq`×`seq2` yields the score matrix.
+ 40      -- The compiler checks that `hd` appears in exactly the two operands (§3.2).
+ 41      let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+ 42  
+ 43      -- softmax over the positions of seq2 that the causal mask allows.
+ 44      let a = softmax(axis seq2, s, where = mask)
+ 45  
+ 46      -- Reweighting of the values, then output projection.
+ 47      let o = ein[batch, heads, seq, hd](a * v)
+ 48      wo.apply(merge_heads(o))
+ 49      -- Note: no trace of FlashAttention here. The softmax+matmul fusion is a
+ 50      -- scheduling strategy chosen by PSK-Realize (§8.2), not a hand-written kernel.
+ 51  }
+ 52  
+ 53  -- ─────────────────────────────────────────────────────────────────────────────────
+ 54  -- Pre-normalized Transformer block (Pre-LN), with residual connections.
+ 55  -- ─────────────────────────────────────────────────────────────────────────────────
+ 56  module Block {
+ 57    use attn : SelfAttention
+ 58    use mlp  : ff.MLP{D, 4*D}
+ 59    use ln1, ln2 : norm.LayerNorm{D}
+ 60  
+ 61    fn apply(x : Acts, mask : Mask) -> Acts =
+ 62      let x = x + attn.apply(ln1.apply(x), mask)   -- shadowing: new binding, no mutation
+ 63      x + mlp.apply(ln2.apply(x))
+ 64  }
+ 65  
+ 66  -- ─────────────────────────────────────────────────────────────────────────────────
+ 67  -- Token and position embeddings.
+ 68  -- embed denotes eₜᵀ·W (one-hot × table); compiled to a gather, never materialized (§3.5).
+ 69  -- ─────────────────────────────────────────────────────────────────────────────────
+ 70  module Embedding {
+ 71    param tok : param ℝ[V, D]  init = normal(std = 0.02)   -- token table
+ 72    param pos : param ℝ[T, D]  init = normal(std = 0.02)   -- learned position table
+ 73  
+ 74    fn apply(ids : Tokens) -> Acts =
+ 75      let e = embed(tok, ids)                 -- ℝ[batch, seq, model: D]; grad = scatter-add on tok
+ 76      let p = embed(pos, positions(seq: T))   -- positions(): idx[T] along the seq axis
+ 77      e + p                                    -- broadcast of p over the batch
+ 78  }
+ 79  
+ 80  -- ─────────────────────────────────────────────────────────────────────────────────
+ 81  -- The complete model: embeddings → L stacked blocks → final norm → logits.
+ 82  -- ─────────────────────────────────────────────────────────────────────────────────
+ 83  module MiniGPT {
+ 84    use emb    : Embedding
+ 85    use blocks : stack{L}(Block)     -- params stacked as ℝ[L, …]; compiled to a loop (§4.3)
+ 86    use lnf    : norm.LayerNorm{D}
+ 87    param head : param ℝ[D, V]  init = zeros    -- projection onto the vocabulary (logits)
+ 88  
+ 89    -- The causal mask is derived from the type: position i only sees j ≤ i.
+ 90    -- This is the property that the inference kv_cache will exploit (§7).
+ 91    fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
+ 92      let mask = causal_mask(seq: T)                  -- bool[seq, seq2], true where j≤i
+ 93      let h0   = emb.apply(ids)
+ 94      let hL   = blocks.apply(h0, mask)               -- applies the L blocks in turn
+ 95      lnf.apply(hL) · head                            -- ℝ[batch, seq, vocab: V]
+ 96  }
+```
+
+**`../../tests/examples/minigpt/../layernorm/layernorm.psk`**
+
+```text
+  1  -- layernorm.psk — Layer normalization.
+  2  -- Illustrates: reductions over a named axis, vector params (gain/bias),
+  3  -- and the principle "numerical stability belongs to the compiler, not to the code".
+  4  
+  5  module LayerNorm{D : dim} {
+  6    param γ : ℝ[D]  init = ones     -- gain
+  7    param β : ℝ[D]  init = zeros    -- bias
+  8  
+  9    -- eps is NOT a numerical guard: the semantics is exact (division by the
+ 10    -- real standard deviation). It is a hyperparameter of the *model* (regularization), hence f64.
+ 11    -- The stability of sqrt and division is handled at compile time under the budget (§8.2),
+ 12    -- not here.
+ 13    fn apply(x : ℝ[..., model: D], eps : f64 = 1e-5) -> ℝ[..., model: D] =
+ 14      let μ  = mean(axis model, x)                 -- ℝ[...]
+ 15      let σ2 = mean(axis model, (x - μ)^2)         -- variance, reduction over `model`
+ 16      let x̂  = (x - μ) / sqrt(σ2 + real(eps))       -- real(eps): explicit f64 -> ℝ injection
+ 17      x̂ * γ + β                                     -- broadcast of γ, β over the leading axes
+ 18  }
+ 19  
+ 20  -- RMSNorm: variant without recentering, same reduction pattern.
+ 21  module RMSNorm{D : dim} {
+ 22    param γ : ℝ[D]  init = ones
+ 23  
+ 24    fn apply(x : ℝ[..., model: D], eps : f64 = 1e-6) -> ℝ[..., model: D] =
+ 25      let ms = mean(axis model, x^2)
+ 26      x / sqrt(ms + real(eps)) * γ
+ 27  }
+```
+
+**`../../tests/examples/minigpt/../mlp/mlp.psk`**
+
+```text
+  1  -- mlp.psk — The smallest "complete" Presk program.
+  2  -- Illustrates: module, param + init, fn apply, composition, and typed grad.
+  3  -- No machine precision appears: everything is exact ℝ (cf. §2).
+  4  
+  5  module Linear{In Out : dim} {
+  6    param w : ℝ[In, Out]  init = xavier_uniform
+  7    param b : ℝ[Out]      init = zeros
+  8  
+  9    fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
+ 10      x · w + b            -- "·": contraction over the last axis, broadcast of b
+ 11  }
+ 12  
+ 13  -- A two-layer perceptron. `hidden` is a symbolic dimension:
+ 14  -- the same definition serves all sizes, checked at instantiation.
+ 15  module MLP{D hidden : dim} {
+ 16    use l1 : Linear{D, hidden}
+ 17    use l2 : Linear{hidden, D}
+ 18  
+ 19    -- gelu is C∞; apply is therefore inferred C∞ (differentiable to any order).
+ 20    fn apply(x : ℝ[..., D]) -> ℝ[..., D] =
+ 21      l2.apply(gelu(l1.apply(x)))
+ 22  }
+ 23  
+ 24  -- Toy objective: mean squared error against a fixed target.
+ 25  -- θ is the parameter pytree generated automatically from the module's `param`s.
+ 26  fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
+ 27                  y : ℝ[batch: B, model: D]) -> ℝ[] =
+ 28    let ŷ = net.apply(θ, x)
+ 29    mean((ŷ - y)^2)
+ 30  
+ 31  -- grad requires at least class C⁰⁺; mse is C∞ ⇒ accepted.
+ 32  -- The derivative is taken with respect to the parameters only (x, y are captured).
+ 33  fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params net,
+ 34                       x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
+ 35      -> params net =
+ 36    grad(λ θ. mse(net, θ, x, y))(θ)
+```
+
+Diagnostics, as `presk check` reports them:
+
+```text
+[W0001] Warning: implicit dimension `B`
+    ,-[ ../../tests/examples/minigpt/../mlp/mlp.psk:26:65 ]
+    |
+ 26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
+    |                                                                 |  
+    |                                                                 `-- not declared; taken as a dimension of this function
+    | 
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'
+[W0001] Warning: implicit dimension `B`
+    ,-[ ../../tests/examples/minigpt/../mlp/mlp.psk:34:35 ]
+    |
+ 34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
+    |                                   |  
+    |                                   `-- not declared; taken as a dimension of this function
+    | 
+    | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
+----'
+```
+
+*Command:* `presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2`
+
+## 2 Elaboration
+
+Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
+
+```text
+== ../../tests/examples/minigpt/../layernorm/layernorm.psk
+module LayerNorm{D : dim} {
+  param γ : ℝ[D]  init
+  param β : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+module RMSNorm{D : dim} {
+  param γ : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+== ../../tests/examples/minigpt/../mlp/mlp.psk
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init
+  param b : ℝ[Out]  init
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out]
+}
+module MLP{D hidden : dim} {
+  use l1 : Linear{D, hidden}
+  use l2 : Linear{hidden, D}
+  fn apply(x : ℝ[..., D]) -> ℝ[..., D]
+}
+fn mse{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[]   -- implicit dims: B
+fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D}   -- implicit dims: B
+== ../../tests/examples/minigpt/minigpt.psk (main)
+import norm = ../../tests/examples/minigpt/../layernorm/layernorm.psk
+import ff = ../../tests/examples/minigpt/../mlp/mlp.psk
+const V = 64  (--const)
+const D = 16  (--const)
+const H = 2  (--const)
+const HD = 8
+const L = 2  (--const)
+dim B
+dim T <= 1024
+type Tokens = idx[64][batch: B, seq: T]
+type Acts = ℝ[batch: B, seq: T, model: 16]
+type Mask = bool[seq: T, seq2: T]
+module SelfAttention {
+  use wq : Linear{16, 16}
+  use wk : Linear{16, 16}
+  use wv : Linear{16, 16}
+  use wo : Linear{16, 16}
+  fn apply(x : ℝ[batch: B, seq: T, model: 16], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 16]
+}
+module Block {
+  use attn : SelfAttention
+  use mlp : MLP{16, 64}
+  use ln1 : LayerNorm{16}
+  use ln2 : LayerNorm{16}
+  fn apply(x : ℝ[batch: B, seq: T, model: 16], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 16]
+}
+module Embedding {
+  param tok : ℝ[64, 16]  init
+  param pos : ℝ[T, 16]  init
+  fn apply(ids : idx[64][batch: B, seq: T]) -> ℝ[batch: B, seq: T, model: 16]
+}
+module MiniGPT {
+  param head : ℝ[16, 64]  init
+  use emb : Embedding
+  use blocks : stack{2}(Block)
+  use lnf : LayerNorm{16}
+  fn apply(ids : idx[64][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: 64]
+}
+static assert #1: discharged
+== implicit dimensions: B
+== instances
+Linear{D, hidden}:
+  w : ℝ[D, hidden]
+  b : ℝ[hidden]
+Linear{hidden, D}:
+  w : ℝ[hidden, D]
+  b : ℝ[D]
+MLP{D, 4*D}:
+  l1.w : ℝ[D, 4*D]
+  l1.b : ℝ[4*D]
+  l2.w : ℝ[4*D, D]
+  l2.b : ℝ[D]
+Linear{16, 16}:
+  w : ℝ[16, 16]
+  b : ℝ[16]
+SelfAttention:
+  wq.w : ℝ[16, 16]
+  wq.b : ℝ[16]
+  wk.w : ℝ[16, 16]
+  wk.b : ℝ[16]
+  wv.w : ℝ[16, 16]
+  wv.b : ℝ[16]
+  wo.w : ℝ[16, 16]
+  wo.b : ℝ[16]
+MLP{16, 64}:
+  l1.w : ℝ[16, 64]
+  l1.b : ℝ[64]
+  l2.w : ℝ[64, 16]
+  l2.b : ℝ[16]
+LayerNorm{16}:
+  γ : ℝ[16]
+  β : ℝ[16]
+Embedding:
+  tok : ℝ[64, 16]
+  pos : ℝ[T, 16]
+Block:
+  attn.wq.w : ℝ[16, 16]
+  attn.wq.b : ℝ[16]
+  attn.wk.w : ℝ[16, 16]
+  attn.wk.b : ℝ[16]
+  attn.wv.w : ℝ[16, 16]
+  attn.wv.b : ℝ[16]
+  attn.wo.w : ℝ[16, 16]
+  attn.wo.b : ℝ[16]
+  mlp.l1.w : ℝ[16, 64]
+  mlp.l1.b : ℝ[64]
+  mlp.l2.w : ℝ[64, 16]
+  mlp.l2.b : ℝ[16]
+  ln1.γ : ℝ[16]
+  ln1.β : ℝ[16]
+  ln2.γ : ℝ[16]
+  ln2.β : ℝ[16]
+```
+
+**Types, regularity and effects**, as `presk check --summary` prints them:
+
+```text
+layernorm.psk LayerNorm.apply : ℝ[..., model: D]
+    let μ : ℝ[...]
+    let σ2 : ℝ[...]
+    let x̂ : ℝ[..., model: D]
+layernorm.psk RMSNorm.apply : ℝ[..., model: D]
+    let ms : ℝ[...]
+mlp.psk Linear.apply : ℝ[..., Out]
+mlp.psk MLP.apply : ℝ[..., D]
+mlp.psk mse : ℝ[]
+    let ŷ : ℝ[batch: B, D]
+mlp.psk mse_grad : params MLP{D, 4*D}
+minigpt.psk SelfAttention.apply : ℝ[batch: B, seq: T, 16]
+    let q : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+    let k : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+    let v : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+    let s : ℝ[batch: B, heads: 2, seq: T, seq2: T]
+    let a : ℝ[batch: B, heads: 2, seq: T, seq2: T]
+    let o : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+minigpt.psk Block.apply : ℝ[batch: B, seq: T, model: 16]
+    let x : ℝ[batch: B, seq: T, model: 16]
+minigpt.psk Embedding.apply : ℝ[batch: B, seq: T, 16]
+    let e : ℝ[batch: B, seq: T, 16]
+    let p : ℝ[seq: T, 16]
+minigpt.psk MiniGPT.apply : ℝ[batch: B, seq: T, 64]
+    let mask : bool[seq: T, seq2: T]
+    let h0 : ℝ[batch: B, seq: T, model: 16]
+    let hL : ℝ[batch: B, seq: T, model: 16]
+-- regularity and effects --
+LayerNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+RMSNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+Linear.apply : [θ C∞, x C∞] uses none
+MLP.apply : [θ C∞, x C∞] uses none
+mse : [θ C∞, x C∞, y C∞] uses none
+mse_grad : [θ C∞, x C∞, y C∞] uses none
+SelfAttention.apply : [θ C∞, x C∞, mask Disc] uses none
+Block.apply : [θ C∞, x C∞, mask Disc] uses none
+Embedding.apply : [θ C∞, ids Disc] uses none
+MiniGPT.apply : [θ C∞, ids Disc] uses none
+LayerNorm.init : [key C∞] uses Rand
+RMSNorm.init : [key C∞] uses Rand
+Linear.init : [key C∞] uses Rand
+MLP.init : [key C∞] uses Rand
+SelfAttention.init : [key C∞] uses Rand
+Block.init : [key C∞] uses Rand
+Embedding.init : [key C∞] uses Rand
+MiniGPT.init : [key C∞] uses Rand
+mse_grad.lambda0 : [x C∞, y C∞, θ C∞] uses none
+```
+
+**Static assertions**, each decided at elaboration by the decision procedure for Presburger arithmetic (`presk_types::dim::entails`), the dimensions' integer linear fragment with constant moduli:
+
+| Assertion | Where | Outcome |
+|----------------|------------------------------------|------------------------|
+| `D % H == 0` | `../../tests/examples/minigpt/minigpt.psk:15` | discharged: valid in Presburger arithmetic over the constants and the facts before it, then kept as a fact |
+
+**The parameters** of `MiniGPT.apply`, its first argument: 21 tensors, 8768 reals at these dimensions.
+
+| Parameter | Reals |
+|-------------------------|----------|
+| `head` | 1024 |
+| `emb.tok` | 1024 |
+| `emb.pos` | 128 |
+| `blocks.attn.wq.w` | 512 |
+| `blocks.attn.wq.b` | 32 |
+| `blocks.attn.wk.w` | 512 |
+| `blocks.attn.wk.b` | 32 |
+| `blocks.attn.wv.w` | 512 |
+| `blocks.attn.wv.b` | 32 |
+| `blocks.attn.wo.w` | 512 |
+| `blocks.attn.wo.b` | 32 |
+| `blocks.mlp.l1.w` | 2048 |
+| `blocks.mlp.l1.b` | 128 |
+| `blocks.mlp.l2.w` | 2048 |
+| `blocks.mlp.l2.b` | 32 |
+| `blocks.ln1.γ` | 32 |
+| `blocks.ln1.β` | 32 |
+| `blocks.ln2.γ` | 32 |
+| `blocks.ln2.β` | 32 |
+| `lnf.γ` | 16 |
+| `lnf.β` | 16 |
+
+*Commands:*
+
+- `presk dump ../../tests/examples/minigpt/minigpt.psk --stage elab --const V=64 --const D=16 --const H=2 --const L=2`
+- `presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 --summary`
+
+## 3 PSK-Core
+
+PSK-Core is the program in A-normal form: one typed operation per line, the parameter trees explicit, a `stack{L}` a `fold`.
+
+**A site is named `<function>/%<n>`**, `n` the number of its variable, whether the `let` has a source name (`ms`) or not (`%5`). That name is the thread every later section follows: the envelope, the sensitivities and the realization are keyed by it, a nest is named by the site it computes, and the C program comments each launch with it.
+
+The functions `MiniGPT.apply` reaches (7 of the program's 19):
+
+```text
+fn LayerNorm.apply{D}(θ : params LayerNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  μ : ℝ[...] = mean axis model x
+  %4 : ℝ[..., model: D] = sub x, μ
+  %5 : ℝ[..., model: D] = pow 2 %4
+  σ2 : ℝ[...] = mean axis model %5
+  %7 : ℝ[..., model: D] = sub x, μ
+  %8 : ℝ[] = real eps
+  %9 : ℝ[...] = add σ2, %8
+  %10 : ℝ[...] = sqrt %9
+  x̂ : ℝ[..., model: D] = div %7, %10
+  γ : ℝ[D] = θ.γ
+  %13 : ℝ[..., model: D] = mul x̂, γ
+  β : ℝ[D] = θ.β
+  %15 : ℝ[..., model: D] = add %13, β
+  return %15
+}
+
+fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
+  w : ℝ[In, Out] = θ.w
+  %3 : ℝ[..., Out] = dot x, w
+  b : ℝ[Out] = θ.b
+  %5 : ℝ[..., Out] = add %3, b
+  return %5
+}
+
+fn MLP.apply{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D]) -> ℝ[..., D] {
+  l1 : params Linear{D, hidden} = θ.l1
+  %3 : ℝ[..., hidden] = call Linear.apply{In = D, Out = hidden}(l1, x)
+  %4 : ℝ[..., hidden] = gelu %3
+  l2 : params Linear{hidden, D} = θ.l2
+  %6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)
+  return %6
+}
+
+fn SelfAttention.apply{B T}(θ : params SelfAttention, x : ℝ[batch: B, seq: T, model: 16], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 16] {
+  wq : params Linear{16, 16} = θ.wq
+  %4 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wq, x)
+  q : ℝ[batch: B, heads: 2, seq: T, hd: 8] = split_heads 2x8 %4
+  wk : params Linear{16, 16} = θ.wk
+  %7 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wk, x)
+  k : ℝ[batch: B, heads: 2, seq: T, hd: 8] = split_heads 2x8 %7
+  wv : params Linear{16, 16} = θ.wv
+  %10 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wv, x)
+  v : ℝ[batch: B, heads: 2, seq: T, hd: 8] = split_heads 2x8 %10
+  %12 : ℝ[batch: B, heads: 2, seq: T, seq2: T] = ein[batch, heads, seq, seq2]([batch, heads, seq, hd] * [batch, heads, seq2, hd]) q, k
+  %13 : nat = 8
+  %14 : ℝ[] = real %13
+  %15 : ℝ[] = sqrt %14
+  s : ℝ[batch: B, heads: 2, seq: T, seq2: T] = div %12, %15
+  a : ℝ[batch: B, heads: 2, seq: T, seq2: T] = softmax axis seq2 s, mask
+  o : ℝ[batch: B, heads: 2, seq: T, hd: 8] = ein[batch, heads, seq, hd]([batch, heads, seq, seq2] * [batch, heads, seq2, hd]) a, v
+  %19 : ℝ[batch: B, seq: T, model: 16] = merge_heads 2x8 o
+  wo : params Linear{16, 16} = θ.wo
+  %21 : ℝ[batch: B, seq: T, 16] = call Linear.apply{In = 16, Out = 16}(wo, %19)
+  return %21
+}
+
+fn Block.apply{B T}(θ : params Block, x : ℝ[batch: B, seq: T, model: 16], mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: 16] {
+  ln1 : params LayerNorm{16} = θ.ln1
+  %4 : f64 = 1e-5
+  %5 : ℝ[batch: B, seq: T, model: 16] = call LayerNorm.apply{D = 16}(ln1, x, %4)
+  attn : params SelfAttention = θ.attn
+  %7 : ℝ[batch: B, seq: T, model: 16] = call SelfAttention.apply{B = B, T = T}(attn, %5, mask)
+  x : ℝ[batch: B, seq: T, model: 16] = add x, %7
+  ln2 : params LayerNorm{16} = θ.ln2
+  %10 : f64 = 1e-5
+  %11 : ℝ[batch: B, seq: T, model: 16] = call LayerNorm.apply{D = 16}(ln2, x, %10)
+  mlp : params MLP{16, 64} = θ.mlp
+  %13 : ℝ[batch: B, seq: T, 16] = call MLP.apply{D = 16, hidden = 64}(mlp, %11)
+  %14 : ℝ[batch: B, seq: T, model: 16] = add x, %13
+  return %14
+}
+
+fn Embedding.apply{B T}(θ : params Embedding, ids : idx[64][batch: B, seq: T]) -> ℝ[batch: B, seq: T, model: 16] {
+  tok : ℝ[64, 16] = θ.tok
+  e : ℝ[batch: B, seq: T, 16] = embed tok, ids
+  pos : ℝ[T, 16] = θ.pos
+  %5 : idx[T][seq: T] = positions seq
+  p : ℝ[seq: T, 16] = embed pos, %5
+  %7 : ℝ[batch: B, seq: T, 16] = add e, p
+  return %7
+}
+
+fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[64][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: 64] {
+  mask : bool[seq: T, seq2: T] = causal_mask seq
+  emb : params Embedding = θ.emb
+  h0 : ℝ[batch: B, seq: T, model: 16] = call Embedding.apply{B = B, T = T}(emb, ids)
+  blocks : params stack{2}(Block) = θ.blocks
+  hL : ℝ[batch: B, seq: T, model: 16] = fold 2 Block.apply{B = B, T = T}(stacked blocks; acc h0; mask)
+  lnf : params LayerNorm{16} = θ.lnf
+  %8 : f64 = 1e-5
+  %9 : ℝ[batch: B, seq: T, model: 16] = call LayerNorm.apply{D = 16}(lnf, hL, %8)
+  head : ℝ[16, 64] = θ.head
+  %11 : ℝ[batch: B, seq: T, 64] = dot %9, head
+  return %11
+}
+```
+
+*Command:* `presk dump ../../tests/examples/minigpt/minigpt.psk --stage core --const V=64 --const D=16 --const H=2 --const L=2`
+
+## 4 Differentiation
+
+Differentiation turns each `grad` into a reverse sweep: a `.vjp` that runs the function forward, keeps what the sweep needs (`--remat store`) or recomputes it (`--remat recompute`), and propagates the cotangents back.
+
+`MiniGPT.apply` calls no `grad`, so its compiled program holds no derivative.
+
+## 5 The e-graph optimizer
+
+The optimizer saturates an e-graph of each function with the rewrite rules and extracts the cheapest form under its cost model.
+
+Not run: `--opt` is off.
+
+## 6 Precision: from a budget to a type per site
+
+A budget bounds the distance between what the machine computes and the mathematics. Four steps turn it into types: **measure** how large the values get (the envelope), **rank** where error matters (the sensitivities), **solve** for the cheapest types the estimate allows, then **discharge** the budget by running the candidate against the exact reference.
+
+### 6.1 The envelope
+
+The exact interpreter runs the entry once and records the largest |x| at every site, and at each sum and contraction what its terms add up to without cancelling: divided by the sum, its condition number.
+
+```text
+presk calibrate: 69 sites over 1 samples of `MiniGPT.apply` at 128 bits
+  LayerNorm.apply/%5           9.6832e0
+  SelfAttention.apply/%14      8.0000e0
+  SelfAttention.apply/%12      7.6050e0
+  Block.apply/%8               3.5261e0
+  Linear.apply/%3              3.2635e0
+presk calibrate: 5 sums and contractions, worst condition numbers Σ|xᵢwᵢ| / |Σxᵢwᵢ|:
+  LayerNorm.apply/%3           2.0892e0
+  SelfAttention.apply/%12      1.7225e0
+  Linear.apply/%3              1.3410e0
+  LayerNorm.apply/%6           1.0000e0
+  SelfAttention.apply/%18      1.0000e0
+```
+
+The envelope holds 69 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
+
+*Command:* `presk calibrate --precision ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --bits 128 --out $DOC/artifacts/envelope.json`
+
+### 6.2 The sensitivities
+
+`‖∂L/∂v‖₁` at each site, from one reverse sweep: how much an error at the site moves the output.
+
+None: `MiniGPT.apply` returns no scalar `ℝ[]`, and a sensitivity is `∂L/∂v` of a scalar `L`.
+
+### 6.3 The realization
+
+A realization gives each site a machine type; a site it does not name takes the default.
+
+Given: every site in `f32`.
+
+### 6.4 The bound and the measurement
+
+Under the realization, each rule's bound on the output's error, beside the gap measured against the exact reference.
+
+```text
+presk check --precision: `MiniGPT.apply` under f32
+  magnitude   0.0000e0
+  bound    k         6.5236e13  (inf relative)
+  bound    normwise  8.7882e-7  (inf relative)
+  bound    cond      0.0000e0  (0.00e0 relative)
+  estimate rss       0.0000e0  (0.00e0 relative)
+  measured             0.0000e0  (NaN relative)  the kernel interpreter against the exact reference
+  envelope    $DOC/artifacts/envelope.json over 1 samples, 69 sites, initial weights
+site                              magnitude            k     relative    condition
+MiniGPT.apply/%11                   0.000e0     6.524e13          inf            -
+LayerNorm.apply/%5                  9.683e0     4.287e12     4.427e11            -
+LayerNorm.apply/%6                  1.806e0     4.287e12     2.374e12      1.000e0
+LayerNorm.apply/%9                  1.806e0     4.287e12     2.374e12            -
+LayerNorm.apply/%11                 2.895e0     4.077e12     1.408e12            -
+LayerNorm.apply/%13                 2.895e0     4.077e12     1.408e12            -
+LayerNorm.apply/%15                 2.895e0     4.077e12     1.408e12            -
+MiniGPT.apply/%9                    2.895e0     4.077e12     1.408e12            -
+```
+
+The sound rule (`cond`) bounds the error by 0.000e0, conditional on the envelope's 1 sample; the measurement is 0.000e0, 0.0e0× under it.
+
+*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/minigpt/minigpt.psk --realize f32 --model all --sites 8 --measure`
+
+## 7 Fusion
+
+PSK-Realize groups the element-wise operations that can share one loop nest: an intermediate inside a group never reaches memory. `iN` is a group's input N, `sN` its step N.
+
+In the functions `MiniGPT.apply` reaches, 3 groups, 5 `let`s fused away:
+
+```text
+fn LayerNorm.apply — 13 lets, 3 groups, 5 launches saved
+  %5 = sub(i0,i1);pow 2(s0) [2 inputs, 2 steps]
+  %10 = add(i0,i1);sqrt(s0) [2 inputs, 2 steps]
+  %15 = sub(i0,i1);div(s0,i2);mul(s1,i3);add(s2,i4) [5 inputs, 4 steps]
+```
+
+Over one call, fusion takes 106 launches to 69.
+
+**Where each group ends**, and why each element-wise value outside a group is alone: what reads it. A value joins its reader's group when every reader is in that group, is element-wise and of the same shape, and the group's expression stays under its size limit.
+
+| Value | Line |  | Reaches memory because |
+|-----------------------------------|------------------------------------|-----------------|------------------------|
+| `LayerNorm.apply/%5` | `%5 : ℝ[..., model: D] = pow 2 %4` | ends a group of 2 | read by `σ2 : ℝ[...] = mean axis model %5`: a reduction |
+| `LayerNorm.apply/%10` | `%10 : ℝ[...] = sqrt %9` | ends a group of 2 | read by `x̂ : ℝ[..., model: D] = div %7, %10`, of another shape: a group is one loop nest over one shape |
+| `LayerNorm.apply/%15` | `%15 : ℝ[..., model: D] = add %13, β` | ends a group of 4 | the function's result |
+| `Linear.apply/%5` | `%5 : ℝ[..., Out] = add %3, b` | alone | the function's result |
+| `MLP.apply/%4` | `%4 : ℝ[..., hidden] = gelu %3` | alone | read by `%6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)`: a call |
+| `SelfAttention.apply/%15` | `%15 : ℝ[] = sqrt %14` | alone | read by `s : ℝ[batch: B, heads: 2, seq: T, seq2: T] = div %12, %15`, of another shape: a group is one loop nest over one shape |
+| `SelfAttention.apply/%16` | `s : ℝ[batch: B, heads: 2, seq: T, seq2: T] = div %12, %15` | alone | read by `a : ℝ[batch: B, heads: 2, seq: T, seq2: T] = softmax axis seq2 s, mask`: a reduction |
+| `Block.apply/%8` | `x : ℝ[batch: B, seq: T, model: 16] = add x, %7` | alone | read by `%11 : ℝ[batch: B, seq: T, model: 16] = call LayerNorm.apply{D = 16}(ln2, x, %10)`: a call |
+| `Block.apply/%14` | `%14 : ℝ[batch: B, seq: T, model: 16] = add x, %13` | alone | the function's result |
+| `Embedding.apply/%7` | `%7 : ℝ[batch: B, seq: T, 16] = add e, p` | alone | the function's result |
+
+*Command:* `presk dump ../../tests/examples/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
+
+## 8 The machine and the layout plan
+
+Each nest has a space of layouts (vector lanes, a split over workers, for a contraction a register tile, a k-block, a loop order, packing). The plan takes the point the profile's cost model predicts fastest; "within 1 + u" counts the points the model cannot tell from the best.
+
+The profile describes the machine as the cost model sees it, and holds the constants fitted on its calibration.
+
+| Machine |  |
+|----------------|------------------------|
+| Workers | 10 (read from `cpu5`) |
+| L1, private | 64 KiB |
+| L2, private | 2048 KiB |
+| L3 | 8192 KiB, shared by 5 workers |
+| Vector registers | 32 × 16 bytes |
+| Cache line | 64 bytes |
+
+| Layout model |  |
+|------------------------|-------------------|
+| Starting a split launch (`spawn`) | 101.5 µs |
+| Bandwidth from L2, L3, memory | 214, 354, 711 GB/s |
+| Terms combined by | a p-norm, p = 1.059 |
+| Its error on the calibration (u) | 0.132 |
+| Rank correlation on the calibration | 0.984 |
+
+The plan, as `presk plan` prints it: each launch's operands, the points of its space that lower, the best prediction, and the layout chosen. The entry was captured from its shapes alone, on 10 workers.
+
+```text
+nest                         operands                        space     predicted          undecided  layout
+Embedding.apply/%3           [64, 16] [2, 8]              7 points        0.07 µs    1 within 1 + u  lanes 1, split none
+Embedding.apply/%6           [8, 16] [8]                  5 points        0.02 µs    1 within 1 + u  lanes 1, split none
+Embedding.apply/%7           [2, 8, 16] [8, 16]           7 points        0.07 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%3           [2, 8, 16]                   5 points        0.05 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%5           [2, 8, 16] [2, 8]            7 points        0.12 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%6           [2, 8, 16]                   5 points        0.05 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%10          [2, 8] []                    5 points        0.02 µs    1 within 1 + u  lanes 1, split none
+LayerNorm.apply/%15          [2, 8, 16] [2, 8] [2, 8] [16] [16]     7 points        0.14 µs    1 within 1 + u  lanes 1, split none
+Linear.apply/%3              [2, 8, 16] [16, 16]        247 points        0.18 µs    2 within 1 + u  tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack
+Linear.apply/%5              [2, 8, 16] [16]              7 points        0.07 µs    1 within 1 + u  lanes 1, split none
+SelfAttention.apply/%5       [2, 8, 16]                   7 points        0.05 µs    1 within 1 + u  lanes 1, split none
+SelfAttention.apply/%8       [2, 8, 16]                   7 points        0.05 µs    1 within 1 + u  lanes 1, split none
+SelfAttention.apply/%11      [2, 8, 16]                   7 points        0.05 µs    1 within 1 + u  lanes 1, split none
+SelfAttention.apply/%12      [2, 2, 8, 8] [2, 2, 8, 8]   269 points        0.22 µs    4 within 1 + u  tiled, tile [4, 8], kblock none, order JI, lanes 4, split none, pack
+SelfAttention.apply/%15      []                           1 points        0.00 µs    1 within 1 + u  lanes 1, split none
+SelfAttention.apply/%16      [2, 2, 8, 8] []              7 points        0.09 µs    1 within 1 + u  lanes 1, split none
+SelfAttention.apply/%17      [2, 2, 8, 8] [8, 8]         14 points        0.59 µs    1 within 1 + u  lanes 1, split none, passes 2
+SelfAttention.apply/%18      [2, 2, 8, 8] [2, 2, 8, 8]   177 points        0.16 µs    2 within 1 + u  tiled, tile [4, 8], kblock none, order JI, lanes 4, split none, no pack
+SelfAttention.apply/%19      [2, 2, 8, 8]                 5 points        0.06 µs    1 within 1 + u  lanes 1, split none
+Block.apply/%8               [2, 8, 16] [2, 8, 16]        7 points        0.08 µs    1 within 1 + u  lanes 1, split none
+Linear.apply/%3              [2, 8, 16] [16, 64]        271 points        0.71 µs    2 within 1 + u  tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack
+Linear.apply/%5              [2, 8, 64] [64]              7 points        0.27 µs    1 within 1 + u  lanes 1, split none
+MLP.apply/%4                 [2, 8, 64]                   7 points        1.14 µs    1 within 1 + u  lanes 1, split none
+Linear.apply/%3              [2, 8, 64] [64, 16]        845 points        0.67 µs    8 within 1 + u  tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack
+= Linear.apply/%3 at 3 shapes, 8 + 2 + 2 launches: tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack; 4.22 µs over them, 4.22 µs at each shape's own best
+Block.apply/%14              [2, 8, 16] [2, 8, 16]        7 points        0.08 µs    1 within 1 + u  lanes 1, split none
+MiniGPT.apply/%11            [2, 8, 16] [16, 64]        271 points        0.71 µs    2 within 1 + u  tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack
+-- 23 nests at 26 shapes, 2211 points costed; u = 0.132
+-- 1 product takes the `add` that alone reads it as its epilogue: Linear.apply/%3
+```
+
+*Every point's prediction, as `presk plan --cost` prints them, in `listings/plan-cost.txt` (2239 lines).*
+
+**Why each nest takes its layout.** The chosen point (1), its two runners-up and the best point that splits the nest over workers, each prediction in its terms, in µs, its layout under it: `λ` a launch, `spawn` starting a split launch, then work, register loads, and the traffic from L2, L3 and memory, which the model combines by a p-norm, p = 1.059. `bound by` names the largest term. A split pays `spawn`, 101.5 µs, so it wins only when it divides more than that.
+
+The twelve nests of the most predicted time a call, of 26; every nest in `listings/plan-reasons.txt`.
+
+```text
+MLP.apply/%4 [2, 8, 64] — 7 points, 1 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1         1.138    0.0000    0.0000     1.042    0.0513    0.0383    0.0231    0.0115  work
+     lanes 1, split none
+2         101.7    0.0000     101.5    0.1298    0.0078    0.0048    0.0231    0.0115  spawn
+     lanes 1, split (1, 10)
+3         101.7    0.0000     101.5    0.1147    0.0068    0.0096    0.0578    0.0288  spawn
+     lanes 1, split (2, 10)
+
+Linear.apply/%3 [2, 8, 16] [16, 16] — 247 points, 2 within 1 + u, 8 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.1824    0.0000    0.0000    0.0605    0.1059    0.0144    0.0087    0.0043  loads
+     tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack
+2        0.1824    0.0000    0.0000    0.0605    0.1059    0.0144    0.0087    0.0043  loads
+     tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack
+3        0.2287    0.0000    0.0000    0.0610    0.1530    0.0144    0.0087    0.0043  loads
+     tiled, tile [2, 16], kblock none, order JI, lanes 4, split none, no pack
+40        101.6    0.0000     101.5    0.0115    0.0444    0.0072    0.0173    0.0086  spawn
+     tiled, tile [2, 16], kblock none, order IJ, lanes 4, split (1, 5), no pack
+
+Linear.apply/%3 [2, 8, 16] [16, 64] — 271 points, 2 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.7066    0.0000    0.0000    0.2418    0.4236    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack
+2        0.7066    0.0000    0.0000    0.2419    0.4236    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack
+3        0.8919    0.0000    0.0000    0.2438    0.6119    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 8], kblock none, order IJ, lanes 4, split none, no pack
+40        101.7    0.0000     101.5    0.0456    0.1230    0.0144    0.0347    0.0173  spawn
+     tiled, tile [4, 16], kblock none, order JI, lanes 4, split (1, 5), no pack
+
+Linear.apply/%3 [2, 8, 64] [64, 16] — 845 points, 8 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.6722    0.0000    0.0000    0.2417    0.3883    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack
+2        0.6723    0.0000    0.0000    0.2418    0.3883    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack
+3        0.6723    0.0000    0.0000    0.2418    0.3883    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock 32, order JIK, lanes 4, split none, no pack
+154       101.8    0.0000     101.5    0.0459    0.1674    0.0252    0.0607    0.0302  spawn
+     tiled, tile [2, 16], kblock none, order IJ, lanes 4, split (1, 5), no pack
+
+SelfAttention.apply/%17 [2, 2, 8, 8] [8, 8] — 14 points, 1 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.5930    0.0000    0.0000    0.5231    0.0470    0.0216    0.0130    0.0065  work
+     lanes 1, split none, passes 2
+2        0.7683    0.0000    0.0000    0.7031    0.0428    0.0216    0.0130    0.0065  work
+     lanes 1, split none, passes 3
+3         101.6    0.0000     101.5    0.0655    0.0071    0.0027    0.0130    0.0065  spawn
+     lanes 1, split (2, 10), passes 2
+
+MiniGPT.apply/%11 [2, 8, 16] [16, 64] — 271 points, 2 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.7066    0.0000    0.0000    0.2418    0.4236    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack
+2        0.7066    0.0000    0.0000    0.2419    0.4236    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack
+3        0.8919    0.0000    0.0000    0.2438    0.6119    0.0431    0.0260    0.0130  loads
+     tiled, tile [4, 8], kblock none, order IJ, lanes 4, split none, no pack
+40        101.7    0.0000     101.5    0.0456    0.1230    0.0144    0.0347    0.0173  spawn
+     tiled, tile [4, 16], kblock none, order JI, lanes 4, split (1, 5), no pack
+
+LayerNorm.apply/%15 [2, 8, 16] [2, 8] [2, 8] [16] [16] — 7 points, 1 within 1 + u, 5 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.1410    0.0000    0.0000    0.1014    0.0257    0.0114    0.0069    0.0034  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0128    0.0039    0.0030    0.0145    0.0072  spawn
+     lanes 1, split (1, 10)
+3         101.5    0.0000     101.5    0.0255    0.0073    0.0042    0.0126    0.0063  spawn
+     lanes 1, split (1, 5)
+
+Linear.apply/%5 [2, 8, 16] [16] — 7 points, 1 within 1 + u, 10 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0683    0.0000    0.0000    0.0414    0.0128    0.0099    0.0060    0.0030  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0053    0.0019    0.0015    0.0072    0.0036  spawn
+     lanes 1, split (1, 10)
+3         101.5    0.0000     101.5    0.0105    0.0037    0.0027    0.0081    0.0040  spawn
+     lanes 1, split (1, 5)
+
+LayerNorm.apply/%5 [2, 8, 16] [2, 8] — 7 points, 1 within 1 + u, 5 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.1156    0.0000    0.0000    0.0814    0.0214    0.0102    0.0061    0.0031  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0103    0.0032    0.0018    0.0087    0.0043  spawn
+     lanes 1, split (1, 10)
+3         101.5    0.0000     101.5    0.0205    0.0061    0.0030    0.0090    0.0045  spawn
+     lanes 1, split (1, 5)
+
+Linear.apply/%5 [2, 8, 64] [64] — 7 points, 1 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.2692    0.0000    0.0000    0.1614    0.0513    0.0395    0.0239    0.0119  work
+     lanes 1, split none
+2         101.6    0.0000     101.5    0.0202    0.0078    0.0060    0.0289    0.0144  spawn
+     lanes 1, split (1, 10)
+3         101.6    0.0000     101.5    0.0339    0.0119    0.0099    0.0298    0.0148  spawn
+     lanes 1, split (2, 5)
+
+SelfAttention.apply/%12 [2, 2, 8, 8] [2, 2, 8, 8] — 269 points, 4 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.2184    0.0000    0.0000    0.0536    0.0909    0.0479    0.0289    0.0144  loads
+     tiled, tile [4, 8], kblock none, order JI, lanes 4, split none, pack
+2        0.2184    0.0000    0.0000    0.0536    0.0909    0.0479    0.0289    0.0144  loads
+     tiled, tile [4, 8], kblock none, order IJ, lanes 4, split none, pack
+3        0.2416    0.0000    0.0000    0.0541    0.1145    0.0479    0.0289    0.0144  loads
+     tiled, tile [2, 8], kblock none, order JI, lanes 4, split none, pack
+42        101.6    0.0000     101.5    0.0434    0.0065    0.0120    0.0578    0.0288  spawn
+     tiled, tile [1, 8], kblock none, order IJ, lanes 1, split (2, 10), no pack
+
+SelfAttention.apply/%18 [2, 2, 8, 8] [2, 2, 8, 8] — 177 points, 2 within 1 + u, 2 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.1557    0.0000    0.0000    0.0306    0.0824    0.0288    0.0173    0.0086  loads
+     tiled, tile [4, 8], kblock none, order JI, lanes 4, split none, no pack
+2        0.1558    0.0000    0.0000    0.0306    0.0824    0.0288    0.0173    0.0086  loads
+     tiled, tile [4, 8], kblock none, order IJ, lanes 4, split none, no pack
+3        0.1790    0.0000    0.0000    0.0311    0.1059    0.0288    0.0173    0.0086  loads
+     tiled, tile [2, 8], kblock none, order JI, lanes 4, split none, no pack
+28        101.6    0.0000     101.5    0.0115    0.0478    0.0144    0.0173    0.0086  spawn
+     tiled, tile [4, 8], kblock none, order JI, lanes 4, split (0, 5), no pack
+```
+
+*Command:* `PRESK_THREADS=10 presk plan ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+
+## 9 The kernels and the host
+
+PSK-Kernel is the loop nests the backends run: one kernel per distinct nest, under its type and its layout. The host program launches them, converting a value where a kernel reads it in another type.
+
+```text
+-- 24 kernels, 69 launches, f32
+-- fusion: 106 launches without it, 37 saved (35%)
+```
+
+Each kernel under the sites that launch it, as the host recorded them:
+
+```text
+// k0: 1 launch at MiniGPT.apply/%2 (mask)
+kernel causal_mask seq () -> %0 : i64[seq: 8, seq2: 8] {
+  for i0 in 0..8 {
+    for i1 in 0..8 {
+      %0[i0, i1] = int(select((real(i1) <= real(i0)), 1, 0))
+    }
+  }
+}
+// k1: 1 launch at Embedding.apply/%3 (e)
+kernel embed (%0 : f32[64, 16], %1 : i64[batch: 2, seq: 8]) -> %2 : f32[batch: 2, seq: 8, 16] {
+  for i0 in 0..2 {
+    for i1 in 0..8 {
+      for i2 in 0..16 {
+        %2[i0, i1, i2] = %0[%1[i0, i1], i2]
+      }
+    }
+  }
+}
+// k2: 1 launch at Embedding.apply/%5
+kernel positions seq () -> %0 : i64[seq: 8] {
+  for i0 in 0..8 {
+    %0[i0] = i0
+  }
+}
+// k3: 1 launch at Embedding.apply/%6 (p)
+kernel embed (%0 : f32[8, 16], %1 : i64[seq: 8]) -> %2 : f32[seq: 8, 16] {
+  for i0 in 0..8 {
+    for i1 in 0..16 {
+      %2[i0, i1] = %0[%1[i0], i1]
+    }
+  }
+}
+// k4: 1 launch at Embedding.apply/%7
+kernel add (%0 : f32[batch: 2, seq: 8, 16], %1 : f32[seq: 8, 16]) -> %2 : f32[batch: 2, seq: 8, 16] {
+  for i0 in 0..2 {
+    for i1 in 0..8 {
+      for i2 in 0..16 {
+        %2[i0, i1, i2] = (%0[i0, i1, i2] + %1[i1, i2])
+      }
+    }
+  }
+}
+// k5: 10 launches at LayerNorm.apply/%3 (μ), LayerNorm.apply/%6 (σ2)
+kernel mean axis model (%0 : f32[batch: 2, seq: 8, model: 16]) -> %1 : f32[batch: 2, seq: 8] {
+  for i0 in 0..2 {
+    for i1 in 0..8 {
+      s0 = 0
+      for i2 in 0..16 {
+        s0 = (s0 + %0[i0, i1, i2])
+      }
+      %1[i0, i1] = (s0 / 16)
+    }
+  }
+}
+// k6: 5 launches at LayerNorm.apply/%5 (fused)
+kernel fused 2 steps (%0 : f32[batch: 2, seq: 8, model: 16], %1 : f32[batch: 2, seq: 8]) -> %2 : f32[batch: 2, seq: 8, model: 16] {
+  for i0 in 0..2 {
+    for i1 in 0..8 {
+      for i2 in 0..16 {
+        %2[i0, i1, i2] = ((%0[i0, i1, i2] - %1[i0, i1]) * (%0[i0, i1, i2] - %1[i0, i1]))
+```
+
+*The first 60 of 590 lines; the whole in `listings/kernels.txt`.*
+
+**The host**, as the C export prints it (§10): a function per Presk function, a fold a loop, each launch under the site it computes and each conversion where a kernel reads a value in another type.
+
+```c
+/* Embedding.apply at B = 2, T = 8: 1 call of the recording. */
+static void presk_Embedding_apply(presk_arena *arena, const float *theta_tok, const float *theta_pos, const int64_t *ids, float *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* Embedding.apply/%3 (e) */
+    float *e = presk_alloc(arena, 256 * sizeof(float));
+    k1(theta_tok, ids, e, 0, 2);
+    /* Embedding.apply/%5 */
+    int64_t *t5 = presk_alloc(arena, 8 * sizeof(int64_t));
+    k2(t5, 0, 8);
+    /* Embedding.apply/%6 (p) */
+    float *p = presk_alloc(arena, 128 * sizeof(float));
+    k3(theta_pos, t5, p, 0, 8);
+    /* Embedding.apply/%7 */
+    k4(e, p, out, 0, 2);
+    presk_release(arena, mark);
+}
+
+/* LayerNorm.apply at D = 16: 5 calls of the recording. */
+static void presk_LayerNorm_apply(presk_arena *arena, const float *theta_gamma, const float *theta_beta, const float *x, float *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* LayerNorm.apply/%3 (μ) */
+    float *mu = presk_alloc(arena, 16 * sizeof(float));
+    k5(x, mu, 0, 2);
+    /* LayerNorm.apply/%5 (fused) */
+    float *t5 = presk_alloc(arena, 256 * sizeof(float));
+    k6(x, mu, t5, 0, 2);
+    /* LayerNorm.apply/%6 (σ2) */
+    float *sigma2 = presk_alloc(arena, 16 * sizeof(float));
+    k5(t5, sigma2, 0, 2);
+    /* LayerNorm.apply/%8 */
+    float *t8 = presk_alloc(arena, 1 * sizeof(float));
+    presk_fill(t8, PRESK_F32, 1e-5, 1);
+    /* LayerNorm.apply/%10 (fused) */
+    float *t10 = presk_alloc(arena, 16 * sizeof(float));
+    k7(sigma2, t8, t10, 0, 2);
+    /* LayerNorm.apply/%15 (fused) */
+    k8(x, mu, t10, theta_gamma, theta_beta, out, 0, 2);
+    presk_release(arena, mark);
+}
+
+/* Linear.apply at In = 16, Out = 16: 8 calls of the recording. */
+static void presk_Linear_apply_In16_Out16(const float *theta_w, const float *theta_b, const float *x, float *out)
+{
+    /* Linear.apply/%3 + Linear.apply/%5 */
+    k9(x, theta_w, theta_b, out, 0, 2);
+}
+
+/* SelfAttention.apply at B = 2, T = 8: 2 calls of the recording. */
+static void presk_SelfAttention_apply(presk_arena *arena, const float *theta_wq_w, const float *theta_wq_b, const float *theta_wk_w, const float *theta_wk_b, const float *theta_wv_w, const float *theta_wv_b, const float *theta_wo_w, const float *theta_wo_b, const float *x, const int64_t *mask, float *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* SelfAttention.apply/%4 */
+    float *t4 = presk_alloc(arena, 256 * sizeof(float));
+    presk_Linear_apply_In16_Out16(theta_wq_w, theta_wq_b, x, t4);
+    /* SelfAttention.apply/%5 (q) */
+    float *q = presk_alloc(arena, 256 * sizeof(float));
+    k10(t4, q, 0, 2);
+    /* SelfAttention.apply/%7 */
+```
+
+*The first 60 of 200 lines; the whole in `listings/host.c`.*
+
+*Command:* `presk dump ../../tests/examples/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
+
+## 10 Targets
+
+**Native.** The Cranelift backend compiles each of the 24 kernels to machine code at its first launch, in process, and the host program of §9 runs them.
+
+## 11 Measured
+
+What one run measured on this machine: the realization natively against the exact reference, a call timed, each kernel's time beside the model's prediction, and the host's time by phase. The one section that changes from run to run.
+
+Not measured: `--measure` was not given. Every other section is deterministic; this one would hold times.
+
+## 12 Sites through every stage
+
+A site is named `<function>/%<n>` at every stage, which is what lets one value be followed from PSK-Core to the C.
+
+By default, the three largest shares of the solver's estimate (the three largest bounds without a solve), then the three nests of the most predicted time a call; `--site` names others.
+
+**`LayerNorm.apply/%5`**
+
+| Stage |  |
+|---------------|------------------------------------|
+| PSK-Core (§3) | `%5 : ℝ[..., model: D] = pow 2 %4` in `LayerNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 9.683e0, 256 elements |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | ends a group of 2: read by `σ2 : ℝ[...] = mean axis model %5`: a reduction |
+| Layout (§8) | nest `LayerNorm.apply/%5`, 7 points at `[2, 8, 16] [2, 8]`; chosen lanes 1, split none, 0.1156 µs, bound by work; runner-up lanes 1, split (1, 10), 101.5 µs |
+| Kernel (§9) | `k6`: `kernel fused 2 steps (%0 : f32[batch: 2, seq: 8, model: 16], %1 : f32[batch: 2, seq: 8]) -> %2 : f32[batch: 2, seq: 8, model: 16]` |
+
+**`LayerNorm.apply/%15`**
+
+| Stage |  |
+|---------------|------------------------------------|
+| PSK-Core (§3) | `%15 : ℝ[..., model: D] = add %13, β` in `LayerNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 2.895e0, 256 elements |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | ends a group of 4: the function's result |
+| Layout (§8) | nest `LayerNorm.apply/%15`, 7 points at `[2, 8, 16] [2, 8] [2, 8] [16] [16]`; chosen lanes 1, split none, 0.1410 µs, bound by work; runner-up lanes 1, split (1, 10), 101.5 µs |
+| Kernel (§9) | `k8`: `kernel fused 4 steps (%0 : f32[batch: 2, seq: 8, model: 16], %1 : f32[batch: 2, seq: 8], %2 : f32[batch: 2, seq: 8], %3 : f32[16], %4 : f32[16]) -> %5 : f32[batch: 2, seq: 8, model: 16]` |
+
+**`MiniGPT.apply/%9`**
+
+| Stage |  |
+|---------------|------------------------------------|
+| PSK-Core (§3) | `%9 : ℝ[batch: B, seq: T, model: 16] = call LayerNorm.apply{D = 16}(lnf, hL, %8)` in `MiniGPT.apply` |
+| Envelope (§6.1) | \|v\| ≤ 2.611e0, 256 elements |
+| Type (§6.3) | `f32`, carried |
+| Fusion (§7) | not an element-wise operation |
+| Layout (§8) | not a nest: no layout space |
+| Kernel (§9) | none: the host carries it |
+
+**`Linear.apply/%3`**
+
+| Stage |  |
+|---------------|------------------------|
+| PSK-Core (§3) | `%3 : ℝ[..., Out] = dot x, w` in `Linear.apply` |
+| Envelope (§6.1) | \|v\| ≤ 3.264e0, 1024 elements, condition number 1.341e0 |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | not an element-wise operation |
+| Layout (§8) | nest `Linear.apply/%3`, 247 points at `[2, 8, 16] [16, 16]`; chosen tiled, tile [4, 16], kblock none, order JI, lanes 4, split none, no pack, epilogue, 0.1824 µs, bound by loads; runner-up tiled, tile [4, 16], kblock none, order IJ, lanes 4, split none, no pack, 0.1824 µs |
+| Kernel (§9) | `k9`: `kernel dot+add (%0 : f32[batch: 2, seq: 8, 16], %1 : f32[16, 16], %2 : f32[16]) -> %3 : f32[batch: 2, seq: 8, 16]` |
+
+**`MLP.apply/%4`**
+
+| Stage |  |
+|---------------|------------------------|
+| PSK-Core (§3) | `%4 : ℝ[..., hidden] = gelu %3` in `MLP.apply` |
+| Envelope (§6.1) | \|v\| ≤ 2.002e0, 1024 elements |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | alone: read by `%6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)`: a call |
+| Layout (§8) | nest `MLP.apply/%4`, 7 points at `[2, 8, 64]`; chosen lanes 1, split none, 1.138 µs, bound by work; runner-up lanes 1, split (1, 10), 101.7 µs |
+| Kernel (§9) | `k20`: `kernel gelu (%0 : f32[batch: 2, seq: 8, 64]) -> %1 : f32[batch: 2, seq: 8, 64]` |
+
+**`Linear.apply/%5`**
+
+| Stage |  |
+|---------------|------------------------|
+| PSK-Core (§3) | `%5 : ℝ[..., Out] = add %3, b` in `Linear.apply` |
+| Envelope (§6.1) | \|v\| ≤ 3.264e0, 1024 elements |
+| Type (§6.3) | `f32`, decision |
+| Fusion (§7) | alone: the function's result |
+| Layout (§8) | nest `Linear.apply/%5`, 7 points at `[2, 8, 16] [16]`; chosen lanes 1, split none, 0.0683 µs, bound by work; runner-up lanes 1, split (1, 10), 101.5 µs |
+| Kernel (§9) | none: the host computes it |
+
+*Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (70 lines).*
+
+## Appendix: the commands
+
+The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
+
+```sh
+presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2
+presk dump ../../tests/examples/minigpt/minigpt.psk --stage elab --const V=64 --const D=16 --const H=2 --const L=2
+presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 --summary
+presk dump ../../tests/examples/minigpt/minigpt.psk --stage core --const V=64 --const D=16 --const H=2 --const L=2
+presk calibrate --precision ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --bits 128 --out $DOC/artifacts/envelope.json
+presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/minigpt/minigpt.psk --realize f32 --model all --sites 8 --measure
+presk dump ../../tests/examples/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump ../../tests/examples/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+```

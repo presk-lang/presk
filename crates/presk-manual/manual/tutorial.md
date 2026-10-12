@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.10.1 prints (timings vary from one run and one machine
+shown is what version 0.11.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.10.1: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)
+Presk compiler (0.11.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
 
 Usage: presk <COMMAND>
 
@@ -61,6 +61,7 @@ Commands:
   train      Run the `training run` of a file, on the reference interpreter or natively
   serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
   plan       Choose a realization plan statically: every nest's layout space costed by the profile's layout model
+  explain    One compilation as a document: every stage's representation and the reasons for its decisions, in DIR/explain.md (plan 0.11.0)
   autotune   Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits
   reprice    Price the points of a recorded day again under another profile, their times copied: nothing is measured
   rank       Rank accuracy of the layout cost model on two days of measurement, the statements of plan 0.7.0, and plan 0.8.0's Q
@@ -746,6 +747,46 @@ recompute` keeps the `.vjp`s that compute their forward pass again). The
 `language` chapter describes the representation and the differentiation
 rules.
 
+### Every stage at once: `presk explain`
+
+`presk explain` compiles one entry and writes every stage of it as one
+document, each section with the command that prints it (0.11.0, the
+`explain` chapter):
+
+```sh
+presk explain tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --out out/tutorial_explain
+grep '^## ' out/tutorial_explain/explain.md
+```
+
+```text
+presk explain: wrote out/tutorial_explain/explain.md (14 sections, 1 listing under listings/, 1 artifact)
+## The parameters
+## 0 Summary
+## 1 The source
+## 2 Elaboration
+## 3 PSK-Core
+## 4 Differentiation
+## 5 The e-graph optimizer
+## 6 Precision: from a budget to a type per site
+## 7 Fusion
+## 8 The machine and the layout plan
+## 9 The kernels and the host
+## 10 Targets
+## 11 Measured
+## 12 Sites through every stage
+## Appendix: the commands
+```
+
+Its §3 is the PSK-Core of the functions `loss_grad` reaches, its §4 the
+derivatives above, and its §9 the ten kernels the entry launches, each
+under the site that launches it. With no budget and no profile, every site
+is in `f64` and every nest at its default layout: §6 bounds the error of
+that realization (`cond`, 2.4·10⁻¹² against a measured 4.4·10⁻¹⁶) and §8
+says nothing is planned. Steps 15 and 17 add a budget (`--budget`) and a
+machine (`--profile`); `make explain` writes the document of step 15's
+`loss` under both, the manual's chapter `explain_loss`, and `make
+explain-pdf` its PDF.
+
 ## 8. Export to PyTorch and check the export
 
 `presk export` writes a readable PyTorch program whose structure mirrors the
@@ -1289,6 +1330,7 @@ not reach yet.
 | `make calibrate-ra4-small`, `make ra4-f2*`, `make ra4-f1*` | 0.8.0's fresh sweeps, each a dry run, two days, a check of every point on the kernel interpreter and a report: the A725 cores calibrated and 0.7.0's shapes swept on them (F2), new shapes on the X925 cores (F1) (`experiments` chapter §8; hours each) |
 | `make c-conformance`, `make c-speed` | the C export on the example entries and the course GPT, under plans, on threads, with integer weights, built with GCC, Clang and for x86-64, bit for bit against the native backend; `presk serve`'s tokens from the exported loop; the SCoP mode's nests against Polly; the exported course GPT timed against the native backend (`export_c` chapter; minutes, installs zig and LLVM's release) |
 | `make pytorch-baseline` | the course GPT's forward pass and training step timed on the native backend, the C export and PyTorch, under the default layout and under plans, with the distances to the native `f64` logits and where the C program's time goes (`experiments` chapter §3; twenty minutes, a quiet machine, needs `.venv`; `CFLAGS` builds the C programs with other flags) |
+| `make pytorch-decoder` | one block of the Llama 2 decoder at the 7B width, its forward pass at 384 tokens timed on the native backend, under the default layouts and the frozen profile's plans, in `f32` and with `int8` weights, and in PyTorch eager, on the ten X925 cores; then the native kernels alone (D107; alone, about three and a half hours) |
 | `make tutorial` | every command of this chapter, in order, including its conformance tests |
 | `cargo insta review` | after a change in the compiler's output: accept or reject each changed snapshot |
 
@@ -1354,14 +1396,23 @@ presk solve tutorial/07_train.psk --precision out/tut_env.json \
 
 ```text
 presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2.104e0)
-  sites       22 narrowable, 22 assigned away from f64
-  cost        1.2900e3 against 2.6000e3 all-f64 (2.02x), relaxation floor 6.5000e2
-  proposal    1.2900e3 before measurement widened anything (time when --profile is given, bytes otherwise)
-  estimate    2.085e-3 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  sites       7 narrowable, 7 assigned away from f64
+  cost        2.9000e2 against 5.8400e2 all-f64 (2.01x), relaxation floor 1.4600e2
+  proposal    2.9000e2 before measurement widened anything (time when --profile is given, bytes otherwise)
+  estimate    2.262e-6 (sensitivity-weighted, first order: it ranks, it does not guarantee)
   measured    3.663e-8 against the exact reference, after 0 widening round(s) — inside the budget
-  optimal     not searched (the space is too large); the relaxation floor above is the lower bound
+  optimal     2.9000e2 bytes by exhaustive search under the same estimate — the greedy proposal is 1.000x that
 presk solve: wrote out/tut_solved.json — run it with `--realize @out/tut_solved.json`
 ```
+
+Seven sites, out of the envelope's thirty: the values the program
+**stores**, each a computation's result that is not fused into another.
+A type means something only there. A parameter's field, a call's result
+or a member of a fused group carries a value that another site computes,
+or is computed in its group's root's type, so the solver does not offer it
+(since 0.11.0; until then it offered all twenty-two and counted them, D112).
+With seven sites the space is small enough for an exhaustive search, which
+finds the greedy proposal optimal.
 
 Read the `estimate` and `measured` lines together, because they are the
 point. The **estimate** ranks: it says where the budget should go, from one
@@ -1383,7 +1434,7 @@ presk run tutorial/07_train.psk --entry loss --dim B=4 \
 ℝ[] = 2.10375823
 ```
 
-Two honest notes to end on. Half the values got a narrower type and the
+Two honest notes to end on. Every stored value got a narrower type and the
 program moves half as many bytes — but on these shapes that does **not** make
 it faster, because the kernels are bound by arithmetic rather than by memory
 (the `experiments` chapter's statement E, which fails; step 16 says what

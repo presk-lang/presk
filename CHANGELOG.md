@@ -1,5 +1,134 @@
 # Changelog
 
+## 0.11.0 — 2026-10-10
+
+`presk explain FILE --entry E … --out DIR` writes one compilation of one
+entry as a document: every stage's representation from the source to the C
+program, every decision with what decided it, and on request what a run
+measures (`presk-specs/implementation/presk-plan-0.11.0.md`, D109–D117).
+It is Markdown, its PDF a make target. Beneath it, a driver,
+`presk-driver`, takes the orchestration out of the command-line tool, so
+that the commands and the document read the same values; it fixes D108's
+two CLI defects. The solver offers only the values the program stores,
+since the other sites' types change no bit. Judged on six statements fixed
+before the work: no output changes but those named (X1, holds: 37 files of
+X1's runs, each named); D108's findings fixed (X2, holds); the document's
+figures are the commands', and two runs give the same bytes (X3, holds);
+the kernel listing from the shapes, the course GPT's in under 10 s (X4,
+holds: 0.18 s); the decoder block at the 7B width explained from D106's
+files in under 5 minutes and 40 GB (X5, holds: 40 s, 10.9 GB); the solver's
+sites before and after (X6, reported: the course GPT 69 → 29 sites,
+2.09× → 2.14×, the same measured gap).
+
+- Step 0 (D109): the plan, the statements X1–X6, the facts; version
+  `0.11.0-dev`.
+- Step 1 (D110): the crate `presk-driver`, the pipeline as values that every
+  command reports through; `presk check --precision` binds a module entry's
+  own arguments (D108, finding 1: the bound on `LayerNorm{8}.apply` was 93×
+  its rule's), and `presk calibrate --precision` refuses `--samples` without
+  `--data` (finding 2). Every other output is byte-identical. The launch
+  capture, `presk plan`'s choice and the C export moved into the driver too.
+- Step 2 (D111): `presk dump --stage kernel` lists an entry's kernels from
+  its shapes, nothing computed (the course GPT's forward pass at `B = 16`,
+  `T = 256` in 0.18 s, where the kernel interpreter ran it for minutes),
+  the same listing; the driver gives a point's terms per kernel, the
+  solver's breakdown per site (`presk_precision::solve::breakdown`) and the
+  sensitivities' sweep as a program.
+- Step 2b (D112): `presk solve` offers the values the program stores, and
+  nothing else: a parameter's field, a projection, a call's or a fold's
+  result and a fused member change no bit when typed (the reference's
+  chapter 4), and are no longer offered, counted or priced; their rounding
+  is charged where it happens. `presk check --precision` charges a fused
+  member at its root's type. The course GPT's solve at 10⁻³: 29 sites, not
+  69, at 2.14×, the same measured gap.
+- Step 3 (D113): `presk explain FILE --entry E … --out DIR`, one
+  compilation as a document (crate `presk-explain`): every stage's
+  representation, the solve with each site's role and term of the estimate,
+  the bound, fusion, the layout plan, the kernels under their sites, the
+  host and the targets, each section with the commands that print it;
+  deterministic, and every line of the commands it quotes found in it
+  verbatim (X3), what they print being one function each in
+  `presk_driver::text`. `presk solve --profile` no longer calls the
+  exhaustive search's time bytes, nor prints its ratio as 0.000x.
+- Step 4 (D114): `presk explain` gives every decision its reason: each
+  site's type from the solver's moves (`presk_precision::solve::Move`,
+  narrowed, kept by the budget, kept for no saving, widened after a
+  measurement), where each fusion group ends and why
+  (`presk_core::fusion::stops`), each nest's chosen layout beside its
+  runners-up and its best split with every prediction's terms, the
+  optimizer's rewrites before and after, the static assertions and how
+  they were decided. No output of the CLI changes.
+- Step 5 (D115): `presk explain --measure` runs the entry on this machine
+  (the native output against the exact reference, a call, each kernel
+  beside its prediction, the host by phase) and says it did not reserve
+  it; `--site` traces a site through every stage, by default the largest
+  shares of the estimate and the slowest predicted nests, and an index of
+  every site goes to `listings/`. `presk bench`'s three measurements are
+  `presk_driver::bench`'s, its output unchanged.
+- Step 6 (D116): `make explain` and `make explain-pdf` (pandoc and
+  LuaLaTeX, TeX Live 2026, the DejaVu fonts; `crates/presk-explain/pandoc/
+  header.tex`); a table's columns sized by its cells; the manual's chapter
+  `explain_loss`, the tutorial's document, held current by a test (`make
+  explain-manual`); the tutorial's step 7 shows `presk explain`. X5 holds:
+  the Llama 2 decoder block at the 7B width, D106's envelope and
+  realization given, no exact reference, in 40 s and 10.9 GB.
+- Step 7 (D117): three of D110's defects fixed: `presk dump --stage elab`
+  and `--stage core` bind `--const`, which they ignored; a missing
+  `--weights` file is named once in the message; the PyTorch export's
+  conformance reports a PSK-Core verification failure as every command
+  does (exit 2), where it exited 1 without a word. `presk check --precision
+  --measure` says "the kernel interpreter against the exact reference",
+  which it runs, where it said "native" (the same bits, U5). Version
+  `0.11.0`, before the checks of record, which pass on the version's tree:
+  `make test`, `check-examples`, `coverage`, `plan-check`, `c-conformance`
+  (14 of 14), `cargo doc`; X1 on `out/x1/x1.sh` and `make tutorial`, every
+  change named. The paper's runs at 0.11.0: `make precision` 29 sites,
+  2.14×, the same gap; `make quant-table` byte for byte; the curve 2.87× to
+  1.09× less traffic, every budget inside, the quality axis within
+  1.7·10⁻⁴ (`precision` chapter); BERT-large at two blocks 25 sites at 2.03×, measured 1.05·10⁻⁵ against
+  6.3·10⁻³ (D101: 63 sites, 2.00×, 5.1·10⁻⁷; over the stored values the
+  greedy order types the query `bf16` and the layer norm's mean `f32`;
+  `docs/compile-times-2026-10-09.md`); the
+  decoder at the 7B width 24 of 25 sites at 1.96×, measured 1.99·10⁻⁵
+  against 1.1·10⁻² (D106: 52 of 56, 1.99×, 4.3·10⁻⁶; the softmax and
+  RMSNorm's mean now `f32`), in 14 h 03 min and 71.7 GB,
+  `docs/compile-times-2026-10-09-llama.md`.
+- Step 8: the manual's `precision`, `coverage`, `experiments` and `status`
+  chapters at 0.11.0; `CLAUDE.md`; presk-specs' plan marked done, its
+  reference, report and tooling at 0.11.0.
+
+Since the tag `v0.10.1`, before 0.11.0:
+
+- One nest's bound proved in Gappa beside the compiler's bound and the
+  measured gap (D108): `make gappa` (`experiments/gappa.sh`,
+  `experiments/gappa_layernorm.py`, `experiments/gappa_layernorm.psk`) on
+  the examples' layer norm in `f32` at `D = 8, 16, 32, 64`, the report
+  `docs/gappa-2026-10-09.md`, the statements, answers and proofs under
+  `docs/gappa/`. At `D = 64` on one row: measured 2.4·10⁻⁷, `cond`
+  1.3·10⁻⁵, proved 3.3·10⁻⁵; on eight rows 4.1·10⁻⁷, 1.4·10⁻⁵, 6.9·10⁻⁵.
+  The compiler's bound meets the proof on one row's envelope and is below
+  it on a sample's (its quotient and square-root rules take a value's
+  error as proportional to its magnitude). Gappa is an optional tool
+  (Debian's package), documented in the manual's `dependencies`. Four
+  defects of the CLI found and left: `presk check --precision` and `presk
+  solve` do not bind a module entry's dimension arguments (the mean's
+  length falls back to 1 024 terms on `LayerNorm{8}.apply`); `calibrate
+  --samples` without `--data` draws nothing; the entry's arguments are not
+  sites of the envelope; one goal per element of a row.
+- PyTorch eager on the Llama 2 decoder block at the 7B width (D107):
+  `experiments/pytorch_decoder.sh`, `make pytorch-decoder`, the forward
+  pass at 384 tokens, batch 1 and 20, by the PyTorch baseline's protocol on
+  the ten X925 cores, the native backend in `f32` and with `int8` weights
+  on every matrix, under the default layouts and the frozen model's plans,
+  then its kernels alone and its host by phase; the report
+  `docs/pytorch-decoder-0.10.1.md`. Under the plan the native forward pass
+  takes 13.6× PyTorch's at batch 1 and 14.4× at batch 20 (`int8` 6.8× and
+  8.3×), two thirds of its kernels' time the attention's output
+  projection, which the layout space does not tile.
+  `experiments/pytorch_baseline.py` builds the decoder with `--model
+  llama` (its own seeded draw and token ids); the course GPT's path is
+  unchanged.
+
 ## 0.10.1 — 2026-10-07
 
 A patch of 0.10.0 that changes how much the exact interpreter holds and no

@@ -11,6 +11,7 @@ Commands:
   train      Run the `training run` of a file, on the reference interpreter or natively
   serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
   plan       Choose a realization plan statically: every nest's layout space costed by the profile's layout model
+  explain    One compilation as a document: every stage's representation and the reasons for its decisions, in DIR/explain.md (plan 0.11.0)
   autotune   Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits
   reprice    Price the points of a recorded day again under another profile, their times copied: nothing is measured
   rank       Rank accuracy of the layout cost model on two days of measurement, the statements of plan 0.7.0, and plan 0.8.0's Q
@@ -99,15 +100,17 @@ output format is not stable.
 | `elab` | the elaborated program: per file, imports, constants with their values, dimensions with bounds, type aliases, modules with the shapes of their parameters and sub-modules, function signatures, discharged assertions; then the table of module instances with every parameter's shape (stacked axes included) | implemented |
 | `core` | the PSK-Core intermediate representation after lowering (every function in A-normal form with its dimensions, parameters and types; `init` functions; lifted lambdas), verified before printing | implemented |
 | `core-after-ad` | PSK-Core after automatic differentiation: every `grad` rewritten, with the generated `.vjp` and `.grad` functions, without their dead code (since 0.10.0 step 3: a `.vjp` returns the cotangents its callers read; `language` chapter, "Dead code after differentiation"), and since step 4 each `.vjp` split into `.fwd` and `.bwd` unless `--remat recompute` ("Residuals"); verified before printing | implemented |
-| `kernel` | the PSK-Kernel v0 kernels launched by an entry, specialized on its shapes: needs `--entry` and `--dim`/`--const` as `presk run`, plus `--realize` or `--plan` (`native` chapter). The kernel interpreter lowers without lanes unless a plan states them, so a dump without a plan, or with one that states none, prints the scalar kernels | implemented (0.3.0 step 2; `--plan` 0.7.0 step 1) |
+| `kernel` | the PSK-Kernel v0 kernels launched by an entry, specialized on its shapes: needs `--entry` and `--dim`/`--const` as `presk run`, plus `--realize` or `--plan` (`native` chapter). Since 0.11.0 (D111) the kernels are lowered at the entry's shapes and none runs, so a model's listing takes the time of its host (the course GPT's forward pass at `B = 16`, `T = 256` in 0.18 s, where the kernel interpreter ran it for minutes); the listing is the one the run gave, at the kernel interpreter's defaults: without lanes unless a plan states them, so a dump without a plan, or with one that states none, prints the scalar kernels | implemented (0.3.0 step 2; `--plan` 0.7.0 step 1; from the shapes 0.11.0) |
 | `sensitivity` | `‖∂L/∂v‖₁` at every site of a scalar entry and summed per module, from one reverse sweep: needs `--entry`, `--dim`/`--const`, and `--weights` to be worth reading, since a zero-initialized head makes every upstream gradient zero; `--sites N` lists more (`precision` chapter) | implemented (0.5.0 step 5) |
 | `realize` (`sched`) | the fusion groups of every function (`realize` chapter): one line per group with its steps, its inputs and the launches it removes; with `--plan @FILE`, then the plan: its realization, and each nest it gives a layout, with the nest's primitive and the decisions stated, after checking that every nest named exists (`E7002`) | implemented (0.4.0 step 4; `--plan` 0.7.0 step 1) |
 | `core-opt` | PSK-Core after AD and the e-graph optimizer (`optimization` chapter); the report (functions rewritten, `let`s and cost before and after, stop reason) goes to standard error; `--profile FILE.json` makes the roofline of that profile the extraction cost, `--dim` binds the dimensions it evaluates | implemented (0.3.0 steps 6–7) |
 
-`--unroll-stack` lowers `stack{L}` as `L` calls, as on `presk run`; `kernel`
-and `sensitivity` take `--entry`, `--dim`, `--const` and `--realize` as `presk
-run` does, `kernel` and `realize` also `--plan`, `sensitivity` also
-`--weights` and `--sites`, and `core-opt` takes `--profile`.
+`--unroll-stack` lowers `stack{L}` as `L` calls, as on `presk run`; every
+stage but `tokens` and `ast` binds `--const` (`elab` and `core` ignored it
+until 0.11.0 step 7); `kernel` and `sensitivity` take `--entry`, `--dim`,
+`--const` and `--realize` as `presk run` does, `kernel` and `realize` also
+`--plan`, `sensitivity` also `--weights` and `--sites`, and `core-opt`
+takes `--profile`.
 
 Diagnostics (if any) are reported on standard error; the exit code is 1 when
 there are errors, 0 otherwise.
@@ -615,10 +618,13 @@ presk calibrate --precision FILE.psk --entry ENTRY [--data FILE.psk.d]
 
 Measures the **magnitude envelope**: the largest `|x|` at each site, on the
 *reference* interpreter, since the bound it feeds is a statement about the
-denotation and must not be read off a rounded run. `--samples N` folds in a
-batch of `N` and `--from K` skips the first `K`, so two disjoint ranges give
-two independent measurements of the same program; `--compare` prints how far
-two envelopes disagree. `--precision` is required and is the only mode — the
+denotation and must not be read off a rounded run. With `--data`,
+`--samples N` folds in a batch of `N` and `--from K` skips the first `K`, so
+two disjoint ranges give two independent measurements of the same program;
+without `--data` the entry runs on the one input `--seed` synthesizes, and
+`--samples` is refused (exit 2) since 0.11.0, where it was recorded and
+printed as `N` samples (D108, finding 2): bind a batch axis with `--dim` to
+measure several rows. `--compare` prints how far two envelopes disagree. `--precision` is required and is the only mode — the
 roofline calibration is `presk bench --calibrate`, a different measurement of
 a different thing. See the `precision` chapter.
 
@@ -686,16 +692,20 @@ under a realization, and prints the bound on its output. `--model` chooses
 the rule for sums and contractions: `cond`, the condition number (the
 default); `normwise`, sound without assumption; `k`, 0.5.0's worst case; `rss`,
 the root-sum-square, printed as an **estimate**; `all` prints the four.
-`--measure` runs the realization natively on the envelope's own inputs and
-weights and prints the measured distance to the exact reference, with each
-row's ratio to it; an element whose difference is not finite (a value that
+`--measure` runs the realization on the kernel interpreter, whose bits
+are the native backend's (statement U5), on the envelope's own inputs and
+weights, and prints the measured distance to the exact reference, with
+each row's ratio to it (until 0.11.0 step 7 the line said "native"); an element whose difference is not finite (a value that
 overflowed or became NaN where the reference is finite) makes it `inf`, the
 reference's gap, as for `presk solve`'s and `presk quantize`'s measurements
 (since 0.10.0 step 8; such an element was left out before, so a realization
 that overflowed was measured on the others, and `presk solve` could accept
 it). `--sites N` lists the `N` widest sites with their condition
-numbers. See the `precision` chapter, "Does the condition number rescue the
-bound?".
+numbers. The bound is at the envelope's dimensions, and on a module entry
+(`LayerNorm{8}.apply`) at the module's own arguments too: until 0.11.0 those
+were left unbound, and a sum over them was priced at a default length of
+1 024 terms, 93× the bound on `LayerNorm{8}.apply` (D108, finding 1). See
+the `precision` chapter, "Does the condition number rescue the bound?".
 
 ## `presk solve FILE.psk --precision ENVELOPE.json --budget ε`
 
@@ -711,8 +721,18 @@ predicted time of the roofline fitted per machine type when given a
 traffic otherwise, and writes a realization `--realize @R.json` can run. It **verifies by
 measurement** against the exact reference rather than by the propagated
 bound, which is vacuous on a real model; `--no-verify` gives the proposal
-alone. `--weights` matters: a sensitivity ranking at initialization is
-vacuous. The envelope's entry must return a scalar `ℝ[]`, a loss: the sites
+alone. It offers the values the program stores, each a computation's
+result not fused into another, and nothing else: a parameter's field, a
+tuple's projection, a call's or a fold's result carry a value another site
+computes, and a fused member is computed in its group's root's type, so a
+type stated for them changes no bit (since 0.11.0, D112: until then the
+solver offered, counted and priced them). Such a value's rounding is
+charged where it happens, a member's to its root, a parameter's to the
+nests that read it. Under a `--profile` every cost it prints is a time in
+seconds, the exhaustive search's too (until 0.11.0 step 3 its line called
+that time bytes and printed the greedy proposal as 0.000x it, D113).
+`--weights` matters: a sensitivity ranking at
+initialization is vacuous. The envelope's entry must return a scalar `ℝ[]`, a loss: the sites
 are ranked by its sensitivity `∂L/∂v`, as `presk dump --stage sensitivity`
 ranks them, and any other entry is refused (exit 2) before anything is
 computed (D101; until then it failed in the reverse sweep's first `.vjp`,
@@ -1055,6 +1075,32 @@ step 1 a layout is lowered once for all its thread splits, which change
 only the kernel's `threads`, and the traffic into the three cache levels
 is computed in one walk that shares the footprints. Every prediction is
 the one 0.7.0 made (`make ra4-dev`, D64).
+
+## `presk explain FILE.psk --entry ENTRY … --out DIR`
+
+```text
+presk explain FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …]
+    [--budget ε | --realize R | --plan @P.json] [--profile P.json] [--threads N]
+    [--remat store|recompute] [--opt] [--weights W] [--seed S] [--bits B]
+    [--envelope ENV.json] [--no-exact] [--target native,c,pytorch] [--measure]
+    [--site SITE …] --out DIR
+```
+
+Compiles the entry under one compilation's parameters and writes
+`DIR/explain.md`: the source, the elaboration, PSK-Core, differentiation,
+the envelope, the sensitivities, the solve or the realization given, the
+bound beside the measured gap, fusion, the machine and the layout plan, the
+kernels and the host, and the targets, each section ending with the
+commands that print what it shows (0.11.0 step 3, D113). The long listings
+go to `DIR/listings/`, the envelope, the realization, the plan and the
+exported programs to `DIR/artifacts/`. The flags are the commands' own;
+`--budget`, `--realize` and `--plan` exclude one another, and `--opt` is
+refused with a profile or a plan (exit 2). `--measure` adds what one run
+measures on this machine (the native output against the exact reference,
+a call, each kernel beside its prediction, the host by phase); `--site`
+names the sites traced through every stage (0.11.0 step 5). Without
+`--measure` the document is deterministic, and every line the commands it
+quotes print is in it verbatim (X3). See the `explain` chapter.
 
 ## `presk autotune FILE.psk --entry ENTRY --out DIR …`
 

@@ -1,0 +1,23 @@
+[package]
+name = "presk-driver"
+description = "The pipeline as values: what every command of the presk tool and presk explain share (plan 0.11.0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-train.workspace = true
+presk-rt.workspace = true
+presk-kernel.workspace = true
+presk-cranelift.workspace = true
+presk-opt.workspace = true
+presk-precision.workspace = true
+presk-serve.workspace = true
+presk-export-c.workspace = true
+presk-data.workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "presk-explain"
+description = "presk explain: one compilation as a document, every stage's representation and the reasons for its decisions (plan 0.11.0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-syntax.workspace = true
+presk-types.workspace = true
+presk-core.workspace = true
+presk-interp.workspace = true
+presk-rt.workspace = true
+presk-kernel.workspace = true
+presk-realize.workspace = true
+presk-opt.workspace = true
+presk-precision.workspace = true
+presk-export-c.workspace = true
+presk-export-pytorch.workspace = true
+presk-driver.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

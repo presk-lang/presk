@@ -38,6 +38,16 @@ pub mod native {}
 #[doc = include_str!("../manual/export_c.md")]
 pub mod export_c {}
 
+/// `presk explain`: one compilation as a document, every stage's
+/// representation and its decisions, each figure the commands' own.
+#[doc = include_str!("../manual/explain.md")]
+pub mod explain {}
+
+/// The document `presk explain` writes for the tutorial's `loss`, generated
+/// (`make explain-manual`) and held current by a test.
+#[doc = include_str!("../manual/explain_loss.md")]
+pub mod explain_loss {}
+
 /// The corpus: models from an NLP course, used as a forcing function.
 #[doc = include_str!("../manual/corpus.md")]
 pub mod corpus {}

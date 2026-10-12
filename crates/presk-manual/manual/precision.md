@@ -168,6 +168,39 @@ pessimism. What would close it is each sum's **condition number**,
 replaces the worst case with what the program does. 0.6.0 step 6 measured
 it; the next section is the answer.
 
+**And it is a first-order analysis, not a proof** (D108, `make gappa`,
+`docs/gappa-2026-10-09.md`). On the layer norm at `D = 64` in `f32`,
+Gappa — given the kernels' operations in their order and the envelope's
+magnitudes at every site as hypotheses — proves the distance to the exact
+value is at most 3.3·10⁻⁵ on one row, whose native kernels are 2.4·10⁻⁷
+from it and whose `cond` bound is 1.3·10⁻⁵; on an envelope of eight rows
+it proves 6.9·10⁻⁵, where the kernels are 4.1·10⁻⁷ off and `cond` says
+1.4·10⁻⁵:
+
+| D | envelope | measured | `k` | `cond` | proved (Gappa, the envelope's sites) | proved / `cond` |
+|---|---|---|---|---|---|---|
+| 8 | one row | 6.8·10⁻⁸ | 5.8·10⁻⁶ | 2.4·10⁻⁶ | 2.3·10⁻⁶ | 0.98× |
+| 64 | one row | 2.4·10⁻⁷ | 8.8·10⁻⁵ | 1.3·10⁻⁵ | 3.3·10⁻⁵ | 2.5× |
+| 8 | eight rows | 1.4·10⁻⁷ | 5.0·10⁻⁶ | 2.8·10⁻⁶ | 9.2·10⁻⁵ | 33× |
+| 64 | eight rows | 4.1·10⁻⁷ | 1.0·10⁻⁴ | 1.4·10⁻⁵ | 6.9·10⁻⁵ | 4.8× |
+
+Every bound is above the measurement. On one row's envelope the proof and
+the compiler agree (the proof the tighter at `D = 8`); on a sample's the
+proof is above the compiler's, by 33× at `D = 8`. The two agree within a
+factor of two on every sum and product and part at the square root and
+the quotient, whose rules here are in relative terms at the site's
+maximum — a value's error taken as proportional to its magnitude, so that
+the row with the smallest variance carries the smallest error — where a
+proof must hold for a row with the envelope's smallest variance and its
+largest errors at once, which a sample's box admits and one row's does
+not. So the compiler's bound on a sample is not a theorem of the sample's
+envelope: the assumption the table above states for `cond`'s sums is in
+every rule's quotients and roots as well, and the measurement supports it
+where a proof does not have it. From the inputs' ranges alone Gappa proves 3.2·10³ (nothing then
+keeps the variance from 0): the envelope's floor on the variance is what
+a proof buys its 3.5·10⁷ from. Gappa's time grows about sixfold per
+doubling of the width (4 s at `D = 8`, 10 min at 64), so 384 was not run.
+
 This is the specification's own risk register arriving on schedule: worst-case
 bounds are pessimistic by several orders of magnitude with respect to the
 degradation observed. It is why the version's primary deliverable is the
@@ -315,10 +348,23 @@ presk run corpus/nlp/05_gpt.psk --entry loss --realize @out/solved.json …
 ```
 
 The solver chooses one machine type per site to minimise **traffic** subject
-to an error constraint, which is a multiple-choice knapsack. It proposes
-greedily, in order of bytes saved per unit of sensitivity-weighted error
-added; it verifies; and while the verification fails it widens the site whose
-estimated contribution is largest, one step of the menu at a time.
+to an error constraint, which is a multiple-choice knapsack. The sites are
+the values the program stores: a computation's result that is not fused
+into another. The reference's chapter 4 gives a type no meaning anywhere
+else, and the executors agree. A field of the parameters, a projection, a
+call's or a fold's result carry a value unchanged; a fused member is
+computed in its group's root's type. Since 0.11.0 step 4 the solver also
+records each move it makes (`Solution::moves`: a narrowing tried, taken or
+refused by the budget, a widening after a measurement), from which `presk
+explain` gives each decision's type its reason. Until 0.11.0 the solver
+offered those too, counted them as narrowed and priced their bytes, though
+their types changed no bit (D112). Their rounding is now charged where it
+happens: a member's at its root's type, a parameter's at the narrowest type
+of the nests that read it. The bound charges a fused member at its root's
+type too. It proposes greedily, in order of bytes saved per unit of
+sensitivity-weighted error added; it verifies; and while the verification
+fails it widens the site whose estimated contribution is largest, one step
+of the menu at a time.
 
 **It verifies by measurement, not by the bound** (D41). The bound is vacuous
 on a transformer, so verifying against it would accept everything. Running
@@ -334,19 +380,22 @@ problems. Pricing time per site needs the roofline's `W` beside its `Q`.
 
 On the corpus GPT at `D = 64`, trained 600 steps (`make gpt-trained`, the
 weights of the corrected gradient), budget 10⁻³ (`make precision` at
-0.10.0):
+0.11.0):
 
 | | |
 |---|---|
-| traffic | 1.17e7 bytes against 2.45e7 all-`f64`, **2.09×** |
+| traffic | 7.68e6 bytes against 1.64e7 all-`f64`, **2.14×**: 29 sites, 25 in `f32` and 4 in `bf16` |
 | widening rounds | 0 — the proposal was accepted first time |
 | measured gap | 1.20e-7 against a budget of 2.8e-3 |
 | solved run, natively | 4.521788597, where `f64` gives 4.521788577 (on the parameters `presk run` synthesizes, as the target runs it) |
 
-(0.5.0's figures, D41, on weights trained then, with a smaller envelope:
-1.29·10⁶ bytes against 3.45·10⁶, 2.67×, a measured gap of 1.05·10⁻⁷
-against 4.5·10⁻³. The curve at the tag `v0.10.0`, at 10⁻³: 2.00× and
-2.1·10⁻⁵, D102; D93's, 2.08× and 1.89·10⁻⁶.)
+(At 0.10.0, before D112: 69 sites, 1.17·10⁷ bytes against 2.45·10⁷,
+2.09×, the same measured gap and the same native loss; the 40 sites no
+longer offered changed no bit. 0.5.0's figures, D41, on weights trained
+then, with a smaller envelope: 1.29·10⁶ bytes against 3.45·10⁶, 2.67×, a
+measured gap of 1.05·10⁻⁷ against 4.5·10⁻³. The curve at 0.11.0, at 10⁻³:
+2.00× and 2.1·10⁻⁵, D117, as at the tag `v0.10.0`, D102; D93's, 2.08× and
+1.89·10⁻⁶.)
 
 On a program small enough to search exhaustively, the greedy proposal is
 **exactly optimal** at a 10⁻³ budget and 1.057× off at 10⁻⁶. That comparison
@@ -379,37 +428,44 @@ the only thing that differs between two rows is the realization:
 | budget | traffic, vs all-`f64` | measured gap | inside | validation loss | vs all-`f64` |
 |---|---|---|---|---|---|
 | all-`f64` | 1.00× | | | 2.77361 | |
-| 1e-1 | 2.69× less | 3.72e-4 | yes | 2.77381 | +2.0e-4 |
-| 1e-2 | 2.22× less | 3.60e-5 | yes | 2.77361 | −4.0e-6 |
+| 1e-1 | 2.87× less | 5.55e-4 | yes | 2.77378 | +1.7e-4 |
+| 1e-2 | 2.34× less | 3.60e-5 | yes | 2.77361 | −4.0e-6 |
 | 1e-3 | 2.00× less | 2.12e-5 | yes | 2.77360 | −6.5e-6 |
-| 1e-4 | 1.98× less | 1.87e-6 | yes | 2.77361 | +1.3e-6 |
-| 1e-5 | 1.60× less | 4.85e-10 | yes | 2.77361 | 0 |
-| 1e-6 | 1.30× less | 1.35e-8 | yes | 2.77361 | 0 |
-| 1e-7 | 1.06× less | 3.73e-9 | yes | 2.77361 | 0 |
+| 1e-4 | 1.97× less | 1.87e-6 | yes | 2.77361 | +1.3e-6 |
+| 1e-5 | 1.72× less | 1.07e-8 | yes | 2.77361 | 0 |
+| 1e-6 | 1.37× less | 2.05e-8 | yes | 2.77361 | 0 |
+| 1e-7 | 1.09× less | 3.73e-9 | yes | 2.77361 | 0 |
 
 **Every point is inside its budget**, by measurement against the exact
 reference, and the traffic falls monotonically as the budget loosens. The
-measured gap is not monotone in the budget — 10⁻⁵'s assignment, every
-site it narrows in `f32`, measures 4.9·10⁻¹⁰, below 10⁻⁶'s and 10⁻⁷'s —
-because the greedy proposal changes
-shape between budgets and the constraint is on being inside, not on being
-tight.
+measured gap is not monotone in the budget — 10⁻⁶'s assignment measures
+2.1·10⁻⁸, above 10⁻⁵'s 1.1·10⁻⁸, though it narrows 14 sites where 10⁻⁵'s
+narrows 24, every one in `f32` in both — because the greedy proposal
+changes shape between budgets and the constraint is on being inside, not
+on being tight.
 
-**The quality axis is flat.** Every realization trains to within 2.0·10⁻⁴
-of all-`f64`: the most narrowed, 65 sites at 10⁻¹, 21 of them in `bf16`,
-ends 2.0·10⁻⁴ above it, 10⁻² and 10⁻³ end 4.0·10⁻⁶ and 6.5·10⁻⁶ below it,
+**The quality axis is flat.** Every realization trains to within 1.7·10⁻⁴
+of all-`f64`: the most narrowed, 29 sites at 10⁻¹, 15 of them in `bf16`,
+ends 1.7·10⁻⁴ above it, 10⁻² and 10⁻³ end 4.0·10⁻⁶ and 6.5·10⁻⁶ below it,
 10⁻⁴ 1.3·10⁻⁶ above, and the three tightest on it to seven digits. The
 yardstick is the seed: all-`f64` trained at seeds 0, 1 and 2 reaches
-2.7736, 2.7584 and 2.6813, a spread of 0.092, some 465 times anything a
-budget did. So there is no knee in
-quality to identify on this model at this length of training: down to a
-budget of 10⁻¹ on the forward loss — every activation site narrowed, a third
-of them to `bf16` — precision costs nothing a validation loss can see. The
-knee in *error* is still where it was, between 10⁻² and 10⁻³ in traffic.
+2.7736, 2.7584 and 2.6813, a spread of 0.092, some 550 times anything a
+budget did. So there is no knee in quality to identify on this model at
+this length of training: down to a budget of 10⁻¹ on the forward loss —
+every stored value narrowed, half of them to `bf16` — precision costs
+nothing a validation loss can see. The knee in *error* is still where it
+was, between 10⁻² and 10⁻³ in traffic.
 
-This table is D102's, measured at the tag `v0.10.0` on 2026-10-03 (`make
-curve`, 25 minutes). It follows D93's of 2026-09-30, measured again after
-the gradient defect 3f: until 0.10.0 step 4 every training of this model used
+This table is D117's, measured at 0.11.0 on 2026-10-09 (`make curve`, 24
+minutes). Since 0.11.0 step 2b the solver offers the values the program
+stores (D112), 29 where D102's table at the tag `v0.10.0` counted 65, and
+the traffic is theirs. At 10⁻², 10⁻³, 10⁻⁴ and 10⁻⁷ the measured gaps and
+the validation losses are D102's: the stored values have the same types,
+and the ratio moves only with what is counted. At 10⁻¹, 10⁻⁵ and 10⁻⁶ the
+greedy order is another, and so is the assignment, each inside its budget;
+at 10⁻¹ D102's was 2.69× less traffic, measured 3.7·10⁻⁴, and trained to
+2.0·10⁻⁴ above all-`f64`. D102's table follows D93's of 2026-09-30,
+measured again after the gradient defect 3f: until 0.10.0 step 4 every training of this model used
 a wrong gradient under dropout (defect 3f, D92), and the curve measured
 then (D50) read the same conclusions from wider numbers, every realization
 within 1.2·10⁻³ of all-`f64`'s 3.0263 against a seed spread of 0.13. With
@@ -417,14 +473,15 @@ the gradient right the runs stay closer together: the step solved at 10⁻³
 ends 5.5·10⁻⁶ from the `f64` run's weights where it ended 5.0·10⁻³
 ("A budget on the training step", below).
 
-Between D93's table and this one, two things moved the solver's columns.
+Between D93's table and D102's, two things moved the solver's columns.
 Since 0.10.0 step 7b the attention reads its mask instead of adding it,
 one site fewer: 65 narrowable, where D93's 66. Since step 8 `bf16`'s unit
 roundoff is 2⁻⁸, where it was 2⁻⁹, so the greedy proposal prices a `bf16`
 site at twice its former error, and the loosest budgets narrow less to
 `bf16`: 21 sites at 10⁻¹ where 31, 2.69× less traffic where 2.95×.
-Statement D's realization, solved at 10⁻³, is another assignment, 62
-sites in `f32` and 3 in `bf16`, measuring 2.1·10⁻⁵ where D93's measured
+Statement D's realization, solved at 10⁻³, became another assignment, 62
+sites in `f32` and 3 in `bf16` (at 0.11.0 its 29 stored values, 26 in
+`f32` and 3 in `bf16`), measuring 2.1·10⁻⁵ where D93's measured
 1.9·10⁻⁶, inside by two orders of magnitude where it was by three. The
 training runs use `--remat store`, the default, where D93's used
 `recompute`; in `f64` the two compute the same bits, and the all-`f64`
@@ -865,7 +922,8 @@ measurements leave for later, and where each is recorded:
   on one block of the Llama 2 decoder at the 7B width: the exact loss of
   384 tokens in 1 h 54 min and 29 GB, `presk solve --budget 1e-3` in 14 h
   and 72 GB, 52 of 56 sites narrowed, measured 4.3·10⁻⁶ against 1.1·10⁻²
-  (D106, the `coverage` chapter). The time is the next limit: the
+  (D106, the `coverage` chapter; at 0.11.0, 24 of 25 stored values in the
+  same time, measured 2.0·10⁻⁵, D117). The time is the next limit: the
   reference is one thread on MPFR, and the solve takes 7.4 times it.
 - **The statistical model, to propose** (question 58). The root-sum-square
   propagation is within 3.2–17× of the measured gap on uniform realizations

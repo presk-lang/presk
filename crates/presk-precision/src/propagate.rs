@@ -190,7 +190,20 @@ pub fn propagate_with(core: &Program, elab: &ElabProgram, entry: FuncId, dims: &
         fallback: Vec::new(),
     };
     let _ = elab;
-    let mut p = Prop { core, env, realize, out: &mut a, depth: 0, model };
+    // A fused member is computed in its group's root's type and stored
+    // nowhere (the reference's chapter 4, "Realized value"): its rounding is
+    // charged at the root's type, whatever the realization states for the
+    // member (plan 0.11.0 step 2b, D112).
+    let mut roots: HashMap<String, String> = HashMap::new();
+    for f in &core.funcs {
+        let plan = presk_core::fusion::plan(f);
+        for g in plan.groups.values() {
+            for m in g.members.iter().filter(|m| **m != g.root) {
+                roots.insert(format!("{}/%{}", f.name, m.0), format!("{}/%{}", f.name, g.root.0));
+            }
+        }
+    }
+    let mut p = Prop { core, env, realize, out: &mut a, depth: 0, model, roots };
     // The entry's arguments arrive rounded once into their storage type,
     // which is what every backend does when a value crosses the seam.
     let args: Vec<Bound> = core
@@ -216,6 +229,8 @@ struct Prop<'a> {
     out: &'a mut Analysis,
     depth: usize,
     model: Model,
+    /// A fused member's site → its group's root's.
+    roots: HashMap<String, String>,
 }
 
 /// How deep the walk follows calls. A Core program's call graph is a DAG of
@@ -345,8 +360,10 @@ impl Prop<'_> {
         }
     }
 
-    /// The unit roundoff of the storage type this site is realized in.
+    /// The unit roundoff of the storage type this site is realized in: its
+    /// group's root's for a fused member.
     fn u(&self, site: &str) -> f64 {
+        let site = self.roots.get(site).map(String::as_str).unwrap_or(site);
         self.realize.dtype_at(site).unit_roundoff()
     }
 

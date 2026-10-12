@@ -63,6 +63,7 @@ make ra4-f1-dry ra4-f1 ra4-f1-check ra4-f1-day2
 make c-conformance               # the C export on the test set, the course GPT and the trained checkpoints, Clang and x86-64, Polly (0.9.0; minutes, installs .venv-zig and .llvm)
 make c-speed                     # statement C4: the exported course GPT against the native backend (a quiet machine)
 make pytorch-baseline            # the course GPT's forward pass and training step: native, C and PyTorch (D87; 0.10.0's T2 and T4; a quiet machine, about twenty minutes, needs .venv)
+make pytorch-decoder             # the Llama 2 decoder block at the 7B width: native and PyTorch eager, its forward pass (D107; alone, about three and a half hours, needs .venv)
 make ra4-t3-dry ra4-t3 ra4-t3-check ra4-t3-day2
                                  # 0.10.0's T3: the frozen model on the derivatives of `dot` (chapter `experiments` §8; hours each)
 make host-profile                # the native host by phase on the course GPT (0.10.0 step 5; a quiet machine)

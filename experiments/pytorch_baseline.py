@@ -1,9 +1,11 @@
 """PyTorch's side of the baseline at 0.9.0 (D87, experiments/pytorch_baseline.sh).
 
     python pytorch_baseline.py forward --export DIR --weights W.psk.d --inputs IDS.psk.d --threads N [--out Y.npy]
+    python pytorch_baseline.py forward --model llama --export DIR --batch B --seq T --threads N
     python pytorch_baseline.py product --in 384 --out 1536 --threads N
     python pytorch_baseline.py compare --reference F64.psk.d NAME=FILE ...
     python pytorch_baseline.py flops --export DIR --inputs IDS.psk.d
+    python pytorch_baseline.py flops --model llama --export DIR --batch B --seq T
     python pytorch_baseline.py report OUT
 
 `forward` times the course GPT's forward pass as `presk export --target
@@ -16,6 +18,16 @@ ones, printing the median and the best in ms and writing the logits.
 counts the floating-point operations of the forward pass and of one
 training step's forward and backward with PyTorch's own counter. `report`
 writes experiments/pytorch_baseline.sh's report from what it left in OUT.
+
+`--model llama` (D107, experiments/pytorch_decoder.sh) builds the Llama 2
+decoder instead, `llama.Llama(T)` as `presk export --target pytorch` writes
+coverage/llama.psk, with its own initialization (every matrix normal(std =
+0.02), every γ ones, the distributions presk draws from) after
+`torch.manual_seed(0)`, on token indices drawn by `torch.randint(0, 32000,
+(B, T))` from a generator seeded 0: no checkpoint and no inputs file, since
+at the 7B width neither is written. `forward` then prints the logits' size,
+whether they are finite and their largest magnitude in place of writing
+them, and `flops` counts the forward pass only.
 """
 import argparse
 import os
@@ -56,6 +68,18 @@ def timed(f, warmup, repeat):
     return statistics.median(times), min(times)
 
 
+def load_llama(export, batch, seq, dtype):
+    """The decoder, its own seeded draw, and seeded token indices."""
+    sys.path.insert(0, os.path.abspath(export))
+    from llama import V, Llama
+
+    torch.manual_seed(0)
+    model = Llama(seq).to(dtype)
+    model.eval()
+    ids = torch.randint(0, V, (batch, seq), generator=torch.Generator().manual_seed(0))
+    return model, ids
+
+
 def load(export, weights, inputs, dtype):
     sys.path.insert(0, os.path.abspath(export))
     from _05_gpt import GPT
@@ -69,7 +93,20 @@ def load(export, weights, inputs, dtype):
     return model, ids
 
 
+def forward_llama(a):
+    torch.set_num_threads(a.threads)
+    model, ids = load_llama(a.export, a.batch, a.seq, getattr(torch, a.dtype))
+    with torch.no_grad():
+        med, best = timed(lambda: model(ids), a.warmup, a.repeat)
+        y = model(ids)
+    finite = bool(torch.isfinite(y).all())
+    print(f"pytorch forward: torch {torch.__version__}, {torch.get_num_threads()} threads, {a.dtype}, {a.repeat} calls after {a.warmup}, median {med:.3f} ms, best {best:.3f} ms")
+    print(f"pytorch logits: {list(y.shape)}, finite {'yes' if finite else 'NO'}, max|y| {float(y.abs().max()):.4f}")
+
+
 def forward(a):
+    if a.model == "llama":
+        return forward_llama(a)
     torch.set_num_threads(a.threads)
     model, ids = load(a.export, a.weights, a.inputs, getattr(torch, a.dtype))
     with torch.no_grad():
@@ -138,6 +175,13 @@ def compare(a):
 def flops(a):
     from torch.utils.flop_counter import FlopCounterMode
 
+    if a.model == "llama":
+        model, ids = load_llama(a.export, a.batch, a.seq, torch.float32)
+        with torch.no_grad(), FlopCounterMode(display=False) as fc:
+            model(ids)
+        fwd = fc.get_total_flops()
+        print(f"pytorch flops: forward {fwd} ({fwd / 1e9:.3f} GFLOP)")
+        return
     model, ids = load(a.export, None, a.inputs, torch.float32)
     sys.path.insert(0, os.path.abspath(a.export))
     from _05_gpt import loss
@@ -328,9 +372,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("forward")
+    f.add_argument("--model", default="gpt", choices=["gpt", "llama"])
     f.add_argument("--export", required=True)
-    f.add_argument("--weights", required=True)
-    f.add_argument("--inputs", required=True)
+    f.add_argument("--weights")
+    f.add_argument("--inputs")
+    f.add_argument("--batch", type=int)
+    f.add_argument("--seq", type=int)
     f.add_argument("--threads", type=int, required=True)
     f.add_argument("--dtype", default="float32", choices=["float32", "float64"])
     f.add_argument("--warmup", type=int, default=1)
@@ -346,11 +393,20 @@ def main():
     c.add_argument("--reference", required=True)
     c.add_argument("sides", nargs="+", metavar="NAME=FILE")
     n = sub.add_parser("flops")
+    n.add_argument("--model", default="gpt", choices=["gpt", "llama"])
     n.add_argument("--export", required=True)
-    n.add_argument("--inputs", required=True)
+    n.add_argument("--inputs")
+    n.add_argument("--batch", type=int)
+    n.add_argument("--seq", type=int)
     r = sub.add_parser("report")
     r.add_argument("dir")
     a = ap.parse_args()
+    if a.cmd in ("forward", "flops"):
+        # The GPT reads a checkpoint and the C export's inputs; the decoder draws both.
+        need = ["batch", "seq"] if a.model == "llama" else ["inputs"] + (["weights"] if a.cmd == "forward" else [])
+        for k in need:
+            if getattr(a, k) is None:
+                ap.error(f"{a.cmd} --model {a.model} needs --{k}")
     {"forward": forward, "product": product, "compare": compare, "flops": flops, "report": report}[a.cmd](a)
 
 

@@ -291,6 +291,29 @@ batch 20; on every matrix, within one run, 1.72× and 2.34×, for BERT-large's
 2.2×. One block is not the model: its head and token table are 56 % of these
 parameters and 4 % of the 7B's.
 
+**Against PyTorch eager** (D107, `make pytorch-decoder`,
+`docs/pytorch-decoder-0.10.1.md`). The same block's forward pass by the
+PyTorch baseline's protocol (the `experiments` chapter, §3 and §10): the
+ten X925 cores pinned, ten threads, the median of seven calls, the native
+backend under its default layouts and under `presk plan`'s plan with the
+frozen profile, beside PyTorch eager on the module `presk export --target
+pytorch` writes, with its own draw of the same distributions:
+
+| side | B = 1, ms a call | ÷ PyTorch | B = 20, ms a call | ÷ PyTorch |
+|---|---|---|---|---|
+| native `f32`, default layouts | 95 806.6 | 348 | 214 063.7 | 47.1 |
+| native `f32`, plan | 3 744.1 | 13.6 | 65 195.9 | 14.4 |
+| native, `int8` every matrix, plan | 1 870.6 | 6.80 | 37 602.9 | 8.28 |
+| PyTorch eager | 275.1 | 1.00 | 4 541.2 | 1.00 |
+
+The plan is worth 25.6× at batch 1, where the default layouts divide the
+batch axis and so run on one core, and 3.3× at batch 20. What is left is
+mostly one nest: the attention's output projection, `ein[batch, seq,
+model]` over `groups`, `per` and `hd`, takes two thirds of the kernels'
+time at 7.5–8.8 GFLOP/s, because the contraction builder tiles an `ein` with one
+summed axis only; the tiled products run at about 400 GFLOP/s. The course
+GPT's forward pass under its plan was 2.32× PyTorch's (D100).
+
 **A budget, solved** (D106). `presk solve --budget 1e-3` on the next-token
 loss of the sequence, at one block, with the envelope of that sequence, as
 `make compile-times` times it (`STAGES=solve` of `experiments/llama.sh`):
@@ -306,10 +329,25 @@ and two scalar constants to `bf16` (the head width, exact in it, and the
 norm's ε). The traffic is 1.99× less than all-`f64`'s, and the realization
 measures **4.3·10⁻⁶** against the exact loss, where the budget allows
 1.1·10⁻², with no widening round. BERT-large's two blocks measured 5.1·10⁻⁷
-at 2.00× (D101), the course GPT 2.1·10⁻⁵ at 2.00× (D102). The solve takes
+at 2.00× (D101; 1.05·10⁻⁵ at 2.03× at 0.11.0, D117), the course GPT
+2.1·10⁻⁵ at 2.00× (D102, D117). The solve takes
 7.4 times the reference, calibrate 4.4 times. The bound on that realization
 is 6.2·10⁵, vacuous: the discharge is the measurement's (the `precision`
 chapter).
+
+**At 0.11.0** (D117, `docs/compile-times-2026-10-09-llama.md`) the solver
+offers the values the program stores and nothing else (D112), and the same
+four commands were run again: the envelope and the exact loss are
+D106's, the times within 3.5 % and the peaks the same. Of 25 stored
+values, 24 are narrowed, 21 to `f32` and 3 to `bf16`; the traffic, now
+the stored values', is 1.96× less than all-`f64`'s, and the realization
+measures **2.0·10⁻⁵** against the same 1.1·10⁻², with no widening round.
+Three stored values have another type than in D106: the softmax and
+RMSNorm's mean, `f64` there, are `f32`, and the head width's square root
+is `bf16`; the bound is 1.2·10⁶. The 31 sites D106 counted besides change
+no bit when typed: D106's realization, read under 0.11.0's roles, narrows
+22 of the 25 at 1.84×. A function's result is not offered, so the head,
+the output projection and the feed-forward products stay in `f64`.
 
 **Two blocks** (D106). The exact logits at two blocks take 3 h 36 min and
 41.4 GB (the largest is 7.21), and the native gaps move little:

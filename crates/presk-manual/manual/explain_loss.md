@@ -1,0 +1,1083 @@
+# `loss` of `tutorial/07_train.psk`, under a budget of 1e-3, planned under the profile `data/x925-frozen.json`
+
+*What the Presk compiler does to one program: `presk explain`*
+
+> **Generated.** This chapter is the document `presk explain` writes for the tutorial's `loss` (`make explain`, `make explain-pdf` for its PDF), as it is: a test holds it current, and `make explain-manual` writes it again. Its listings and artifacts are written beside the document, not into the manual. See the `explain` chapter.
+
+## The parameters
+
+| Parameter | Value | Where it comes from |
+|-------------------|------------------------|------------------------------------|
+| Program | `tutorial/07_train.psk` | the command line |
+| Entry | `loss` | `--entry loss` |
+| Dimensions | `B = 4` | `--dim B=4` |
+| Constants | `D = 4`, `L = 3` | the files' |
+| Weights | the initialization, seed 0 | no `--weights` |
+| Realization | solved under a budget of 1e-3 relative to the output | `--budget 1e-3` |
+| Exact reference | MPFR at 128 bits | `--bits 128` |
+| Machine | the profile `crates/presk-explain/tests/data/x925-frozen.json` | `--profile crates/presk-explain/tests/data/x925-frozen.json` |
+| Threads | 10 | `--threads 10` |
+| Differentiation | `--remat store` | the command line |
+| Optimizer (e-graph) | off | no `--opt` |
+| Targets | native (Cranelift), C, PyTorch | `--target native,c,pytorch` |
+
+Compiler: presk 0.11.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+
+**The artifacts** it was made from or wrote:
+
+| What | Path | Provenance | SHA-256 |
+|-------------------|------------------------------------|--------------------|--------------------------|
+| the machine profile | `crates/presk-explain/tests/data/x925-frozen.json` | given | `0a4ed24b1b666e13…` |
+| the envelope | `$DOC/artifacts/envelope.json` | computed in this run |  |
+| the realization | `$DOC/artifacts/realization.json` | computed in this run |  |
+| the layout plan | `$DOC/artifacts/plan.json` | computed in this run |  |
+| the C program | `$DOC/artifacts/c/` | computed in this run |  |
+| the PyTorch module | `$DOC/artifacts/pytorch/` | computed in this run |  |
+
+`$DOC/artifacts/SHA256SUMS` holds the checksum of every file written there.
+
+## 0 Summary
+
+| What | Outcome | Kind | Where |
+|------------------|------------------------|------------------|------------------------|
+| Realization | 7 stored values away from `f64`: 1 in `bf16`, 6 in `f32`; the rest in `f64` | decision | §6 |
+| Budget | 1e-3 of the output's magnitude 2.104e0: 2.104e-3 absolute | parameter | §6.3 |
+| Measured gap | 3.663e-8 against the exact reference, inside the budget | measurement | §6.3 |
+| Solver's estimate | 2.262e-6: it ranks, it does not guarantee | estimate | §6.3 |
+| Cost | 2.7240e-4 against 2.7252e-4 all-`f64` (s, predicted by the profile's roofline): 1.00× | estimate | §6.3 |
+| Bound, rule `cond` | 5.152e-5 (2.449e-5 relative) | bound | §6.4, conditional on the envelope's 1 sample |
+| Fusion | 39 launches without it, 30 with it: 9 saved | decision | §7 |
+| Layout plan | 10 nests, 78 points costed, 1 tiled, 0 split; predicted 0.281 µs a call over the nests it prices | decision, estimate | §8 |
+| Kernels | 10 distinct, 30 launches a call | fact | §9 |
+| C program | 9 files, 4360 lines with its runtime | fact | §10 |
+
+A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
+
+## 1 The source
+
+The entry's file and the files it imports, as the compiler reads them.
+
+**`tutorial/07_train.psk`**
+
+```text
+  1  -- 07_train.psk — a training run: the tower of 06 learns y = 2·x + 1.
+  2  import "06_tower.psk" as t
+  3  dim B
+  4  
+  5  fn loss(θ : params t.Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])) -> ℝ[] =
+  6    let (x, y) = batch
+  7    mean((t.Tower.apply(θ, x) - y)^2)
+  8  
+  9  optimizer adamw {
+ 10    lr           : f64 = 0.01
+ 11    weight_decay : f64 = 0.0
+ 12    schedule     : cosine(warmup = 20)
+ 13  }
+ 14  
+ 15  training run {
+ 16    model     = t.Tower
+ 17    objective = loss
+ 18    optimizer = adamw
+ 19    data      = stream "data/pairs.psk.d" |> shuffle(seed = 3) |> batch(B = 8)
+ 20    epochs    : nat = 10
+ 21    checkpoint every 50 steps to "ckpt/"
+ 22  }
+```
+
+**`tutorial/06_tower.psk`**
+
+```text
+  1  -- 06_tower.psk — composition: imports, sub-modules, stacked blocks.
+  2  import "01_linear.psk" as lin
+  3  import "02_norm.psk"   as norm
+  4  
+  5  const D : nat = 4
+  6  const L : nat = 3
+  7  
+  8  module Block {
+  9    use norm : norm.RMSNorm{D}
+ 10    use proj : lin.Linear{D, D}
+ 11  
+ 12    fn apply(x : ℝ[..., model: D]) -> ℝ[..., model: D] =
+ 13      x + proj.apply(gelu(norm.apply(x)))       -- residual connection
+ 14  }
+ 15  
+ 16  module Tower {
+ 17    use blocks : stack{L}(Block)                 -- L copies of Block, parameters stacked
+ 18    use final  : norm.RMSNorm{D}
+ 19  
+ 20    fn apply(x : ℝ[..., model: D]) -> ℝ[..., model: D] =
+ 21      final.apply(blocks.apply(x))
+ 22  }
+```
+
+**`tutorial/01_linear.psk`**
+
+```text
+  1  -- 01_linear.psk — a linear layer: parameters, initializers, one function.
+  2  module Linear{In Out : dim} {
+  3    param w : ℝ[In, Out]  init = xavier_uniform
+  4    param b : ℝ[Out]      init = zeros
+  5  
+  6    fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
+  7      x · w + b
+  8  }
+```
+
+**`tutorial/02_norm.psk`**
+
+```text
+  1  -- 02_norm.psk — named axes, reductions, broadcasting, hyperparameters.
+  2  module RMSNorm{D : dim} {
+  3    param γ : ℝ[D]  init = ones
+  4  
+  5    fn apply(x : ℝ[..., model: D], eps : f64 = 1e-6) -> ℝ[..., model: D] =
+  6      let ms = mean(axis model, x^2)        -- ℝ[...]: the `model` axis is reduced
+  7      x / sqrt(ms + real(eps)) * γ          -- ms broadcasts back, γ aligns on `model`
+  8  }
+```
+
+Diagnostics: none (`presk check` reports no error and no warning).
+
+*Command:* `presk check tutorial/07_train.psk`
+
+## 2 Elaboration
+
+Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
+
+```text
+== tutorial/01_linear.psk
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init
+  param b : ℝ[Out]  init
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out]
+}
+== tutorial/02_norm.psk
+module RMSNorm{D : dim} {
+  param γ : ℝ[D]  init
+  fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
+}
+== tutorial/06_tower.psk
+import lin = tutorial/01_linear.psk
+import norm = tutorial/02_norm.psk
+const D = 4
+const L = 3
+module Block {
+  use norm : RMSNorm{4}
+  use proj : Linear{4, 4}
+  fn apply(x : ℝ[..., model: 4]) -> ℝ[..., model: 4]
+}
+module Tower {
+  use blocks : stack{3}(Block)
+  use final : RMSNorm{4}
+  fn apply(x : ℝ[..., model: 4]) -> ℝ[..., model: 4]
+}
+== tutorial/07_train.psk (main)
+import t = tutorial/06_tower.psk
+dim B
+fn loss(θ : params Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])) -> ℝ[]
+optimizer adamw (3 fields)
+training run (6 items)
+== instances
+RMSNorm{4}:
+  γ : ℝ[4]
+Linear{4, 4}:
+  w : ℝ[4, 4]
+  b : ℝ[4]
+Block:
+  norm.γ : ℝ[4]
+  proj.w : ℝ[4, 4]
+  proj.b : ℝ[4]
+Tower:
+  blocks.norm.γ : ℝ[3, 4]
+  blocks.proj.w : ℝ[3, 4, 4]
+  blocks.proj.b : ℝ[3, 4]
+  final.γ : ℝ[4]
+```
+
+**Types, regularity and effects**, as `presk check --summary` prints them:
+
+```text
+01_linear.psk Linear.apply : ℝ[..., Out]
+02_norm.psk RMSNorm.apply : ℝ[..., model: D]
+    let ms : ℝ[...]
+06_tower.psk Block.apply : ℝ[..., model: 4]
+06_tower.psk Tower.apply : ℝ[..., model: 4]
+07_train.psk loss : ℝ[]
+    let x : ℝ[batch: B, model: 4]
+    let y : ℝ[batch: B, model: 4]
+-- regularity and effects --
+Linear.apply : [θ C∞, x C∞] uses none
+RMSNorm.apply : [θ C∞, x C∞, eps C∞] uses none
+Block.apply : [θ C∞, x C∞] uses none
+Tower.apply : [θ C∞, x C∞] uses none
+loss : [θ C∞, batch C∞] uses none
+Linear.init : [key C∞] uses Rand
+RMSNorm.init : [key C∞] uses Rand
+Block.init : [key C∞] uses Rand
+Tower.init : [key C∞] uses Rand
+adamw.init : [θ C∞] uses none
+adamw.lr : [t C⁰⁺, total C⁰⁺] uses none
+adamw.step : [θ C∞, s C∞, g C∞, t C⁰⁺, total C⁰⁺] uses none
+-- training --
+training run: model Tower, objective loss, optimizer adamw
+    batch   : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])
+    sample  : (ℝ[model: 4], ℝ[model: 4])
+    data    : data/pairs.psk.d (shuffle 3, batch 8) — file holds (ℝ[model: 4], ℝ[model: 4])
+    epochs  : 10
+    ckpt    : every 50 steps to ckpt/
+    dims    : B = 8
+```
+
+**Static assertions:** none.
+
+**The parameters** of `loss`, its first argument: 4 tensors, 76 reals at these dimensions.
+
+| Parameter | Reals |
+|---------------------|----------|
+| `blocks.norm.γ` | 12 |
+| `blocks.proj.w` | 48 |
+| `blocks.proj.b` | 12 |
+| `final.γ` | 4 |
+
+*Commands:*
+
+- `presk dump tutorial/07_train.psk --stage elab`
+- `presk check tutorial/07_train.psk --summary`
+
+## 3 PSK-Core
+
+PSK-Core is the program in A-normal form: one typed operation per line, the parameter trees explicit, a `stack{L}` a `fold`.
+
+**A site is named `<function>/%<n>`**, `n` the number of its variable, whether the `let` has a source name (`ms`) or not (`%5`). That name is the thread every later section follows: the envelope, the sensitivities and the realization are keyed by it, a nest is named by the site it computes, and the C program comments each launch with it.
+
+The functions `loss` reaches (5 of the program's 12):
+
+```text
+fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
+  w : ℝ[In, Out] = θ.w
+  %3 : ℝ[..., Out] = dot x, w
+  b : ℝ[Out] = θ.b
+  %5 : ℝ[..., Out] = add %3, b
+  return %5
+}
+
+fn RMSNorm.apply{D}(θ : params RMSNorm{D}, x : ℝ[..., model: D], eps : f64) -> ℝ[..., model: D] {
+  %3 : ℝ[..., model: D] = pow 2 x
+  ms : ℝ[...] = mean axis model %3
+  %5 : ℝ[] = real eps
+  %6 : ℝ[...] = add ms, %5
+  %7 : ℝ[...] = sqrt %6
+  %8 : ℝ[..., model: D] = div x, %7
+  γ : ℝ[D] = θ.γ
+  %10 : ℝ[..., model: D] = mul %8, γ
+  return %10
+}
+
+fn Block.apply(θ : params Block, x : ℝ[..., model: 4]) -> ℝ[..., model: 4] {
+  norm : params RMSNorm{4} = θ.norm
+  %3 : f64 = 1e-6
+  %4 : ℝ[..., model: 4] = call RMSNorm.apply{D = 4}(norm, x, %3)
+  %5 : ℝ[..., model: 4] = gelu %4
+  proj : params Linear{4, 4} = θ.proj
+  %7 : ℝ[..., 4] = call Linear.apply{In = 4, Out = 4}(proj, %5)
+  %8 : ℝ[..., model: 4] = add x, %7
+  return %8
+}
+
+fn Tower.apply(θ : params Tower, x : ℝ[..., model: 4]) -> ℝ[..., model: 4] {
+  blocks : params stack{3}(Block) = θ.blocks
+  %3 : ℝ[..., model: 4] = fold 3 Block.apply(stacked blocks; acc x)
+  final : params RMSNorm{4} = θ.final
+  %5 : f64 = 1e-6
+  %6 : ℝ[..., model: 4] = call RMSNorm.apply{D = 4}(final, %3, %5)
+  return %6
+}
+
+fn loss{B}(θ : params Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])) -> ℝ[] {
+  x : ℝ[batch: B, model: 4] = batch.0
+  y : ℝ[batch: B, model: 4] = batch.1
+  %4 : ℝ[batch: B, model: 4] = call Tower.apply(θ, x)
+  %5 : ℝ[batch: B, model: 4] = sub %4, y
+  %6 : ℝ[batch: B, model: 4] = pow 2 %5
+  %7 : ℝ[] = mean %6
+  return %7
+}
+```
+
+*Command:* `presk dump tutorial/07_train.psk --stage core`
+
+## 4 Differentiation
+
+Differentiation turns each `grad` into a reverse sweep: a `.vjp` that runs the function forward, keeps what the sweep needs (`--remat store`) or recomputes it (`--remat recompute`), and propagates the cotangents back.
+
+`loss` calls no `grad`, so its compiled program holds no derivative.
+
+The precision analysis differentiates `loss` once more, for its own use: the sensitivities of §6.2 are read off one reverse sweep at 128 bits, the `.vjp` below, which keeps the adjoint of every intermediate. It is not part of the compiled program.
+
+*The sweep's program in `listings/sensitivity-sweep.txt` (148 lines).*
+
+## 5 The e-graph optimizer
+
+The optimizer saturates an e-graph of each function with the rewrite rules and extracts the cheapest form under its cost model.
+
+Not run: `--opt` is off.
+
+## 6 Precision: from a budget to a type per site
+
+A budget bounds the distance between what the machine computes and the mathematics. Four steps turn it into types: **measure** how large the values get (the envelope), **rank** where error matters (the sensitivities), **solve** for the cheapest types the estimate allows, then **discharge** the budget by running the candidate against the exact reference.
+
+### 6.1 The envelope
+
+The exact interpreter runs the entry once and records the largest |x| at every site, and at each sum and contraction what its terms add up to without cancelling: divided by the sum, its condition number.
+
+```text
+presk calibrate: 30 sites over 1 samples of `loss` at 128 bits
+  loss/%6                      7.4759e0
+  RMSNorm.apply/%3             4.0212e0
+  loss/%5                      2.7342e0
+  loss/%3                      2.2073e0
+  loss/%7                      2.1038e0
+presk calibrate: 3 sums and contractions, worst condition numbers Σ|xᵢwᵢ| / |Σxᵢwᵢ|:
+  Linear.apply/%3              1.1620e0
+  RMSNorm.apply/%4             1.0000e0
+  loss/%7                      1.0000e0
+```
+
+The envelope holds 30 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
+
+*Command:* `presk calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out $DOC/artifacts/envelope.json`
+
+### 6.2 The sensitivities
+
+`‖∂L/∂v‖₁` at each site, from one reverse sweep: how much an error at the site moves the output.
+
+```text
+-- sensitivity of `loss`: ‖∂L/∂v‖₁ at each site, one reverse sweep at 128 bits
+module                                 Σ ‖∂L/∂v‖₁
+RMSNorm.apply                            1.1672e1
+Tower.apply                              9.6229e0
+loss                                     9.1017e0
+Block.apply                              6.6191e0
+Linear.apply                             3.7349e0
+
+site                                     ‖∂L/∂v‖₁
+Tower.apply/%2                           6.2814e0
+Block.apply/%6                           2.5041e0
+RMSNorm.apply/%8                         2.4077e0
+loss/%3                                  2.4077e0
+loss/%4                                  2.4077e0
+loss/%5                                  2.4077e0
+RMSNorm.apply/%9                         2.3809e0
+Tower.apply/%4                           2.3809e0
+RMSNorm.apply/%7                         2.2975e0
+Block.apply/%5                           1.5366e0
+Linear.apply/%2                          1.5241e0
+Block.apply/%7                           1.2307e0
+Linear.apply/%3                          1.2307e0
+RMSNorm.apply/%5                         1.1466e0
+RMSNorm.apply/%3                         1.1466e0
+RMSNorm.apply/%4                         1.1466e0
+RMSNorm.apply/%6                         1.1466e0
+loss/%6                                  1.0000e0
+Linear.apply/%4                         9.8000e-1
+Tower.apply/%3                          9.6063e-1
+loss/%2                                 8.7850e-1
+Block.apply/%4                          8.1492e-1
+Block.apply/%2                          5.3272e-1
+```
+
+*Command:* `presk dump tutorial/07_train.psk --stage sensitivity --entry loss --dim B=4 --sites 30`
+
+### 6.3 The realization
+
+The solver ranks the values the program stores by sensitivity and narrows the cheapest first while its first-order estimate Σ s · u(type) · |v| stays under the budget, then measures the candidate against the exact reference and widens until the measurement holds.
+
+```text
+presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2.104e0)
+  sites       7 narrowable, 7 assigned away from f64
+  cost        2.7240e-4 against 2.7252e-4 all-f64 (1.00x), relaxation floor 2.7234e-4
+  proposal    2.7240e-4 before measurement widened anything (time when --profile is given, bytes otherwise)
+  estimate    2.262e-6 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  measured    3.663e-8 against the exact reference, after 0 widening round(s) — inside the budget
+  optimal     2.7240e-4 s by exhaustive search under the same estimate — the greedy proposal is 1.000x that
+```
+
+**Why each site has its type.** The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`). The terms below sum to 2.262e-6, the solver's 2.262e-6. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost.
+
+**The decisions**, each with its term of the estimate:
+
+| Site | Operation | Type | Elements | \|v\| | s | Term | Share |
+|-------------------------|----------------------------|----------|----------|----------|----------|----------|----------|
+| `loss/%6` | `pow 2 %5` | `f32` | 16 | 7.476e0 | 1.000e0 | 4.456e-7 | 19.702 % |
+| `RMSNorm.apply/%3` | `pow 2 x` | `f32` | 16 | 4.021e0 | 1.147e0 | 2.748e-7 | 12.151 % |
+| `RMSNorm.apply/%7` | `sqrt %6` | `f32` | 4 | 1.392e0 | 2.298e0 | 1.907e-7 | 8.431 % |
+| `Block.apply/%5` | `gelu %4` | `f32` | 16 | 1.915e0 | 1.537e0 | 1.754e-7 | 7.756 % |
+| `RMSNorm.apply/%4` | `mean axis model %3` | `f32` | 4 | 1.939e0 | 1.147e0 | 1.325e-7 | 5.858 % |
+| `Linear.apply/%3` | `dot x, w` | `f32` | 16 | 1.618e0 | 1.231e0 | 1.187e-7 | 5.249 % |
+| `RMSNorm.apply/%5` | `real eps` | `bf16` | 1 | 1.000e-6 | 1.147e0 | 4.479e-9 | 0.198 % |
+
+**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget (2.104e-3 absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in s, the profile's roofline.
+
+- `loss/%6`: narrowed to `f32` (move 7): saves 2.648e-8 s, adds 1.155e-6 to the estimate, then 1.939e-6.
+- `RMSNorm.apply/%3`: narrowed to `f32` (move 5): saves 2.648e-8 s, adds 2.748e-7 to the estimate, then 6.513e-7.
+- `RMSNorm.apply/%7`: narrowed to `f32` (move 8): saves 6.619e-9 s, adds 3.232e-7 to the estimate, then 2.262e-6.
+- `Block.apply/%5`: narrowed to `f32` (move 3): saves 2.648e-8 s, adds 1.754e-7 to the estimate, then 1.799e-7.
+- `RMSNorm.apply/%4`: narrowed to `f32` (move 6): saves 6.619e-9 s, adds 1.325e-7 to the estimate, then 7.838e-7.
+- `Linear.apply/%3`: narrowed to `f32` (move 4): saves 2.648e-8 s, adds 1.966e-7 to the estimate, then 3.765e-7.
+- `RMSNorm.apply/%5`: narrowed to `f32` (move 1): saves 1.655e-9 s, adds 6.834e-14 to the estimate, then 7.334e-14; narrowed to `bf16` (move 2): saves 8.274e-10 s, adds 4.479e-9 to the estimate, then 4.479e-9.
+
+**The values rounded elsewhere, or carried.** A follower's type is the narrowest of the types it is rounded to where it is read; a carried value's is its own, never rounded there.
+
+| Site | Operation | Role | Type | \|v\| | s | Term | Share |
+|-------------------------|------------------------------------|------------------------|----------|----------|----------|----------|----------|
+| `loss/%5` | `sub %4, y` | follows `loss/%6` | `f32` | 2.734e0 | 2.408e0 | 3.924e-7 | 17.349 % |
+| `loss/%3` | `batch.1` | follows `loss/%6` | `f32` | 2.207e0 | 2.408e0 | 3.168e-7 | 14.006 % |
+| `RMSNorm.apply/%6` | `add ms, %5` | follows `RMSNorm.apply/%7` | `f32` | 1.939e0 | 1.147e0 | 1.325e-7 | 5.858 % |
+| `Linear.apply/%2` | `θ.w` | follows `Linear.apply/%3` | `f32` | 8.569e-1 | 1.524e0 | 7.785e-8 | 3.442 % |
+| `RMSNorm.apply/%8` | `div x, %7` | follows `RMSNorm.apply/%10` | `f64` | 1.964e0 | 2.408e0 | 5.250e-16 | 0.000 % |
+| `RMSNorm.apply/%9` | `θ.γ` | follows `RMSNorm.apply/%10` | `f64` | 1.000e0 | 2.381e0 | 2.643e-16 | 0.000 % |
+| `Block.apply/%2` | `θ.norm` | carried | `f64` | 1.000e0 | 5.327e-1 | 0.000e0 | 0.000 % |
+| `Block.apply/%4` | `call RMSNorm.apply{D = 4}(norm, x, %3)` | carried | `f64` | 1.964e0 | 8.149e-1 | 0.000e0 | 0.000 % |
+| `Block.apply/%6` | `θ.proj` | carried | `f64` | 8.569e-1 | 2.504e0 | 0.000e0 | 0.000 % |
+| `Block.apply/%7` | `call Linear.apply{In = 4, Out = 4}(proj, %5)` | carried | `f64` | 1.618e0 | 1.231e0 | 0.000e0 | 0.000 % |
+| `Tower.apply/%2` | `θ.blocks` | carried | `f64` | 1.000e0 | 6.281e0 | 0.000e0 | 0.000 % |
+| `Tower.apply/%3` | `fold 3 Block.apply(stacked blocks; acc x)` | carried | `f64` | 1.934e0 | 9.606e-1 | 0.000e0 | 0.000 % |
+| `Tower.apply/%4` | `θ.final` | carried | `f64` | 1.000e0 | 2.381e0 | 0.000e0 | 0.000 % |
+| `loss/%2` | `batch.0` | carried | `f64` | 1.980e0 | 8.785e-1 | 0.000e0 | 0.000 % |
+| `loss/%4` | `call Tower.apply(θ, x)` | carried | `f64` | 1.790e0 | 2.408e0 | 0.000e0 | 0.000 % |
+
+*Command:* `presk solve tutorial/07_train.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile crates/presk-explain/tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json`
+
+### 6.4 The bound and the measurement
+
+Under the realization, each rule's bound on the output's error, beside the gap measured against the exact reference.
+
+```text
+presk check --precision: `loss` under f64+sequential+7sites
+  magnitude   2.1038e0
+  bound    k         1.9120e-2  (9.09e-3 relative)     5.22e5× the measured gap
+  bound    normwise  4.6975e-3  (2.23e-3 relative)     1.28e5× the measured gap
+  bound    cond      5.1524e-5  (2.45e-5 relative)     1.41e3× the measured gap
+  estimate rss       6.6651e-6  (3.17e-6 relative)     1.82e2× the measured gap
+  measured             3.6628e-8  (1.74e-8 relative)  the kernel interpreter against the exact reference
+  envelope    $DOC/artifacts/envelope.json over 1 samples, 30 sites, initial weights
+site                              magnitude            k     relative    condition
+loss/%7                             2.104e0     1.912e-2     9.089e-3      1.000e0
+loss/%6                             7.476e0     1.912e-2     2.558e-3            -
+RMSNorm.apply/%6                    1.939e0     4.657e-3     2.402e-3            -
+RMSNorm.apply/%4                    1.939e0     4.657e-3     2.402e-3      1.000e0
+RMSNorm.apply/%3                    4.021e0     4.656e-3     1.158e-3            -
+loss/%5                             2.734e0     3.496e-3     1.279e-3            -
+RMSNorm.apply/%10                   1.964e0     3.496e-3     1.780e-3            -
+Tower.apply/%6                      1.964e0     3.496e-3     1.780e-3            -
+```
+
+The sound rule (`cond`) bounds the error by 5.152e-5, conditional on the envelope's 1 sample; the measurement is 3.663e-8, 1.4e3× under it.
+
+*Command:* `presk check --precision $DOC/artifacts/envelope.json tutorial/07_train.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure`
+
+## 7 Fusion
+
+PSK-Realize groups the element-wise operations that can share one loop nest: an intermediate inside a group never reaches memory. `iN` is a group's input N, `sN` its step N.
+
+In the functions `loss` reaches, 3 groups, 3 `let`s fused away:
+
+```text
+fn RMSNorm.apply — 8 lets, 2 groups, 2 launches saved
+  %7 = add(i0,i1);sqrt(s0) [2 inputs, 2 steps]
+  %10 = div(i0,i1);mul(s0,i2) [3 inputs, 2 steps]
+fn loss — 6 lets, 1 groups, 1 launches saved
+  %6 = sub(i0,i1);pow 2(s0) [2 inputs, 2 steps]
+```
+
+Over one call, fusion takes 39 launches to 30.
+
+**Where each group ends**, and why each element-wise value outside a group is alone: what reads it. A value joins its reader's group when every reader is in that group, is element-wise and of the same shape, and the group's expression stays under its size limit.
+
+| Value | Line |  | Reaches memory because |
+|--------------------------|------------------------------------|-----------------|------------------------|
+| `Linear.apply/%5` | `%5 : ℝ[..., Out] = add %3, b` | alone | the function's result |
+| `RMSNorm.apply/%3` | `%3 : ℝ[..., model: D] = pow 2 x` | alone | read by `ms : ℝ[...] = mean axis model %3`: a reduction |
+| `RMSNorm.apply/%7` | `%7 : ℝ[...] = sqrt %6` | ends a group of 2 | read by `%8 : ℝ[..., model: D] = div x, %7`, of another shape: a group is one loop nest over one shape |
+| `RMSNorm.apply/%10` | `%10 : ℝ[..., model: D] = mul %8, γ` | ends a group of 2 | the function's result |
+| `Block.apply/%5` | `%5 : ℝ[..., model: 4] = gelu %4` | alone | read by `%7 : ℝ[..., 4] = call Linear.apply{In = 4, Out = 4}(proj, %5)`: a call |
+| `Block.apply/%8` | `%8 : ℝ[..., model: 4] = add x, %7` | alone | the function's result |
+| `loss/%6` | `%6 : ℝ[batch: B, model: 4] = pow 2 %5` | ends a group of 2 | read by `%7 : ℝ[] = mean %6`: a reduction |
+
+*Command:* `presk dump tutorial/07_train.psk --stage realize --plan @$DOC/artifacts/plan.json`
+
+## 8 The machine and the layout plan
+
+Each nest has a space of layouts (vector lanes, a split over workers, for a contraction a register tile, a k-block, a loop order, packing). The plan takes the point the profile's cost model predicts fastest; "within 1 + u" counts the points the model cannot tell from the best.
+
+The profile describes the machine as the cost model sees it, and holds the constants fitted on its calibration.
+
+| Machine |  |
+|----------------|------------------------|
+| Workers | 10 (read from `cpu5`) |
+| L1, private | 64 KiB |
+| L2, private | 2048 KiB |
+| L3 | 8192 KiB, shared by 5 workers |
+| Vector registers | 32 × 16 bytes |
+| Cache line | 64 bytes |
+
+| Layout model |  |
+|------------------------|-------------------|
+| Starting a split launch (`spawn`) | 101.5 µs |
+| Bandwidth from L2, L3, memory | 214, 354, 711 GB/s |
+| Terms combined by | a p-norm, p = 1.059 |
+| Its error on the calibration (u) | 0.132 |
+| Rank correlation on the calibration | 0.984 |
+
+The plan, as `presk plan` prints it: each launch's operands, the points of its space that lower, the best prediction, and the layout chosen. The entry was captured from its shapes alone, on 10 workers.
+
+```text
+nest                         operands                        space     predicted          undecided  layout
+RMSNorm.apply/%3             [4, 4]                       5 points        0.01 µs    1 within 1 + u  lanes 1, split none
+RMSNorm.apply/%4             [4, 4]                       3 points        0.01 µs    1 within 1 + u  lanes 1, split none
+RMSNorm.apply/%7             [4] []                       3 points        0.00 µs    1 within 1 + u  lanes 1, split none
+RMSNorm.apply/%10            [4, 4] [4] [4]               5 points        0.01 µs    1 within 1 + u  lanes 1, split none
+Block.apply/%5               [4, 4]                       5 points        0.02 µs    1 within 1 + u  lanes 1, split none
+Linear.apply/%3              [4, 4] [4, 4]               41 points        0.01 µs    4 within 1 + u  tiled, tile [4, 4], kblock none, order IJ, lanes 4, split none, no pack
+Linear.apply/%5              [4, 4] [4]                   5 points        0.01 µs    1 within 1 + u  lanes 1, split none
+Block.apply/%8               [4, 4] [4, 4]                5 points        0.01 µs    1 within 1 + u  lanes 1, split none
+loss/%6                      [4, 4] [4, 4]                5 points        0.01 µs    1 within 1 + u  lanes 1, split none
+loss/%7                      [4, 4]                       1 points        0.01 µs    1 within 1 + u  lanes 1, split none
+-- 10 nests, 78 points costed; u = 0.132
+```
+
+*Every point's prediction, as `presk plan --cost` prints them, in `listings/plan-cost.txt` (89 lines).*
+
+**Why each nest takes its layout.** The chosen point (1), its two runners-up and the best point that splits the nest over workers, each prediction in its terms, in µs, its layout under it: `λ` a launch, `spawn` starting a split launch, then work, register loads, and the traffic from L2, L3 and memory, which the model combines by a p-norm, p = 1.059. `bound by` names the largest term. A split pays `spawn`, 101.5 µs, so it wins only when it divides more than that.
+
+```text
+RMSNorm.apply/%3 [4, 4] — 5 points, 1 within 1 + u, 4 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0075    0.0000    0.0000    0.0028    0.0008    0.0024    0.0014    0.0007  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0007    0.0002    0.0006    0.0014    0.0007  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0007    0.0002    0.0006    0.0014    0.0007  spawn
+     lanes 1, split (0, 10)
+
+RMSNorm.apply/%4 [4, 4] — 3 points, 1 within 1 + u, 4 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0059    0.0000    0.0000    0.0031    0.0003    0.0015    0.0009    0.0004  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0008    0.0001    0.0006    0.0014    0.0007  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0008    0.0001    0.0006    0.0014    0.0007  spawn
+     lanes 1, split (0, 10)
+
+RMSNorm.apply/%7 [4] [] — 3 points, 1 within 1 + u, 4 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0047    0.0000    0.0000    0.0031    0.0002    0.0009    0.0005    0.0003  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0008    0.0001    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0008    0.0001    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 10)
+
+RMSNorm.apply/%10 [4, 4] [4] [4] — 5 points, 1 within 1 + u, 4 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0100    0.0000    0.0000    0.0042    0.0010    0.0030    0.0018    0.0009  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0011    0.0002    0.0012    0.0029    0.0014  spawn
+     lanes 1, split (0, 10)
+3         101.5    0.0000     101.5    0.0010    0.0003    0.0012    0.0029    0.0014  spawn
+     lanes 1, split (0, 5)
+
+Block.apply/%5 [4, 4] — 5 points, 1 within 1 + u, 3 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0209    0.0000    0.0000    0.0166    0.0008    0.0024    0.0014    0.0007  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0041    0.0002    0.0006    0.0014    0.0007  spawn
+     lanes 1, split (0, 10)
+3         101.5    0.0000     101.5    0.0041    0.0002    0.0006    0.0014    0.0007  spawn
+     lanes 1, split (0, 5)
+
+Linear.apply/%3 [4, 4] [4, 4] — 41 points, 4 within 1 + u, 3 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0113    0.0000    0.0000    0.0010    0.0044    0.0036    0.0022    0.0011  loads
+     tiled, tile [4, 4], kblock none, order IJ, lanes 4, split none, no pack
+2        0.0113    0.0000    0.0000    0.0010    0.0044    0.0036    0.0022    0.0011  loads
+     tiled, tile [4, 4], kblock none, order JI, lanes 4, split none, no pack
+3        0.0120    0.0000    0.0000    0.0010    0.0051    0.0036    0.0022    0.0011  loads
+     tiled, tile [2, 4], kblock none, order JI, lanes 4, split none, no pack
+16        101.5    0.0000     101.5    0.0004    0.0030    0.0024    0.0029    0.0014  spawn
+     tiled, tile [2, 4], kblock none, order IJ, lanes 4, split (0, 5), no pack
+
+Linear.apply/%5 [4, 4] [4] — 5 points, 1 within 1 + u, 3 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0081    0.0000    0.0000    0.0029    0.0007    0.0027    0.0016    0.0008  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 10)
+3         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 5)
+
+Block.apply/%8 [4, 4] [4, 4] — 5 points, 1 within 1 + u, 3 launches
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0096    0.0000    0.0000    0.0029    0.0007    0.0036    0.0022    0.0011  l2
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 10)
+3         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 5)
+
+loss/%6 [4, 4] [4, 4] — 5 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0125    0.0000    0.0000    0.0053    0.0013    0.0036    0.0022    0.0011  work
+     lanes 1, split none
+2         101.5    0.0000     101.5    0.0013    0.0004    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0013    0.0004    0.0009    0.0022    0.0011  spawn
+     lanes 1, split (0, 10)
+
+loss/%7 [4, 4] — 1 points, 1 within 1 + u, 1 launch
+      predicted         λ     spawn      work     loads        L2        L3       mem  bound by
+1        0.0057    0.0000    0.0000    0.0030    0.0003    0.0015    0.0009    0.0004  work
+     lanes 1, split none
+```
+
+*Command:* `PRESK_THREADS=10 presk plan tutorial/07_train.psk --entry loss --dim B=4 --realize @$DOC/artifacts/realization.json --profile crates/presk-explain/tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+
+## 9 The kernels and the host
+
+PSK-Kernel is the loop nests the backends run: one kernel per distinct nest, under its type and its layout. The host program launches them, converting a value where a kernel reads it in another type.
+
+```text
+-- 10 kernels, 30 launches, f64+sequential+7sites
+-- fusion: 39 launches without it, 9 saved (23%)
+```
+
+Each kernel under the sites that launch it, as the host recorded them:
+
+```text
+// k0: 4 launches at RMSNorm.apply/%3
+kernel pow 2 (%0 : f32[batch: 4, model: 4]) -> %1 : f32[batch: 4, model: 4] {
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      %1[i0, i1] = (%0[i0, i1] * %0[i0, i1])
+    }
+  }
+}
+// k1: 4 launches at RMSNorm.apply/%4 (ms)
+kernel mean axis model (%0 : f32[batch: 4, model: 4]) -> %1 : f32[batch: 4] {
+  for i0 in 0..4 {
+    s0 = 0
+    for i1 in 0..4 {
+      s0 = (s0 + %0[i0, i1])
+    }
+    %1[i0] = (s0 / 4)
+  }
+}
+// k2: 4 launches at RMSNorm.apply/%7 (fused)
+kernel fused 2 steps (%0 : f32[batch: 4], %1 : f32[]) -> %2 : f32[batch: 4] {
+  for i0 in 0..4 {
+    %2[i0] = sqrt((%0[i0] + %1[]))
+  }
+}
+// k3: 4 launches at RMSNorm.apply/%10 (fused)
+kernel fused 2 steps (%0 : f64[batch: 4, model: 4], %1 : f64[batch: 4], %2 : f64[4]) -> %3 : f64[batch: 4, model: 4] {
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      %3[i0, i1] = ((%0[i0, i1] / %1[i0]) * %2[i1])
+    }
+  }
+}
+// k4: 3 launches at Block.apply/%5
+kernel gelu (%0 : f32[batch: 4, model: 4]) -> %1 : f32[batch: 4, model: 4] {
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      %1[i0, i1] = (%0[i0, i1] * ((1 + erf((%0[i0, i1] / 1.4142135623730951))) / 2))
+    }
+  }
+}
+// k5: 3 launches at Linear.apply/%3
+kernel dot (%0 : f32[batch: 4, 4], %1 : f32[4, 4]) -> %2 : f32[batch: 4, 4] {
+  for i0 in 0..1 {
+    for i1 in 0..1 {
+      v0 = splat(0)
+      v1 = splat(0)
+      v2 = splat(0)
+      v3 = splat(0)
+      for i2 in 0..4 {
+        s0 = %0[((i0 * 4) + 0), i2]
+        s1 = %0[((i0 * 4) + 1), i2]
+        s2 = %0[((i0 * 4) + 2), i2]
+        s3 = %0[((i0 * 4) + 3), i2]
+        v4 = %1[i2, ((i1 * 4) + 0)]<v>
+        v0 = (v0 + (splat(s0) * v4)<v>)<v>
+        v1 = (v1 + (splat(s1) * v4)<v>)<v>
+        v2 = (v2 + (splat(s2) * v4)<v>)<v>
+        v3 = (v3 + (splat(s3) * v4)<v>)<v>
+      }
+      %2[((i0 * 4) + 0), ((i1 * 4) + 0)] <v= v0
+      %2[((i0 * 4) + 1), ((i1 * 4) + 0)] <v= v1
+      %2[((i0 * 4) + 2), ((i1 * 4) + 0)] <v= v2
+      %2[((i0 * 4) + 3), ((i1 * 4) + 0)] <v= v3
+    }
+  }
+}
+// k6: 3 launches at Linear.apply/%5
+kernel add (%0 : f64[batch: 4, 4], %1 : f64[4]) -> %2 : f64[batch: 4, 4] {
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      %2[i0, i1] = (%0[i0, i1] + %1[i1])
+    }
+  }
+}
+// k7: 3 launches at Block.apply/%8
+kernel add (%0 : f64[batch: 4, model: 4], %1 : f64[batch: 4, 4]) -> %2 : f64[batch: 4, model: 4] {
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      %2[i0, i1] = (%0[i0, i1] + %1[i0, i1])
+    }
+  }
+}
+// k8: 1 launch at loss/%6 (fused)
+kernel fused 2 steps (%0 : f32[batch: 4, model: 4], %1 : f32[batch: 4, model: 4]) -> %2 : f32[batch: 4, model: 4] {
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      %2[i0, i1] = ((%0[i0, i1] - %1[i0, i1]) * (%0[i0, i1] - %1[i0, i1]))
+    }
+  }
+}
+// k9: 1 launch at loss/%7
+kernel mean (%0 : f64[batch: 4, model: 4]) -> %1 : f64[] {
+  s0 = 0
+  for i0 in 0..4 {
+    for i1 in 0..4 {
+      s0 = (s0 + %0[i0, i1])
+    }
+  }
+  %1[] = (s0 / 16)
+}
+```
+
+**The host**, as the C export prints it (§10): a function per Presk function, a fold a loop, each launch under the site it computes and each conversion where a kernel reads a value in another type.
+
+```c
+/* RMSNorm.apply at D = 4: 4 calls of the recording. */
+static void presk_RMSNorm_apply(presk_arena *arena, const double *theta_gamma, const double *x, double *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* RMSNorm.apply/%3 */
+    float *x_f32 = presk_alloc(arena, 16 * sizeof(float));
+    presk_convert(x_f32, PRESK_F32, x, PRESK_F64, 16);
+    float *t3 = presk_alloc(arena, 16 * sizeof(float));
+    k0(x_f32, t3, 0, 4);
+    /* RMSNorm.apply/%4 (ms) */
+    float *ms = presk_alloc(arena, 4 * sizeof(float));
+    k1(t3, ms, 0, 4);
+    /* RMSNorm.apply/%5 */
+    uint16_t *t5 = presk_alloc(arena, 1 * sizeof(uint16_t));
+    presk_fill(t5, PRESK_BF16, 1e-6, 1);
+    /* RMSNorm.apply/%7 (fused) */
+    float *t5_f32 = presk_alloc(arena, 1 * sizeof(float));
+    presk_convert(t5_f32, PRESK_F32, t5, PRESK_BF16, 1);
+    float *t7 = presk_alloc(arena, 4 * sizeof(float));
+    k2(ms, t5_f32, t7, 0, 4);
+    /* RMSNorm.apply/%10 (fused) */
+    double *t7_f64 = presk_alloc(arena, 4 * sizeof(double));
+    presk_convert(t7_f64, PRESK_F64, t7, PRESK_F32, 4);
+    k3(x, t7_f64, theta_gamma, out, 0, 4);
+    presk_release(arena, mark);
+}
+
+/* Linear.apply at In = 4, Out = 4: 3 calls of the recording. */
+static void presk_Linear_apply(presk_arena *arena, const double *theta_w, const double *theta_b, const float *x, double *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* Linear.apply/%3 */
+    float *theta_w_f32 = presk_alloc(arena, 16 * sizeof(float));
+    presk_convert(theta_w_f32, PRESK_F32, theta_w, PRESK_F64, 16);
+    float *t3 = presk_alloc(arena, 16 * sizeof(float));
+    k5(x, theta_w_f32, t3, 0, 0);
+    /* Linear.apply/%5 */
+    double *t3_f64 = presk_alloc(arena, 16 * sizeof(double));
+    presk_convert(t3_f64, PRESK_F64, t3, PRESK_F32, 16);
+    k6(t3_f64, theta_b, out, 0, 4);
+    presk_release(arena, mark);
+}
+
+/* Block.apply: 3 calls of the recording. */
+static void presk_Block_apply(presk_arena *arena, const double *theta_norm_gamma, const double *theta_proj_w, const double *theta_proj_b, const double *x, double *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* Block.apply/%4 */
+    double *t4 = presk_alloc(arena, 16 * sizeof(double));
+    presk_RMSNorm_apply(arena, theta_norm_gamma, x, t4);
+    /* Block.apply/%5 */
+    float *t4_f32 = presk_alloc(arena, 16 * sizeof(float));
+    presk_convert(t4_f32, PRESK_F32, t4, PRESK_F64, 16);
+    float *t5 = presk_alloc(arena, 16 * sizeof(float));
+    k4(t4_f32, t5, 0, 4);
+    /* Block.apply/%7 */
+    double *t7 = presk_alloc(arena, 16 * sizeof(double));
+    presk_Linear_apply(arena, theta_proj_w, theta_proj_b, t5, t7);
+    /* Block.apply/%8 */
+    k7(x, t7, out, 0, 4);
+    presk_release(arena, mark);
+}
+
+/* Tower.apply: 1 call of the recording. */
+static void presk_Tower_apply(presk_arena *arena, const double *theta_blocks_norm_gamma, const double *theta_blocks_proj_w, const double *theta_blocks_proj_b, const double *theta_final_gamma, const double *x, double *out)
+{
+    const size_t mark = presk_mark(arena);
+    /* Tower.apply/%3 */
+    /* a fold of 3 iterations: one loop over its 3 iterations */
+    const double *x_2 = x;
+    double *x_buf[2] = {presk_alloc(arena, 16 * sizeof(double)), presk_alloc(arena, 16 * sizeof(double))};
+    for (int64_t l = 0; l < 3; l++) {
+        presk_Block_apply(arena, theta_blocks_norm_gamma + l * 4, theta_blocks_proj_w + l * 16, theta_blocks_proj_b + l * 4, x_2, x_buf[l % 2]);
+        x_2 = x_buf[l % 2];
+    }
+    /* Tower.apply/%6 */
+    presk_RMSNorm_apply(arena, theta_final_gamma, x_2, out);
+    presk_release(arena, mark);
+}
+
+void presk_loss(presk_arena *arena, const presk_loss_in *in, presk_loss_out *out)
+{
+    const double *theta_blocks_norm_gamma = in->theta_blocks_norm_gamma;
+    const double *theta_blocks_proj_w = in->theta_blocks_proj_w;
+    const double *theta_blocks_proj_b = in->theta_blocks_proj_b;
+    const double *theta_final_gamma = in->theta_final_gamma;
+    const double *batch_0 = in->batch_0;
+    const double *batch_1 = in->batch_1;
+    double *result = presk_alloc(arena, 1 * sizeof(double));
+    const size_t mark = presk_mark(arena);
+    /* loss/%4 */
+    double *t4 = presk_alloc(arena, 16 * sizeof(double));
+    presk_Tower_apply(arena, theta_blocks_norm_gamma, theta_blocks_proj_w, theta_blocks_proj_b, theta_final_gamma, batch_0, t4);
+    /* loss/%6 (fused) */
+    float *t4_f32 = presk_alloc(arena, 16 * sizeof(float));
+    presk_convert(t4_f32, PRESK_F32, t4, PRESK_F64, 16);
+    float *batch_1_f32 = presk_alloc(arena, 16 * sizeof(float));
+    presk_convert(batch_1_f32, PRESK_F32, batch_1, PRESK_F64, 16);
+    float *t6 = presk_alloc(arena, 16 * sizeof(float));
+    k8(t4_f32, batch_1_f32, t6, 0, 4);
+    /* loss/%7 */
+    double *t6_f64 = presk_alloc(arena, 16 * sizeof(double));
+    presk_convert(t6_f64, PRESK_F64, t6, PRESK_F32, 16);
+    k9(t6_f64, result, 0, 0);
+    out->result = result;
+    presk_release(arena, mark);
+}
+```
+
+*Command:* `presk dump tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json`
+
+## 10 Targets
+
+**Native.** The Cranelift backend compiles each of the 10 kernels to machine code at its first launch, in process, and the host program of §9 runs them.
+
+**C.** `presk export --target c` writes the entry as a C program that computes the native backend's bits (statement C1):
+
+```text
+presk export: `loss` at B = 4 in f64+sequential+7sites under the plan $DOC/artifacts/plan.json: 30 launches (0 dead, on one thread) of 10 kernels, 4 functions besides the entry's and 1 loop, an arena of 2048 bytes (5568 released nothing), into $DOC/artifacts/c; `make -C $DOC/artifacts/c check` builds it and compares it with the native backend
+```
+
+| File | Lines |
+|-------------------|----------|
+| `Makefile` | 22 |
+| `README.md` | 66 |
+| `kernels.c` | 227 |
+| `main.c` | 113 |
+| `model.c` | 127 |
+| `model.h` | 35 |
+| `presk_libm.c` | 2680 |
+| `presk_rt.c` | 743 |
+| `presk_rt.h` | 347 |
+
+The first contraction, `k5`, as C:
+
+```c
+// kernel dot (%0 : f32[batch: 4, 4], %1 : f32[4, 4]) -> %2 : f32[batch: 4, 4] {
+//   for i0 in 0..1 {
+//     for i1 in 0..1 {
+//       v0 = splat(0)
+//       v1 = splat(0)
+//       v2 = splat(0)
+//       v3 = splat(0)
+//       for i2 in 0..4 {
+//         s0 = %0[((i0 * 4) + 0), i2]
+//         s1 = %0[((i0 * 4) + 1), i2]
+//         s2 = %0[((i0 * 4) + 2), i2]
+//         s3 = %0[((i0 * 4) + 3), i2]
+//         v4 = %1[i2, ((i1 * 4) + 0)]<v>
+//         v0 = (v0 + (splat(s0) * v4)<v>)<v>
+//         v1 = (v1 + (splat(s1) * v4)<v>)<v>
+//         v2 = (v2 + (splat(s2) * v4)<v>)<v>
+//         v3 = (v3 + (splat(s3) * v4)<v>)<v>
+//       }
+//       %2[((i0 * 4) + 0), ((i1 * 4) + 0)] <v= v0
+//       %2[((i0 * 4) + 1), ((i1 * 4) + 0)] <v= v1
+//       %2[((i0 * 4) + 2), ((i1 * 4) + 0)] <v= v2
+//       %2[((i0 * 4) + 3), ((i1 * 4) + 0)] <v= v3
+//     }
+//   }
+// }
+// lo, hi: unused, no loop of this kernel may be divided among threads
+static void k5(const float *restrict in0, const float *restrict in1, float *restrict out, int64_t lo, int64_t hi) {
+    int64_t i0 = 0, i1 = 0, i2 = 0;
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+    float v0[4] = {0}, v1[4] = {0}, v2[4] = {0}, v3[4] = {0}, v4[4] = {0};
+    (void)lo; (void)hi;
+    for (i0 = 0; i0 < 1; i0++) {
+        for (i1 = 0; i1 < 1; i1++) {
+            for (int l = 0; l < 4; l++) v0[l] = 0.0f;
+            for (int l = 0; l < 4; l++) v1[l] = 0.0f;
+            for (int l = 0; l < 4; l++) v2[l] = 0.0f;
+            for (int l = 0; l < 4; l++) v3[l] = 0.0f;
+            for (i2 = 0; i2 < 4; i2++) {
+                s0 = in0[i0 * 16 + i2];
+                s1 = in0[i0 * 16 + i2 + 4];
+                s2 = in0[i0 * 16 + i2 + 8];
+                s3 = in0[i0 * 16 + i2 + 12];
+                for (int l = 0; l < 4; l++) v4[l] = in1[i2 * 4 + i1 * 4 + l];
+                for (int l = 0; l < 4; l++) v0[l] = v0[l] + s0 * v4[l];
+                for (int l = 0; l < 4; l++) v1[l] = v1[l] + s1 * v4[l];
+                for (int l = 0; l < 4; l++) v2[l] = v2[l] + s2 * v4[l];
+                for (int l = 0; l < 4; l++) v3[l] = v3[l] + s3 * v4[l];
+            }
+            for (int l = 0; l < 4; l++) out[i0 * 16 + i1 * 4 + l] = v0[l];
+            for (int l = 0; l < 4; l++) out[i0 * 16 + i1 * 4 + 4 + l] = v1[l];
+            for (int l = 0; l < 4; l++) out[i0 * 16 + i1 * 4 + 8 + l] = v2[l];
+            for (int l = 0; l < 4; l++) out[i0 * 16 + i1 * 4 + 12 + l] = v3[l];
+        }
+    }
+}
+```
+
+`make -C $DOC/artifacts/c check` builds it and compares its outputs with the native backend's, bit for bit.
+
+**PyTorch.** `presk export --target pytorch` writes one module per file:
+
+| File | Lines |
+|---------------------|----------|
+| `_01_linear.py` | 36 |
+| `_02_norm.py` | 36 |
+| `_06_tower.py` | 54 |
+| `_07_train.py` | 46 |
+
+*Commands:*
+
+- `presk export tutorial/07_train.psk --target c --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --threads 10 -o $DOC/artifacts/c`
+- `presk export tutorial/07_train.psk --target pytorch -o $DOC/artifacts/pytorch`
+
+## 11 Measured
+
+What one run measured on this machine: the realization natively against the exact reference, a call timed, each kernel's time beside the model's prediction, and the host's time by phase. The one section that changes from run to run.
+
+Not measured: `--measure` was not given. Every other section is deterministic; this one would hold times.
+
+## 12 Sites through every stage
+
+A site is named `<function>/%<n>` at every stage, which is what lets one value be followed from PSK-Core to the C.
+
+By default, the three largest shares of the solver's estimate (the three largest bounds without a solve), then the three nests of the most predicted time a call; `--site` names others.
+
+**`loss/%6`**
+
+| Stage |  |
+|------------------|------------------------------------|
+| PSK-Core (§3) | `%6 : ℝ[batch: B, model: 4] = pow 2 %5` in `loss` |
+| Envelope (§6.1) | \|v\| ≤ 7.476e0, 16 elements |
+| Sensitivity (§6.2) | 1.000e0 |
+| Type (§6.3) | `f32`, decision; term 4.456e-7; narrowed to `f32` (move 7): saves 2.648e-8 s, adds 1.155e-6 to the estimate, then 1.939e-6 |
+| Fusion (§7) | ends a group of 2: read by `%7 : ℝ[] = mean %6`: a reduction |
+| Layout (§8) | nest `loss/%6`, 5 points at `[4, 4] [4, 4]`; chosen lanes 1, split none, 0.0125 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k8`: `kernel fused 2 steps (%0 : f32[batch: 4, model: 4], %1 : f32[batch: 4, model: 4]) -> %2 : f32[batch: 4, model: 4]` |
+| C (§10) | `k8` in `kernels.c`, launched by `presk_loss` in `model.c`, the launch commented `loss/%6` |
+
+**`RMSNorm.apply/%3`**
+
+| Stage |  |
+|------------------|------------------------------------|
+| PSK-Core (§3) | `%3 : ℝ[..., model: D] = pow 2 x` in `RMSNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 4.021e0, 16 elements |
+| Sensitivity (§6.2) | 1.147e0 |
+| Type (§6.3) | `f32`, decision; term 2.748e-7; narrowed to `f32` (move 5): saves 2.648e-8 s, adds 2.748e-7 to the estimate, then 6.513e-7 |
+| Fusion (§7) | alone: read by `ms : ℝ[...] = mean axis model %3`: a reduction |
+| Layout (§8) | nest `RMSNorm.apply/%3`, 5 points at `[4, 4]`; chosen lanes 1, split none, 0.0075 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k0`: `kernel pow 2 (%0 : f32[batch: 4, model: 4]) -> %1 : f32[batch: 4, model: 4]` |
+| C (§10) | `k0` in `kernels.c`, launched by `presk_RMSNorm_apply` in `model.c`, the launch commented `RMSNorm.apply/%3` |
+
+**`RMSNorm.apply/%7`**
+
+| Stage |  |
+|------------------|------------------------------------|
+| PSK-Core (§3) | `%7 : ℝ[...] = sqrt %6` in `RMSNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 1.392e0, 4 elements |
+| Sensitivity (§6.2) | 2.298e0 |
+| Type (§6.3) | `f32`, decision; term 1.907e-7; narrowed to `f32` (move 8): saves 6.619e-9 s, adds 3.232e-7 to the estimate, then 2.262e-6 |
+| Fusion (§7) | ends a group of 2: read by `%8 : ℝ[..., model: D] = div x, %7`, of another shape: a group is one loop nest over one shape |
+| Layout (§8) | nest `RMSNorm.apply/%7`, 3 points at `[4] []`; chosen lanes 1, split none, 0.0047 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | `k2`: `kernel fused 2 steps (%0 : f32[batch: 4], %1 : f32[]) -> %2 : f32[batch: 4]` |
+| C (§10) | `k2` in `kernels.c`, launched by `presk_RMSNorm_apply` in `model.c`, the launch commented `RMSNorm.apply/%7` |
+
+**`Block.apply/%5`**
+
+| Stage |  |
+|------------------|------------------------------------|
+| PSK-Core (§3) | `%5 : ℝ[..., model: 4] = gelu %4` in `Block.apply` |
+| Envelope (§6.1) | \|v\| ≤ 1.915e0, 16 elements |
+| Sensitivity (§6.2) | 1.537e0 |
+| Type (§6.3) | `f32`, decision; term 1.754e-7; narrowed to `f32` (move 3): saves 2.648e-8 s, adds 1.754e-7 to the estimate, then 1.799e-7 |
+| Fusion (§7) | alone: read by `%7 : ℝ[..., 4] = call Linear.apply{In = 4, Out = 4}(proj, %5)`: a call |
+| Layout (§8) | nest `Block.apply/%5`, 5 points at `[4, 4]`; chosen lanes 1, split none, 0.0209 µs, bound by work; runner-up lanes 1, split (0, 10), 101.5 µs |
+| Kernel (§9) | `k4`: `kernel gelu (%0 : f32[batch: 4, model: 4]) -> %1 : f32[batch: 4, model: 4]` |
+| C (§10) | `k4` in `kernels.c`, launched by `presk_Block_apply` in `model.c`, the launch commented `Block.apply/%5` |
+
+**`RMSNorm.apply/%10`**
+
+| Stage |  |
+|------------------|------------------------------------|
+| PSK-Core (§3) | `%10 : ℝ[..., model: D] = mul %8, γ` in `RMSNorm.apply` |
+| Envelope (§6.1) | \|v\| ≤ 1.964e0, 16 elements |
+| Sensitivity (§6.2) | none |
+| Type (§6.3) | `f64`, decision |
+| Fusion (§7) | ends a group of 2: the function's result |
+| Layout (§8) | nest `RMSNorm.apply/%10`, 5 points at `[4, 4] [4] [4]`; chosen lanes 1, split none, 0.0100 µs, bound by work; runner-up lanes 1, split (0, 10), 101.5 µs |
+| Kernel (§9) | `k3`: `kernel fused 2 steps (%0 : f64[batch: 4, model: 4], %1 : f64[batch: 4], %2 : f64[4]) -> %3 : f64[batch: 4, model: 4]` |
+| C (§10) | `k3` in `kernels.c`, launched by `presk_RMSNorm_apply` in `model.c`, the launch commented `RMSNorm.apply/%10` |
+
+**`Linear.apply/%3`**
+
+| Stage |  |
+|------------------|------------------------|
+| PSK-Core (§3) | `%3 : ℝ[..., Out] = dot x, w` in `Linear.apply` |
+| Envelope (§6.1) | \|v\| ≤ 1.618e0, 16 elements, condition number 1.162e0 |
+| Sensitivity (§6.2) | 1.231e0 |
+| Type (§6.3) | `f32`, decision; term 1.187e-7; narrowed to `f32` (move 4): saves 2.648e-8 s, adds 1.966e-7 to the estimate, then 3.765e-7 |
+| Fusion (§7) | not an element-wise operation |
+| Layout (§8) | nest `Linear.apply/%3`, 41 points at `[4, 4] [4, 4]`; chosen tiled, tile [4, 4], kblock none, order IJ, lanes 4, split none, no pack, 0.0113 µs, bound by loads; runner-up tiled, tile [4, 4], kblock none, order JI, lanes 4, split none, no pack, 0.0113 µs |
+| Kernel (§9) | `k5`: `kernel dot (%0 : f32[batch: 4, 4], %1 : f32[4, 4]) -> %2 : f32[batch: 4, 4]` |
+| C (§10) | `k5` in `kernels.c`, launched by `presk_Linear_apply` in `model.c`, the launch commented `Linear.apply/%3` |
+
+*Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (31 lines).*
+
+## Appendix: the commands
+
+The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
+
+```sh
+presk check tutorial/07_train.psk
+presk dump tutorial/07_train.psk --stage elab
+presk check tutorial/07_train.psk --summary
+presk dump tutorial/07_train.psk --stage core
+presk calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out $DOC/artifacts/envelope.json
+presk dump tutorial/07_train.psk --stage sensitivity --entry loss --dim B=4 --sites 30
+presk solve tutorial/07_train.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile crates/presk-explain/tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json
+presk check --precision $DOC/artifacts/envelope.json tutorial/07_train.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure
+presk dump tutorial/07_train.psk --stage realize --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan tutorial/07_train.psk --entry loss --dim B=4 --realize @$DOC/artifacts/realization.json --profile crates/presk-explain/tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json
+presk export tutorial/07_train.psk --target c --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --threads 10 -o $DOC/artifacts/c
+presk export tutorial/07_train.psk --target pytorch -o $DOC/artifacts/pytorch
+```
+

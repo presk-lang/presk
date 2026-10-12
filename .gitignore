@@ -3,6 +3,7 @@
 /.venv
 /.venv-zig
 /.llvm
+/.gappa
 *.snap.new
 .DS_Store
 __pycache__/

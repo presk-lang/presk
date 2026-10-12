@@ -1084,7 +1084,11 @@ sweep, the reference and the proposal's measurement, each on two
 windows); on BERT-large's two blocks, on their SQuAD loss, 10 minutes for
 the reference, 85 to calibrate and 2 h 54 min to solve, which puts their 63
 sites away from `f64` (59 in `f32`, 4 in `bf16`) and measures 5.1·10⁻⁷
-under a budget of 6.3·10⁻³. `presk solve` takes a scalar entry, a loss,
+under a budget of 6.3·10⁻³. At 0.11.0, the solver offering the values the
+program stores alone (D112), the same solve in the same time puts all 25
+away from `f64` (21 in `f32`, 4 in `bf16`), 2.03× less traffic, and
+measures 1.05·10⁻⁵: two of the 25 have another type, the query `bf16`
+and the layer norm's mean `f32` (D117, `docs/compile-times-2026-10-09.md`). `presk solve` takes a scalar entry, a loss,
 and refuses any other at once since D101. BERT's `squad`, which returns its
 logits, was refused that way, so its row is measured on `squad_loss`, the
 loss `run_squad.py` trains it on (the `coverage` chapter).
@@ -1105,10 +1109,22 @@ exact value once (D105) and fixes that defect, and on 2026-10-05–07 the
 decoder's budget was solved (D106, the `coverage` chapter's *The decoder,
 run*): `presk solve --budget 1e-3` on its next-token loss, one block, 384
 tokens, in 14 h 07 min and 71.7 GB, 52 of 56 sites narrowed, 1.99× less
-traffic than all-`f64`, measured 4.3·10⁻⁶ against 1.1·10⁻², beside
-BERT's two blocks above (5.1·10⁻⁷, 2.00×) and statement D's course GPT
-(2.1·10⁻⁵, 2.00×, D102). Every output 0.10.0 gives is 0.10.1's, so every
+traffic than all-`f64`, measured 4.3·10⁻⁶ against 1.1·10⁻² (at 0.11.0,
+the solver offering the stored values alone: 24 of 25 at 1.96×, measured
+2.0·10⁻⁵, D117), beside
+BERT's two blocks above (5.1·10⁻⁷, 2.00×; 1.05·10⁻⁵, 2.03× at 0.11.0)
+and statement D's course GPT (2.1·10⁻⁵, 2.00×, D102 and D117). Every output 0.10.0 gives is 0.10.1's, so every
 number of this chapter stands.
+
+**The second model against PyTorch, after 0.10.1.** The same block's
+forward pass by §3's protocol, the ten X925 cores pinned (D107, `make
+pytorch-decoder`, the `coverage` chapter's *The decoder, run*,
+`docs/pytorch-decoder-0.10.1.md`): under the frozen model's plan the native
+backend takes 13.6× PyTorch eager's at batch 1 and 14.4× at batch 20, 6.8×
+and 8.3× with `int8` weights on every matrix, where the course GPT's
+forward pass took 2.32× (D100); two thirds of its kernels' time is the
+attention's output projection, an `ein` over three summed axes that the
+layout space does not tile.
 
 **What T2 says.** A training step of the course GPT in C is level with
 PyTorch's on these cores, where 0.9.0 left it 12× behind. In order of what
@@ -1136,6 +1152,74 @@ reported as it fell (`docs/kernels-roadmap.md`, the last section).
 **What T3 says.** §8's addendum: the frozen model picks within 1.19× of
 the best on nests it was never shown, and fails Q only by what it charges
 for deciding, the whole gradient's capture, on nests whose sweep is short.
+
+## 11. One nest's bound proved: Gappa beside the compiler's bound and the measurement (D108)
+
+The compiler's bound is a first-order analysis conditional on a measured
+envelope, sound wherever it was checked and never proved (§4, §5). On
+2026-10-09 one nest's bound was proved in Gappa and set beside it
+(`make gappa`, `experiments/gappa.sh`; the report `docs/gappa-2026-10-09.md`;
+the statements and Gappa's answers under `docs/gappa/`): `LayerNorm{D}.apply`
+of the examples in `f32`, at `D = 8, 16, 32, 64`, on eight rows synthesized
+from seed 0. For each width: `presk calibrate --precision` measures the
+envelope at 128 bits; `presk check --precision … --model all --measure`
+prints the four rules' bounds and the native kernels' gap to the reference
+on the envelope's inputs; `presk dump --stage kernel` gives the operations
+and the order of the sums; `experiments/gappa_layernorm.py` writes the Gappa
+statement — the same tree over the reals and with one rounding per
+operation in the kernels' order, the inputs rounded once, `eps` the `f32`
+of the binary64 the literal denotes — whose hypotheses are the envelope's
+magnitudes at every site (and, as a second run, the inputs' ranges alone),
+and whose goal is `|ŷ₀ − y₀|`; Gappa answers, and the same statement with
+the answer as its goal is a proof it checks. Nothing is timed; the machine
+does not matter.
+
+| D | hypotheses | measured | `k` | `cond` | proved (Gappa) | `cond` / measured | proved / measured | proved / `cond` |
+|---|---|---|---|---|---|---|---|---|
+| 8 | the envelope's sites | 1.4·10⁻⁷ | 5.0·10⁻⁶ | 2.8·10⁻⁶ | **9.2·10⁻⁵** | 19× | 637× | 33× |
+| 64 | the envelope's sites | 4.1·10⁻⁷ | 1.0·10⁻⁴ | 1.4·10⁻⁵ | **6.9·10⁻⁵** | 35× | 168× | 4.8× |
+| 8 | one row's sites | 6.8·10⁻⁸ | 5.8·10⁻⁶ | 2.4·10⁻⁶ | **2.3·10⁻⁶** | 35× | 34× | 0.98× |
+| 64 | one row's sites | 2.4·10⁻⁷ | 8.8·10⁻⁵ | 1.3·10⁻⁵ | **3.3·10⁻⁵** | 53× | 134× | 2.5× |
+| 8 | the inputs alone | 1.4·10⁻⁷ | | | **3.2·10³** | | 2.3·10¹⁰× | |
+| 64 | the inputs alone | 4.1·10⁻⁷ | | | **4.5·10³** | | | |
+
+**What it says.** Proved ≥ measured and `cond` ≥ measured everywhere (`k`
+and `normwise` too). On one row's envelope the proof and the compiler's
+bound agree (0.98–2.5×); on a sample's the proved bound is above the
+compiler's: the two analyses agree within a factor of two on every sum
+and product and part at the square root and the quotient, whose rules in
+the compiler are in relative terms at the site's maximum — a value's error
+taken as proportional to its magnitude — where a proof must hold for a row
+with the envelope's smallest variance and the largest errors at once,
+which a sample's box admits. So the compiler's bound on a sample is not a
+theorem of the sample's envelope; the proportionality it assumes is what
+the measurement supports and a proof does not have. From the inputs' ranges alone the proved bound is vacuous
+(nothing keeps the variance from 0 and the denominator from `√eps`): the
+envelope's floor on the variance buys 3.5·10⁷. The proved bound does not
+grow with `D` (it is the quotient's term, `|x − μ|ₘₐₓ · err(√) / √ₘᵢₙ²`,
+a property of the sample's spread), where `k` grows with the sum's length,
+so proved/`cond` falls from 33× at `D = 8` to 4.8× at 64. In `f64` the
+picture is `f32`'s (33× at `D = 8`); in `bf16` the proved bound is vacuous
+(866) while `cond` is 6.2× the measurement, the sum of squares' error
+under `u = 2⁻⁸` exceeding the variance's floor. Gappa's time grows about
+sixfold per doubling of the width (4 s, 13 s, 86 s, 10 min), so 384 was
+not run.
+
+**What it does not say.** Nothing about the loss or a block (§4's nine
+orders are eight sums in series, not this nest); nothing proved about the
+envelope, which both bounds are conditional on; no Gappa export (the
+generator knows one nest). Four findings about the compiler are recorded
+in D108. Two were fixed in 0.11.0 (D110): `presk check --precision` did
+not bind a module's dimension arguments, so on the entry
+`LayerNorm{8}.apply` itself the mean's length fell back to 1 024 terms and
+the bound printed was 93× its rule's (the soundness test binds them and
+gives §4's table; the paper's entries are top-level functions and
+unaffected; `presk solve` bound them through its run and was not
+affected); and `presk calibrate --precision --samples N` without `--data`
+drew nothing, and is now refused. Two are left: the entry's arguments are not sites of the envelope, so an
+input's rounding is charged at `u · 1` whatever its range; and the bound
+for `ŷ₀` is every element's only to within 0.3 %, the sequential sum not
+being symmetric in them.
 
 ## What these experiments do not show
 

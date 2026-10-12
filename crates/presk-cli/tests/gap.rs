@@ -2,7 +2,8 @@
 //! (plan 0.10.0 step 8; the language reference's chapter 4, finding b): an
 //! element whose difference is not finite makes the gap +∞, as the
 //! reference's definition of the gap does, for `presk check --precision
-//! --measure` and `presk solve`, which therefore refuses `f32` here. Until
+//! --measure` and `presk solve`, which therefore refuses `f32` for the
+//! overflowing group here. Until
 //! step 8 such an element was left out: the gap read 0, and `presk solve`
 //! accepted the realization that overflows.
 
@@ -32,9 +33,16 @@ fn a_non_finite_difference_makes_the_gap_infinite() {
     assert!(check.lines().any(|l| l.trim_start().starts_with("measured") && l.contains(" inf ")), "{check}");
     let f64_check = presk(&["check", "--precision", env.to_str().unwrap(), FILE, "--realize", "f64", "--measure"]);
     assert!(!f64_check.contains(" inf "), "{f64_check}");
-    // The solver measures its proposal, widens it, and keeps `f64`.
+    // The solver measures its proposal, which overflows, and widens it: the
+    // group of `exp` (root `f/%4`, `mul` its member) goes back to `f64`.
+    // Since 0.11.0 step 2b (D112) the round widens the decision whose share,
+    // its member's with its own, is largest, which is that group, and the
+    // constant `real 120`, exact in `f32`, may stay narrowed; until then the
+    // round widened every site, the member's type among them.
     let solve = presk(&["solve", FILE, "--precision", env.to_str().unwrap(), "--budget", "1e-3", "--out", solved.to_str().unwrap(), "--sites", "0"]);
-    assert!(solve.contains("0 assigned away from f64") && solve.contains("inside the budget"), "{solve}");
-    assert!(!std::fs::read_to_string(&solved).unwrap().contains("\"f32\""));
+    assert!(solve.contains("inside the budget") && solve.contains("widening round"), "{solve}");
+    assert!(solve.lines().any(|l| l.trim_start().starts_with("measured") && !l.contains("inf")), "{solve}");
+    let r = std::fs::read_to_string(&solved).unwrap();
+    assert!(!r.contains("\"f/%4\"") && !r.contains("\"f/%3\""), "{r}");
     std::fs::remove_dir_all(&dir).ok();
 }

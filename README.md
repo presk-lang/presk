@@ -5,7 +5,7 @@ running neural networks with exact real semantics. The language is specified
 in the `presk-specs` repository; its `examples/*.psk` are the reference
 programs (copied under `tests/examples/`).
 
-**Version 0.10.1**: the front-end (`presk check`); an arbitrary-precision
+**Version 0.11.0**: the front-end (`presk check`); an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), the oracle
 every other executor is measured against; a native backend — PSK-Kernel v0
 compiled by Cranelift, with fusion groups, threads, blocked contractions and
@@ -57,7 +57,12 @@ key, masks of truth values, an entry refused at the dimensions where an
 operation is undefined), every change exact. And the exact interpreter
 holds each parameter once and frees each value after its last use (0.10.1),
 so that a budget is solved and discharged on one block of the Llama 2
-decoder at the 7B configuration's width, at the same bits as before. See
+decoder at the 7B configuration's width, at the same bits as before. And
+`presk explain` writes one compilation as a document (0.11.0): every
+stage's representation, every decision with its reason, the commands that
+print each figure, the PDF by `make explain-pdf`; beneath it a driver takes
+the orchestration out of the command line, and the solver offers only the
+values the program stores. See
 `CHANGELOG.md` and the
 user manual (`make doc`); its tutorial chapter (programs in `tutorial/`,
 commands in `make tutorial`) is the place to start.

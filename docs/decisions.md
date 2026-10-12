@@ -10890,3 +10890,1105 @@ chapter ("The decoder, run" gains the solve, the whole scheme, two blocks
 and the split at one), `status`, `precision` and `experiments` §10. The
 paper's side (Table 1's row, RQ5's paragraph, the sentences that say no
 budget was solved on a second model) is the paper session's.
+
+## D107 — PyTorch eager on one block of the Llama 2 decoder at the 7B width, by D100's protocol: the native forward pass under the frozen model's plan takes 13.6× PyTorch's at batch 1 and 14.4× at batch 20 (`int8` weights 6.8× and 8.3×), where the course GPT's took 2.32×; two thirds of the native kernels' time is the attention's output projection, an `ein` over three summed axes that the layout space does not tile (2026-10-07)
+
+RQ6's figure is the course GPT's: its C training step at 0.99× PyTorch
+eager's on the ten X925 cores, its native forward pass at 2.32× under the
+frozen model's plan and 9.75× under the default layouts (D100), on a model
+the project wrote. D104 and D106 ran a model it did not write, one block of
+the Llama 2 decoder at the 7B width, natively, unpinned and on the default
+layouts only. This is the same block on D100's terms, the paper's plan's
+§7 item 6 (presk-paper-001 !15): Table 4's second row. A measurement; it
+decides nothing.
+
+**How.** `experiments/pytorch_decoder.sh` (`make pytorch-decoder`), on
+falicon, alone, from 2026-10-07 16:35 to 17:59, presk `25dbeda` (0.10.1's
+code and the script), every command in a `systemd-run` scope capped at
+108 GB. The forward pass `Llama.apply` of `coverage/llama.psk` at
+`--const G=32 --const L=1`, `T = 384`, batch 1 and 20, `f32`, on the ten
+X925 cores pinned (`taskset -c 5-9,15-19`, ten threads), the median and
+the best of seven calls after one warmup. Native: `presk bench
+--native-only --plan-only`, in `f32` and with `int8` weights on every
+matrix (D106's `int8_all.json`), each under the default layouts and under
+`presk plan`'s plan with the frozen profile; `presk plan` gave one at both
+batch sizes in both realizations (22 nests, 18–50 s). PyTorch: the module
+`presk export --target pytorch --mode readable` writes, `llama.Llama(384)`
+with its own draw of presk's distributions (seed 0), in eval mode under
+`torch.no_grad()`, on ids drawn by `torch.randint` (seed 0), with ten
+threads, and with one on cpu 15 at batch 1 (`pytorch_baseline.py
+--model llama`). PyTorch's counter gives 258.50 GFLOP a sequence, the
+compiler's count of the contractions exactly. The gate on 16 tokens took
+ten minutes and sized the run at seven calls everywhere; after the timed
+rows, the native kernels alone under the `f32` plan (`presk bench
+--calibrate`, D100's) and the host by phase at batch 1 (`--host-profile`,
+D95's).
+
+**The rows** (milliseconds a call; ÷ PyTorch's ten-thread median):
+
+| side | layout | B = 1 | ÷ | B = 20 | ÷ |
+|---|---|---|---|---|---|
+| native `f32` | default | 95 806.6 | 348 | 214 063.7 | 47.1 |
+| native `f32` | plan | **3 744.1** | **13.6** | **65 195.9** | **14.4** |
+| native, `int8` every matrix | default | 48 617.0 | 177 | 94 453.5 | 20.8 |
+| native, `int8` every matrix | plan | **1 870.6** | **6.80** | **37 602.9** | **8.28** |
+| PyTorch eager, ten threads | its own | **275.1** | 1.00 | **4 541.2** | 1.00 |
+| PyTorch eager, one thread (cpu 15) | its own | 1 910.5 | 6.94 | — | — |
+
+PyTorch runs the pass at 940 GFLOP/s at batch 1 and 1 139 at batch 20;
+the native backend under the plan at 69 and 79 in `f32`. Its logits are
+finite, their largest magnitude 6.84 at batch 1, where presk's exact
+logits on its own draw reach 6.88 (D104). The export's conformance test
+passes at the tiny constants and at `D = 256`, `G = 4`, `FF = 688`,
+`T = 32`, which checks what the PyTorch side computes; the draws differ,
+so the logits are not compared.
+
+**What the plan buys.** At batch 1, 25.6× in `f32` and 26.0× in `int8`:
+the default layouts divide a kernel's outermost loop among the threads,
+and at batch 1 that loop is the batch axis, so a whole pass runs on one
+core of the ten (95.8 s, 50× PyTorch on one thread, the like-for-like row
+on one core); the plan divides each nest at depth 2, the 384 positions,
+over ten workers, and gives the products a register tile ([4, 16], k-block
+128). At batch 20 the default layouts already divide the batch over the
+ten cores, and the plan buys 3.3× in `f32` and 2.5× in `int8`, with the
+same tiles, the products still divided over the positions and most other
+nests over the batch.
+`int8` weights halve the time under the plan at batch 1 (2.00×) and buy
+1.73× at batch 20; on the default layouts 1.97× and 2.27× (D106, unpinned
+on twenty threads: 1.72× and 2.34×).
+
+**Where the native time goes.** Under the `f32` plan, every kernel timed
+alone (`out/pytorch-decoder/prof/`):
+
+| kernel | GFLOP a launch, B = 1 | share of the kernels' time, B = 1 / B = 20 | GFLOP/s, B = 1 / B = 20 |
+|---|---|---|---|
+| `wo`'s product, `ein[batch, seq, model]` | 12.88 | **69.8 % / 66.8 %** | **7.5 / 8.8** |
+| the head, `dot` [4096, 32000] | 100.66 | 10.3 % / 11.2 % | 394 / 408 |
+| SwiGLU's three `dot`s | 3 × 34.63 | 10.3 % / 11.7 % | 396–413 / 392–408 |
+| `wq`, `wk`, `wv`, `dot`s | 3 × 12.88 | 3.7 % / 4.2 % | 417–419 / 422–424 |
+| the attention's two `ein`s | 2 × 1.21 | 5.2 % / 5.6 % | 13.6–30.5 / 13.5–36.6 |
+
+The output projection is 5 % of the pass's operations and two thirds of
+its kernels' time. `presk_kernel::lower::Contraction::of` takes an `ein`
+as a contraction nest, the builder's tiled kernel, only when it sums over
+one axis and both operands carry every outer axis. The file reads `wo`
+under the heads' three axes (`split` twice, since `merge` names nothing,
+D28) and sums over `groups`, `per` and `hd`; the scores and the values
+read a key or value operand without `per` (grouped-query attention, one
+key head per group). So these three nests have no tiled point: their
+space is the lanes and the thread split (5 to 7 points). The course GPT's
+attention has no group axis, and its two `ein`s are contraction nests. The
+products that are tiled run at 391–424 GFLOP/s. Inside the call the
+kernels take 3 824 ms of a 3 827 ms call at batch 1 (`--host-profile`), the
+host 0.8 ms; the same kernels timed one by one add up to 2 470 ms, so a
+launch inside the call takes longer than alone, but none of the call is the
+host's.
+
+**What it says.** On a decoder the project did not design, at a published
+width, the compiler's own PyTorch export of the same source runs eagerly in
+275 ms a sequence at batch 1 and 227 ms at batch 20; presk's native
+backend under the frozen model's plan takes 13.6× and 14.4× that in `f32`,
+6.8× and 8.3× with `int8` weights, six times further than on the course
+GPT (2.32×). The frozen model's plan is worth 25.6× at batch 1, where the
+default layouts leave nine cores idle, and 3.3× at batch 20. Most of the distance left is one
+nest outside the layout space, not the tiled products: a limit of the
+contraction builder (one summed axis) met by how the file must write the
+grouped-query projection, not of the plan's choice. Batch 1 says that the
+default layouts are no layout for a decoder at batch 1, and the plan is.
+
+**What it does not say.** Anything about `torch.compile`, a GPU, or
+another library: PyTorch eager on the CPU only, as RQ6 frames it. A
+training step: none at this width, since no budget on a step can be
+discharged there without the exact step. The C program: not exported at
+this width. The values: PyTorch's parameters are its own draw of presk's
+distributions. One block of 32 on random ids: the head and the token table
+are 56 % of these parameters and 4 % of the 7B's. A performance claim
+beyond these rows: none. What tiling the output projection would give: not
+measured; an `ein` over several summed axes taken as one, as `dot_vjp_r`
+takes its leading axes (D89), is a lead for a later plan, not a change
+here (the prompt allowed none, and none was needed).
+
+**The record.** The report `docs/pytorch-decoder-0.10.1.md`, every command
+and file, the gate, the correctness checks and torch's configuration; the
+outputs under `out/pytorch-decoder/` (the run of record) and
+`out/pytorch-decoder-T16/` (the gate), git-ignored, not archived: they can
+be taken again (`make pytorch-decoder`, about three and a half hours, the
+kernels alone two of them). `experiments/pytorch_baseline.py`'s course GPT
+is unchanged: its forward pass's logits on D100's checkpoint byte for byte,
+its FLOP count and D100's report identical. The manual's `coverage`
+chapter ("The decoder, run"), `experiments` §10 and `status` ("Since
+0.10.1"). The paper's side (Table 4's second row, RQ6's sentence) is the
+paper session's.
+
+## D108 — One nest's bound proved in Gappa beside the compiler's bound and the measured gap: on the layer norm at `D = 64` in `f32` the native kernels are 4.1·10⁻⁷ from the exact value, `cond` says 1.4·10⁻⁵ (35×), and Gappa proves 6.9·10⁻⁵ (168×) from the envelope of eight rows and 3.3·10⁻⁵ (134×, 2.5× `cond`) from one row's; the compiler's bound is a first-order analysis under a proportionality assumption at the quotients and roots, not a theorem of the envelope, and the two agree where the envelope is one row's; four defects of the CLI found and left (2026-10-09)
+
+The paper's §4 ends its paragraph on the bound with "a proof of one
+nest's bound, in Gappa, is the route to a verified figure, named and not
+taken here", and §1, §6, §7 and §8 repeat it. This takes it, on one nest,
+as a measurement with no compiler change
+(`presk-project/docs/prompt-gappa-layernorm-2026-10-08.md`; the report
+`docs/gappa-2026-10-09.md`; the Gappa statements, answers, proofs and dumps
+under `docs/gappa/`; `make gappa`). Nothing timed; an x86-64 machine ran
+it. It decides nothing about the language or the compiler; it says what
+the compiler's bound is.
+
+**How.** `LayerNorm{D}.apply` of the examples (the paper's §3 listing) in
+`f32`, `D = 8, 16, 32, 64`, on eight rows synthesized from seed 0
+(`γ = 1`, `β = 0`, `eps = 1e-5`), behind a wrapper module
+(`experiments/gappa_layernorm.psk`, finding 1 below; its kernels are the
+example's byte for byte). `presk calibrate --precision` at 128 bits gives
+the envelope; `presk check --precision … --model all --measure` the four
+rules' bounds and the native kernels' gap to the reference on the
+envelope's inputs; `presk dump --stage kernel` the operations and the
+order of the sums. `experiments/gappa_layernorm.py` writes the Gappa
+statement from the envelope: the kernels' tree over the reals and the
+same with one `float<ieee_32,ne>` rounding per operation in the kernels'
+order (two sequential sums each divided by `D`, the square of `x − μ`,
+`sqrt(v + eps)` with `eps` the `f32` of the binary64 the literal denotes,
+the quotient, the product by `γ`, the sum with `β`; the inputs rounded
+once as they cross the seam), hypotheses the envelope's magnitudes at
+every site — `|μ|`, `|x − μ|`, the square's, the variance's and the
+root's floor and ceiling, `|x̂|`, `|y|`, `|x| ≤ max|x − μ| + max|μ|` — and
+the goal `|ŷ₀ − y₀| in ?`. Gappa (1.6.0, Debian's package) answers with an
+exact dyadic; the same statement with that dyadic as its goal is a proof
+it checks (`-Echange-threshold=0.0001`, so that it refines as far as the
+query did). Three hints, in the generator with their reasons: the sum's
+first addition `0 + x` exact; `rnd(a / D)` paired with `a / D` by hand;
+the quotient by the root in absolute terms, the form the compiler's `Div`
+rule calls `abs`, since `x − μ` has no floor. A second run per width with
+the inputs' ranges alone as hypotheses; `D = 8` with every element of the
+row as a goal, and queried site by site; one row (`batch = 1`) at each
+width; `f64` and `bf16` at `D = 8` and 16.
+
+**The numbers** (`f32`, eight rows; `k`/`normwise`/`rss` in the report):
+
+| D | measured | `cond` | proved, the envelope's sites | proved, the inputs alone | `cond`/measured | proved/measured | proved/`cond` | Gappa |
+|---|---|---|---|---|---|---|---|---|
+| 8 | 1.44e-7 | 2.78e-6 | **9.17e-5** | 3.25e3 | 19× | 637× | 33× | 5 s |
+| 16 | 2.05e-7 | 4.19e-6 | **6.01e-5** | 5.19e3 | 20× | 293× | 14× | 13 s |
+| 32 | 2.83e-7 | 7.83e-6 | **6.41e-5** | 4.86e3 | 28× | 227× | 8.2× | 86 s |
+| 64 | 4.13e-7 | 1.45e-5 | **6.94e-5** | 4.52e3 | 35× | 168× | 4.8× | 10 min |
+
+One row (`batch = 1`; measured, `cond`, proved; proved/`cond`): `D = 8` 6.79e-8, 2.38e-6, **2.33e-6**, 0.98×; 16: 1.15e-7, 4.19e-6, **7.96e-6**, 1.9×; 32: 2.83e-7, 6.75e-6, **1.27e-5**, 1.9×; 64: 2.43e-7, 1.29e-5, **3.27e-5**, 2.5× — the proof 34–134× the gap, the compiler 24–53×.
+
+Every proof checks. Proved ≥ measured and `cond` ≥ measured (and `k`,
+`normwise`) at every width, realization and hypothesis set: the prompt's
+two checks hold.
+
+**What it says.** The proved bound is above the compiler's at every width
+on the eight rows' envelope, by 33× at `D = 8` and 4.8× at 64, and within
+0.98–2.5× of it on one row's. Site by site at `D = 8`, the two analyses agree within a
+factor of two on the mean, the centering, the square and the variance
+(`k` and Gappa to a few per cent) and part at the square root and the
+quotient: the compiler's rules there are in relative terms at the site's
+maximum — `err(a/b) = |a/b|ₘₐₓ (err(a)/|a|ₘₐₓ + err(b)/|b|ₘₐₓ)`, the
+smaller of that and the absolute form — which takes a value's error as
+proportional to its magnitude, so that the row with the smallest variance
+carries the smallest error; a proof must hold on every point of the
+hypotheses' box, among them a row with the envelope's smallest variance
+(0.18 at `D = 8`, from one row) and the largest terms' errors (from
+another), where `|x − μ|ₘₐₓ · err(√) / √ₘᵢₙ²` is 9.1e-5 against the
+compiler's 2.3e-6. When the envelope is one row's, every scalar site's
+floor is its ceiling and the two agree. So **the compiler's bound is not a
+theorem of the envelope's magnitudes**: it is a first-order analysis
+under a proportionality assumption — the one the manual states for
+`cond`'s sums, and which is in every rule's quotients and roots as well —
+that the measurement supports (`cond` 19–35× the gap, the soundness test
+on 24 combinations) and a proof does not have. The envelope is what a
+proof lives on: from the inputs' ranges alone Gappa proves 3.2·10³ at
+`D = 8` (nothing keeps the variance from 0 and the root from `√eps`),
+and the floor on the variance buys 3.5·10⁷. The proved bound does not grow
+with `D` (the quotient's term, a property of the sample's spread) where
+`k` grows with the sum's length, so proved/`cond` falls from 33× to 4.8×.
+`f64` is `f32`'s picture; in `bf16` the proved bound is vacuous (866 at
+`D = 8`, the squares' error under `u = 2⁻⁸` exceeding the variance's
+floor) while `cond` is 6.2× the gap: there the compiler's bound rests on
+the assumption and on nothing a proof sees. Gappa's time grows about
+sixfold per doubling of the width; 384 was not run.
+
+**What it does not say.** Nothing about the loss or a block (§4's nine
+orders are eight sums in series, not this nest); nothing proved about the
+envelope, which both bounds are conditional on; no Gappa export (the
+generator knows one nest's thirteen lets by their operations); nothing
+about the transcendental functions (none here) or the kernels' bits (a
+kernel computing otherwise would put the measured gap above the proved
+bound, and it does not); nothing timed.
+
+**Found and left** (the prompt allowed no compiler change; each is a line
+or two, for a later plan unless the user says otherwise):
+
+1. `presk check --precision` and `presk solve` discard the dimensions a
+   module entry's arguments bind (`let Ok((entry, _, _)) =
+   resolve_entry(…)`, `presk-cli/src/main.rs`) and bind only the
+   envelope's `--dim`s, so on `LayerNorm{8}.apply` itself `D` is unbound,
+   `terms()` (`presk-precision/src/propagate.rs`) falls back to
+   `DEFAULT_TERMS = 1024` for the mean, and the bound printed is 93× its
+   rule's (`k` 5.4e-4 and `cond` 1.5e-4 at `D = 8`, 1.5e-3 and 2.0e-4 at
+   64, against 5.0e-6 / 2.8e-6 and 1.0e-4 / 1.4e-5 behind the wrapper;
+   `docs/gappa/check_example_D*.txt`). The soundness test binds them
+   through `prepare_run` and gives the manual's table today (48× under
+   `k` at `D = 8`); the paper's entries are top-level functions with
+   `--const`s, unaffected. (The presk session found the 93× on 2026-10-09
+   independently, without its cause; its message is in the record.)
+2. `presk calibrate --precision --samples N` without `--data` records `N`
+   and prints "over N samples", and runs the one synthesized input of
+   `--seed`: `--samples` folds in a batch only from a data file. Here the
+   rows are the sample (`--dim batch=8`).
+3. The entry's arguments are not sites of the envelope, so
+   `propagate_with` charges an input's rounding at `u · 1` whatever its
+   range (`|x|` reaches 2.7 at `D = 8`, 3.6 at 64): undercharged by that
+   factor, under a margin of 19×.
+4. The bound for `ŷ₀` is every element's only to within 0.3 % (the
+   sequential sum is not symmetric in the elements); the summary takes the
+   largest over the row's goals at `D = 8`.
+
+**The record.** The report; `docs/gappa/` (the `.g` statements, Gappa's
+answers and proofs, the kernel and realize dumps, the `check` outputs,
+each run's `summary.md`); `experiments/gappa.sh`, `gappa_layernorm.py`,
+`gappa_layernorm.psk`; `make gappa`; the manual's `precision` ("Is the
+bound any use?" gains the proof), `experiments` §11, `dependencies`
+(Gappa's row), `status`; `presk-specs/implementation/presk-tooling.md`
+(Gappa's section). The paper's side — §4's sentence with the three
+numbers, and the five sentences that say "named and not taken" (§1, §4,
+§6 *Threats*, §7, §8) — is the paper session's, after this is on `main`.
+
+## D109 — Version 0.11.0 opened: `presk explain`, one compilation as a document, over a driver that takes the orchestration out of the CLI; the solver offers field sites whose type changes no bit, which carry 90 % of D106's traffic saving (2026-10-09)
+
+On 2026-10-09 the user asked for a tool that takes a Presk program and
+the parameters of one compilation (a budget or a realization, a machine
+profile, threads, targets) and writes a document of everything the
+compiler does to it, with its intermediate representations. The design
+is `presk-project/docs/presk-explain-2026-10-09.md`. The user decided it
+the same day, as recommended:
+- the tool writes Markdown, and a make target makes the PDF from it with
+  pandoc;
+- it is a command, `presk explain`;
+- a driver comes first, with D108's findings 1 and 2 fixed in it;
+- a mock-up comes before any code;
+- the work starts as soon as possible, as version **0.11.0**.
+
+The plan is `presk-specs/implementation/presk-plan-0.11.0.md`. The
+mock-up, `presk-project/docs/presk-explain-mockup-2026-10-09/` (17
+pages, the tutorial's `loss` at `B = 4` under a budget of 10⁻³ on the
+frozen X925 profile), is the target of its step 3.
+
+**Why a driver.** `presk-cli` is 6 862 lines with 367 print statements.
+Each command parses, elaborates, lowers, differentiates, binds the
+dimensions and loads the profile itself, then prints as it goes. A
+document read from that text would drift from it. The libraries already
+return values: the envelope, the sensitivities,
+`presk_precision::solve::Solution`, `PlannedCost` per layout point, the
+kernels and the recorded host. So the orchestration moves into a crate,
+`presk-driver`: a `Session` built once from the file and the parameters,
+one function per stage returning its value. The commands print from
+those values as today, and the document renders the same ones. D108's
+findings 1 and 2 belong to that orchestration (an entry resolved twice,
+once without its module's dimensions; `--samples` read without
+`--data`); findings 3 and 4 are the precision analysis's, and stay out.
+
+**What the mock-up showed.**
+- The C export's host already comments each launch with its site, so the
+  link from a site to its kernels exists.
+- `presk dump --stage kernel` records the launches by running the entry
+  on the kernel interpreter (still running after two minutes on the
+  course GPT's forward pass at `B = 16`, `T = 256`), where `presk plan`
+  records them by shapes in milliseconds; the document uses the shapes.
+- The solver's estimate splits exactly into one term per site:
+  Σ s · u(type) · |v|, with u(`bf16`) = 2⁻⁸, gives its 2.085·10⁻³.
+
+**The finding.** On the tutorial, 99.85 % of that estimate is one site,
+`Block.apply/%2`: `norm = θ.norm`, a field of the parameter tree, typed
+`bf16`. By the reference (chapter 4, "Realized value", item "Host
+operations"), a projection or a field carries its operand unchanged, the
+parameters of an entry are stored in the default type, and a nest reads
+each operand converted to its own type. The executors follow it.
+1. *On the tutorial.* On the trained weights
+   (`out/tutorial_ckpt/final.psk.d`), each of the six field sites the
+   solver narrows (`θ.norm`, `θ.proj`, `θ.blocks`, `θ.final`, `θ.γ`,
+   `θ.w`), set alone to `bf16`, everything else `f64`, gives the all-`f64`
+   loss bit for bit, 0.98646807345096232. The product `Linear.apply/%3`
+   alone gives 0.98664716296384269.
+2. *On the decoder.* D106's realization
+   (`out/llama/compile_times_T384/llama-7b-L1_solved.json`), run natively
+   on `Llama.apply` at `G = 32`, `L = 1`, `T = 16`
+   (`out/llama_gate/ids_T16.psk.d`), unchanged and without its 18 field
+   sites, gives the same 512 000 logits bit for bit: SHA-256
+   `b9ef86db6515e4f2…`, 41.5 GB at peak both times. All-`f64` differs from
+   both in every logit, at most 8.1·10⁻⁵.
+
+The solver still offers such sites, charges them in its estimate and
+counts their bytes in its traffic. Recounted from each envelope's `elems`
+and each realization by the solver's byte model, with functions' results
+left out as the solver leaves them; the decoder's and the course GPT's
+recounts give the solver's own figures to every printed digit, BERT's to
+four:
+
+| Solve | Narrowed sites (fields among them) | Traffic, as printed | Fields kept in `f64` |
+|---|---|---|---|
+| D106, the decoder at the 7B width, one block | 52 (18) | 8.2284·10⁹ → 4.1394·10⁹ bytes, **1.99×** | **1.05×**; the fields are 89.6 % of the saving |
+| D101, BERT-large at two blocks, `squad_loss` | 63 (20) | 1.7114·10⁹ → 8.5568·10⁸ bytes, 2.00× | 1.13×; the fields are 77.8 % of the saving |
+| `make precision`, the course GPT | 69 (19) | 2.09× | 1.93× |
+| `make curve` at 10⁻³ (statement D) | 65 (16) | 2.00× | about 1.85× (the recount's all-`f64` total 1.8 % off the solver's) |
+
+Measured gaps and times are of what executes, and do not move. Nothing is
+changed here. Step 2b of the plan, if the user decides it, makes the
+solver offer nests only. A per-leaf storage type for parameters, which
+would make such a site a real decision, is a language change for the
+reference. The paper session was told the same day.
+
+**Statements, fixed before the work.**
+- X1: no output changes but X2's and X6's.
+- X2: D108's findings 1 and 2 fixed.
+- X3: `presk explain` writes the mock-up's sections, every figure the
+  command's, and deterministic without `--measure`.
+- X4: the kernels captured by their shapes give the same listing.
+- X5: the decoder block with D106's artifacts given takes no exact run,
+  under 5 minutes and 40 GB.
+- X6: if decided, the solver's sites before and after.
+
+Version `0.11.0-dev`.
+
+## D110 — Plan 0.11.0, step 1, first part: `presk-driver`, the front end and the precision stages as values; D108's findings 1 and 2 fixed, every other output byte-identical (2026-10-09)
+
+**What moved.** A crate `presk-driver` holds the steps every command
+repeated: `front` (the file read, `--const` and `--dim` parsed, parsing,
+elaboration, typing, lowering and verification), `ad` (differentiation
+under the command's `--remat`, `W0004`), `plan` (`--realize`, `--plan`,
+`E7002`), `backend` (`with_backend`), `opt` (`--opt`), `entry`
+(`entry_args`, `run_diag`, and `entry_dims`, below), `gap` (the distances
+between runtime values) and `precision`. In `precision`, the envelope
+(`calibrate`), the bound (`bound`), the sensitivities (`sensitivity`) and
+the solve (`solve`) each return their value and their errors as values,
+and the four commands print them as before.
+
+A step never prints. It reports its diagnostics and messages to a
+`Report` its caller gives, at the point where the command printed them,
+and stops with `Stop`, the exit code. The tool reports to `Stderr`;
+`Collect` keeps the same reports in order for a document. The CLI's
+helpers are thin calls into the driver, so no call site changed.
+`process::exit` stays in the CLI, around `--realize` and `--plan` only.
+
+**D108's findings.**
+1. *Fixed.* `presk check --precision` takes the entry and its dimensions
+   from `entry_dims`: a module's own arguments, as `LayerNorm{8}.apply`
+   gives them, then the envelope's `--dim`s by name. On the example's
+   layer norm the bound is now the one D108 measured behind its wrapper,
+   to every printed digit: at `D = 8`, `k` 4.9591·10⁻⁶ and `cond`
+   2.7817·10⁻⁶, where it printed 4.1536·10⁻⁴ and 1.9330·10⁻⁴; at
+   `D = 64`, 9.9584·10⁻⁵ and 1.4455·10⁻⁵, where it printed 1.5335·10⁻³
+   and 2.0392·10⁻⁴. `presk solve` was not affected. It dropped the same
+   tuple, but bound the run through `prepare_run`, which keeps the
+   module's arguments, and it refuses a non-scalar entry such as
+   `LayerNorm{8}.apply` anyway.
+2. *Fixed.* `presk calibrate --precision --samples N` without `--data` is
+   refused with exit 2 and a message saying to bind a batch axis with
+   `--dim`. No script of the repository passed it; `calibrate --step`'s
+   `--samples` reads the run's own data and is untouched.
+
+Findings 3 and 4 are the precision analysis's, and stay for the user.
+
+**X1, so far.** `out/x1/x1.sh BINARY DIR` writes 626 outputs (stdout,
+stderr and exit status) and 42 files:
+- U1's 31 entries on the exact interpreter at 128 and 256 bits and with
+  `--json`, and on the kernel interpreter and the native backend in `f64`,
+  `f32` and `bf16`, under `--remat store` and `recompute`;
+- `check --summary` and `--json` and the `dump` stages of the examples,
+  the tutorial and the course GPT at `D = 64`, `L = 2`;
+- `calibrate`, `check --precision` in two types and on the solved
+  realization, `solve` with and without `--quant`, `quantize`, `plan`, a
+  planned run, both exports (the C under a plan and under a solved
+  realization; the PyTorch one with its conformance), `--opt --verbose`;
+- the module entry, and ten error paths of the precision commands.
+
+`out/x1/compare.sh A B` normalizes each run's own directory name and
+diffs the two trees. Against step 0's binary, only finding 1's
+`bound.ln` and finding 2's `cal.samples` differ, and the envelope the
+refused command no longer writes.
+
+**The checks.** `cargo test -p presk-cli -p presk-driver` passes, and so
+does `cargo test --workspace`, except one property test, presk-opt's
+`rewritten_scalar_expressions_agree`. A random case found it on this run:
+`(√(exp(exp((2.5+2.5)(2+2)))))²`, about 10^210 704 567, where the rewrite
+and the original agree to 30 digits and the test's tolerance does not
+accept it. The crate and its test are `main`'s, so it fails there on the
+same case. The regression file proptest wrote is not committed, for the
+user to decide. `cargo clippy` gives the CLI step 0's three warnings, no
+new one.
+
+**Found and left** (each prints what it printed before; X1 forbids
+changing it here):
+- `check --precision --measure` runs the realization on the kernel
+  interpreter, yet prints "native against the exact reference", and the
+  manual says "natively". The two executors compute the same bits (U5),
+  so the figure stands, but the word does not.
+- A missing `--weights` file is named twice in `solve`'s message.
+- `dump --stage elab` and `--stage core` ignore `--const`.
+- The PyTorch export's conformance exits 1 without a message on a
+  verification failure.
+- `reprice` can `process::exit` midway.
+
+**The second part.** The layout plan and the launch capture
+(`ra4::capture`, `plan`), the kernels and the host, the exports, `run` and
+`bench` into the driver, with the capture by shapes of step 2 where
+`--stage kernel` needs it.
+
+**Addendum, the second part (2026-10-09).** The launch capture and the
+layout plan, and the C export, moved into the driver too.
+- `presk_driver::layout` holds what `ra4.rs` held for every command:
+  `Space`, `Capture` (`Run`, `Shapes`), `capture`, `point_zero`,
+  `points`, `predict`, `group`, `shape`, `load_fit`.
+- `choose` is `presk plan`'s computation as a value (`Planned`): each
+  launch's priced points and how many are within `1 + u`; the launches no
+  layout is priced at; the layout per nest, by the weighed choice across
+  shapes; the line of a nest whose shapes chose otherwise; the epilogues.
+  `presk plan` prints its rows from it.
+- `ra4.rs` keeps `kernel_records` (JSON for `autotune` and `reprice`) and
+  thin `capture` and `load_fit` wrappers, so that `autotune`, `reprice`,
+  `recost` and their tests are unchanged.
+- `presk_driver::export_c` is `export_c.rs`, every message reported and
+  every exit a `Stop`. The crate's version, which the generated files
+  print, is the workspace's, so the same string.
+
+X1 grew to every path of the choice:
+- the course GPT's forward pass (its epilogues) and `--space small`;
+- the two gradients (nests launched at several shapes);
+- `bf16` (no layout priced, exit 2);
+- `--nest`, an unknown nest and a missing profile, and a run under the
+  GPT's plan.
+
+It grew to the export's modes too: the SCoP mode, `--serve` on MiniGPT
+(the greedy copy and `generate.c`), no `--entry`, and a missing plan.
+That makes 640 outputs and 77 files written. Against step 0's binary,
+only finding 1's and finding 2's outputs differ.
+
+`cargo test -p presk-cli -p presk-driver` passes, `ra4.rs`'s own tests and
+C1 through the binary among them; clippy gives the CLI step 0's three
+warnings and the driver none.
+
+`run`, `bench` and the kernel listing stay in the CLI, over the driver's
+front end, until the steps that read them as values: the kernels by their
+shapes (step 2), the measured section (step 5).
+
+## D111 — Plan 0.11.0, step 2: the kernels from the shapes, the terms of a prediction, the solver's breakdown, the sweep's program (2026-10-09)
+
+What the document needs below the driver, each a value the next steps
+print. No output changes (X1), and the kernel listing is the one the run
+gave (X4).
+
+**The kernels from the shapes (X4).** Until now `presk dump --stage
+kernel` ran the entry on the kernel interpreter to record its launches. On
+the course GPT's forward pass at `B = 16`, `T = 256`, it was still running
+after two minutes at 950 MB. `presk_driver::layout::kernels` now runs the
+host program on `presk plan`'s executor that runs nothing (`NoRun`), on
+inputs that are zeros of their shapes. Three points:
+- **The parameters' zeros come from a backend of their own.** Their
+  initializers' kernels are not the entry's, so they stay out of the
+  listing and out of its counts.
+- **A realization with integer weights gets the drawn parameters**, as the
+  capture does, since zeros have no scale.
+- **The backend's defaults are the kernel interpreter's** (scalar unless
+  the plan states lanes), as the dump's were.
+
+Kernels are lowered at the entry's shapes, which are all of its values
+they depend on. The course GPT's forward pass at `B = 16`, `T = 256` now
+takes 0.18 s and 142 MB: 26 kernels, 222 launches. Its listing is
+byte-identical to step 0's binary's (340 lines), which ran the entry on
+the kernel interpreter for more than 4 min 45 s at 954 MB. X1's listings
+are byte-identical to step 0's binary too:
+- each of the 31 entries in `f64`, `f32` and `bf16`, and under the test
+  set's four plans (217 listings, 124 of them kernels and the rest the
+  plans' `E7002`);
+- a `--quant` solve's realization, a solved realization of the course GPT,
+  its plan, and two errors.
+
+`presk-driver`'s test `kernels_from_shapes_are_the_run_s` holds four
+entries in three types to the kernel interpreter's run: the same kernels
+in order, the same launches and fused launches. `make plan-check` lists
+through it.
+
+**The terms of a prediction.** The layout model already split a
+prediction into `λ + spawn + C(work, loads, l2, l3, mem)` (`LayoutFit::terms`,
+which `autotune` and `reprice` record per kernel).
+`layout::point_terms(fit, machine, dtype, kernels)` gives them per kernel
+with its group and the model's inputs (`PlannedCost`).
+`layout::terms_at(fit, machine, launch, layout, workers)` lowers a launch
+at any point and prices it. The reason of a layout is then which term each
+point is bound by, the chosen one beside the runners-up.
+
+**The solver's breakdown.** In `presk-precision`, the filter of the sites
+the solver offers, which `solve` and `exhaustive` each repeated, is one
+function, `sites`, unchanged. `breakdown(env, sens, r, menu, default,
+machine)` gives each such site its type under `r`, its term of the
+estimate `s · u(type) · |v|`, its cost under the machine, and the same two
+in the widest type. `presk_driver::precision::Solved::breakdown` is the
+solve's, under its own menu and machine. The test
+`breakdown_sums_to_the_estimate` holds the terms' sum to
+`Solution::estimated_error`, bit for bit, and their count to `considered`.
+The table of D109's finding is now a value.
+
+**The sweep's program.** `precision::sensitivity_program(core, entry)`
+adds the entry's `.vjp` that keeps every intermediate's adjoint (what
+`dump --stage sensitivity` and `solve` run) and returns its functions, the
+sweep first, for a document to print. No dump stage printed it.
+
+**The host with its sites** is the C export's structured host, which
+comments every launch with its site (the mock-up's §9). `presk explain`
+takes it from `presk_driver::export_c`; nothing new was needed.
+
+**Also.** D108's finding 1 is held by a test too:
+`module_entry_bound_is_the_wrapper_s` gives `LayerNorm{8}.apply` the bound
+of D108's wrapper (`experiments/gappa_layernorm.psk`) under `k` and
+`cond`. The wrapper's header and the manual's `experiments` chapter say
+that the finding was fixed. `cargo test -p presk-driver` passes.
+
+Step 2b, the solver offering nests only, waits on the user's decision.
+
+## D112 — Plan 0.11.0, step 2b: the solver offers the values the program stores, and charges every other value's rounding where it happens; the bound charges a fused member at its root's type (2026-10-09)
+
+**The decision.** The user decided D109's finding on 2026-10-09:
+- **A now**, this step;
+- **B**, a per-parameter float storage type, later in a plan of its own,
+  since it changes the language.
+
+**What is inert, measured.** The finding was wider than the fields of the
+parameter tree. On the tutorial's trained weights, each site was typed
+`bf16` alone, everything else `f64`.
+- *Same bits as all-`f64`*, bit for bit:
+  - call sites (`Block.apply/%4`, `loss/%4`);
+  - a fold (`Tower.apply/%3`);
+  - tuple projections (`loss/%2`, `%3`);
+  - fused members (`RMSNorm.apply/%6`, `%8`, `loss/%5`);
+  - the six fields of D109.
+- *Different bits:* a group's root (`RMSNorm.apply/%7`, `loss/%6`), an
+  unfused nest (`Linear.apply/%3`) and a function's result
+  (`RMSNorm.apply/%10`).
+
+This is the reference's chapter 4. A member of a group is computed in its
+root's type and stored nowhere; a host operation and a call carry their
+operands unchanged; a nest converts what it reads to its own type.
+
+**The roles.** `presk_precision::solve::Roles::of(core)` reads each site's
+role off PSK-Core and its fusion groups (`presk_core::fusion::plan`, the
+groups the kernel backends launch):
+- **decision**: a primitive or a literal that is not a fused member;
+- **follows**: a fused member follows its root; a field or a projection
+  follows the nests that read it, each as the stored site it is computed
+  under, and is rounded at the narrowest of their types (the default for a
+  reader the solver does not offer);
+- **carried**: anything else (a call's or a fold's result, a tuple, a
+  record, a subtree, a closure).
+
+**What the solver does with them.**
+- `solve`, `exhaustive` and `breakdown` take the roles. Only decisions are
+  offered, counted, priced and written into the realization.
+- The estimate is the decisions' terms plus each follower's at the type
+  it is rounded to.
+- A move's added error, and the share a widening round compares, include
+  the followers a decision leads.
+- With empty roles the arithmetic is the old solver's to the bit (empty
+  sums add +0.0 in the same order). `presk-precision`'s soundness test
+  runs that way and passes.
+- The driver passes `Roles::of(core)`. `presk solve --step` chooses per
+  function and is untouched.
+
+**The bound.** `check --precision` charged each primitive at the type the
+realization states for its site (`dtype_at`), and the reference's
+member-takes-its-root rule was not applied. That was harmless while the
+solver typed members as their roots, and an undercharge once it no longer
+types members. `propagate_with` now charges a fused member at its root's
+type. A uniform realization's bound is unchanged (X1).
+
+A realization that typed a member otherwise than its root is now bounded
+as it computes. On the tutorial, `RMSNorm.apply/%8` is a member of the
+group whose root is the function's `f64` result: its `k` bound under the
+old 22-site realization was 2.1111·10⁻² and is 1.9120·10⁻². The old
+realization and the new 7-site one now have the same bound, as they
+compute the same bits.
+
+**X6, before and after,** on D103's envelopes and weights. The outputs are
+in the session's scratchpad, not `out/`.
+
+| Solve | Sites | Traffic | Estimate | Measured gap | Bound `cond` |
+|---|---|---|---|---|---|
+| Tutorial `loss`, 10⁻³ | 22 → **7** of 7 | 2.02× → 2.01× | 2.085·10⁻³ → 2.262·10⁻⁶ | 3.663·10⁻⁸, the same | 5.73·10⁻⁵ → 5.15·10⁻⁵ (both realizations, new bound) |
+| `make precision`'s course GPT | 69 (61 `f32`, 8 `bf16`) → **29** (25, 4) | 2.09× → 2.14× | 2.80·10⁻³ → 1.95·10⁻³ | 1.204·10⁻⁷, the same | 4.803·10⁴ → 4.802·10⁴ |
+| `make curve` at 10⁻³ (statement D) | 65 (62, 3) → **29** (26, 3) | 2.00× → 2.00× | 2.663·10⁻³ → 2.544·10⁻³ | 2.122·10⁻⁵, the same | 2.70·10⁻⁷, the same |
+
+On the tutorial, with seven sites, the exhaustive search now runs and finds
+the greedy proposal optimal.
+
+On both course-GPT solves the new solver chose exactly the old choices
+restricted to the decisions. Applied to the existing realizations of
+D106 and D101 (`examples/roles.rs` in `presk-driver`), the roles give:
+- **D106, the decoder:** 22 of its 25 offered decisions narrowed (2
+  `bf16`), 1.84× of the stored values' bytes, where it printed 52 of 56
+  and 1.99×;
+- **D101, BERT:** 25 of 25 (4 `bf16`), 2.00×, where it printed 63 and
+  2.00×.
+
+Those two are reclassifications, not re-solves (14 h and 3 h on falicon),
+which the user schedules.
+
+**Checks.**
+- Every kernel and every line of C that a solved realization runs is
+  unchanged: X1's differences are the realization's label (22 → 7 sites)
+  and what the solver and the bound print.
+- `presk-driver`'s new test `roles_of_the_tutorial` holds seven roles: a
+  dot a decision, `θ.w` following it, a member following its root, a
+  root a decision, a subtree, a call and a fold carried.
+- `breakdown_sums_to_the_estimate` now counts decisions.
+- The tutorial's step 15 shows the new output, and the manual's `cli` and
+  `precision` chapters say what the solver offers.
+
+Dated records (`docs/llama-7b-solve-2026-10-07.md`, the compile-time
+reports, the `status` log) keep what their version printed.
+
+**One test changed its assertion:** `presk-cli/tests/gap.rs`, the solve
+of `tests/data/overflow.psk`, where `exp(120·x)` overflows in `f32`.
+- *Before:* the widening round walked every site back to `f64`, the
+  member's inert type among them.
+- *Now:* it widens the decision whose share, its member's with its own, is
+  largest: the `exp` group, back to `f64`. That puts the gap inside the
+  budget and leaves the constant `real 120`, exact in `f32`, narrowed.
+
+The test now asserts what it was for: the overflowing group is refused by
+measurement. `cargo test --workspace --no-fail-fast` passes, 83 test
+binaries, presk-opt's property test included on this run.
+
+## D113 — Plan 0.11.0, step 3: `presk explain`, first version; what the commands print, one function each in the driver, which the document quotes (2026-10-09)
+
+`presk explain FILE --entry E [--budget ε | --realize R | --plan @P]
+[--profile P] [--threads N] [--remat …] [--opt] [--weights W] [--seed S]
+[--bits B] [--envelope ENV] [--no-exact] [--target native,c,pytorch] --out
+DIR` writes `DIR/explain.md`, `DIR/listings/` and `DIR/artifacts/`. The
+crate `presk-explain` holds a document model and its Markdown renderer
+(`doc`), and the builder (`build`), which runs the compilation stage by
+stage over `presk-driver` and fills the sections from its values.
+
+**What the commands print is one function each** (`presk_driver::text`):
+`calibrate --precision`, `dump --stage sensitivity`, `check --precision`,
+`solve`, `plan` (its rows and its totals) and the kernel listing's two
+heading lines. The commands print those lines; the document quotes them. So
+the document's figures are the commands' by construction, not by a second
+formatting that could drift, and nothing parses printed text. What holds a
+time or a path stays in the command: `presk plan`'s seconds (the document
+prints the totals' line without them), the wall time, the file written. X1
+holds on 862 outputs and 77 files: the CLI's output is byte-identical to
+step 2b's.
+
+**X3 is a test** (`presk-cli/tests/explain.rs`). The tutorial's `loss`
+under a budget of 10⁻³ and the frozen profile, on 10 threads:
+- two runs into two directories write the same `explain.md`;
+- every line of `presk calibrate --precision`, `presk dump --stage
+  sensitivity`, `presk solve`, `presk check --precision --measure`, `presk
+  plan` and `presk dump --stage kernel` on the document's own artifacts is
+  a line of the document, but for the envelope's path (`$DOC/…` in the
+  document) and `presk plan`'s seconds.
+
+**Deterministic.** No time, no date, no absolute path in the body:
+- a relative path is printed as given, an absolute one relative to the
+  working directory or with `~`;
+- the document's directory is `$DOC`;
+- the compiler's version is in the header only;
+- a computed artifact is listed without its checksum, since the envelope
+  holds its date and the C program its commit;
+  `artifacts/SHA256SUMS` has them all. A given input (profile, weights,
+  envelope, realization, plan) is listed with its path and SHA-256
+  (`presk_explain::sha256`, FIPS 180-4, forty lines, checked on the
+  standard's vectors, rather than a new dependency);
+- the plan's splits are counted on `--threads`, set on the capture by the
+  library, not read from the environment.
+
+**The sections** are the mock-up's 0–4 and 6–10:
+- **§2** adds the entry's parameter leaves and their sizes, from the host's
+  recording (76 reals on the tutorial, the mock-up's hand count).
+- **§3** shows the functions the entry reaches (`presk_explain::reach`: 5
+  of the tutorial's 12).
+- **§4** shows the derivatives the entry reaches, and, in `listings/`, the
+  reverse sweep the precision analysis runs (`sensitivity_program`).
+- **§6.3** quotes the solve, then a table of every site the solver
+  offered: its PSK-Core line (`presk_core::pretty::pretty_let`, factored
+  out of `pretty_func`), its role (D112), type, elements, |v|, s, term and
+  share. The terms sum to the solver's estimate, which the section states.
+- **§9** shows each kernel under the sites that launch it and how often.
+  The listing is `layout::kernels_with_host`: `kernels` with the C
+  export's recorder on, so `Op::Launch { kernel, site }` names the sites.
+  The host is printed as the C export prints it, from that recording, in
+  memory.
+- **§10** runs the C export and the PyTorch export into `artifacts/`, and
+  shows the files, their lines and the first contraction as C.
+- An appendix lists every command.
+
+**On the tutorial's `loss`** (B = 4, 10⁻³, the frozen X925 profile, 10
+threads, all three targets): 0.05 s, 1 104 lines. It has:
+- 7 decisions narrowed (6 `f32`, 1 `bf16`);
+- an estimate of 2.262·10⁻⁶ and a measured gap of 3.663·10⁻⁸;
+- a `cond` bound of 5.15·10⁻⁵;
+- 10 nests and 78 points; 10 kernels and 30 launches;
+- a C program of 4 360 lines.
+
+The MLP, the layer norm (a module entry, which returns no scalar, so §6.2
+says why there are no sensitivities), the MiniGPT and the gradient
+`mse_grad` all run, in 0.03–0.3 s.
+
+**Snapshots** (`presk-explain/tests/documents.rs`): the MLP under a budget,
+the layer norm and the MiniGPT in `f32`, the tutorial's `loss` to every
+target.
+- The profile is `tests/data/x925-frozen.json`, the frozen model's
+  constants without its 1.4 MB of calibration samples.
+- Its documents differ from the full profile's only in the profile's path
+  and checksum.
+- A change to any stage now shows in four documents as a diff.
+
+**A defect found by the document.** Under `--profile`, `presk solve`'s
+exhaustive-search line said "bytes" of a time, and divided the proposal by
+`max(cost, 1)`. It printed `optimal 2.7240e-4 bytes … the greedy proposal
+is 0.000x that` on the tutorial. It now says `s` and divides by the time.
+- `Solved::time` says which unit the costs are in.
+- X1 runs no such solve, so X1 does not change. X3 asserts the line.
+
+**Also found.** `presk solve` prices bytes, without a word, when its
+`--profile` does not load; that is left as it is. Not in this step:
+- the reasons (step 4);
+- `--site` and `--measure` (step 5);
+- the PDF (step 6).
+
+`--opt` with a profile or a plan is refused (exit 2): `presk plan` plans
+the program the optimizer has not rewritten.
+
+## D114 — Plan 0.11.0, step 4: the reasons of every decision, each a value of the pass that took it (2026-10-09)
+
+The mock-up marked eight things no command printed. Step 3 printed five. This step prints the reasons, the last of them but CLIF and the index across stages (step 5). Each reason is taken from the pass that decided, as a value. No output of the CLI changes: X1 is identical to step 3's tree. Against the baseline, it differs in the same 17 files as step 2b's.
+
+**A site's type (§6.3).** The solver records what it did: `Solution::moves`, a list of `presk_precision::solve::Move`.
+- `Tried { site, to, saved, added, spent, taken, rank }`: each narrowing the greedy proposal tried, in the order it tries them (saving per unit of error added, the best first). It records what the move saves under the machine, what it adds to the estimate where it stood, and whether the budget took it.
+- `Widened { round, site, from, to, gap }`: each site a measurement widened.
+
+A decision no move names saves nothing in a narrower type under the machine. The document gives each decision one of four reasons:
+- *narrowed* (with the saving, the error added and the move's rank);
+- *kept* because the move would pass the budget, which it shows;
+- *kept* because no narrower type saves anything;
+- *widened* at a round, with the gap.
+
+At 10⁻⁷ on the tutorial, five decisions are kept by the budget: each one's move would add 1.3·10⁻⁷–1.2·10⁻⁶ to an estimate already at 1.8·10⁻⁷ of 2.1·10⁻⁷. On `tests/data/overflow.psk`, `exp` is narrowed to `f32` and then widened back at round 1, since the measured gap is infinite. The table now has two parts: the decisions with their reasons, then the values rounded elsewhere or carried.
+
+**Where a fusion group ends (§7).** `presk_core::fusion::stops(func, plan)` gives every element-wise `let` that reaches memory, a group's root or a value alone, a `Stop`:
+- the function's result;
+- unread;
+- a reader that is not element-wise (`Reader`: a reduction, a contraction, a call, a fold);
+- a reader of another shape (`Shape`: a group is one loop nest over one shape);
+- readers in different groups (`Shared`);
+- the expression tree's limit (`Size`, `MAX_TREE`, now public).
+
+It is read off the plan after the fact, from the conditions `plan` applies, which do not change. On the tutorial: `pow 2 x` is alone because `mean axis model` reads it, a reduction; `sqrt` ends its group because `div x, %7` is of another shape; `gelu` is alone because a call reads it.
+
+**A nest's layout (§8).** For each priced launch, four points: the chosen one, its two runners-up, and the best point that splits when the chosen one does not. Each is lowered again by `layout::terms_at` and its terms are summed over its kernels: λ, `spawn`, work, loads, L2, L3, memory, and the term that bounds it. On the tutorial every split pays `spawn`, 101.5 µs, against nests of 0.005–0.02 µs. The tiled product is bound by its register loads; the other nests by their work, and the residual add by L2. The body holds the twelve nests with the most predicted time; every nest is in `listings/plan-reasons.txt` (the MiniGPT has 26).
+
+**The optimizer's rewrites (§5).** `presk_driver::opt::Opt::apply_report` returns the optimizer's `Report`; `apply` is it with the summary. The document shows each function the entry reaches whose lets or cost the report says changed, before and after. A textual comparison would not do: the optimizer numbers every visited function's variables anew, even one it does not rewrite. So under `--opt` the sites of the later sections are the rewritten program's, which the section says.
+
+**The static assertions (§2).** For each `static assert` of the units: its text, where it is, and that it was discharged by the decision procedure for Presburger arithmetic (`presk_types::dim::entails`) and kept as a fact. The MiniGPT's `D % H == 0` is one.
+
+Tests: the four snapshots take the new sections. `cargo test --workspace --no-fail-fast` passes. Clippy has no new warning.
+
+## D115 — Plan 0.11.0, step 5: the measured section and the site traces; `presk bench`'s measurements as values (2026-10-09)
+
+**`presk_driver::bench`.** `presk bench`'s three measurements moved out of
+the CLI, each a value:
+- `time_call` times a call: warm-up, repeats, the median and the best in
+  ms. Its error says whether the backend could not prepare the entry, which
+  `presk bench` leaves out without a word as before, or a call failed.
+- `kernel_times` times every kernel of a call on the native executor under
+  a plan (`--calibrate`'s `TimedExec`): each kernel's median launch, its
+  launches, the kernels' share of a call.
+- `host_profile` gives the host by phase (`--host-profile`, D95): the calls
+  with and without the timers, the two outputs compared, the page faults.
+  `text::host_profile` prints it.
+
+The CLI prints them as before. `presk bench` (the table),
+`--host-profile` and `--calibrate` give the same output on the tutorial,
+every number masked, with step 4's binary and this one (72 lines). X1 is
+identical to step 4's tree.
+
+**`--measure` (§11).** On this machine:
+- the exact reference at `--bits`, and the realization natively under the
+  plan, from the entry's own arguments (`entry::entry_args`, the weights
+  included), with their gap;
+- a call (3 warm-up, 21 timed);
+- each kernel's median launch over 21 calls beside the profile's
+  prediction (`layout::predict` of the kernel alone), each kernel named by
+  its sites from §9's recording (matched by its text);
+- the host by phase.
+
+The section gives the minute's load average before and after, and says
+that `presk explain` does not reserve the machine and its times are not a
+record. On the tutorial (B = 4, 10⁻³, the frozen profile, 10 threads, an
+unreserved falicon at load 0.45), the native gap is 3.663·10⁻⁸, the
+solver's on the kernel interpreter (U5). A call takes 0.127 ms, of which the
+kernels are 0.005 ms. A launch measures 13–27× its prediction, since it is
+timed with its dispatch, which the model prices apart; the section says so.
+A test (`the_measured_gap_is_the_solver_s`) holds the native gap to the
+solver's, which is deterministic though the times are not.
+
+**The traces (§12).** For each site: its PSK-Core line and function, the
+envelope (|v|, elements, condition number), the sensitivity, its type with
+its role, term and reason (D114), and its fusion (a member, which group's
+end, or alone, and why). Then its nest (its own or its group's root) with
+the points, the chosen layout, its prediction, the term that bounds it and
+the runner-up; its kernel; the C function that launches it; and with
+`--measure` its time.
+- `--site` names the sites. By default they are the three largest shares
+  of the estimate (the three largest `cond` bounds without a solve), then
+  the three nests of the most predicted time a call.
+- A site the program does not have is said to be so.
+- The host's recording names a launch `loss/%6 (fused)` or
+  `RMSNorm.apply/%4 (ms)`, so a site is matched on its bare name.
+- A follower has no kernel of its own: it is read and converted by its
+  readers' kernels.
+- `listings/site-index.tsv` lists every site of the functions the entry
+  reaches with its line and the sections that name it: the index across
+  stages.
+
+The mock-up's "Not printed today" boxes are all filled but CLIF.
+
+## D116 — Plan 0.11.0, step 6: the PDF, the uses, and X5 at the 7B width (2026-10-09)
+
+**The PDF.** The Markdown stays the document of record; the PDF is a
+make target, so the compiler has no TeX dependency.
+- `make explain` writes the tutorial's `loss` (B = 4, a budget of 10⁻³,
+  the frozen profile's constants, ten threads, every target) into
+  `out/explain/loss`.
+- `make explain-pdf [EXPLAIN=DIR]` runs pandoc 3.1.3 with LuaLaTeX from
+  TeX Live 2026 (`TEXLIVE=`), the DejaVu fonts and
+  `crates/presk-explain/pandoc/header.tex`. That header is the mock-up's
+  (fvextra's verbatim, which breaks a long line), plus tables in
+  `\footnotesize` (etoolbox) and a narrower column gap.
+- The tutorial's document makes 19 pages in 6 s, with no missing glyph.
+
+Reading the pages changed the renderer:
+- A table's separator now gives each column its share of the width: its
+  longest cell's length, a code cell counted 1.4 times (its font is wider,
+  and it cannot wrap), within 10–24 dashes (36 for a code column). Until
+  then every column had the same share, the code spans overflowed, and the
+  numbers broke at their exponent's minus sign.
+- §6.3's reasons moved out of the table into a list under it: nine columns
+  were too many for a page.
+- The layout reasons print each point's layout on its own line, and a term
+  over 10⁶ µs in scientific notation.
+
+GitLab renders the same Markdown.
+
+**The uses.**
+- **The manual's chapter `explain_loss`** is the tutorial's document, its
+  metadata block a heading and a note saying it is generated. The test
+  `the_manual_holds_the_tutorial_s_document` (`presk-cli/tests/explain.rs`)
+  fails when it is not what `presk explain` writes now, and `make
+  explain-manual` writes it again.
+- Rustdoc took a shape `[4] []` in a trace for a link: the shapes are now
+  code spans, and `cargo doc -p presk-manual` has no warning.
+- **The tutorial's step 7** ("Under the hood") ends with `presk explain` on
+  step 4's `loss_grad`, its sections and what they show, and `make
+  tutorial` runs it.
+- **The dependencies.** The manual's `dependencies` chapter has rows for
+  pandoc, LuaLaTeX with fvextra, etoolbox and xurl, and the DejaVu fonts.
+  presk-specs' `implementation/presk-tooling.md` gets its sections with
+  step 8's presk-specs changes.
+
+**X5 holds.** The run:
+- the Llama 2 decoder block at the 7B configuration's width (`G = 32`,
+  `L = 1`), 384 tokens, `--dim B=1` (the envelope's one sample from its data
+  file);
+- the frozen profile, ten threads;
+- D106's envelope and solved realization given, `--no-exact`;
+- under `systemd-run --user --scope -p MemoryMax=40G` on falicon, alone.
+
+It took 39.9 s and 10.9 GB, and ran no exact reference. The document has:
+- 24 nests at 25 shapes and 6 252 points priced; 26 kernels and 36
+  launches;
+- the host, the plan's reasons for every nest, and a site index;
+- in §6.3, D106's 52 typed sites by role: 22 decisions (20 `f32`, 2
+  `bf16`), **11 followers and 19 carried values whose type changes no
+  bit**, which the section says (D112);
+- a `cond` bound of 6.2382·10⁵, where D106's `presk check` printed
+  6.2390·10⁵. The difference is D112's: a fused member is now charged at
+  its root's type.
+
+The PDF is 19 pages in 6 s. The outputs are in `presk/out/explain/llama-7b-L1/` (git-ignored).
+
+**A finding of the document, for the cost model.** The layout model
+predicts the token embedding's gather (`Llama.apply/%4`, `embed tok, ids`)
+at 6.3 s, 79 % of the 8.0 s it predicts for the call. Its terms say why:
+- 1.5 s from L2, 0.58 s from L3 and 4.5 s from memory;
+- that is the traffic of the whole 32 000 × 4 096 table for every token,
+  where the gather reads 384 rows.
+
+The gather's index is data, which a footprint computed from the shapes
+cannot see; the terms are of the order of the whole table read for every
+token, not checked further. It decides nothing here, since every point of
+that nest is priced the same way. But the predicted total of a model with a
+large vocabulary is mostly this term. It is recorded, not fixed: the cost
+model is frozen (D71), and a gather's footprint is a change to it, for a
+later plan.
+
+X1 is identical to step 5's tree. `cargo test --workspace --no-fail-fast`
+passes, and so does `cargo doc -p presk-manual` with no warning.
+
+## D117 — Plan 0.11.0, step 7: the checks of record on the version's tree, the decided fixes, and the paper's runs at 0.11.0 (2026-10-09/10)
+
+The version's tree is step 7's first commit, `bb78cb8`: the fixes below and
+version `0.11.0`, bumped before the checks so that they and the paper's
+runs ran on what the tag goes on (step 8 adds documentation only). Steps
+0–6 and !73 were merged on 2026-10-09 (presk `main` `aa746b4`); !73
+changes presk-opt's property test alone (its tolerance and the case
+it found), which no run below reads; the test passes on its branch, and
+on `bb78cb8` it drew no failing case. Every
+run was on falicon, in the worktree's own `out/`. The inputs no command of
+the tree writes in minutes were copied from the main checkout: the corpus's
+data, two checkpoints the C conformance reads (`out/ckpt`,
+`out/course_probe_f32`) and the corpus GPT's machine profile
+(`out/gpt_prof.json`, D93's, which the step table prices by). The course
+GPT's weights were trained again by 0.11.0 (`make gpt-trained`, 185 s):
+byte-identical to D103's of 2026-10-03.
+
+**The fixes the user decided on 2026-10-09** (the prompt
+`presk-project/docs/prompt-0.11.0-explain-2026-10-09.md`, its four
+questions):
+1. presk-opt's property test `rewritten_scalar_expressions_agree`: its
+   tolerance relative, at half the reference's precision, the case it
+   found kept as a regression (presk !73, apart, from `main`).
+2. `presk check --precision --measure` says "the kernel interpreter
+   against the exact reference", which it runs, where it said "native";
+   the two compute the same bits (U5), so the figure stood and the word
+   did not.
+3. Three of D110's left defects fixed: `presk dump --stage elab` and
+   `--stage core` bind `--const`, which they ignored (a test,
+   `tests/dump_const.rs`); a missing `--weights` file is named once in the
+   message, not twice; the PyTorch export's conformance reports a PSK-Core
+   verification failure as every command does, exit 2, where it exited 1
+   without a word. `reprice`, which can exit midway, is left as it is.
+4. D101's and D106's solves run again at 0.11.0 (below), so that the paper
+   quotes what the version solves rather than a reclassification.
+
+Version `0.11.0`: `Cargo.toml`, the CLI's about line, the README, the
+manual's index, the tutorial's version lines and its `--help`.
+
+**The checks of record**, all on `bb78cb8`:
+- `make test`: 88 test binaries, every test passing (177 s, debug).
+- `make check-examples`, `coverage`, `plan-check` (the same kernels with
+  and without each plan on every entry): pass.
+- `make c-conformance` (`PRESK_C3=1`, GCC, Clang and x86-64 through zig,
+  Polly): 14 of 14. Three failed first for their inputs, the two
+  checkpoints above, and pass on them.
+- `cargo doc -p presk-manual`: no warning. Clippy: the three warnings
+  `main.rs` and `ra4.rs` had before this version, none new.
+- `make tutorial`, with this tree's binary and with step 0's (`024c44c`'s
+  code): the same output but for
+  - the version and `presk --help`'s `explain` line, and the step 7 lines
+    that run it (the baseline has no such command);
+  - step 15's solve (D112: 7 sites, not 22; the exhaustive search runs);
+  - what is timed, and what follows from a time: the bench tables, the
+    layout model the tutorial calibrates on each run, step 17's rank
+    tables, statement O's verdict on the tutorial's own sweep and one
+    plan line priced by that model.
+
+**X1, on the version's binary.** `out/x1/x1.sh` against step 0's tree:
+37 files differ, each one named:
+- step 2b's 17: finding 1's `bound.ln`, finding 2's `cal.samples`, and
+  the solve and what follows from a solved realization (D112);
+- the label of five measured bounds (fix 2);
+- the missing weights file named once (fix 3);
+- the version line of the C programs X1 exports, `0.11.0`.
+
+Against step 6's tree, the same less the version lines. Beyond `x1.sh`:
+- `make precision`: the same outputs but for the solve (69 → 29 sites,
+  2.09× → 2.14×, estimate 2.799·10⁻³ → 1.949·10⁻³, the same measured
+  1.204·10⁻⁷), its bound (`cond` 4.8030·10⁴ → 4.8021·10⁴, D112's charge
+  of a member at its root's type) and the label; the solved realization's
+  native run gives the same loss.
+- `make quant-table`: byte-identical (statement K, `int8` 2.73·10⁻⁵).
+- `make step-table`: byte-identical, with step 0's binary and with
+  0.11.0's (the first try with step 0's lacked the corpus GPT's profile,
+  then copied, and was run again alone), and both are D103's file of
+  record at the tag, the paper's `step_table-D103.md`.
+- `make gappa`'s record (`docs/gappa/`), its `presk` half (Gappa is not
+  on falicon): the kernels and the fusion groups byte-identical; every
+  `check` output the record's but for the envelope's path with step 0's
+  binary, and with 0.11.0's the label, and on `LayerNorm{D}.apply` the
+  bound of D108's wrapper at every width (X2).
+
+**X2–X5** hold, as steps 1, 3, 2 and 6 found: X2 again above; X3 by the
+test; X4 the listings of X1; X5 39.9 s and 10.9 GB (D116).
+
+**The paper's runs at 0.11.0** (decided), alone, before and after:
+- `make precision`, the course GPT at 10⁻³ (§2): 69 → **29** sites,
+  2.09× → **2.14×**, estimate 2.799·10⁻³ → 1.949·10⁻³, measured
+  **1.204·10⁻⁷**, the same.
+- `make curve` (§4, statement D, Figure 3), in 24 min: fewer sites at
+  every budget, since the solver offers only the values the program
+  stores (D112), and the ratio over all-`f64` the stored values' traffic:
+
+  | budget | sites | vs all-`f64` | measured gap |
+  |---|---|---|---|
+  | 10⁻¹ | 65 → 29 | 2.69× → 2.87× | 3.717·10⁻⁴ → 5.548·10⁻⁴ |
+  | 10⁻² | 65 → 29 | 2.22× → 2.34× | 3.596·10⁻⁵, the same |
+  | 10⁻³ | 65 → 29 | 2.00×, the same | 2.122·10⁻⁵, the same |
+  | 10⁻⁴ | 63 → 28 | 1.98× → 1.97× | 1.871·10⁻⁶, the same |
+  | 10⁻⁵ | 56 → 24 | 1.60× → 1.72× | 4.854·10⁻¹⁰ → 1.069·10⁻⁸ |
+  | 10⁻⁶ | 15 → 14 | 1.30× → 1.37× | 1.348·10⁻⁸ → 2.051·10⁻⁸ |
+  | 10⁻⁷ | 7 → 6 | 1.06× → 1.09× | 3.729·10⁻⁹, the same |
+
+  Where the gap is the same, the stored values have the same types; where
+  it moves, the solve took another order, each gap inside its budget. The
+  validation loss after 600 steps moves at 10⁻¹ only (+1.98·10⁻⁴ →
+  +1.67·10⁻⁴ over all-`f64`'s 2.7736101), and the bound column
+  (2.5754·10⁻¹³) is the same. Statement D holds at every budget; the
+  paper's "2.69× to 1.06×" becomes 2.87× to 1.09×.
+- **BERT-large at two blocks** (D101's row: `MODELS=bert-large-L2
+  ./experiments/compile_times.sh`, 4 h 31 min, the report
+  `docs/compile-times-2026-10-09.md`): 63 → **25** sites, every one
+  narrowed (21 `f32`, 4 `bf16`), 2.00× → **2.03×**, measured 5.097·10⁻⁷
+  → **1.046·10⁻⁵** against the budget's 6.254·10⁻³ (the estimate
+  6.094·10⁻³), no widening round. The envelope is D101's but for its
+  date and the exact loss the same. Of the 25 stored values, 23 keep
+  D101's types; two moved, the layer norm's mean μ from `bf16` to `f32`
+  and the query after `split_heads` (786 432 elements) from `f32` to
+  `bf16`: over the stored values alone the greedy order is another. So
+  step 2b's reclassification of D101's realization (25 of 25 at 2.00×,
+  5.1·10⁻⁷) is not what 0.11.0 solves, and the re-solve is what the
+  paper quotes. The solve in 10 447.6 s (D101: 10 463.8) and 11.1 GB at
+  its peak (D101 sampled 42 GB, before D105). Its outputs, with the
+  paper's files of record and every run's log, are archived as
+  `presk-project/data/paper-0.11.0.tar.xz`.
+- **The decoder** (D106's row, `STAGES=solve L=1 T=384
+  ./experiments/llama.sh`, the whole protocol as the user chose, 24 h
+  05 min, the report `docs/compile-times-2026-10-09-llama.md`): 56 →
+  **25** sites, 52 → **24** narrowed (21 `f32`, 3 `bf16`), 1.99× →
+  **1.96×**, measured 4.324·10⁻⁶ → **1.993·10⁻⁵** against the budget's
+  1.118·10⁻² (the estimate 6.897·10⁻³), no widening round; the bound
+  `cond` 6.2390·10⁵ → 1.1872·10⁶. The envelope is D106's but for its date
+  and the exact loss the same, 11.1761830595. Three stored values moved:
+  the softmax (4 718 592 elements) and RMSNorm's mean, `f64` in D106, are
+  `f32`, and the head width's square root (one element) is `bf16` where
+  it was `f32`; RMSNorm's square, which its mean reads, stays `f64`. So
+  step 2b's reclassification of D106 (22 of 25 at 1.84×) is not what
+  0.11.0 solves either. A function's result is not offered: the head,
+  the output projection, the feed-forward products, the norm's output
+  and the block's second residual stay `f64`, as in D106. The times are
+  within 3.5 % of D106's, the peaks the same: `calibrate` 8 h 12 min and
+  32.0 GB, `solve` 14 h 03 min and 71.7 GB, the reference 1 h 50 min and
+  29.3 GB. A first start of the stage, at 22:18 CEST, was stopped four
+  minutes into `calibrate` to run the solve alone on D106's envelope; the
+  user chose the whole protocol instead. Its outputs (the stage writes no
+  logits) are archived as `presk-project/data/llama-7b-0.11.0.tar.xz`.
+
+  On all three models the budget narrows every stored value, or all
+  but one, and about halves their traffic: BERT 25 of 25 at 2.03×, the
+  course GPT 29 of 29 at 2.00× (statement D), the decoder 24 of 25 at
+  1.96×; the gaps are inside their budgets by about 600 and 560 times on
+  BERT and the decoder.
+
+**Found, not decided.** The solver does not offer a function's result,
+so the products a function returns stay in `f64` under any budget: on the
+decoder the head (12 288 000 elements, the block's largest value), the
+feed-forward products (4 227 072 each) and the output projection. Whether to offer a
+result is a question for the user, beside 0.12.0's per-parameter storage
+type, which also changes what the solver offers.

@@ -16,7 +16,6 @@ use presk_types::check as typing;
 use presk_types::check::TypedProgram;
 use presk_types::elab::{self, Options};
 
-mod export_c;
 mod ra4;
 mod step;
 
@@ -27,7 +26,7 @@ mod step;
     about = concat!(
         "Presk compiler (",
         env!("CARGO_PKG_VERSION"),
-        ": front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports)"
+        ": front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)"
     )
 )]
 struct Cli {
@@ -381,6 +380,65 @@ enum Command {
         /// `.vjp` (0.10.0 step 4). The same bits either way.
         #[arg(long, value_enum, default_value_t = RematArg::Store)]
         remat: RematArg,
+    },
+    /// One compilation as a document: every stage's representation and the reasons for its decisions, in DIR/explain.md (plan 0.11.0).
+    Explain {
+        file: PathBuf,
+        #[arg(long)]
+        entry: String,
+        #[arg(long = "dim", value_name = "NAME=N")]
+        dims: Vec<String>,
+        #[arg(long = "const", value_name = "NAME=N")]
+        consts: Vec<String>,
+        /// Solve for a realization under this relative budget, as `presk solve --budget`.
+        #[arg(long, conflicts_with_all = ["realize", "plan"])]
+        budget: Option<f64>,
+        /// A realization given: `f64`, `f32`, `bf16` or `@FILE.json`.
+        #[arg(long, conflicts_with = "plan")]
+        realize: Option<String>,
+        /// A realization plan given, `@PLAN.json`, its realization with it.
+        #[arg(long, value_name = "@PLAN.json")]
+        plan: Option<String>,
+        /// A calibrated profile: the solver prices time, and the layouts are planned.
+        #[arg(long, value_name = "FILE.json")]
+        profile: Option<PathBuf>,
+        /// Worker threads of the native executor, which the plan's splits are counted on.
+        #[arg(long, value_name = "N")]
+        threads: Option<usize>,
+        /// What a gradient does with its forward pass's values: `store` them
+        /// for its reverse sweep, or `recompute` them inside each callee's
+        /// `.vjp` (0.10.0 step 4). The same bits either way.
+        #[arg(long, value_enum, default_value_t = RematArg::Store)]
+        remat: RematArg,
+        /// Rewrite the program with the e-graph optimizer.
+        #[arg(long)]
+        opt: bool,
+        /// Trained weights in place of the initial ones.
+        #[arg(long, value_name = "FILE.psk.d")]
+        weights: Option<PathBuf>,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// The exact reference's precision.
+        #[arg(long, default_value_t = 128)]
+        bits: u32,
+        /// An envelope given (`presk calibrate --precision --out`) in place of measuring one.
+        #[arg(long, value_name = "ENVELOPE.json")]
+        envelope: Option<PathBuf>,
+        /// No exact reference: no envelope measured, no gap, no conformance outputs.
+        #[arg(long)]
+        no_exact: bool,
+        /// The targets, separated by commas: `native`, `c`, `pytorch`.
+        #[arg(long, default_value = "native")]
+        target: String,
+        /// Also run it: natively against the exact reference, a call timed, each kernel beside its prediction, the host by phase.
+        #[arg(long)]
+        measure: bool,
+        /// A site to trace through every stage (`<function>/%<let>`), the option repeated; by default the largest shares of the estimate and the slowest predicted nests.
+        #[arg(long = "site", value_name = "SITE")]
+        sites: Vec<String>,
+        /// The directory the document, its listings and its artifacts are written to.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
     },
     /// Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits.
     Autotune {
@@ -904,42 +962,18 @@ pub(crate) fn remat() -> presk_core::ad::Remat {
     REMAT.get().copied().unwrap_or_default()
 }
 
-/// Automatic differentiation under the command's `--remat`, keeping the
-/// fusion groups as the recomputing `.vjp`s had them when `groups`: when a
-/// realization the command runs can see them (`Realization::groups_visible`,
-/// 0.10.0 step 4b, D94). A command that runs several realizations keeps them
-/// when any of them can.
+/// Automatic differentiation under the command's `--remat` (the driver's
+/// [`presk_driver::ad::differentiate`]).
 pub(crate) fn differentiate(core: &mut presk_core::Program, groups: bool) -> Vec<presk_syntax::Diagnostic> {
-    presk_core::ad::transform_as(core, ad_options(groups))
+    presk_driver::ad::differentiate(core, remat(), groups)
 }
 
 /// The command's `--remat`, and the fusion groups kept or not.
 pub(crate) fn ad_options(groups: bool) -> presk_core::ad::Options {
-    presk_core::ad::Options { remat: remat(), groups }
+    presk_driver::ad::options(remat(), groups)
 }
 
-/// `W0004` (0.10.0 step 4b, D94): a realization that types a `.vjp`, by
-/// function or by site, where the program stores its gradient types
-/// nothing of it: that `.vjp` only calls `.fwd` and `.bwd` (D92). Unless it
-/// names them too, as `presk solve --step` does under `store`, it was
-/// written for the recomputing `.vjp`s. Not an error, since a realization
-/// written for a training step is also run on forward entries.
-pub(crate) fn stored_vjps(core: &presk_core::Program, r: &presk_rt::Realization) -> Vec<presk_syntax::Diagnostic> {
-    let names: std::collections::HashSet<&str> = core.funcs.iter().map(|f| f.name.as_str()).collect();
-    let sites = r.storage.keys().chain(r.accum.keys()).filter_map(|s| s.rsplit_once('/').map(|(f, _)| f));
-    let typed: std::collections::BTreeSet<&str> = r.functions.keys().map(String::as_str).chain(sites).collect();
-    let stored = |f: &str| f.strip_suffix(".vjp").is_some_and(|g| names.contains(format!("{g}.bwd").as_str()) && !typed.contains(format!("{g}.bwd").as_str()) && !typed.contains(format!("{g}.fwd").as_str()));
-    let named: Vec<&str> = typed.iter().copied().filter(|f| stored(f)).collect();
-    named
-        .into_iter()
-        .map(|v| {
-            let g = v.strip_suffix(".vjp").expect("a .vjp");
-            let fwd = if names.contains(format!("{g}.fwd").as_str()) { format!("`{g}.fwd`") } else { format!("`{g}` itself") };
-            // No label, so no help either: the advice is in the message.
-            presk_syntax::Diagnostic::warning("W0004", format!("the realization types `{v}`, which this stored gradient only calls (its forward pass is {fwd}, its sweep `{g}.bwd`), so the type applies to nothing: a realization solved under `--remat recompute`, or before 0.10.0 step 4, runs with `--remat recompute`; under `--remat store`, solve it again"))
-        })
-        .collect()
-}
+pub(crate) use presk_driver::ad::stored_vjps;
 
 fn set_threads(n: Option<usize>) {
     if let Some(n) = n {
@@ -949,30 +983,25 @@ fn set_threads(n: Option<usize>) {
     }
 }
 
-/// Runs `f` with the chosen backend over `core`, under `plan`. The
-/// reference interpreter computes at `bits` whatever the plan says; the
-/// kernel backends take its realization and its layout.
+/// The command-line tool's report: standard error (`presk_driver::Stderr`).
+pub(crate) fn stderr() -> presk_driver::Stderr {
+    presk_driver::Stderr { color: color() }
+}
+
+/// The exit code of a step that stopped.
+pub(crate) fn exit(stop: presk_driver::Stop) -> ExitCode {
+    ExitCode::from(stop.0)
+}
+
+/// Runs `f` with the chosen backend (the driver's
+/// [`presk_driver::backend::with_backend`]).
 fn with_backend<R>(kind: BackendKind, core: &presk_core::Program, prog: &elab::ElabProgram, bits: u32, plan: &presk_rt::Plan, f: impl FnOnce(&mut dyn presk_rt::Backend) -> R) -> R {
-    let realize = &plan.realization;
-    let kernel = || {
-        let mut b = presk_kernel::KernelBackend::new(core, prog, realize);
-        b.set_plan(plan.clone());
-        b
+    let kind = match kind {
+        BackendKind::Interp => presk_driver::backend::BackendKind::Interp,
+        BackendKind::Kernel => presk_driver::backend::BackendKind::Kernel,
+        BackendKind::Native => presk_driver::backend::BackendKind::Native,
     };
-    match kind {
-        BackendKind::Interp => f(&mut presk_rt::InterpBackend::new(core, prog, bits)),
-        BackendKind::Kernel => f(&mut kernel()),
-        BackendKind::Native => match presk_cranelift::native_backend(core, prog, realize) {
-            Ok(mut b) => {
-                b.set_plan(plan.clone());
-                f(&mut b)
-            }
-            Err(e) => {
-                eprintln!("presk: the native backend is unavailable: {}", e.message);
-                f(&mut kernel())
-            }
-        },
-    }
+    presk_driver::backend::with_backend(kind, core, prog, bits, plan, &mut stderr(), f)
 }
 
 /// `--opt [--profile FILE]`.
@@ -982,41 +1011,17 @@ struct Opt {
 }
 
 impl Opt {
-    /// Rewrite `core` with the e-graph optimizer when `--opt` is on; one
-    /// summary line on stderr (the whole report with `--verbose` or `dump
-    /// --stage core-opt`). `dims` are the run's dimensions, for the roofline.
+    /// The driver's [`presk_driver::opt::Opt::apply`], reported on standard
+    /// error.
     fn apply(&self, core: &mut presk_core::Program, prog: &elab::ElabProgram, verbose: bool, dims: &[(String, u64)]) -> Result<(), ExitCode> {
-        if !self.on {
-            return Ok(());
-        }
-        let profile = match &self.profile {
-            Some(path) => match presk_opt::Profile::load(path) {
-                Ok(p) => Some(p),
-                Err(m) => {
-                    eprintln!("presk: --profile: {m}");
-                    return Err(ExitCode::from(2));
-                }
-            },
-            None => None,
-        };
-        let opts = presk_opt::Options { limits: presk_opt::Limits::default(), profile, dims: dims.iter().cloned().collect(), default_dim: None };
-        let report = presk_opt::optimize(core, prog, &opts);
-        let summary = report.summary();
-        if verbose {
-            eprint!("{summary}");
-        } else {
-            eprintln!("{}", summary.lines().next().unwrap_or(""));
-        }
-        Ok(())
+        presk_driver::opt::Opt { on: self.on, profile: self.profile.clone() }.apply(core, prog, verbose, dims, &mut stderr()).map(|_| ()).map_err(exit)
     }
 }
 
-/// `--realize f64|f32|bf16|@FILE`. The three names are uniform realizations,
-/// what the flag has always meant; `@FILE` reads the object a solver writes
-/// (D34). Parsing is deferred to `presk_rt::Realization::parse` so that one
-/// spelling serves the CLI, the solver and the conformance report.
+/// `--realize f64|f32|bf16|@FILE` ([`presk_driver::plan::parse_realize`]);
+/// a usage error ends the command.
 fn parse_realize(spec: &str) -> presk_rt::Realization {
-    match presk_rt::Realization::parse(spec) {
+    match presk_driver::plan::parse_realize(spec) {
         Ok(r) => r,
         Err(m) => {
             eprintln!("presk: {m}");
@@ -1025,29 +1030,21 @@ fn parse_realize(spec: &str) -> presk_rt::Realization {
     }
 }
 
-/// `--plan @FILE`, or the plan `--realize` means: its realization and the
-/// default layout.
+/// `--plan @FILE`, or the plan `--realize` means
+/// ([`presk_driver::plan::parse_plan`]); a usage error ends the command.
 fn parse_plan(plan: Option<&str>, realize: &str) -> presk_rt::Plan {
-    match plan {
-        None => presk_rt::Plan::from_realization(parse_realize(realize)),
-        Some(spec) => match presk_rt::Plan::parse(spec) {
-            Ok(p) => p,
-            Err(m) => {
-                eprintln!("presk: {m}");
-                std::process::exit(2);
-            }
-        },
+    match presk_driver::plan::parse_plan(plan, realize) {
+        Ok(p) => p,
+        Err(m) => {
+            eprintln!("presk: {m}");
+            std::process::exit(2);
+        }
     }
 }
 
-/// Checks a plan's nests against the program it runs on (`E7002`), after
-/// every transformation of the program: a nest is named in the program as it
-/// is executed.
+/// [`presk_driver::plan::check_plan`] (`E7002`), reported on standard error.
 fn check_plan(plan: &presk_rt::Plan, core: &presk_core::Program, sm: &SourceMap) -> Result<(), ExitCode> {
-    presk_kernel::plan::check_plan(plan, core).map_err(|e| {
-        eprint!("{}", render_all(&[presk_syntax::Diagnostic::error(e.code, e.message)], sm, color()));
-        ExitCode::from(1)
-    })
+    presk_driver::plan::check_plan(plan, core, sm, &mut stderr()).map_err(exit)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -1103,7 +1100,7 @@ fn main() -> ExitCode {
                 eprintln!("presk export --target c --mode scop: --entry is required (its nests are captured as `presk plan` captures them)");
                 return ExitCode::from(2);
             };
-            export_c::export_scop(&export_c::ScopOptions { file: &file, entry: &entry, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), seed, out: &out })
+            presk_driver::export_c::export_scop(&presk_driver::export_c::ScopOptions { file: &file, entry: &entry, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), seed, out: &out, remat: crate::remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
         }
         Command::Export { file, target: ExportTarget::C, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, remat } => {
             set_remat(remat);
@@ -1210,6 +1207,26 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Command::Explain { file, entry, dims, consts, budget, realize, plan, profile, threads, remat, opt, weights, seed, bits, envelope, no_exact, target, measure, sites, out } => {
+            set_threads(threads);
+            set_remat(remat);
+            let targets = match presk_explain::Target::parse_list(&target) {
+                Ok(t) => t,
+                Err(m) => {
+                    eprintln!("presk explain: {m}");
+                    return ExitCode::from(2);
+                }
+            };
+            let o = presk_explain::Options { file, entry, dims, consts, budget, realize, plan, profile, threads, remat: crate::remat(), opt, weights, seed, bits, envelope, no_exact, targets, measure, sites, out };
+            match presk_explain::explain(&o, &mut stderr()) {
+                Ok(e) => {
+                    let listings = if e.listings == 0 { String::new() } else { format!(", {} listing{} under listings/", e.listings, if e.listings == 1 { "" } else { "s" }) };
+                    println!("presk explain: wrote {} ({} sections{listings}, {} artifact{})", e.document.display(), e.sections, e.artifacts.len(), if e.artifacts.len() == 1 { "" } else { "s" });
+                    ExitCode::SUCCESS
+                }
+                Err(stop) => exit(stop),
+            }
+        }
         Command::Autotune { file, entry, dims, consts, realize, space, repeat, profile, nest, interp, top, random, shard, out, seed, remat } => {
             set_remat(remat);
             let shard = match shard.as_deref().map(|s| s.split_once('/').and_then(|(k, n)| Some((k.parse::<usize>().ok()?, n.parse::<usize>().ok()?)))) {
@@ -1341,7 +1358,6 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
 /// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
 #[allow(clippy::too_many_arguments)]
 fn solve_precision(file: &Path, env_path: &Path, budget: f64, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>) -> ExitCode {
-    use presk_precision::{sensitivity, solve};
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => {
@@ -1360,157 +1376,27 @@ fn solve_precision(file: &Path, env_path: &Path, budget: f64, weights: Option<&P
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
-    let Ok((entry, _, _)) = presk_interp::run::resolve_entry(&core, &prog, &env.entry) else {
-        eprintln!("presk solve: `{}` is not an entry of {}", env.entry, file.display());
-        return ExitCode::from(1);
-    };
-    // The sites are ranked by `∂L/∂v`, as `dump --stage sensitivity` ranks
-    // them: refused here, not after the reverse sweep's forward half.
-    if !matches!(core.func(entry).ret, presk_types::ty::Ty::Real(ref s) if s.axes.is_empty() && s.prefix.is_none()) {
-        eprintln!("presk solve: `{}` must return a scalar `ℝ[]`, since the sites are ranked by its sensitivity `∂L/∂v`", env.entry);
-        return ExitCode::from(2);
-    }
-    let opts = presk_interp::RunOptions { entry: env.entry.clone(), dims: env.dims.clone(), seed, bits, digits: 17 };
-    // The envelope's own inputs: synthesized, or the data slice it was
-    // measured on (0.6.0 step 6). A checkpoint that does not load is an
-    // error, never a fallback to the initial parameters: 0.5.0 read a
-    // `T = 256` checkpoint at `T = 32` without a word (D48).
-    let (_, fdims, args) = match entry_args(&core, &prog, &opts, env.data.as_ref(), weights) {
-        Ok(x) => x,
-        Err(m) => {
-            eprintln!("presk solve: cannot bind the inputs of `{}`: {m}", env.entry);
-            return ExitCode::from(1);
-        }
-    };
-
-    // Where the budget should *not* be spent: one reverse sweep.
-    let (vjp, adjoints, _) = presk_core::ad::vjp_with_adjoints(&mut core, entry);
-    let mut sb = presk_rt::InterpBackend::new(&core, &prog, bits);
-    sb.interp.sums = Some(Default::default());
-    let mut vargs = args.clone();
-    vargs.push(presk_rt::Value::Real(presk_rt::Tensor { axes: vec![], data: presk_rt::Buf::F64(vec![1.0].into()) }));
-    let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
-    // The same sweep's cotangent of the parameters, `∂L/∂θ`, prices the
-    // parameter menu (0.6.0 step 5d); kept only when `--quant` asks for it,
-    // and the sweep's result dropped once read: it is parameter-sized (plan
-    // 0.10.1 step 3).
-    let (sens, grad_theta) = match presk_rt::Backend::prepare(&mut sb, vjp, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut sb, &p, vargs)) {
-        Ok(g) => (sensitivity::from_run(&core, entry, &adjoints, &sb.interp.sums.take().unwrap_or_default()), if quant.is_some() { params_cotangent(&g, &args[0]) } else { None }),
+    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant };
+    let solved = match presk_driver::precision::solve(&mut core, &prog, &env, &args) {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("presk solve: the objective does not differentiate: {}", e.message);
-            return ExitCode::from(1);
-        }
-    };
-
-    // The exact value, to measure candidates against.
-    let mut exact = presk_rt::InterpBackend::new(&core, &prog, bits);
-    let reference = match presk_rt::Backend::prepare(&mut exact, entry, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut exact, &p, args.clone())) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("presk solve: {}", e.message);
-            return ExitCode::from(1);
-        }
-    };
-    let ref_f64 = leaf_max(&reference);
-    let output_site = format!("{}/%{}", core.func(entry).name, core.func(entry).body.result.0);
-
-    let mut measure = |r: &presk_rt::Realization| -> f64 {
-        let mut b = presk_kernel::KernelBackend::new(&core, &prog, r);
-        let mut a: Vec<presk_rt::Value> = args.iter().map(|v| v.realize(r.default)).collect();
-        if r.quantize_args(&mut a).is_err() {
-            return f64::INFINITY;
-        }
-        match presk_rt::Backend::prepare(&mut b, entry, &fdims, r).and_then(|p| presk_rt::Backend::call(&mut b, &p, a)) {
-            Ok(v) => leaf_gap(&reference, &v),
-            Err(_) => f64::INFINITY,
-        }
-    };
-    let menu = solve::Menu::default();
-    // Price *time* when a machine profile is available, and traffic
-    // otherwise. 0.5.0 minimised traffic and lost: on a compute-bound site
-    // narrowing buys nothing and the conversions cost.
-    struct Roofline(presk_opt::Profile);
-    impl solve::Machine for Roofline {
-        fn seconds(&self, d: presk_rt::Dtype, work: f64, bytes: f64) -> f64 {
-            self.0.predict_for(d.name(), work, bytes)
-        }
-    }
-    let machine: Box<dyn solve::Machine> = match profile.as_deref().map(presk_opt::Profile::load) {
-        Some(Ok(p)) => Box::new(Roofline(p)),
-        _ => Box::new(solve::Traffic),
-    };
-    let mut sol = if verify {
-        solve::solve(&env, &sens, &output_site, budget, &menu, presk_rt::Dtype::F64, machine.as_ref(), Some(&mut measure))
-    } else {
-        solve::solve(&env, &sens, &output_site, budget, &menu, presk_rt::Dtype::F64, machine.as_ref(), None)
-    };
-    // The parameter menu, on top of the float assignment and under what it
-    // left of the budget (0.6.0 step 5d). Verified, the measurement is of
-    // the whole realization, so the budget is the whole budget.
-    let qsol = match (quant, &grad_theta) {
-        (Some(scheme), Some(g)) => {
-            // Ranks as declared, so a stacked vector is not taken for a matrix.
-            let declared: std::collections::BTreeMap<String, usize> = match &core.func(entry).params.first().map(|p| &p.ty) {
-                Some(presk_types::ty::Ty::Params(m)) => prog.params_tree(m).declared_ranks().into_iter().collect(),
-                _ => Default::default(),
+            use presk_driver::precision::SolveError as E;
+            let (message, code) = match e {
+                E::NotEntry => (format!("presk solve: `{}` is not an entry of {}", env.entry, file.display()), 1),
+                E::NotScalar => (format!("presk solve: `{}` must return a scalar `ℝ[]`, since the sites are ranked by its sensitivity `∂L/∂v`", env.entry), 2),
+                E::Inputs(m) => (format!("presk solve: cannot bind the inputs of `{}`: {m}", env.entry), 1),
+                E::NoGradient(m) => (format!("presk solve: the objective does not differentiate: {m}"), 1),
+                E::Reference(m) => (format!("presk solve: {m}"), 1),
+                E::QuantWithoutGradient => ("presk solve: --quant needs the parameters' gradient, and the reverse sweep gave none".to_string(), 1),
             };
-            let cands = presk_precision::quant::candidates(&args[0], g, &declared, sol.realization.default.bytes(), scheme);
-            let q = if verify {
-                presk_precision::quant::solve(cands, sol.budget_abs, &sol.realization, scheme, Some(&mut measure))
-            } else {
-                let left = (sol.budget_abs - sol.estimated_error).max(0.0);
-                presk_precision::quant::solve(cands, left, &sol.realization, scheme, None)
-            };
-            sol.realization.quant = q.quant.clone();
-            Some(q)
+            eprintln!("{message}");
+            return ExitCode::from(code);
         }
-        (Some(_), None) => {
-            eprintln!("presk solve: --quant needs the parameters' gradient, and the reverse sweep gave none");
-            return ExitCode::from(1);
-        }
-        _ => None,
     };
-
-    println!("presk solve: `{}` under budget {:.2e} relative ({:.3e} absolute, |output| {:.3e})", env.entry, budget, sol.budget_abs, ref_f64);
-    println!("  sites       {} narrowable, {} assigned away from f64", sol.considered, sol.realization.storage.len());
-    println!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, sol.speedup(), sol.relaxation_bytes);
-    println!("  proposal    {:.4e} before measurement widened anything (time when --profile is given, bytes otherwise)", sol.proposed_bytes);
-    println!("  estimate    {:.3e} (sensitivity-weighted, first order: it ranks, it does not guarantee)", sol.estimated_error);
-    match sol.measured {
-        Some(g) => println!("  measured    {:.3e} against the exact reference, after {} widening round(s) — {}", g, sol.rounds, if g <= sol.budget_abs { "inside the budget" } else { "OUTSIDE the budget" }),
-        None => println!("  measured    not checked (--no-verify)"),
+    for line in presk_driver::text::solve(&env, budget, &solved, list) {
+        println!("{line}");
     }
-    if let Some(q) = &qsol {
-        let (n8, n4) = (q.chosen.values().filter(|b| **b == Some(8)).count(), q.chosen.values().filter(|b| **b == Some(4)).count());
-        println!("  parameters  {} of {} matrices quantised ({n8} int8, {n4} int4): {} bytes → {} ({:.2}x less)", n8 + n4, q.candidates.len(), q.bytes_before, q.bytes_after, q.bytes_before as f64 / q.bytes_after.max(1) as f64);
-        println!("  estimate    {:.3e} (√Σ(∂L/∂w·(ŵ−w))², first order, roundings taken as independent)", q.estimated);
-        match q.measured {
-            Some(g) => println!("  measured    {:.3e} against the exact reference with the weights quantised, after {} widening round(s) — {}", g, q.rounds, if g <= sol.budget_abs { "inside the budget" } else { "OUTSIDE the budget" }),
-            None => println!("  measured    not checked (--no-verify)"),
-        }
-        if list > 0 {
-            println!("{:<28} {:>6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}", "parameter", "bits", "elements", "bound 8", "Σgδ 8", "rss 8", "bound 4", "Σgδ 4", "rss 4");
-            for c in &q.candidates {
-                let b = q.chosen[&c.path].map(|b| format!("int{b}")).unwrap_or_else(|| sol.realization.default.name().into());
-                println!("{:<28} {:>6} {:>10} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e}", c.path, b, c.elems, c.est8, c.signed[0], c.rss[0], c.est4, c.signed[1], c.rss[1]);
-            }
-            let sum = |f: &dyn Fn(&presk_precision::quant::Candidate) -> f64| q.candidates.iter().map(f).sum::<f64>();
-            println!("{:<28} {:>6} {:>10} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e}", "all, combined", "", "", sum(&|c| c.est8), sum(&|c| c.signed[0]).abs(), sum(&|c| c.rss[0] * c.rss[0]).sqrt(), sum(&|c| c.est4), sum(&|c| c.signed[1]).abs(), sum(&|c| c.rss[1] * c.rss[1]).sqrt());
-        }
-    }
-    if let Some((_, bytes)) = solve::exhaustive(&env, &sens, &output_site, budget, &menu, presk_rt::Dtype::F64, machine.as_ref(), 200_000) {
-        println!("  optimal     {:.4e} bytes by exhaustive search under the same estimate — the greedy proposal is {:.3}x that", bytes, sol.proposed_bytes / bytes.max(1.0));
-    } else {
-        println!("  optimal     not searched (the space is too large); the relaxation floor above is the lower bound");
-    }
-    if list > 0 && !sol.realization.storage.is_empty() {
-        let mut rows: Vec<(&String, &presk_rt::Dtype)> = sol.realization.storage.iter().collect();
-        rows.sort_by_key(|(k, _)| k.as_str());
-        println!("{:<30} {:>8} {:>12} {:>12}", "site", "dtype", "elements", "‖∂L/∂v‖₁");
-        for (site, d) in rows.iter().take(list) {
-            println!("{site:<30} {:>8} {:>12} {:>12.3e}", d.name(), env.elems(site), sens.get(site).unwrap_or(0.0));
-        }
-    }
+    let sol = &solved.solution;
     if let Some(path) = out {
         if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty())
             && let Err(e) = std::fs::create_dir_all(d)
@@ -1673,66 +1559,7 @@ fn quantize(file: &Path, realize: &presk_rt::Realization, list: bool, entry: &st
     ExitCode::SUCCESS
 }
 
-/// The real tensor at `path` in a parameter tree.
-fn param_leaf<'v>(theta: &'v presk_rt::Value, path: &str) -> Option<&'v presk_rt::Tensor> {
-    let mut v = theta;
-    for part in path.split('.') {
-        v = match v {
-            presk_rt::Value::Record(_) => v.field(part)?,
-            presk_rt::Value::Tuple(xs) => xs.get(part.parse::<usize>().ok()?)?,
-            _ => return None,
-        };
-    }
-    match v {
-        presk_rt::Value::Real(t) => Some(t),
-        _ => None,
-    }
-}
-
-/// The cotangent of the parameters in a vjp's result: the result itself when
-/// it is shaped like `theta`, else the first component of a tuple that is.
-fn params_cotangent(out: &presk_rt::Value, theta: &presk_rt::Value) -> Option<presk_rt::Value> {
-    let paths = presk_rt::quant::param_paths(theta);
-    if presk_rt::quant::param_paths(out) == paths {
-        return Some(out.clone());
-    }
-    match out {
-        presk_rt::Value::Tuple(xs) => xs.iter().find(|x| presk_rt::quant::param_paths(x) == paths).cloned(),
-        _ => None,
-    }
-}
-
-/// A non-finite element counts as +∞: `f64::max` would pass over a NaN.
-fn or_infinite(x: f64) -> f64 {
-    if x.is_finite() { x } else { f64::INFINITY }
-}
-
-/// The largest `|x|` over the leaves of a runtime value; +∞ when an element
-/// is not finite.
-fn leaf_max(v: &presk_rt::Value) -> f64 {
-    match v {
-        presk_rt::Value::Real(t) => t.data.to_f64().into_iter().map(|x| or_infinite(x.abs())).fold(0.0, f64::max),
-        presk_rt::Value::Tuple(xs) => xs.iter().map(leaf_max).fold(0.0, f64::max),
-        presk_rt::Value::Record(xs) => xs.iter().map(|(_, x)| leaf_max(x)).fold(0.0, f64::max),
-        _ => 0.0,
-    }
-}
-
-/// The largest absolute difference over the leaves of two runtime values. A
-/// difference that is not finite, an element that overflowed or became NaN
-/// against a finite reference, makes the gap +∞, as the reference's gap is
-/// (its chapter 4); until 0.10.0 step 8 such an element was left out, so a
-/// realization that overflowed was measured on the rest and could be
-/// accepted. Since 0.10.0 step 7b no tensor holds `−∞`, the only infinity
-/// a legitimate value had.
-fn leaf_gap(a: &presk_rt::Value, b: &presk_rt::Value) -> f64 {
-    match (a, b) {
-        (presk_rt::Value::Real(x), presk_rt::Value::Real(y)) => x.data.to_f64().into_iter().zip(y.data.to_f64()).map(|(p, q)| or_infinite((p - q).abs())).fold(0.0, f64::max),
-        (presk_rt::Value::Tuple(xs), presk_rt::Value::Tuple(ys)) => xs.iter().zip(ys).map(|(x, y)| leaf_gap(x, y)).fold(0.0, f64::max),
-        (presk_rt::Value::Record(xs), presk_rt::Value::Record(ys)) => xs.iter().zip(ys).map(|((_, x), (_, y))| leaf_gap(x, y)).fold(0.0, f64::max),
-        _ => 0.0,
-    }
-}
+use presk_driver::gap::{leaf_gap, leaf_max, param_leaf};
 
 /// `presk dump --stage sensitivity`: one reverse sweep, and what it says
 /// about where a budget should go (plan 0.5.0 §3.3).
@@ -1761,63 +1588,25 @@ fn dump_sensitivity(file: &Path, entry: Option<&str>, dims: &[String], consts: &
         eprintln!("presk dump --stage sensitivity: --entry is required");
         return ExitCode::from(2);
     };
-    let Ok((f, _, _)) = presk_interp::run::resolve_entry(&core, &prog, entry) else {
-        eprintln!("presk dump: `{entry}` is not an entry of {}", file.display());
-        return ExitCode::from(1);
-    };
-    if !matches!(core.func(f).ret, presk_types::ty::Ty::Real(ref s) if s.axes.is_empty() && s.prefix.is_none()) {
-        eprintln!("presk dump --stage sensitivity: `{entry}` must return a scalar `ℝ[]`, since a sensitivity is `∂L/∂v`");
-        return ExitCode::from(2);
-    }
-    // The reverse sweep already computes the adjoint of every intermediate;
-    // this only asks where each one ended up.
-    let (vjp, adjoints, diags) = presk_core::ad::vjp_with_adjoints(&mut core, f);
-    eprint!("{}", render_all(&diags, &sm, color()));
-    if has_errors(&diags) {
-        return ExitCode::from(1);
-    }
-    let opts = presk_interp::RunOptions { entry: entry.into(), dims: dims_p, seed, bits, digits: 17 };
-    let Ok((_, fdims, inputs)) = presk_interp::run::prepare_run(&core, &prog, &opts) else {
-        eprintln!("presk dump: cannot bind the inputs of `{entry}`");
-        return ExitCode::from(1);
-    };
-    let mut backend = presk_rt::InterpBackend::new(&core, &prog, bits);
-    backend.interp.sums = Some(Default::default());
-    // The vjp takes the forward arguments and a cotangent; seeding it with 1
-    // is what makes the adjoints `∂L/∂v` rather than a scaled multiple.
-    let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
-    if let Some(path) = weights {
-        match presk_rt::load_params(path, &args[0]) {
-            Ok(v) => args[0] = v,
-            Err(e) => {
-                eprintln!("presk dump: {}", e.message);
-                return ExitCode::from(1);
-            }
-        }
-    }
-    args.push(presk_rt::Value::Real(presk_rt::Tensor { axes: vec![], data: presk_rt::Buf::F64(vec![1.0].into()) }));
-    let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
-    let p = match presk_rt::Backend::prepare(&mut backend, vjp, &fdims, &one) {
-        Ok(p) => p,
+    let s = match presk_driver::precision::sensitivity(&mut core, &prog, &sm, entry, dims_p, seed, bits, weights, &mut stderr()) {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("presk dump: {}", e.message);
+            use presk_driver::precision::SensitivityError as E;
+            match e {
+                E::NotEntry => eprintln!("presk dump: `{entry}` is not an entry of {}", file.display()),
+                E::NotScalar => {
+                    eprintln!("presk dump --stage sensitivity: `{entry}` must return a scalar `ℝ[]`, since a sensitivity is `∂L/∂v`");
+                    return ExitCode::from(2);
+                }
+                E::Diagnostics => {}
+                E::Inputs => eprintln!("presk dump: cannot bind the inputs of `{entry}`"),
+                E::Run(m) => eprintln!("presk dump: {m}"),
+            }
             return ExitCode::from(1);
         }
     };
-    if let Err(e) = presk_rt::Backend::call(&mut backend, &p, args) {
-        eprintln!("presk dump: {}", e.message);
-        return ExitCode::from(1);
-    }
-    let sums = backend.interp.sums.take().unwrap_or_default();
-    let s = presk_precision::sensitivity::from_run(&core, f, &adjoints, &sums);
-    println!("-- sensitivity of `{entry}`: ‖∂L/∂v‖₁ at each site, one reverse sweep at {bits} bits");
-    println!("{:<34} {:>14}", "module", "Σ ‖∂L/∂v‖₁");
-    for (m, v) in s.by_module() {
-        println!("{m:<34} {v:>14.4e}");
-    }
-    println!("\n{:<34} {:>14}", "site", "‖∂L/∂v‖₁");
-    for (site, v) in s.ranked().into_iter().take(top) {
-        println!("{site:<34} {v:>14.4e}");
+    for line in presk_driver::text::sensitivity(&s, entry, bits, top) {
+        println!("{line}");
     }
     ExitCode::SUCCESS
 }
@@ -1857,88 +1646,21 @@ fn check_precision(file: &Path, env_path: &Path, realize: &presk_rt::Realization
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
-    let Ok((entry, _, _)) = presk_interp::run::resolve_entry(&core, &prog, &env.entry) else {
-        eprintln!("presk check: `{}` is not an entry of {}", env.entry, file.display());
-        return ExitCode::from(1);
-    };
-    // The same shapes the magnitudes were measured at: `k` in a contraction's
-    // rule is a shape, so a bound computed at other dimensions is a bound
-    // about another program.
-    let named: std::collections::BTreeMap<String, u64> = env.dims.iter().cloned().collect();
-    let dims: std::collections::BTreeMap<presk_types::dim::DimVar, u64> =
-        core.func(entry).dims.iter().filter_map(|d| named.get(&prog.dim_name(*d)).map(|n| (*d, *n))).collect();
-
-    // The measured gap first, since every row is compared with it.
-    let measured = if measure {
-        let opts = presk_interp::RunOptions { entry: env.entry.clone(), dims: env.dims.clone(), seed: 0, bits: env.bits, digits: 17 };
-        let weights = env.weights.as_ref().map(PathBuf::from);
-        let (func, fdims, args) = match entry_args(&core, &prog, &opts, env.data.as_ref(), weights.as_deref()) {
-            Ok(x) => x,
-            Err(m) => {
-                eprintln!("presk check: {m}");
-                return ExitCode::from(1);
-            }
-        };
-        let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
-        let mut exact = presk_rt::InterpBackend::new(&core, &prog, env.bits);
-        let reference = presk_rt::Backend::prepare(&mut exact, func, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut exact, &p, args.clone()));
-        let mut b = presk_kernel::KernelBackend::new(&core, &prog, realize);
-        let mut a: Vec<presk_rt::Value> = args.iter().map(|v| v.realize(realize.default)).collect();
-        let got = realize
-            .quantize_args(&mut a)
-            .and_then(|_| presk_rt::Backend::prepare(&mut b, func, &fdims, realize))
-            .and_then(|p| presk_rt::Backend::call(&mut b, &p, a));
-        match (reference, got) {
-            (Ok(r), Ok(g)) => Some(leaf_gap(&r, &g)),
-            (Err(e), _) | (_, Err(e)) => {
-                eprintln!("presk check: {}", e.message);
-                return ExitCode::from(1);
-            }
+    // The bound at the envelope's shapes, a module entry's own arguments
+    // among them (D108, finding 1), and the gap measured beside it.
+    let bounded = match presk_driver::precision::bound(&core, &prog, &env, realize, &models, measure) {
+        Ok(b) => b,
+        Err(presk_driver::precision::BoundError::NotEntry) => {
+            eprintln!("presk check: `{}` is not an entry of {}", env.entry, file.display());
+            return ExitCode::from(1);
         }
-    } else {
-        None
-    };
-
-    let runs: Vec<presk_precision::propagate::Analysis> =
-        models.iter().map(|m| presk_precision::propagate::propagate_with(&core, &prog, entry, &dims, &env, realize, *m)).collect();
-    let a = &runs[0];
-    println!("presk check --precision: `{}` under {}", env.entry, realize.label());
-    println!("  magnitude   {:.4e}", a.output.mag);
-    for r in &runs {
-        let what = if r.model.is_bound() { "bound   " } else { "estimate" };
-        let ratio = match measured {
-            Some(g) if g > 0.0 => format!("  {:>9.2e}× the measured gap", r.output.err / g),
-            _ => String::new(),
-        };
-        println!("  {what} {:<9} {:.4e}  ({:.2e} relative){ratio}", r.model.name(), r.output.err, r.output.relative());
-    }
-    if let Some(g) = measured {
-        println!("  measured             {:.4e}  ({:.2e} relative)  native against the exact reference", g, if a.output.mag > 0.0 { g / a.output.mag } else { f64::NAN });
-    }
-    println!(
-        "  envelope    {} over {} samples, {} sites, {}",
-        env_path.display(),
-        env.samples,
-        a.sites.len(),
-        env.weights.as_deref().map(|w| format!("weights {w}")).unwrap_or_else(|| "initial weights".into())
-    );
-    if !a.uncovered.is_empty() {
-        println!("  uncovered   {} site(s) the envelope does not mention, first {}", a.uncovered.len(), a.uncovered.first().map(|s| s.as_str()).unwrap_or("-"));
-    }
-    if !a.unbounded.is_empty() {
-        println!("  unbounded   {} site(s) divide by something with no measured floor: {}", a.unbounded.len(), a.unbounded.first().map(|s| s.as_str()).unwrap_or("-"));
-    }
-    if let Some(r) = runs.iter().find(|r| !r.fallback.is_empty()) {
-        println!("  fallback    {} sum(s) with no recorded terms took the `k` rule, first {} (an envelope from before 0.6.0 step 6?)", r.fallback.len(), r.fallback[0]);
-    }
-    if sites > 0 {
-        let mut rows: Vec<(&String, &presk_precision::propagate::Bound)> = a.sites.iter().collect();
-        rows.sort_by(|x, y| y.1.err.partial_cmp(&x.1.err).unwrap_or(std::cmp::Ordering::Equal));
-        println!("{:<30} {:>12} {:>12} {:>12} {:>12}", "site", "magnitude", a.model.name(), "relative", "condition");
-        for (site, b) in rows.iter().take(sites) {
-            let c = env.condition(site).map(|c| format!("{c:.3e}")).unwrap_or_else(|| "-".into());
-            println!("{site:<30} {:>12.3e} {:>12.3e} {:>12.3e} {c:>12}", b.mag, b.err, b.relative());
+        Err(presk_driver::precision::BoundError::Measure(m)) => {
+            eprintln!("presk check: {m}");
+            return ExitCode::from(1);
         }
+    };
+    for line in presk_driver::text::bound(&env, &env_path.display().to_string(), &realize.label(), &bounded, sites) {
+        println!("{line}");
     }
     ExitCode::SUCCESS
 }
@@ -1982,49 +1704,23 @@ fn calibrate_precision(
         eprintln!("presk calibrate: --entry is required");
         return ExitCode::from(2);
     };
-    let opts = presk_interp::RunOptions { entry: entry.into(), dims, seed, bits, digits: 17 };
-    let mut backend = presk_rt::InterpBackend::new(&core, &prog, bits);
-    backend.interp.magnitudes = Some(Default::default());
-    backend.interp.minima = Some(Default::default());
-    backend.interp.elems = Some(Default::default());
-    backend.interp.ops = Some(Default::default());
-    backend.interp.terms = Some(Default::default());
-    let today = presk_precision::envelope::today();
-    let mut env = presk_precision::envelope::Envelope::new(&file.display().to_string(), entry, bits, &today);
-    env.dims = opts.dims.clone();
-    env.consts = consts.to_vec();
-    env.weights = weights.map(|w| w.display().to_string());
-    env.data = data.map(|d| presk_precision::envelope::DataSlice { path: d.display().to_string(), from, samples });
-    let run = entry_args(&core, &prog, &opts, env.data.as_ref(), weights).and_then(|(func, fdims, args)| {
-        let one = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
-        presk_rt::Backend::prepare(&mut backend, func, &fdims, &one).and_then(|p| presk_rt::Backend::call(&mut backend, &p, args)).map_err(|e| e.message)
-    });
-    if let Err(m) = run {
-        eprintln!("presk calibrate: {m}");
-        return ExitCode::from(1);
+    // `--samples` counts the samples read from `--data`; without it the
+    // entry runs on the one input `--seed` synthesizes, which an envelope
+    // must not call N samples (D108, finding 2).
+    if samples.is_some() && data.is_none() {
+        eprintln!("presk calibrate: --samples counts the samples read from --data; without --data the entry runs on the one input --seed synthesizes (bind a batch axis with --dim to measure several rows)");
+        return ExitCode::from(2);
     }
-    let m = backend.interp.magnitudes.take().unwrap_or_default();
-    env.observe(&m);
-    env.observe_minima(&backend.interp.minima.take().unwrap_or_default());
-    env.observe_elems(&backend.interp.elems.take().unwrap_or_default());
-    env.observe_ops(&backend.interp.ops.take().unwrap_or_default());
-    env.observe_terms(&backend.interp.terms.take().unwrap_or_default());
-    env.samples = samples.unwrap_or(1).max(1);
-    println!("presk calibrate: {} sites over {} samples of `{entry}` at {bits} bits", env.sites.len(), env.samples);
-    let mut widest: Vec<(&String, &f64)> = env.sites.iter().collect();
-    widest.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
-    for (site, v) in widest.iter().take(5) {
-        println!("  {site:<28} {v:.4e}");
-    }
-    // The sums whose terms cancel most: the condition number the bound now
-    // uses in place of `k` (0.6.0 step 6).
-    let mut conds: Vec<(&String, f64)> = env.terms.keys().filter_map(|s| env.condition(s).map(|c| (s, c))).collect();
-    conds.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if !conds.is_empty() {
-        println!("presk calibrate: {} sums and contractions, worst condition numbers Σ|xᵢwᵢ| / |Σxᵢwᵢ|:", conds.len());
-        for (site, c) in conds.iter().take(5) {
-            println!("  {site:<28} {c:.4e}");
+    let c = presk_driver::precision::Calibrate { file, entry, dims, consts, data, samples, from, seed, bits, weights };
+    let env = match presk_driver::precision::calibrate(&core, &prog, &c) {
+        Ok(e) => e,
+        Err(m) => {
+            eprintln!("presk calibrate: {m}");
+            return ExitCode::from(1);
         }
+    };
+    for line in presk_driver::text::calibrate(&env, entry, bits) {
+        println!("{line}");
     }
     if let Some(other) = compare {
         match presk_precision::envelope::Envelope::load(other) {
@@ -2056,32 +1752,6 @@ fn calibrate_precision(
         println!("presk calibrate: wrote {}", path.display());
     }
     ExitCode::SUCCESS
-}
-
-/// The entry of `opts` and its arguments at the seam: the last one read from
-/// a data slice when there is one, the first one from a checkpoint when there
-/// is one, the rest synthesized as `presk run` does. The same inputs for the
-/// envelope and for a gap measured beside the bound it supports.
-type EntryArgs = (presk_core::FuncId, presk_interp::eval::Dims, Vec<presk_rt::Value>);
-
-fn entry_args(core: &presk_core::Program, prog: &elab::ElabProgram, opts: &presk_interp::RunOptions, data: Option<&presk_precision::envelope::DataSlice>, weights: Option<&Path>) -> Result<EntryArgs, String> {
-    let (func, fdims, mut args) = match data {
-        Some(d) => {
-            let (func, fdims, _, args) = presk_train::args_on_data(core, prog, opts, Path::new(&d.path), d.from, d.samples).map_err(|e| e.message)?;
-            (func, fdims, args)
-        }
-        None => {
-            let (func, fdims, inputs) = presk_interp::run::prepare_run(core, prog, opts).map_err(|e| e.message)?;
-            let args = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| e.message)?;
-            (func, fdims, args)
-        }
-    };
-    // A checkpoint that does not load is an error, never a fallback to the
-    // initial parameters (D48).
-    if let Some(w) = weights {
-        args[0] = presk_rt::load_params(w, &args[0]).map_err(|e| format!("{}: {}", w.display(), e.message))?;
-    }
-    Ok((func, fdims, args))
 }
 
 /// `presk bench`: one entry timed on every backend.
@@ -2145,34 +1815,14 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         return bench_host_profile(&core, &prog, (entry, func, &fdims), &args, (plan, planned), (repeat, warmup));
     }
     let time = |name: &str, b: &mut dyn presk_rt::Backend, realize: &presk_rt::Realization| -> Option<(String, f64, f64)> {
-        let p = b.prepare(func, &fdims, realize).ok()?;
-        // The inputs are built by the reference interpreter, as exact reals.
-        // Rounding them to the machine type, and quantising the weights of a
-        // quantised realization, is loading a checkpoint, not a step, so both
-        // happen once, outside the timing (0.6.0 step 5b; before it, every
-        // row paid a conversion from MPFR per call).
-        let mut args: Vec<presk_rt::Value> = args.iter().map(|v| if b.name() == "interp" { v.clone() } else { v.realize(realize.default) }).collect();
-        if let Err(e) = realize.quantize_args(&mut args) {
-            eprintln!("presk bench: {name}: {}", e.message);
-            return None;
-        }
-        for _ in 0..warmup {
-            if let Err(e) = b.call(&p, args.clone()) {
-                eprintln!("presk bench: {name}: {}", e.message);
-                return None;
+        match presk_driver::bench::time_call(b, func, &fdims, realize, &args, warmup, repeat) {
+            Ok((median, best)) => Some((name.to_string(), median, best)),
+            Err(presk_driver::bench::TimeError::Prepare(_)) => None,
+            Err(presk_driver::bench::TimeError::Run(m)) => {
+                eprintln!("presk bench: {name}: {m}");
+                None
             }
         }
-        let mut samples = Vec::new();
-        for _ in 0..repeat.max(1) {
-            let t0 = std::time::Instant::now();
-            if let Err(e) = b.call(&p, args.clone()) {
-                eprintln!("presk bench: {name}: {}", e.message);
-                return None;
-            }
-            samples.push(t0.elapsed().as_secs_f64() * 1e3);
-        }
-        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        Some((name.to_string(), samples[samples.len() / 2], samples[0]))
     };
     let uniform = |d| presk_rt::Realization::uniform(d);
     let f64r = uniform(presk_rt::Dtype::F64);
@@ -2376,168 +2026,37 @@ fn refit(path: &Path, load: presk_opt::profile::LoadTerm, combine: presk_opt::pr
 /// compared bit for bit.
 #[allow(clippy::type_complexity)]
 fn bench_host_profile(core: &presk_core::Program, prog: &elab::ElabProgram, (entry, func, fdims): (&str, presk_core::FuncId, &presk_interp::eval::Dims), args: &[presk_rt::Value], (plan, planned): (&presk_rt::Plan, bool), (repeat, warmup): (usize, usize)) -> ExitCode {
-    use presk_kernel::profile::{HostProfile, Phase, minor_faults, same_bits, table, value_bytes};
-    let realize = &plan.realization;
-    let mut b = match presk_cranelift::native_backend(core, prog, realize) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("presk bench: native backend unavailable: {}", e.message);
-            return ExitCode::from(1);
+    match presk_driver::bench::host_profile(core, prog, func, fdims, args, plan, planned, repeat, warmup) {
+        Ok(h) => {
+            print!("{}", presk_driver::text::host_profile(entry, &plan.realization.label(), planned, &h));
+            if h.same { ExitCode::SUCCESS } else { ExitCode::from(1) }
         }
-    };
-    if planned {
-        b.set_plan(plan.clone());
-    }
-    let p = match presk_rt::Backend::prepare(&mut b, func, fdims, realize) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("presk bench: {}", e.message);
-            return ExitCode::from(1);
-        }
-    };
-    let mut args: Vec<presk_rt::Value> = args.iter().map(|v| v.realize(realize.default)).collect();
-    if let Err(e) = realize.quantize_args(&mut args) {
-        eprintln!("presk bench: {}", e.message);
-        return ExitCode::from(1);
-    }
-    let profile = HostProfile::shared();
-    // A call, timed; `keep`: its result is returned rather than freed (the
-    // comparison, untimed).
-    let call = |b: &mut presk_kernel::KernelBackend, timed: bool, keep: bool| -> Result<(f64, Option<HostProfile>, Option<presk_rt::Value>, Option<u64>), String> {
-        b.set_host_profile(timed.then(|| profile.clone()));
-        let f0 = minor_faults();
-        let t0 = std::time::Instant::now();
-        let a = args.clone();
-        let copy = t0.elapsed().as_secs_f64();
-        let r = presk_rt::Backend::call(b, &p, a).map_err(|e| e.message)?;
-        if keep {
-            b.set_host_profile(None);
-            return Ok((0.0, None, Some(r), None));
-        }
-        let t1 = std::time::Instant::now();
-        drop(r);
-        let drop_s = t1.elapsed().as_secs_f64();
-        let total = t0.elapsed().as_secs_f64();
-        let faults = f0.zip(minor_faults()).map(|(a, b)| b - a);
-        b.set_host_profile(None);
-        let snap = timed.then(|| {
-            let mut s = std::mem::take(&mut *profile.borrow_mut());
-            // The caller's copy of the arguments, and the result freed.
-            s.add(Phase::Entry, copy, args.iter().map(value_bytes).sum());
-            s.add(Phase::Free, drop_s, 0);
-            s.faults = faults;
-            s
-        });
-        Ok((total, snap, None, faults))
-    };
-    for _ in 0..warmup.max(1) {
-        if let Err(m) = call(&mut b, false, false) {
+        Err(m) => {
             eprintln!("presk bench: {m}");
-            return ExitCode::from(1);
+            ExitCode::from(1)
         }
     }
-    let (mut plain, mut timed, mut plain_faults) = (Vec::new(), Vec::new(), Vec::new());
-    for _ in 0..repeat.max(1) {
-        for on in [false, true] {
-            match call(&mut b, on, false) {
-                Ok((s, Some(snap), _, _)) => timed.push((snap, s)),
-                Ok((s, None, _, f)) => {
-                    plain.push(s);
-                    plain_faults.extend(f);
-                }
-                Err(m) => {
-                    eprintln!("presk bench: {m}");
-                    return ExitCode::from(1);
-                }
-            }
-        }
-    }
-    // One call of each kind, outside the timing, their outputs compared.
-    let same = match (call(&mut b, false, true), call(&mut b, true, true)) {
-        (Ok((_, _, Some(x), _)), Ok((_, _, Some(y), _))) => same_bits(&x, &y),
-        _ => false,
-    };
-    let med = |v: &[f64]| {
-        let mut v = v.to_vec();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        (v[v.len() / 2], v[0], v[v.len() - 1])
-    };
-    let (pm, plo, phi) = med(&plain);
-    let (tm, tlo, thi) = med(&timed.iter().map(|(_, s)| *s).collect::<Vec<_>>());
-    let workers = presk_kernel::KernelExec::workers(&*b.exec).unwrap_or(1);
-    println!(
-        "presk bench --host-profile: `{entry}` on the native backend, {} {}, {workers} threads; {} calls timed by phase and {} not, alternated, after {} warm-up",
-        realize.label(),
-        if planned { "under the plan" } else { "at the default layout" },
-        timed.len(),
-        plain.len(),
-        warmup.max(1)
-    );
-    println!(
-        "-- a call: {:.3} ms without the timers (median; {:.3}–{:.3}), {:.3} ms with them ({:.3}–{:.3}): the timers' cost {:+.3} ms, {:+.2} %",
-        pm * 1e3,
-        plo * 1e3,
-        phi * 1e3,
-        tm * 1e3,
-        tlo * 1e3,
-        thi * 1e3,
-        (tm - pm) * 1e3,
-        100.0 * (tm - pm) / pm
-    );
-    println!("-- the outputs of a call with the timers and of one without: {}", if same { "the same bits" } else { "DIFFERENT" });
-    if !plain_faults.is_empty() {
-        println!("-- without the timers, {:.0} minor page faults a call", plain_faults.iter().sum::<u64>() as f64 / plain_faults.len() as f64);
-    }
-    print!("{}", table(&timed, "call"));
-    if same { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
 /// `presk bench --calibrate`: time every kernel of the entry natively, fit
 /// the roofline and write (or extend) the profile.
 #[allow(clippy::too_many_arguments)]
 fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], plan: &presk_rt::Plan, repeat: usize, path: &Path) -> ExitCode {
-    let realize = &plan.realization;
-    let native = match presk_cranelift::NativeExec::new() {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("presk bench: native backend unavailable: {}", e.message);
+    let times = match presk_driver::bench::kernel_times(core, prog, func, fdims, args, plan, repeat) {
+        Ok(t) => t,
+        Err(m) => {
+            eprintln!("presk bench: {m}");
             return ExitCode::from(1);
         }
     };
-    let (timed, samples) = presk_kernel::cost::TimedExec::new(Box::new(native));
-    let mut backend = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(timed));
-    backend.set_plan(plan.clone());
-    let p = match presk_rt::Backend::prepare(&mut backend, func, fdims, realize) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("presk bench: {}", e.message);
-            return ExitCode::from(1);
-        }
-    };
-    for _ in 0..repeat {
-        if let Err(e) = presk_rt::Backend::call(&mut backend, &p, args.to_vec()) {
-            eprintln!("presk bench: {}", e.message);
-            return ExitCode::from(1);
-        }
-    }
-    let medians = presk_kernel::cost::median_per_kernel(&samples.borrow(), backend.kernels.len());
     // The kernels' share of a call: each kernel's median launch times its
     // launches a call, so that a first launch's compilation is not counted;
     // the call's own time (`presk bench` without --calibrate) less this is
     // the host's (the PyTorch baseline at 0.9.0, D87).
-    let (per_call_launches, per_call_seconds) = {
-        let mut count = vec![0usize; backend.kernels.len()];
-        for (i, _) in samples.borrow().iter() {
-            if let Some(c) = count.get_mut(*i) {
-                *c += 1;
-            }
-        }
-        let seconds: f64 = medians.iter().zip(&count).map(|(m, c)| m.unwrap_or(0.0) * *c as f64).sum();
-        (count.iter().sum::<usize>() / repeat, seconds / repeat as f64)
-    };
-    let dtype = backend.realize.label();
+    let (per_call_launches, per_call_seconds) = (times.per_call_launches(), times.per_call_seconds());
+    let dtype = times.label.clone();
     let mut kernels: Vec<presk_opt::profile::Sample> = Vec::new();
-    for (k, t) in backend.kernels.iter().zip(medians) {
+    for (k, t) in times.kernels.iter().zip(times.medians.iter().copied()) {
         let Some(seconds) = t else { continue };
         let c = presk_kernel::cost::kernel_cost(k);
         let signature = k.to_string().lines().next().unwrap_or("").trim_end_matches(" {").to_string();
@@ -3031,49 +2550,18 @@ fn data(command: DataCommand) -> Result<(), presk_data::DataError> {
 }
 
 fn load(file: &Path) -> Result<(SourceMap, presk_syntax::FileId), ExitCode> {
-    let mut sm = SourceMap::new();
-    match sm.load(file) {
-        Ok(id) => Ok((sm, id)),
-        Err(e) => {
-            eprintln!("presk: cannot read {}: {e}", file.display());
-            Err(ExitCode::from(2))
-        }
-    }
+    presk_driver::front::load(file, &mut stderr()).map_err(exit)
 }
 
 fn color() -> bool {
     std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
 
-/// A run's error as a diagnostic, at the binding it was evaluating; an entry
-/// refused at its dimensions (`E7003`) at the operation undefined there.
-pub(crate) fn run_diag(code: &'static str, message: String, span: Option<presk_syntax::Span>) -> presk_syntax::Diagnostic {
-    let d = presk_syntax::Diagnostic::error(code, message);
-    match span {
-        Some(s) if code == presk_interp::defined::CODE => d.label(s, "undefined at the dimensions given"),
-        Some(s) => d.label(s, "while evaluating this"),
-        None => d,
-    }
-}
-
-/// The same for the interpreter's error, `E7001` unless it names its code.
-pub(crate) fn interp_diag(e: presk_interp::RunError) -> presk_syntax::Diagnostic {
-    run_diag(e.code.unwrap_or("E7001"), e.message, e.span)
-}
+pub(crate) use presk_driver::entry::{interp_diag, run_diag};
 
 /// `NAME=N` pairs of `--const`.
 fn parse_consts(consts: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
-    let mut out = Vec::new();
-    for c in consts {
-        match c.split_once('=').and_then(|(n, v)| v.trim().parse::<u64>().ok().map(|v| (n.trim().to_string(), v))) {
-            Some(pair) => out.push(pair),
-            None => {
-                eprintln!("presk: `--const {c}`: expected NAME=N with N a natural number");
-                return Err(ExitCode::from(2));
-            }
-        }
-    }
-    Ok(out)
+    presk_driver::front::parse_consts(consts, &mut stderr()).map_err(exit)
 }
 
 /// Diagnostics as JSON: `{code, severity, message, labels: [{file, line, col, start, end, text}], notes, help}`.
@@ -3104,28 +2592,14 @@ fn diags_json(diags: &[presk_syntax::Diagnostic], sm: &SourceMap) -> serde_json:
     )
 }
 
-/// Parse and elaborate; report all diagnostics. Returns the program when
-/// there is no error.
+/// Parse and elaborate ([`presk_driver::front::front`]).
 fn front(file: &Path, consts: &[String]) -> Result<(SourceMap, elab::ElabProgram), ExitCode> {
-    let const_overrides = parse_consts(consts)?;
-    let (mut sm, id) = load(file)?;
-    let (program, mut diags) = parse_file(&sm, id);
-    if has_errors(&diags) {
-        eprint!("{}", render_all(&diags, &sm, color()));
-        return Err(ExitCode::from(1));
-    }
-    let (prog, more) = elab::elaborate(&mut sm, id, program, &Options { const_overrides });
-    diags.extend(more);
-    eprint!("{}", render_all(&diags, &sm, color()));
-    if has_errors(&diags) { Err(ExitCode::from(1)) } else { Ok((sm, prog)) }
+    presk_driver::front::front(file, consts, &mut stderr()).map_err(exit)
 }
 
-/// Parse, elaborate and type; report diagnostics.
+/// Parse, elaborate and type ([`presk_driver::front::typed_front`]).
 fn typed_front(file: &Path, consts: &[String]) -> Result<(SourceMap, elab::ElabProgram, TypedProgram), ExitCode> {
-    let (sm, prog) = front(file, consts)?;
-    let (typed, diags) = typing::check(&sm, &prog);
-    eprint!("{}", render_all(&diags, &sm, color()));
-    if has_errors(&diags) { Err(ExitCode::from(1)) } else { Ok((sm, prog, typed)) }
+    presk_driver::front::typed_front(file, consts, &mut stderr()).map_err(exit)
 }
 
 /// The complete static check. With `json`, nothing is rendered: every
@@ -3209,31 +2683,13 @@ fn check_stages(file: &Path, consts: &[String], summary: bool, quiet: bool, sm_o
     if failed { ExitCode::from(1) } else { ExitCode::SUCCESS }
 }
 
-/// Lower to PSK-Core and verify the result.
+/// Lower to PSK-Core and verify the result ([`presk_driver::front::core`]).
 fn core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap, elab::ElabProgram, presk_core::Program), ExitCode> {
-    typed_core(file, consts, unroll_stack).map(|(sm, prog, _, core)| (sm, prog, core))
-}
-
-/// [`core()`], and the typed program it was lowered from.
-fn typed_core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap, elab::ElabProgram, TypedProgram, presk_core::Program), ExitCode> {
-    let (sm, prog, typed) = typed_front(file, consts)?;
-    let (core, diags) = presk_core::lower::lower_with(&prog, &typed, &presk_core::lower::Options { unroll_stack });
-    eprint!("{}", render_all(&diags, &sm, color()));
-    if has_errors(&diags) {
-        return Err(ExitCode::from(1));
-    }
-    if let Err(errs) = presk_core::verify(&core) {
-        for e in errs {
-            eprintln!("presk: internal error (PSK-Core verification): {e}");
-        }
-        return Err(ExitCode::from(2));
-    }
-    Ok((sm, prog, typed, core))
+    presk_driver::front::core(file, consts, unroll_stack, &mut stderr()).map_err(exit)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, dims: &[String], consts: &[String], plan: &presk_rt::Plan, planned: bool, profile: Option<PathBuf>, weights: Option<PathBuf>, sites: usize) -> ExitCode {
-    let realize = &plan.realization;
     if let DumpStage::Sensitivity = stage {
         return dump_sensitivity(file, entry, dims, consts, weights.as_deref(), sites, 0, 128);
     }
@@ -3259,20 +2715,20 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
         if let Err(c) = check_plan(plan, &core, &sm) {
             return c;
         }
-        let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed: 0, bits: 64, digits: 12 };
-        // The kernel interpreter's default is scalar, so a dump without a
-        // plan, or with one that states no lanes, prints 0.6.0's kernels.
-        let mut backend = presk_kernel::KernelBackend::new(&core, &prog, realize);
-        backend.set_plan(plan.clone());
-        if let Err(e) = presk_rt::run_with(&mut backend, &core, &prog, &opts, realize) {
-            eprint!("{}", render_all(&[presk_syntax::Diagnostic::error(e.code, e.message)], &sm, color()));
-            return ExitCode::from(1);
+        // The kernels from the entry's shapes, nothing computed (0.11.0,
+        // X4); the kernel interpreter's default is scalar, so a dump without
+        // a plan, or with one that states no lanes, prints 0.6.0's kernels.
+        let listing = match presk_driver::layout::kernels(&core, &prog, entry, dims, plan, 0) {
+            Ok(l) => l,
+            Err(e) => {
+                eprint!("{}", render_all(&[presk_syntax::Diagnostic::error(e.code, e.message)], &sm, color()));
+                return ExitCode::from(1);
+            }
+        };
+        for line in presk_driver::text::kernel_heading(&listing) {
+            println!("{line}");
         }
-        let before = backend.launches + backend.fused;
-        let pct = if before > 0 { 100.0 * backend.fused as f64 / before as f64 } else { 0.0 };
-        println!("-- {} kernels, {} launches, {}", backend.kernels.len(), backend.launches, backend.realize.label());
-        println!("-- fusion: {before} launches without it, {} saved ({pct:.0}%)", backend.fused);
-        for k in &backend.kernels {
+        for k in &listing.kernels {
             print!("{k}");
         }
         return ExitCode::SUCCESS;
@@ -3295,7 +2751,9 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
             eprint!("{}", render_all(&diags, &sm, color()));
             if has_errors(&diags) { ExitCode::from(1) } else { ExitCode::SUCCESS }
         }
-        DumpStage::Elab => match front(file, &[]) {
+        // `--const` binds the constants here too (until 0.11.0 step 7 the two
+        // stages ignored it, D110).
+        DumpStage::Elab => match front(file, consts) {
             Err(c) => c,
             Ok((sm, prog)) => {
                 // A module that includes itself has no parameter tree to print.
@@ -3308,7 +2766,7 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
                 ExitCode::SUCCESS
             }
         },
-        DumpStage::Core => match core(file, &[], unroll_stack) {
+        DumpStage::Core => match core(file, consts, unroll_stack) {
             Err(c) => c,
             Ok((_, prog, core)) => {
                 print!("{}", presk_core::pretty(&core, &prog));
@@ -3379,7 +2837,7 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
 
 /// `NAME=N` pairs of `--dim`.
 fn parse_dims(dims: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
-    parse_consts(dims).inspect_err(|_| eprintln!("presk: (in `--dim`)"))
+    presk_driver::front::parse_dims(dims, &mut stderr()).map_err(exit)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3482,7 +2940,7 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
 }
 
 /// `presk export --target c` (plan 0.9.0 step 3, D79): the options first,
-/// then the entry (`export_c::export`). `E8002`, which refused the target
+/// then the entry (`presk_driver::export_c::export`). `E8002`, which refused the target
 /// (steps 0–2) and then `--plan` and `--threads` (steps 3–4), is no longer
 /// emitted (step 5, D81). With `--serve` (step 6, D83) the entry is the
 /// file's generation function unless `--entry` names another, as for
@@ -3497,7 +2955,7 @@ fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], const
         eprintln!("presk export --target c: --entry is required (the program is one entry at bound dimensions, as `presk run` runs it), or --serve for the file's generation function");
         return ExitCode::from(2);
     }
-    export_c::export(&export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, serve, out })
+    presk_driver::export_c::export(&presk_driver::export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, serve, out, remat: remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3751,8 +3209,16 @@ fn export(file: &Path, mode: ExportMode, out: &Path, shapes: Option<&str>, stack
         // No realization: the groups kept, as by default.
         let diags = differentiate(&mut core, true);
         eprint!("{}", render_all(&diags, &sm, color()));
-        if has_errors(&diags) || presk_core::verify(&core).is_err() {
+        if has_errors(&diags) {
             return ExitCode::from(1);
+        }
+        // An internal error, reported as every command reports it (until
+        // 0.11.0 step 7 the export exited 1 without a word, D110).
+        if let Err(errs) = presk_core::verify(&core) {
+            for e in errs {
+                eprintln!("presk: internal error (PSK-Core verification after AD): {e}");
+            }
+            return ExitCode::from(2);
         }
         if let Err(c) = opt.apply(&mut core, &prog, false, &dims) {
             return c;

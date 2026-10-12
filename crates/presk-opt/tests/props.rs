@@ -235,12 +235,22 @@ fn inputs(seed: u64) -> Vec<Value<Float>> {
     vec![a, b, s]
 }
 
+/// The precision both programs are evaluated at.
+const BITS: u32 = 128;
+
 fn close(x: &Value<Float>, y: &Value<Float>) -> Result<(), String> {
     let (Value::Real(tx), Value::Real(ty)) = (x, y) else { return Err(format!("kinds differ: {} vs {}", x.kind(), y.kind())) };
     if tx.axes != ty.axes {
         return Err(format!("axes differ: {:?} vs {:?}", tx.axes, ty.axes));
     }
-    let tol = Float::with_val(128, 2f64.powi(-100));
+    // Relative, at the reference's precision: the two programs are the same
+    // function over ℝ and round differently at 2⁻¹²⁸ an operation, which
+    // conditioning amplifies (an `exp` multiplies a relative error by its
+    // argument: at 4.8·10⁸, a found case, two correct programs differ by
+    // 2⁻⁹⁹); a wrong rewrite differs by a relative O(1). Half the precision
+    // separates the two with room either side; until 0.11.0 it was 2⁻¹⁰⁰,
+    // which that case failed (kept in props.proptest-regressions).
+    let tol = Float::with_val(128, 2f64.powi(-(BITS as i32) / 2));
     for (u, v) in tx.data.iter().zip(&ty.data) {
         if u.is_nan() && v.is_nan() {
             continue;
@@ -261,8 +271,8 @@ fn check(bytes: &[u8], kind: Kind, seed: u64) -> Result<(), TestCaseError> {
     let report = presk_opt::optimize(&mut opt, &prog, &presk_opt::Options::default());
     presk_core::verify(&opt).map_err(|errs| TestCaseError::fail(errs.join("\n")))?;
     let args = inputs(seed);
-    let mut i0: Interp<Float> = Interp::new(&core, &prog, 128);
-    let mut i1: Interp<Float> = Interp::new(&opt, &prog, 128);
+    let mut i0: Interp<Float> = Interp::new(&core, &prog, BITS);
+    let mut i1: Interp<Float> = Interp::new(&opt, &prog, BITS);
     let r0 = i0.call(fid, dims.clone(), args.clone()).map_err(|e| TestCaseError::fail(e.message))?;
     let r1 = i1.call(fid, dims, args).map_err(|e| TestCaseError::fail(format!("optimized program fails: {}\n{}", e.message, presk_core::pretty::pretty_func(opt.func(fid), &opt, &prog))))?;
     close(&r0, &r1).map_err(|why| {
