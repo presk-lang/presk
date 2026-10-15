@@ -72,6 +72,27 @@ use presk_rt::{Dtype, Realization};
 use crate::envelope::Envelope;
 use crate::sensitivity::Sensitivity;
 
+/// A budget on an entry's output: relative to its largest magnitude in the
+/// envelope, as every budget was until 0.12.0, or absolute (plan 0.12.0
+/// step 4, the plan's question 5: ε\* from a model's margins is a number on
+/// its logits).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Budget {
+    Relative(f64),
+    Absolute(f64),
+}
+
+impl Budget {
+    /// The budget in absolute terms, for an output of largest magnitude
+    /// `out_mag`.
+    pub fn absolute(self, out_mag: f64) -> f64 {
+        match self {
+            Budget::Relative(r) => r * out_mag,
+            Budget::Absolute(a) => a,
+        }
+    }
+}
+
 /// The machine types a site may be assigned.
 #[derive(Clone, Debug)]
 pub struct Menu(pub Vec<Dtype>);
@@ -150,6 +171,8 @@ struct Site {
     sens: f64,
     /// Weighted operations the site performs, for the roofline's `W`.
     work: f64,
+    /// A parameter, decided by its path (plan 0.12.0), not a nest.
+    param: bool,
 }
 
 /// What a site costs in a given machine type.
@@ -185,7 +208,7 @@ fn sites(env: &Envelope, sens: &Sensitivity) -> Vec<Site> {
             let elems = env.elems(name) as f64;
             let sens = sens.get(name)?;
             let work = elems * op_weight(env.op(name));
-            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work })
+            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false })
         })
         .collect()
 }
@@ -215,9 +238,99 @@ pub enum Role {
 }
 
 /// The roles of a program's sites. A site it does not name is a decision,
-/// which is what the solver took every site for until 0.11.0.
+/// which is what the solver took every site for until 0.11.0. Since 0.12.0
+/// the parameters it offers come with them ([`Roles::with_params`]).
 #[derive(Clone, Debug, Default)]
-pub struct Roles(pub BTreeMap<String, Role>);
+pub struct Roles(pub BTreeMap<String, Role>, pub Vec<ParamSite>);
+
+/// A parameter the solver offers (plan 0.12.0 step 4, D123): a leaf of the
+/// entry's parameter tree, decided by its path as the realization's
+/// `params` keys it, rounded once at rest to its type and read by the
+/// nests that read its field sites. Its term of the estimate is
+/// `sens · u · mag` at the narrowest of its type and its readers' types:
+/// the value a nest reads is rounded there, at rest or at the nest's edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamSite {
+    pub path: String,
+    pub elems: f64,
+    /// Its largest magnitude.
+    pub mag: f64,
+    /// `‖∂L/∂θ‖₁` over the leaf, from the reverse sweep's cotangent.
+    pub sens: f64,
+    /// The field sites that read it ([`param_reads`]).
+    pub fields: Vec<String>,
+}
+
+/// The paths of the entry's parameter tree each field or projection site
+/// reads, followed from the entry's first parameter through fields,
+/// projections, calls, closures and folds (a stacked subtree sliced by a
+/// `fold` keeps its path: a parameter's type is every layer's). A site of a
+/// function called on several subtrees reads several paths: `Linear.apply`'s
+/// `θ.w` reads every linear layer's matrix. A path may be a subtree's; the
+/// caller keeps the leaves'.
+pub fn param_reads(core: &presk_core::Program, entry: presk_core::FuncId) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+    use presk_core::ir::{Rhs, VarId};
+    use std::collections::{BTreeSet, HashMap};
+    let join = |p: &str, n: &str| if p.is_empty() { n.to_string() } else { format!("{p}.{n}") };
+    let mut known: HashMap<(presk_core::FuncId, usize), BTreeSet<String>> = HashMap::new();
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    if core.func(entry).params.is_empty() {
+        return out;
+    }
+    known.insert((entry, 0), BTreeSet::from([String::new()]));
+    let mut work = vec![entry];
+    while let Some(f) = work.pop() {
+        let func = core.func(f);
+        let mut vars: HashMap<VarId, BTreeSet<String>> = HashMap::new();
+        for (i, p) in func.params.iter().enumerate() {
+            if let Some(ps) = known.get(&(f, i)) {
+                vars.insert(p.var, ps.clone());
+            }
+        }
+        let mut closures: HashMap<VarId, (presk_core::FuncId, Vec<VarId>)> = HashMap::new();
+        let mut pass: Vec<(presk_core::FuncId, usize, BTreeSet<String>)> = Vec::new();
+        for l in &func.body.lets {
+            let read = match &l.rhs {
+                Rhs::Field(x, n) => vars.get(x).map(|ps| ps.iter().map(|p| join(p, n)).collect::<BTreeSet<_>>()),
+                Rhs::Proj(x, i) => vars.get(x).map(|ps| ps.iter().map(|p| join(p, &i.to_string())).collect::<BTreeSet<_>>()),
+                Rhs::Call { f: g, args, .. } => {
+                    pass.extend(args.iter().enumerate().filter_map(|(k, a)| vars.get(a).map(|ps| (*g, k, ps.clone()))));
+                    None
+                }
+                Rhs::Fold { body, stacked, init, extra, index, .. } => {
+                    let off = usize::from(*index);
+                    let ins = stacked.iter().chain(std::iter::once(init)).chain(extra);
+                    pass.extend(ins.enumerate().filter_map(|(k, a)| vars.get(a).map(|ps| (*body, off + k, ps.clone()))));
+                    None
+                }
+                Rhs::Closure { f: g, captured } => {
+                    closures.insert(l.var, (*g, captured.clone()));
+                    None
+                }
+                Rhs::Apply { fun, args } => {
+                    if let Some((g, cap)) = closures.get(fun) {
+                        pass.extend(cap.iter().chain(args).enumerate().filter_map(|(k, a)| vars.get(a).map(|ps| (*g, k, ps.clone()))));
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some(ps) = read {
+                out.entry(format!("{}/%{}", func.name, l.var.0)).or_default().extend(ps.iter().cloned());
+                vars.insert(l.var, ps);
+            }
+        }
+        for (g, k, ps) in pass {
+            let e = known.entry((g, k)).or_default();
+            let before = e.len();
+            e.extend(ps);
+            if e.len() > before {
+                work.push(g);
+            }
+        }
+    }
+    out
+}
 
 impl Roles {
     /// The roles of every site of `core`, from its `let`s and their fusion
@@ -267,36 +380,54 @@ impl Roles {
                 roles.insert(name(l.var), role);
             }
         }
-        Roles(roles)
+        Roles(roles, Vec::new())
     }
 
     pub fn role(&self, site: &str) -> Role {
         self.0.get(site).cloned().unwrap_or(Role::Decision)
     }
+
+    /// These roles with the parameters the solver offers besides the sites.
+    pub fn with_params(self, params: Vec<ParamSite>) -> Roles {
+        Roles(self.0, params)
+    }
 }
 
-/// The sites the solver offers, split by role: the decisions, and each
-/// follower with the decisions it follows (indices into the first) and
-/// whether it follows a site outside them too, which stays in the
-/// realization's default type. Carried sites are left out.
+/// The sites the solver offers, split by role: the decisions, the nests
+/// first and then the parameters, and each follower with the decisions it
+/// follows (indices into the first) and whether it follows a site outside
+/// them too, which stays in the realization's default type. Carried sites
+/// are left out, and so are the field sites that read an offered
+/// parameter: their rounding is the parameter's.
 struct Split {
     decisions: Vec<Site>,
     followers: Vec<(Site, Vec<usize>, bool)>,
     /// For each decision, the followers it leads.
     led: Vec<Vec<usize>>,
+    /// For a parameter, the nests that read it (indices into `decisions`)
+    /// and whether one is outside them, in the default type.
+    readers: Vec<(Vec<usize>, bool)>,
+    /// For a nest, the parameters it reads.
+    reads: Vec<Vec<usize>>,
 }
 
 fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles) -> Split {
     let mut decisions = Vec::new();
     let mut pending = Vec::new();
+    let param_fields: std::collections::BTreeSet<&str> = roles.1.iter().flat_map(|p| p.fields.iter().map(String::as_str)).collect();
     for s in sites(env, sens) {
         match roles.role(&s.name) {
             Role::Decision => decisions.push(s),
+            Role::Follows(_) if param_fields.contains(s.name.as_str()) => {}
             Role::Follows(leaders) => pending.push((s, leaders)),
             Role::Carried => {}
         }
     }
-    let index: BTreeMap<&str, usize> = decisions.iter().enumerate().map(|(i, s)| (s.name.as_str(), i)).collect();
+    let nests = decisions.len();
+    for p in &roles.1 {
+        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true });
+    }
+    let index: BTreeMap<&str, usize> = decisions[..nests].iter().enumerate().map(|(i, s)| (s.name.as_str(), i)).collect();
     let mut led = vec![Vec::new(); decisions.len()];
     let mut followers = Vec::new();
     for (s, leaders) in pending {
@@ -307,10 +438,53 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles) -> Split {
         }
         followers.push((s, ids, outside));
     }
-    Split { decisions, followers, led }
+    // A parameter's readers: the leaders of its field sites. A field read by
+    // a call rather than a nest, or a parameter with no field site, has a
+    // reader the solver does not see: the default type.
+    let mut readers = vec![(Vec::new(), false); decisions.len()];
+    let mut reads = vec![Vec::new(); decisions.len()];
+    for (k, p) in roles.1.iter().enumerate() {
+        let i = nests + k;
+        let mut outside = p.fields.is_empty();
+        for f in &p.fields {
+            match roles.role(f) {
+                Role::Follows(leaders) => {
+                    for l in &leaders {
+                        match index.get(l.as_str()) {
+                            Some(j) if !readers[i].0.contains(j) => {
+                                readers[i].0.push(*j);
+                                reads[*j].push(i);
+                            }
+                            Some(_) => {}
+                            None => outside = true,
+                        }
+                    }
+                }
+                _ => outside = true,
+            }
+        }
+        readers[i].1 = outside;
+    }
+    Split { decisions, followers, led, readers, reads }
 }
 
 impl Split {
+    /// The type a decision's value is rounded to: a nest's own; a
+    /// parameter's, or the narrowest of its readers' where that is
+    /// narrower, since the value a nest reads is rounded at rest and again
+    /// at the nest's edge.
+    fn rounded(&self, i: usize, chosen: &[Dtype], default: Dtype) -> Dtype {
+        if !self.decisions[i].param {
+            return chosen[i];
+        }
+        let (ids, outside) = &self.readers[i];
+        ids.iter().map(|j| chosen[*j]).chain(outside.then_some(default)).chain(std::iter::once(chosen[i])).min_by_key(|d| d.bytes()).unwrap_or(chosen[i])
+    }
+
+    fn decision_err(&self, i: usize, chosen: &[Dtype], default: Dtype) -> f64 {
+        err_at(&self.decisions[i], self.rounded(i, chosen, default))
+    }
+
     /// A follower's type: the narrowest of its leaders', the default for a
     /// leader the solver does not offer.
     fn follower_type(&self, f: usize, chosen: &[Dtype], default: Dtype) -> Dtype {
@@ -324,13 +498,30 @@ impl Split {
 
     /// The estimate: every decision's term and every follower's.
     fn estimate(&self, chosen: &[Dtype], default: Dtype) -> f64 {
-        let d: f64 = self.decisions.iter().zip(chosen).map(|(s, t)| err_at(s, *t)).sum();
+        let d: f64 = (0..self.decisions.len()).map(|i| self.decision_err(i, chosen, default)).sum();
         d + (0..self.followers.len()).map(|f| self.follower_err(f, chosen, default)).sum::<f64>()
     }
 
-    /// What decision `i` and the followers it leads add to the estimate.
+    /// What decision `i`, the followers it leads and the parameters it
+    /// reads add to the estimate.
     fn share(&self, i: usize, chosen: &[Dtype], default: Dtype) -> f64 {
-        err_at(&self.decisions[i], chosen[i]) + self.led[i].iter().map(|f| self.follower_err(*f, chosen, default)).sum::<f64>()
+        self.decision_err(i, chosen, default) + self.led[i].iter().map(|f| self.follower_err(*f, chosen, default)).sum::<f64>() + self.reads[i].iter().map(|p| self.decision_err(*p, chosen, default)).sum::<f64>()
+    }
+
+    /// A realization of `default` with these choices: the nests' in
+    /// `storage`, the parameters' in `params` (a parameter in the default
+    /// type is named nowhere).
+    fn realization(&self, chosen: &[Dtype], default: Dtype, envelope: &str) -> Realization {
+        let mut r = Realization::uniform(default);
+        for (s, d) in self.decisions.iter().zip(chosen).filter(|(_, d)| **d != default) {
+            if s.param {
+                r.params.insert(s.name.clone(), *d);
+            } else {
+                r.storage.insert(s.name.clone(), *d);
+            }
+        }
+        r.envelope = Some(envelope.to_string());
+        r
     }
 
     fn cost(&self, chosen: &[Dtype], machine: &dyn Machine) -> f64 {
@@ -344,7 +535,10 @@ impl Split {
 /// explain` prints: the estimate is the sum of the `err`s.
 #[derive(Clone, Debug)]
 pub struct SiteCost {
+    /// A site's name, or a parameter's path.
     pub name: String,
+    /// A parameter, decided by its path (plan 0.12.0), not a nest.
+    pub param: bool,
     /// Its role (step 2b): a decision, a follower or a carried value.
     pub role: Role,
     /// Its type: the realization's for a decision, the type it is rounded
@@ -371,20 +565,21 @@ pub struct SiteCost {
 pub fn breakdown(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realization, menu: &Menu, default: Dtype, machine: &dyn Machine) -> Vec<SiteCost> {
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
     let sp = split(env, sens, roles);
-    let chosen: Vec<Dtype> = sp.decisions.iter().map(|s| r.storage.get(&s.name).copied().unwrap_or(r.default)).collect();
+    let chosen: Vec<Dtype> = sp.decisions.iter().map(|s| if s.param { r.params.get(&s.name) } else { r.storage.get(&s.name) }.copied().unwrap_or(r.default)).collect();
     let mut out: Vec<SiteCost> = sp
         .decisions
         .iter()
         .zip(&chosen)
-        .map(|(s, d)| SiteCost { name: s.name.clone(), role: Role::Decision, dtype: *d, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, *d), cost: cost_at(s, *d, machine), widest_err: err_at(s, widest), widest_cost: cost_at(s, widest, machine) })
+        .enumerate()
+        .map(|(i, (s, d))| SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, dtype: *d, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), widest_err: err_at(s, widest), widest_cost: cost_at(s, widest, machine) })
         .collect();
     for (f, (s, _, _)) in sp.followers.iter().enumerate() {
         let d = sp.follower_type(f, &chosen, r.default);
-        out.push(SiteCost { name: s.name.clone(), role: roles.role(&s.name), dtype: d, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d), cost: 0.0, widest_err: err_at(s, widest), widest_cost: 0.0 });
+        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), dtype: d, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d), cost: 0.0, widest_err: err_at(s, widest), widest_cost: 0.0 });
     }
     for s in sites(env, sens) {
         if roles.role(&s.name) == Role::Carried {
-            out.push(SiteCost { name: s.name.clone(), role: Role::Carried, dtype: r.default, elems: s.elems, mag: s.mag, sens: s.sens, err: 0.0, cost: 0.0, widest_err: 0.0, widest_cost: 0.0 });
+            out.push(SiteCost { name: s.name.clone(), param: false, role: Role::Carried, dtype: r.default, elems: s.elems, mag: s.mag, sens: s.sens, err: 0.0, cost: 0.0, widest_err: 0.0, widest_cost: 0.0 });
         }
     }
     out
@@ -419,14 +614,14 @@ pub fn solve(
     sens: &Sensitivity,
     roles: &Roles,
     output_site: &str,
-    budget_rel: f64,
+    budget: Budget,
     menu: &Menu,
     default: Dtype,
     machine: &dyn Machine,
     mut verify: Option<&mut dyn FnMut(&Realization) -> f64>,
 ) -> Solution {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
-    let budget_abs = budget_rel * out_mag;
+    let budget_abs = budget.absolute(out_mag);
     let sp = split(env, sens, roles);
     let sites = &sp.decisions;
 
@@ -480,12 +675,7 @@ pub fn solve(
 
     let proposed_bytes: f64 = sp.cost(&chosen, machine);
 
-    let build = |chosen: &[Dtype]| -> Realization {
-        let mut r = Realization::uniform(default);
-        r.storage = sites.iter().zip(chosen).filter(|(_, d)| **d != default).map(|(s, d)| (s.name.clone(), *d)).collect();
-        r.envelope = Some(env.program.clone());
-        r
-    };
+    let build = |chosen: &[Dtype]| -> Realization { sp.realization(chosen, default, &env.program) };
 
     // Verify, and tighten while the *measured* gap exceeds the budget.
     let mut rounds = 0usize;
@@ -545,9 +735,9 @@ pub fn solve(
 ///
 /// Returns `None` when the search space exceeds `max_states`.
 #[allow(clippy::too_many_arguments)]
-pub fn exhaustive(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget_rel: f64, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64) -> Option<(Realization, f64)> {
+pub fn exhaustive(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64) -> Option<(Realization, f64)> {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
-    let budget_abs = budget_rel * out_mag;
+    let budget_abs = budget.absolute(out_mag);
     let sp = split(env, sens, roles);
     let sites = &sp.decisions;
     let m = menu.0.len() as u64;
@@ -573,9 +763,7 @@ pub fn exhaustive(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site
         }
     }
     let (pick, bytes) = best?;
-    let mut r = Realization::uniform(default);
-    r.storage = sites.iter().zip(&pick).filter(|(_, d)| **d != default).map(|(s, d)| (s.name.clone(), *d)).collect();
-    Some((r, bytes))
+    Some((sp.realization(&pick, default, &env.program), bytes))
 }
 
 

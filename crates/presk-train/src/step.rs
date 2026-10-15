@@ -228,6 +228,7 @@ impl StepSetup {
     }
 
     fn step_on(&self, backend: &mut dyn Backend, realize: &Realization, input: Dtype, other: bool) -> Result<StepResult> {
+        crate::refuse_params(realize)?;
         let vjp = backend.prepare(self.fns.vjp, &self.d_obj, realize)?;
         let opt_step = backend.prepare(self.fns.opt_step, &self.d_opt, realize)?;
         backend.set_training(true);

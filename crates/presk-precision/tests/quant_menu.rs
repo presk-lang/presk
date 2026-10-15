@@ -28,7 +28,7 @@ fn declared() -> BTreeMap<String, usize> {
 /// not offered, the stacked matrix is.
 #[test]
 fn the_menu_offers_matrices_as_declared() {
-    let c = candidates(&model(1.0), &model(1.0), &declared(), 4, QuantScheme::Absmax);
+    let c = candidates(&model(1.0), &model(1.0), &declared(), &|_| 4, QuantScheme::Absmax);
     let paths: Vec<&str> = c.iter().map(|c| c.path.as_str()).collect();
     assert_eq!(paths, vec!["head", "blocks.w"]);
     for c in &c {
@@ -43,12 +43,12 @@ fn the_menu_offers_matrices_as_declared() {
 fn the_proposal_respects_the_estimate() {
     let (w, g) = (model(1.0), model(1.0));
     let base = Realization::uniform(Dtype::F32);
-    let all = solve(candidates(&w, &g, &declared(), 4, QuantScheme::Absmax), f64::INFINITY, &base, QuantScheme::Absmax, None);
+    let all = solve(candidates(&w, &g, &declared(), &|_| 4, QuantScheme::Absmax), f64::INFINITY, &base, QuantScheme::Absmax, None);
     assert!(all.chosen.values().all(|b| *b == Some(4)));
     assert_eq!(all.quant.len(), 2);
-    let none = solve(candidates(&w, &g, &declared(), 4, QuantScheme::Absmax), 0.0, &base, QuantScheme::Absmax, None);
+    let none = solve(candidates(&w, &g, &declared(), &|_| 4, QuantScheme::Absmax), 0.0, &base, QuantScheme::Absmax, None);
     assert!(none.quant.is_empty());
-    let cands = candidates(&w, &g, &declared(), 4, QuantScheme::Absmax);
+    let cands = candidates(&w, &g, &declared(), &|_| 4, QuantScheme::Absmax);
     let budget = cands.iter().map(|c| c.est8).sum::<f64>() * 1.01;
     let some = solve(cands, budget, &base, QuantScheme::Absmax, None);
     assert!(some.estimated <= budget);
@@ -68,7 +68,7 @@ fn measurement_has_the_last_word() {
         calls += 1;
         if r.quant.values().any(|q| q.bits == 4) { 1.0 } else { 0.0 }
     };
-    let s = solve(candidates(&w, &g, &declared(), 4, QuantScheme::Absmax), 0.5, &base, QuantScheme::Absmax, Some(&mut measure));
+    let s = solve(candidates(&w, &g, &declared(), &|_| 4, QuantScheme::Absmax), 0.5, &base, QuantScheme::Absmax, Some(&mut measure));
     assert_eq!(s.measured, Some(0.0));
     assert!(s.chosen.values().all(|b| *b == Some(8)), "{:?}", s.chosen);
     assert_eq!(s.rounds, 2);

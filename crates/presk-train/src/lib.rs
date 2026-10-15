@@ -229,6 +229,17 @@ pub fn plan_for_loop(plan: &Plan, core: &Program, fns: &TrainingFns) -> Plan {
     p
 }
 
+/// A training step keeps its parameters in the default type: they are the
+/// master weights it updates, and a narrower type at rest loses updates
+/// (plan 0.12.0, §5). So a realization that stores parameters in their own
+/// types (`params`) is refused, as one that quantises them is.
+pub fn refuse_params(realize: &Realization) -> Result<()> {
+    if realize.params.is_empty() {
+        return Ok(());
+    }
+    err("E7001", "the realization stores parameters in their own types, which applies to trained weights: train with the parameters in the default type, then run or serve the result with this one")
+}
+
 /// Runs the (first) `training run` of the program over `backend`, built
 /// over the program returned by [`prepare_training`].
 pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, typed: &TypedProgram, fns: &TrainingFns, opts: &TrainOptions, mut on_step: impl FnMut(&StepLog)) -> Result<TrainOutput> {
@@ -239,6 +250,7 @@ pub fn train(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, type
         // compiler does not do.
         return err("E7001", "the realization quantises parameters, which applies to trained weights: train with a float realization, then run or serve the result with this one");
     }
+    refuse_params(&opts.realize)?;
     let run: &TrainingRun = typed.training.first().ok_or_else(|| TrainError { code: "E7001", message: "no `training run` in this file".into(), span: None })?;
     // Data.
     let Some(pipe) = &run.data else {
@@ -390,7 +402,7 @@ pub fn run_on_data(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram
 #[allow(clippy::too_many_arguments)]
 pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, realize: Realization, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<presk_interp::RunOutput> {
     let (func, fdims, inputs, mut args) = args_on_data(core, elab, opts, path, from, samples)?;
-    realize.quantize_args(&mut args)?;
+    realize.store_params(&mut args)?;
     let prepared = backend.prepare(func, &fdims, &realize)?;
     let result = backend.call(&prepared, args)?;
     let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
@@ -400,7 +412,10 @@ pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabPr
 /// The arguments of an entry whose last one is filled from `samples` entries
 /// of a data file starting at `from`, the others synthesized as `presk run`
 /// does: the entry, its dimensions (the `batch` axis bound to the number of
-/// samples read), the synthesized inputs, and the arguments at the seam.
+/// samples read), the inputs, and the arguments at the seam. The inputs are
+/// the arguments the entry runs on, the last one the data's: until D118's
+/// follow-up they were the synthesized ones, so `presk run --json --data`
+/// printed a batch it did not run on.
 pub type DataArgs = (FuncId, Dims, presk_interp::run::Inputs, Vec<Value>);
 
 pub fn args_on_data(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<DataArgs> {
@@ -425,11 +440,12 @@ pub fn args_on_data(core: &Program, elab: &ElabProgram, opts: &presk_interp::Run
         dims.push((name, count as u64));
     }
     let opts = presk_interp::RunOptions { entry: opts.entry.clone(), dims, seed: opts.seed, bits: opts.bits, digits: opts.digits };
-    let (func, fdims, inputs) = presk_interp::run::prepare_run(core, elab, &opts).map_err(to_train)?;
+    let (func, fdims, mut inputs) = presk_interp::run::prepare_run(core, elab, &opts).map_err(to_train)?;
     let values: Vec<presk_data::Value> = (from..from + count).map(|i| reader.get(i)).collect::<std::result::Result<_, _>>()?;
     let refs: Vec<&presk_data::Value> = values.iter().collect();
     let batch = batch_value(&last_ty, &layout, &refs, &fdims)?;
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<std::result::Result<_, _>>()?;
+    inputs.last_mut().unwrap().1 = batch.to_interp(opts.bits);
     *args.last_mut().unwrap() = batch;
     Ok((func, fdims, inputs, args))
 }

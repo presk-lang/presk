@@ -287,7 +287,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
             let p = presk_rt::Backend::prepare(&mut b, entry, &fdims, r).unwrap();
             gap(&reference, &presk_rt::Backend::call(&mut b, &p, a).unwrap())
         };
-        let sol = solve::solve(&env, &sens, &solve::Roles::default(), &output_site, budget, &menu, Dtype::F64, &solve::Traffic, Some(&mut measure));
+        let sol = solve::solve(&env, &sens, &solve::Roles::default(), &output_site, solve::Budget::Relative(budget), &menu, Dtype::F64, &solve::Traffic, Some(&mut measure));
         let measured = sol.measured.expect("a verifier was supplied");
         assert!(
             measured <= sol.budget_abs,
@@ -298,7 +298,7 @@ fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
         assert!(sol.bytes >= sol.relaxation_bytes, "and cannot beat the relaxation floor");
 
         // The proposal against the optimum of the same estimate.
-        if let Some((_, best)) = solve::exhaustive(&env, &sens, &solve::Roles::default(), &output_site, budget, &menu, Dtype::F64, &solve::Traffic, 200_000) {
+        if let Some((_, best)) = solve::exhaustive(&env, &sens, &solve::Roles::default(), &output_site, solve::Budget::Relative(budget), &menu, Dtype::F64, &solve::Traffic, 200_000) {
             let ratio = sol.proposed_bytes / best.max(1.0);
             assert!(ratio >= 0.999, "the greedy proposal cannot beat an exhaustive search of the same estimate");
             assert!(ratio <= 1.25, "budget {budget:.0e}: greedy is {ratio:.3}x the optimum, which is worse than the heuristic should be");

@@ -71,7 +71,7 @@ paying for the exact reference again.
 | 3 | PSK-Core | the functions the entry reaches, and how a site is named |
 | 4 | Differentiation | the derivatives the entry reaches; the precision analysis's own reverse sweep, in `listings/` |
 | 5 | The e-graph optimizer | under `--opt`, its report, and each function the entry reaches that it rewrote, before and after |
-| 6 | Precision | 6.1 the envelope; 6.2 the sensitivities; 6.3 the solve and, per decision, its type, term of the estimate and why it has that type, then the values rounded elsewhere or carried; or the realization given; 6.4 every rule's bound beside the measured gap |
+| 6 | Precision | 6.1 the envelope; 6.2 the sensitivities; 6.3 the solve and, per decision (the stored values, the functions' results among them, and the parameters by path, since 0.12.0), its type, term of the estimate and why it has that type, then the values rounded elsewhere or carried; or the realization given: every value the program stores with the type the record gives it or the default's, and every parameter with its type (since 0.12.0); 6.4 every rule's bound beside the measured gap |
 | 7 | Fusion | the groups of the functions the entry reaches, the launches they save, and why each group ends where it does |
 | 8 | The machine and the layout plan | the profile's machine and layout model; the plan as `presk plan` prints it; for each nest the chosen point, its runners-up and the best split, each prediction in its terms; every point's prediction in `listings/` |
 | 9 | The kernels and the host | the kernels, each under the sites that launch it; the host as the C export prints it |
@@ -206,8 +206,9 @@ writes it again.
 
 The document reads what costs hours from files instead of computing it
 again. On the Llama 2 decoder block at the 7B configuration's width and 384
-tokens, D106's envelope and solved realization given, the frozen profile,
-no exact reference (statement X5, D116):
+tokens, the envelope and solved realization of `make compile-times`' run
+given, the frozen profile, no exact reference (statement X5, D116; 43 s and
+12.4 GB at 0.12.0):
 
 ```sh
 presk explain coverage/llama.psk --entry loss --const G=32 --const L=1 --dim T=384 --dim B=1 \
@@ -219,9 +220,12 @@ presk explain coverage/llama.psk --entry loss --const G=32 --const L=1 --dim T=3
 
 The entry reads its batch from a data file, which the envelope names; the
 document's shapes are those of one sequence, `--dim B=1`, the envelope's
-one sample. D106's realization was solved before 0.11.0 step 2b and types
-sites whose type changes no bit: §6.3 gives each its role, a follower or a
-carried value, and says so.
+one sample. At 0.12.0 that realization is D124's: 31 of the 32 stored
+values and the 13 parameters typed. §6.3 lists every stored value with
+its type, the one at the default (RMSNorm's square, `RMSNorm.apply/%2`)
+among them, and every parameter. D106's realization, solved before 0.11.0
+step 2b, typed sites whose type changes no bit too: §6.3 gives each its
+role, a follower or a carried value, and says so.
 
 ## What is not there yet
 

@@ -133,12 +133,14 @@ impl Store {
         }
     }
 
-    /// The store of a kernel's buffer: its reals, indices, or the integer
-    /// weights the host marked it to load.
+    /// The store of a kernel's buffer: its reals, indices, the integer
+    /// weights the host marked it to load, or the narrower reals it marked
+    /// it to widen.
     pub fn of_spec(spec: &crate::ir::BufSpec, dtype: Dtype) -> Store {
         match spec.kind {
             BufKind::Idx => Store::I64,
             BufKind::Real => Store::of(dtype),
+            BufKind::Wide(d) => Store::of(d),
             BufKind::Quant { bits, over, span } => Store::Quant { bits, k: spec.dims[over..over + span].iter().product(), inner: spec.dims[over + span..].iter().product() },
         }
     }

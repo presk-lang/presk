@@ -216,6 +216,10 @@ fn elem(k: &Kernel, s: &BufSpec) -> Result<&'static str> {
             Dtype::F32 => "float",
             Dtype::Bf16 => "uint16_t",
         },
+        // Narrower reals a kernel widens as it loads them (plan 0.12.0).
+        BufKind::Wide(Dtype::F64) => "double",
+        BufKind::Wide(Dtype::F32) => "float",
+        BufKind::Wide(Dtype::Bf16) => "uint16_t",
         BufKind::Quant { bits: 8, .. } => "int8_t",
         BufKind::Quant { bits: 4, .. } => "uint8_t",
         BufKind::Quant { bits, .. } => return Err(format!("kernel `{}` reads int{bits} weights: only int8 and int4 exist", k.name)),
@@ -640,6 +644,17 @@ impl<'k> Printer<'k> {
         Ok(if self.real == "double" { cast("double", x) } else { x })
     }
 
+    /// An element of narrower reals widened exactly to the kernel's
+    /// arithmetic type, as the native backend's `load_wide`: a `bf16` by its
+    /// bits to `float`, a `float` to `double`.
+    fn wide_load(&self, d: Dtype, at: String) -> Text {
+        let x = match d {
+            Dtype::Bf16 => call("presk_bf16_to_f32", (at, PRIMARY)),
+            _ => (at, PRIMARY),
+        };
+        if self.real == "double" { cast("double", x) } else { x }
+    }
+
     /// A real of the kernel's arithmetic type: the native backend's `gen_f`.
     fn real(&self, e: &Expr) -> Result<Text> {
         Ok(match e {
@@ -648,10 +663,14 @@ impl<'k> Printer<'k> {
                 if self.scop && matches!(self.spec(*b).kind, BufKind::Quant { .. }) {
                     return Err(format!("kernel `{}` reads integer weights, which the SCoP mode does not print", self.k.name));
                 }
+                if self.scop && matches!(self.spec(*b).kind, BufKind::Wide(_)) {
+                    return Err(format!("kernel `{}` reads reals stored in a narrower type than its own, which the SCoP mode does not print", self.k.name));
+                }
                 let at = self.access(*b, ix)?;
                 match self.spec(*b).kind {
                     BufKind::Real if self.narrow() => call("presk_bf16_to_f32", (at, PRIMARY)),
                     BufKind::Real => (at, PRIMARY),
+                    BufKind::Wide(d) => self.wide_load(d, at),
                     BufKind::Idx => return Err(format!("kernel `{}`: a real load from index buffer %{b}", self.k.name)),
                     BufKind::Quant { bits, .. } => self.quant_load(*b, bits, ix, "")?,
                 }
@@ -742,6 +761,7 @@ impl<'k> Printer<'k> {
                 match self.spec(*b).kind {
                     BufKind::Real if self.narrow() => call("presk_bf16_to_f32", (at, PRIMARY)),
                     BufKind::Real => (at, PRIMARY),
+                    BufKind::Wide(d) => self.wide_load(d, at),
                     BufKind::Idx => return Err(format!("kernel `{}`: a vector load from index buffer %{b}", self.k.name)),
                     BufKind::Quant { bits, .. } => self.quant_load(*b, bits, ix, "l")?,
                 }

@@ -92,8 +92,9 @@ fn quant(bits: u8, scheme: QuantScheme) -> Quant {
 /// The candidates of `theta`, priced with the gradient `grad` (same tree).
 /// `declared` gives each leaf's rank as its module declares it, without the
 /// axes `stack{n}` prepends; a leaf it does not name is judged by its own
-/// rank.
-pub fn candidates(theta: &Value, grad: &Value, declared: &BTreeMap<String, usize>, float_bytes: usize, scheme: QuantScheme) -> Vec<Candidate> {
+/// rank. `float_bytes` gives each leaf's bytes an element in the float
+/// realization, its own type's for a parameter `params` types (plan 0.12.0).
+pub fn candidates(theta: &Value, grad: &Value, declared: &BTreeMap<String, usize>, float_bytes: &dyn Fn(&str) -> usize, scheme: QuantScheme) -> Vec<Candidate> {
     let (w, g) = (leaves(theta), leaves(grad));
     param_paths(theta)
         .into_iter()
@@ -107,7 +108,7 @@ pub fn candidates(theta: &Value, grad: &Value, declared: &BTreeMap<String, usize
             let gv = g.get(&path).map(|g| g.data.to_f64()).unwrap_or_else(|| vec![0.0; t.numel()]);
             let wv = t.data.to_f64();
             let (mut est, mut signed, mut rss) = ([0.0; 2], [0.0; 2], [0.0; 2]);
-            let mut bytes = [t.numel() * float_bytes, 0, 0];
+            let mut bytes = [t.numel() * float_bytes(&path), 0, 0];
             for (i, bits) in [8u8, 4].into_iter().enumerate() {
                 let q = QTensor::quantize(t, &quant(bits, scheme)).ok()?;
                 let Tensor { data, .. } = q.dequantize();
@@ -184,6 +185,9 @@ pub fn solve(cands: Vec<Candidate>, budget: f64, base: &Realization, scheme: Qua
         let mut r = base.clone();
         for (p, b) in chosen {
             if let Some(bits) = b {
+                // Integers replace a float type at rest: a parameter is
+                // typed or quantised, not both.
+                r.params.remove(p);
                 r.quant.insert(p.clone(), quant(*bits, scheme));
             }
         }

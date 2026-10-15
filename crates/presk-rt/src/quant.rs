@@ -375,6 +375,26 @@ pub fn quantize_params(theta: &Value, quant: &BTreeMap<String, Quant>) -> Result
         .collect()
 }
 
+/// `into` with every leaf `params` types replaced by the same leaf of
+/// `given` converted to its type, once (plan 0.12.0, D121): a leaf already
+/// of that type is shared as it is. `into` and `given` are one tree, `into`
+/// perhaps realized already; the conversion is from `given`'s values.
+pub fn typed_leaves(into: &Value, given: &Value, params: &BTreeMap<String, crate::Dtype>) -> Value {
+    fn go(v: &Value, g: Option<&Value>, path: &str, params: &BTreeMap<String, crate::Dtype>) -> Value {
+        let join = |n: &str| if path.is_empty() { n.to_string() } else { format!("{path}.{n}") };
+        match v {
+            Value::Record(fs) => Value::Record(fs.iter().map(|(n, x)| (n.clone(), go(x, g.and_then(|g| g.field(n)), &join(n), params))).collect()),
+            Value::Tuple(xs) => Value::Tuple(xs.iter().enumerate().map(|(i, x)| go(x, g.and_then(|g| if let Value::Tuple(gs) = g { gs.get(i) } else { None }), &join(&i.to_string()), params)).collect()),
+            leaf => match (params.get(path), g) {
+                (Some(d), Some(Value::Real(t))) if t.data.dtype() == d.name() => Value::Real(t.clone()),
+                (Some(d), Some(Value::Real(t))) => Value::Real(Tensor { axes: t.axes.clone(), data: crate::Buf::of(*d, &t.data.to_f64()) }),
+                _ => leaf.clone(),
+            },
+        }
+    }
+    go(into, Some(given), "", params)
+}
+
 /// `theta` with every quantised leaf replaced by its integers and scales,
 /// which is what an entry runs on (step 5b).
 pub fn quantized_leaves(theta: &Value, q: &BTreeMap<String, QTensor>) -> Value {

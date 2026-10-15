@@ -366,6 +366,39 @@ sensitivity-weighted error added; it verifies; and while the verification
 fails it widens the site whose estimated contribution is largest, one step
 of the menu at a time.
 
+**What it offers since 0.12.0** (plan 0.12.0 step 4, D123):
+- **The functions' results.** A function's result has its adjoint in its
+  `.vjp`'s cotangent argument, and the entry's is the sweep's seed: the
+  interpreter now records that argument's 1-norm as it records a site's, so
+  a result is ranked and offered like any stored value. On the decoder at
+  0.11.0 these were the head, the feed-forward products and the
+  attention's output projection, left in `f64` under any budget (D117); at
+  0.12.0 they are all `f32` at 10⁻³, and the block runs 3.5 to 4 times
+  faster natively (D124).
+- **The parameters,** by path, written in the realization's `params` (the
+  section above). A parameter's sensitivity is its cotangent's 1-norm, read
+  from the sweep's result as it returns and dropped, so never kept whole;
+  its magnitude its largest element; its term its rounding at the
+  narrowest of its own type and the types of the nests that read it, since
+  the value a nest reads is rounded at rest and again at a narrower nest's
+  edge. Which nests read it is followed from the entry through fields,
+  calls and folds (`presk_precision::solve::param_reads`); the field sites
+  that read it carry no term of their own. Its cost is its bytes at rest.
+  So typing a parameter `f32` where only `f32` nests read it adds nothing
+  to the estimate and saves its bytes. With `--quant` the integer menu
+  still runs on top, priced by the whole cotangent, and a parameter it
+  quantises leaves `params`.
+- **An entry whose result is a tensor** (logits): the budget bounds the
+  largest elementwise gap, relative to the output's largest magnitude
+  (`--budget`) or absolute (`--budget-abs`). One reverse sweep seeded with
+  ones over the output ranks the sites by `‖∂(Σ y)/∂v‖₁`, read per output
+  element, so that the estimate is the first-order change of a mean
+  element; it ranks, and the measurement of the largest gap decides, the
+  solver widening while it exceeds the budget, as since D41. Where the
+  output's elements sum to a constant, as a layer norm's do, the seed of
+  ones ranks nothing (every sensitivity about 10⁻⁴⁰) and the widening does
+  all the work.
+
 **It verifies by measurement, not by the bound** (D41). The bound is vacuous
 on a transformer, so verifying against it would accept everything. Running
 the candidate and measuring its distance to the exact reference is a stronger
@@ -380,21 +413,28 @@ problems. Pricing time per site needs the roofline's `W` beside its `Q`.
 
 On the corpus GPT at `D = 64`, trained 600 steps (`make gpt-trained`, the
 weights of the corrected gradient), budget 10⁻³ (`make precision` at
-0.11.0):
+0.12.0, D124):
 
 | | |
 |---|---|
-| traffic | 7.68e6 bytes against 1.64e7 all-`f64`, **2.14×**: 29 sites, 25 in `f32` and 4 in `bf16` |
+| traffic | 9.03e6 bytes against 1.91e7 all-`f64`, the weights counted, **2.12×** |
+| stored values | 33, 29 in `f32` and 4 in `bf16`, the functions' results among them |
+| parameters | 21, 10 in `f32` and 11 in `bf16` (the biases and the norms' β among them): 5.10e5 bytes at rest against 1.03e6 |
 | widening rounds | 0 — the proposal was accepted first time |
-| measured gap | 1.20e-7 against a budget of 2.8e-3 |
-| solved run, natively | 4.521788597, where `f64` gives 4.521788577 (on the parameters `presk run` synthesizes, as the target runs it) |
+| measured gap | 3.87e-6 against a budget of 2.8e-3 (estimate 2.72e-3) |
+| solved run, natively | 4.521755695, where `f64` gives 4.521788577 (on the parameters `presk run` synthesizes, as the target runs it) |
 
-(At 0.10.0, before D112: 69 sites, 1.17·10⁷ bytes against 2.45·10⁷,
+(At 0.11.0, the stored values alone and the weights not counted: 29
+sites, 25 in `f32` and 4 in `bf16`, 7.68·10⁶ bytes against 1.64·10⁷,
+2.14×, measured 1.20·10⁻⁷, the solved run 4.521788597, D117. The bound
+`cond` moves from 4.8·10⁴ to 3.0·10⁶, the parameter tree now charged at
+`bf16`. At 0.10.0, before D112: 69 sites, 1.17·10⁷ bytes against 2.45·10⁷,
 2.09×, the same measured gap and the same native loss; the 40 sites no
 longer offered changed no bit. 0.5.0's figures, D41, on weights trained
 then, with a smaller envelope: 1.29·10⁶ bytes against 3.45·10⁶, 2.67×, a
-measured gap of 1.05·10⁻⁷ against 4.5·10⁻³. The curve at 0.11.0, at 10⁻³:
-2.00× and 2.1·10⁻⁵, D117, as at the tag `v0.10.0`, D102; D93's, 2.08× and
+measured gap of 1.05·10⁻⁷ against 4.5·10⁻³. The curve at 0.12.0, at 10⁻³:
+2.00× with the weights and 2.1·10⁻⁶, D124; at 0.11.0, 2.00× and
+2.1·10⁻⁵, D117, as at the tag `v0.10.0`, D102; D93's, 2.08× and
 1.89·10⁻⁶.)
 
 On a program small enough to search exhaustively, the greedy proposal is
@@ -425,39 +465,49 @@ the quality column trains the model **from scratch under each realization**,
 10 %. Every run starts from the same initialisation, seed and batch order, so
 the only thing that differs between two rows is the realization:
 
-| budget | traffic, vs all-`f64` | measured gap | inside | validation loss | vs all-`f64` |
+| budget | traffic, vs all-`f64`, the weights counted | measured gap | inside | validation loss | vs all-`f64` |
 |---|---|---|---|---|---|
 | all-`f64` | 1.00× | | | 2.77361 | |
-| 1e-1 | 2.87× less | 5.55e-4 | yes | 2.77378 | +1.7e-4 |
-| 1e-2 | 2.34× less | 3.60e-5 | yes | 2.77361 | −4.0e-6 |
-| 1e-3 | 2.00× less | 2.12e-5 | yes | 2.77360 | −6.5e-6 |
-| 1e-4 | 1.97× less | 1.87e-6 | yes | 2.77361 | +1.3e-6 |
-| 1e-5 | 1.72× less | 1.07e-8 | yes | 2.77361 | 0 |
-| 1e-6 | 1.37× less | 2.05e-8 | yes | 2.77361 | 0 |
-| 1e-7 | 1.09× less | 3.73e-9 | yes | 2.77361 | 0 |
+| 1e-1 | 2.78× less | 2.40e-4 | yes | 2.77366 | +5.2e-5 |
+| 1e-2 | 2.29× less | 1.31e-5 | yes | 2.77361 | −1.1e-6 |
+| 1e-3 | 2.00× less | 2.11e-6 | yes | 2.77361 | +1.3e-6 |
+| 1e-4 | 1.97× less | 1.16e-6 | yes | 2.77361 | +1.3e-6 |
+| 1e-5 | 1.58× less | 1.64e-6 | yes | 2.77361 | +1.3e-6 |
+| 1e-6 | 1.35× less | 4.54e-9 | yes | 2.77361 | 0 |
+| 1e-7 | 1.08× less | 3.73e-9 | yes | 2.77361 | 0 |
 
 **Every point is inside its budget**, by measurement against the exact
 reference, and the traffic falls monotonically as the budget loosens. The
-measured gap is not monotone in the budget — 10⁻⁶'s assignment measures
-2.1·10⁻⁸, above 10⁻⁵'s 1.1·10⁻⁸, though it narrows 14 sites where 10⁻⁵'s
-narrows 24, every one in `f32` in both — because the greedy proposal
-changes shape between budgets and the constraint is on being inside, not
-on being tight.
+measured gap is not monotone in the budget — 10⁻⁵'s assignment measures
+1.6·10⁻⁶, above 10⁻⁴'s 1.2·10⁻⁶, though it narrows 25 stored values where
+10⁻⁴'s narrows 30 — because the greedy proposal changes shape between
+budgets and the constraint is on being inside, not on being tight.
 
-**The quality axis is flat.** Every realization trains to within 1.7·10⁻⁴
-of all-`f64`: the most narrowed, 29 sites at 10⁻¹, 15 of them in `bf16`,
-ends 1.7·10⁻⁴ above it, 10⁻² and 10⁻³ end 4.0·10⁻⁶ and 6.5·10⁻⁶ below it,
-10⁻⁴ 1.3·10⁻⁶ above, and the three tightest on it to seven digits. The
+**The quality axis is flat.** Every realization trains to within 5.2·10⁻⁵
+of all-`f64`: the most narrowed, 32 stored values at 10⁻¹, 16 of them in
+`bf16`, ends 5.2·10⁻⁵ above it, 10⁻² 1.1·10⁻⁶ below it, 10⁻³, 10⁻⁴ and
+10⁻⁵ 1.3·10⁻⁶ above, and the two tightest on it to seven digits. The
 yardstick is the seed: all-`f64` trained at seeds 0, 1 and 2 reaches
-2.7736, 2.7584 and 2.6813, a spread of 0.092, some 550 times anything a
+2.7736, 2.7584 and 2.6813, a spread of 0.092, some 1 800 times anything a
 budget did. So there is no knee in quality to identify on this model at
 this length of training: down to a budget of 10⁻¹ on the forward loss —
 every stored value narrowed, half of them to `bf16` — precision costs
 nothing a validation loss can see. The knee in *error* is still where it
 was, between 10⁻² and 10⁻³ in traffic.
 
-This table is D117's, measured at 0.11.0 on 2026-10-09 (`make curve`, 24
-minutes). Since 0.11.0 step 2b the solver offers the values the program
+This table is D124's, measured at 0.12.0 on 2026-10-14 (`make curve`, 22
+minutes). Since 0.12.0 the solver also offers the functions' results and
+the parameters (D123): 32 stored values at the loosest budgets where it
+offered 29, and each realization types the parameters too, 21 of them at
+10⁻¹ to 10⁻⁵ (11 in `bf16` at 10⁻¹), 10 at the two tightest. So the
+traffic counts the weights at rest. A training run trains under the
+realization less its `params`: its parameters are the master weights it
+updates, kept in the default type, and `presk train` refuses `params`. So
+the quality column is of the nests' types, as every curve before 0.12.0
+was. D117's table, at 0.11.0 on 2026-10-09, counted the 29 stored values
+without the weights: 2.87× to 1.09× less traffic, the measured gaps
+5.5·10⁻⁴ to 3.7·10⁻⁹, every validation loss within 1.7·10⁻⁴ of
+all-`f64`'s. Since 0.11.0 step 2b the solver offers the values the program
 stores (D112), 29 where D102's table at the tag `v0.10.0` counted 65, and
 the traffic is theirs. At 10⁻², 10⁻³, 10⁻⁴ and 10⁻⁷ the measured gaps and
 the validation losses are D102's: the stored values have the same types,
@@ -495,6 +545,40 @@ at 600 steps might not be at 60 000.
 This table replaces 0.5.0's, which was measured on a checkpoint opened at
 the wrong `T` (D48): its gaps described weights that were neither trained
 nor initial.
+
+## A budget from an accuracy target
+
+The curve's quality axis is flat; it does not say which ε an accuracy
+target needs. The margins do (D118, `make margins`, the `experiments`
+chapter §5):
+- **A flip needs a close call.** A realization within ε of every logit
+  changes the decision `argmax` only where the exact model's margin, its
+  top logit minus the second, is below 2ε. So the accuracy it loses is
+  at most the fraction of positions with m < 2ε, which the exact model
+  alone gives.
+- **ε\*(δ)** is half the δ-quantile of the margins on held-out data,
+  corrected for the sample.
+
+On the course GPT's 118 016 held-out positions the exact margins give
+ε\*(10⁻³) = 4.7·10⁻⁴ at 95 % confidence. Five of the curve's seven
+realizations at 0.11.0 are within it on the logits, statement D's at 3.3·10⁻⁴,
+and that one changes one decision where the margins allow 70. Every
+realization measured changes at most as many as its margins allow. On
+0.12.0's curve the same five are within it, statement D's at 2.5·10⁻⁴
+with no decision changed (D125).
+
+So an accuracy target is a budget on the logits, and it covers every
+realization within it. Two limits:
+- **The budget must be on the logits.** A budget on the loss is not
+  enough: the curve's 10⁻² realization is inside its budget and 30 times
+  ε\*(10⁻³) on the logits.
+- **The solver takes the target since 0.12.0** (D123): `presk solve
+  --budget-abs 4.67e-4` on the logits, a budget on their largest
+  elementwise gap. It narrows 29 of the 31 stored values and types all 21
+  parameters, at 1.97× less traffic than all-`f64`, the weights counted.
+  Its largest gap on the 461 held-out windows is 7.5·10⁻⁵, and it changes
+  no decision, where statement D's realization, solved on the loss at
+  10⁻³, has 3.3·10⁻⁴ and one (D124).
 
 ## Time, not traffic
 
@@ -636,6 +720,70 @@ of the parameters, and a checkpoint trained at `T = 256` used to load at
 `T = 32` without a word, every leaf after `pos` read from shifted offsets.
 Since step 5d a checkpoint that is not exactly the size of the program's
 layout is refused (`E9005`, D48).
+
+## Parameters in their own type
+
+A realization stores every parameter in its default type, `f64` for a
+solved one, and an `f32` nest reads each weight converted at its edge: so
+typing a weight's binding narrower changed no bit and saved no byte (D109),
+and 0.11.0's solver stopped offering it (D112). Version 0.12.0 gives a
+parameter a storage type of its own at rest, the floating-point
+counterpart of `quant` (plan 0.12.0, D119; the reference's chapter 4,
+W18):
+
+```json
+{ "default": "f64", "order": { "kind": "sequential" },
+  "params": { "blocks.ff.up.w": "bf16", "head": "f32" } }
+```
+
+The leaf is converted once to its type when the entry is given it, from
+the value given, and every nest reads it from that type. A path is a
+parameter's, as `presk quantize --list` prints them; a stacked parameter
+has one type for all its layers.
+
+Since 0.12.0 step 1 (D120) the record is parsed and checked where the
+parameters are loaded, and refused with `E7001` for a type other than `f32`
+or `bf16` (`f64` is the default's to state), for a path `quant` names too
+(a parameter is typed or quantised, not both), and for a path that is not
+a parameter of the model, naming those there are. `presk train`, and the
+steps `calibrate --step` and `solve --step` measure, refuse a realization
+that types parameters, as they refuse one that quantises them: the master
+weights stay in the default type.
+
+Since 0.12.0 steps 2 and 3 (D121, D122) every executor runs it: `presk
+run`, `bench`, `serve` and the measurements of `solve`, `check --precision
+--measure` and `quantize` store the parameters in their types once, when
+they are loaded, and keep them there.
+- **A nest of the parameter's type** reads it as it is, with no copy.
+- **A nest of a wider type** (a `bf16` weight read by an `f32` product, an
+  `f32` one by an `f64` nest) gets an input marked as narrower, as integer
+  weights are marked, and its loads widen each element, exactly. Nothing
+  is converted at its edge (`presk dump --stage kernel` shows such an input
+  in its own type, `bf16[…]` in an `f32` kernel).
+- **A `bf16` nest** reads an `f32` parameter rounded to `bf16` at its edge,
+  as it reads every wider operand: its inputs are `bf16`, so it reads what
+  it stores. The reference's chapter 4 read such an operand in `f32` until
+  D120 found the difference; the user decided on 2026-10-15 to amend the
+  reference to what the executors do, which moves no output (its question
+  W19, closed).
+- **The C export** keeps each such weight in its type in the program's
+  arena, read from the `.psk.d` as the weights always are, and its kernels
+  widen it as the native ones do, `presk serve`'s loop (`generate.c`)
+  included.
+
+Under such a record, each executor gives the bits the same record without
+`params` gives on the parameters rounded to their types beforehand, and the
+three agree as they always have (`presk-cranelift/tests/params.rs`,
+`presk-cli/tests/export_c.rs`, statement V2). With every parameter in a type
+no wider than the nests that read it, the host's conversion phase moves no
+byte of it (`presk bench --host-profile`'s `buffers.convert`, V3).
+
+`presk solve` chooses these types since step 4 (the solver's section
+above). At the Llama 2 decoder's 7B width, under its solved realization
+(D124), the 13 parameters are in `f32`, 1.74 GB at rest against 3.47 GB in
+`f64`, and no byte of them is converted at an edge. The block's forward
+pass runs 3.5 to 4 times faster than under 0.11.0's realization, which
+converted 944 MB of weights a call.
 
 ## Which weights to quantise
 
@@ -923,7 +1071,8 @@ measurements leave for later, and where each is recorded:
   384 tokens in 1 h 54 min and 29 GB, `presk solve --budget 1e-3` in 14 h
   and 72 GB, 52 of 56 sites narrowed, measured 4.3·10⁻⁶ against 1.1·10⁻²
   (D106, the `coverage` chapter; at 0.11.0, 24 of 25 stored values in the
-  same time, measured 2.0·10⁻⁵, D117). The time is the next limit: the
+  same time, measured 2.0·10⁻⁵, D117; at 0.12.0, 31 of 32 and the 13
+  parameters in 13 h 32 min, measured 2.6·10⁻⁵, D124). The time is the next limit: the
   reference is one thread on MPFR, and the solve takes 7.4 times it.
 - **The statistical model, to propose** (question 58). The root-sum-square
   propagation is within 3.2–17× of the measured gap on uniform realizations

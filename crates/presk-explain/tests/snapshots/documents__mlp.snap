@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.11.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.12.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -41,15 +41,15 @@ Compiler: presk 0.11.0. Each section ends with the commands that print what it s
 
 | What | Outcome | Kind | Where |
 |------------------|------------------------|------------------|------------------------|
-| Realization | 3 stored values away from `f64`: 3 in `f32`; the rest in `f64` | decision | §6 |
+| Realization | 5 stored values away from `f64`: 5 in `f32`; the rest in `f64`; 4 parameters stored in their own types (§6.3) | decision | §6 |
 | Budget | 1e-3 of the output's magnitude 9.359e-1: 9.359e-4 absolute | parameter | §6.3 |
-| Measured gap | 3.636e-8 against the exact reference, inside the budget | measurement | §6.3 |
-| Solver's estimate | 7.234e-7: it ranks, it does not guarantee | estimate | §6.3 |
-| Cost | 1.1681e-4 against 1.1693e-4 all-`f64` (s, predicted by the profile's roofline): 1.00× | estimate | §6.3 |
-| Bound, rule `cond` | 3.323e-6 (3.551e-6 relative) | bound | §6.4, conditional on the envelope's 1 sample |
-| Fusion | 8 launches without it, 7 with it: 1 saved | decision | §7 |
-| Layout plan | 5 nests, 143 points costed, 1 tiled, 0 split; predicted 0.093 µs a call over the nests it prices | decision, estimate | §8 |
-| Kernels | 7 distinct, 7 launches a call | fact | §9 |
+| Measured gap | 5.952e-8 against the exact reference, inside the budget | measurement | §6.3 |
+| Solver's estimate | 1.050e-6: it ranks, it does not guarantee | estimate | §6.3 |
+| Cost | 3.5047e-4 against 3.5091e-4 all-`f64` (s, predicted by the profile's roofline): 1.00× | estimate | §6.3 |
+| Bound, rule `cond` | 4.224e-2 (4.513e-2 relative) | bound | §6.4, conditional on the envelope's 1 sample |
+| Fusion | 8 launches without it, 5 with it: 3 saved | decision | §7 |
+| Layout plan | 5 nests, 143 points costed, 1 tiled, 0 split; predicted 0.091 µs a call over the nests it prices | decision, estimate | §8 |
+| Kernels | 5 distinct, 5 launches a call | fact | §9 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
 
@@ -274,9 +274,9 @@ The envelope holds 13 sites from **1 sample** on the initial weights, at 128 bit
 ```text
 -- sensitivity of `mse`: ‖∂L/∂v‖₁ at each site, one reverse sweep at 128 bits
 module                                 Σ ‖∂L/∂v‖₁
-MLP.apply                                1.9050e1
-Linear.apply                             9.3677e0
-mse                                      4.4149e0
+MLP.apply                                2.0757e1
+Linear.apply                             1.1728e1
+mse                                      5.4149e0
 
 site                                     ‖∂L/∂v‖₁
 MLP.apply/%5                             6.5210e0
@@ -284,11 +284,14 @@ MLP.apply/%2                             6.4424e0
 Linear.apply/%2                          5.2297e0
 MLP.apply/%4                             3.7267e0
 Linear.apply/%3                          2.3599e0
+Linear.apply/%5                          2.3599e0
 MLP.apply/%3                             2.3599e0
 Linear.apply/%4                          1.7781e0
+MLP.apply/%6                             1.7074e0
 mse/%3                                   1.7074e0
 mse/%4                                   1.7074e0
 mse/%5                                   1.0000e0
+mse/%6                                   1.0000e0
 ```
 
 *Command:* `presk dump ../../tests/examples/mlp/mlp.psk --stage sensitivity --entry mse --dim D=4 --dim B=2 --sites 30`
@@ -299,39 +302,52 @@ The solver ranks the values the program stores by sensitivity and narrows the ch
 
 ```text
 presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.359e-1)
-  sites       3 narrowable, 3 assigned away from f64
-  cost        1.1681e-4 against 1.1693e-4 all-f64 (1.00x), relaxation floor 1.1675e-4
-  proposal    1.1681e-4 before measurement widened anything (time when --profile is given, bytes otherwise)
-  estimate    7.234e-7 (sensitivity-weighted, first order: it ranks, it does not guarantee)
-  measured    3.636e-8 against the exact reference, after 0 widening round(s) — inside the budget
-  optimal     1.1681e-4 s by exhaustive search under the same estimate — the greedy proposal is 1.000x that
+  sites       5 narrowable, 5 assigned away from f64
+  parameters  4 offered, 4 stored away from f64 (2 f32, 2 bf16): 5.5200e2 bytes at rest against 1.1840e3 in f64
+  cost        3.5047e-4 against 3.5091e-4 all-f64 (1.00x), relaxation floor 3.5028e-4
+  proposal    3.5047e-4 before measurement widened anything (time when --profile is given, bytes otherwise)
+  estimate    1.050e-6 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  measured    5.952e-8 against the exact reference, after 0 widening round(s) — inside the budget
+  optimal     3.5047e-4 s by exhaustive search under the same estimate — the greedy proposal is 1.000x that
 ```
 
-**Why each site has its type.** The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`). The terms below sum to 7.234e-7, the solver's 7.234e-7. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost.
+**Why each site has its type.** The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`). The terms below sum to 1.050e-6, the solver's 1.050e-6. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost. A **parameter** is a decision keyed by its path (since 0.12.0): its term is its rounding at the narrowest of its own type and the types of the nests that read it, s its cotangent's 1-norm and |v| its largest magnitude, and the field sites that read it carry none.
 
 **The decisions**, each with its term of the estimate:
 
 | Site | Operation | Type | Elements | \|v\| | s | Term | Share |
-|-----------------------|--------------|----------|----------|----------|----------|----------|----------|
-| `MLP.apply/%4` | `gelu %3` | `f32` | 32 | 6.443e-1 | 3.727e0 | 1.431e-7 | 19.783 % |
-| `mse/%5` | `pow 2 %4` | `f32` | 8 | 2.275e0 | 1.000e0 | 1.356e-7 | 18.741 % |
-| `Linear.apply/%3` | `dot x, w` | `f32` | 32 | 8.739e-1 | 2.360e0 | 1.229e-7 | 16.992 % |
+|-----------------------|------------------------|----------|----------|----------|----------|----------|----------|
+| `l2.w` | a parameter, by its path | `f32` | 64 | 5.334e-1 | 5.230e0 | 1.663e-7 | 15.831 % |
+| `l1.w` | a parameter, by its path | `f32` | 64 | 5.400e-1 | 4.664e0 | 1.501e-7 | 14.295 % |
+| `MLP.apply/%4` | `gelu %3` | `f32` | 32 | 6.443e-1 | 3.727e0 | 1.431e-7 | 13.628 % |
+| `mse/%5` | `pow 2 %4` | `f32` | 8 | 2.275e0 | 1.000e0 | 1.356e-7 | 12.909 % |
+| `Linear.apply/%3` | `dot x, w` | `f32` | 32 | 8.739e-1 | 2.360e0 | 1.229e-7 | 11.705 % |
+| `Linear.apply/%5` | `add %3, b` | `f32` | 32 | 8.739e-1 | 2.360e0 | 1.229e-7 | 11.705 % |
+| `mse/%6` | `mean %5` | `f32` | 1 | 9.359e-1 | 1.000e0 | 5.578e-8 | 5.312 % |
+| `l1.b` | a parameter, by its path | `bf16` | 16 | 0.000e0 | 1.778e0 | 0.000e0 | 0.000 % |
+| `l2.b` | a parameter, by its path | `bf16` | 4 | 0.000e0 | 1.291e0 | 0.000e0 | 0.000 % |
 
 **Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget (9.359e-4 absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in s, the profile's roofline.
 
-- `MLP.apply/%4`: narrowed to `f32` (move 1): saves 5.295e-8 s, adds 1.431e-7 to the estimate, then 1.431e-7.
-- `mse/%5`: narrowed to `f32` (move 3): saves 1.324e-8 s, adds 2.891e-7 to the estimate, then 7.234e-7.
-- `Linear.apply/%3`: narrowed to `f32` (move 2): saves 5.295e-8 s, adds 2.912e-7 to the estimate, then 4.344e-7.
+- `l2.w`: narrowed to `f32` (move 6): saves 1.059e-7 s, adds 1.663e-7 to the estimate, then 3.164e-7.
+- `l1.w`: narrowed to `f32` (move 5): saves 1.059e-7 s, adds 1.501e-7 to the estimate, then 1.501e-7.
+- `MLP.apply/%4`: narrowed to `f32` (move 8): saves 5.295e-8 s, adds 1.431e-7 to the estimate, then 5.824e-7.
+- `mse/%5`: narrowed to `f32` (move 10): saves 1.324e-8 s, adds 2.891e-7 to the estimate, then 9.944e-7.
+- `Linear.apply/%3`: narrowed to `f32` (move 9): saves 5.295e-8 s, adds 1.229e-7 to the estimate, then 7.054e-7.
+- `Linear.apply/%5`: narrowed to `f32` (move 7): saves 5.295e-8 s, adds 1.229e-7 to the estimate, then 4.393e-7.
+- `mse/%6`: narrowed to `f32` (move 11): saves 1.655e-9 s, adds 5.578e-8 to the estimate, then 1.050e-6.
+- `l1.b`: narrowed to `f32` (move 1): saves 2.648e-8 s, adds 0.000e0 to the estimate, then 1.956e-15; narrowed to `bf16` (move 2): saves 1.324e-8 s, adds 0.000e0 to the estimate, then 1.956e-15.
+- `l2.b`: narrowed to `f32` (move 3): saves 6.619e-9 s, adds 0.000e0 to the estimate, then 1.956e-15; narrowed to `bf16` (move 4): saves 3.309e-9 s, adds 0.000e0 to the estimate, then 1.956e-15.
 
 **The values rounded elsewhere, or carried.** A follower's type is the narrowest of the types it is rounded to where it is read; a carried value's is its own, never rounded there.
 
 | Site | Operation | Role | Type | \|v\| | s | Term | Share |
-|-----------------------|------------------------------------|------------------------|----------|----------|----------|----------|----------|
-| `Linear.apply/%2` | `θ.w` | follows `Linear.apply/%3` | `f32` | 5.400e-1 | 5.230e0 | 1.683e-7 | 23.267 % |
-| `mse/%4` | `sub ŷ, y` | follows `mse/%5` | `f32` | 1.508e0 | 1.707e0 | 1.535e-7 | 21.217 % |
+|-------------------|------------------------------------|----------------|----------|----------|----------|----------|----------|
+| `mse/%4` | `sub ŷ, y` | follows `mse/%5` | `f32` | 1.508e0 | 1.707e0 | 1.535e-7 | 14.615 % |
 | `MLP.apply/%2` | `θ.l1` | carried | `f64` | 5.400e-1 | 6.442e0 | 0.000e0 | 0.000 % |
 | `MLP.apply/%3` | `call Linear.apply{In = D, Out = hidden}(l1, x)` | carried | `f64` | 8.602e-1 | 2.360e0 | 0.000e0 | 0.000 % |
 | `MLP.apply/%5` | `θ.l2` | carried | `f64` | 5.334e-1 | 6.521e0 | 0.000e0 | 0.000 % |
+| `MLP.apply/%6` | `call Linear.apply{In = hidden, Out = D}(l2, %4)` | carried | `f64` | 8.739e-1 | 1.707e0 | 0.000e0 | 0.000 % |
 | `mse/%3` | `call MLP.apply{D = D, hidden = 4*D}(θ, x)` | carried | `f64` | 8.739e-1 | 1.707e0 | 0.000e0 | 0.000 % |
 
 *Command:* `presk solve ../../tests/examples/mlp/mlp.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json`
@@ -341,26 +357,26 @@ presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.
 Under the realization, each rule's bound on the output's error, beside the gap measured against the exact reference.
 
 ```text
-presk check --precision: `mse` under f64+sequential+3sites
+presk check --precision: `mse` under f64+sequential+5sites+4params
   magnitude   9.3589e-1
-  bound    k         6.9033e-5  (7.38e-5 relative)     1.90e3× the measured gap
-  bound    normwise  1.2746e-5  (1.36e-5 relative)     3.51e2× the measured gap
-  bound    cond      3.3231e-6  (3.55e-6 relative)     9.14e1× the measured gap
-  estimate rss       4.7803e-7  (5.11e-7 relative)     1.31e1× the measured gap
-  measured             3.6355e-8  (3.88e-8 relative)  the kernel interpreter against the exact reference
+  bound    k         1.1975e0  (1.28e0 relative)     2.01e7× the measured gap
+  bound    normwise  4.5641e-1  (4.88e-1 relative)     7.67e6× the measured gap
+  bound    cond      4.2236e-2  (4.51e-2 relative)     7.10e5× the measured gap
+  estimate rss       8.5729e-3  (9.16e-3 relative)     1.44e5× the measured gap
+  measured             5.9522e-8  (6.36e-8 relative)  the kernel interpreter against the exact reference
   envelope    $DOC/artifacts/envelope.json over 1 samples, 13 sites, initial weights
 site                              magnitude            k     relative    condition
-mse/%6                             9.359e-1     6.903e-5     7.376e-5      1.000e0
-mse/%5                              2.275e0     6.903e-5     3.035e-5            -
-mse/%4                              1.508e0     2.284e-5     1.515e-5            -
-Linear.apply/%5                    8.739e-1     2.275e-5     2.603e-5            -
-MLP.apply/%6                       8.739e-1     2.275e-5     2.603e-5            -
-mse/%3                             8.739e-1     2.275e-5     2.603e-5            -
-Linear.apply/%3                    8.739e-1     2.275e-5     2.603e-5      1.664e0
-MLP.apply/%4                       6.443e-1     8.459e-7     1.313e-6            -
+mse/%6                             9.359e-1      1.198e0      1.280e0      1.000e0
+mse/%5                              2.275e0      1.198e0     5.265e-1            -
+mse/%4                              1.508e0     3.970e-1     2.632e-1            -
+Linear.apply/%5                    8.739e-1     3.970e-1     4.543e-1            -
+MLP.apply/%6                       8.739e-1     3.970e-1     4.543e-1            -
+mse/%3                             8.739e-1     3.970e-1     4.543e-1            -
+Linear.apply/%3                    8.739e-1     3.931e-1     4.498e-1      1.664e0
+MLP.apply/%4                       6.443e-1     2.205e-2     3.423e-2            -
 ```
 
-The sound rule (`cond`) bounds the error by 3.323e-6, conditional on the envelope's 1 sample; the measurement is 3.636e-8, 9.1e1× under it.
+The sound rule (`cond`) bounds the error by 4.224e-2, conditional on the envelope's 1 sample; the measurement is 5.952e-8, 7.1e5× under it.
 
 *Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/mlp/mlp.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure`
 
@@ -375,7 +391,7 @@ fn mse — 4 lets, 1 groups, 1 launches saved
   %5 = sub(i0,i1);pow 2(s0) [2 inputs, 2 steps]
 ```
 
-Over one call, fusion takes 8 launches to 7.
+Over one call, fusion takes 8 launches to 5.
 
 **Where each group ends**, and why each element-wise value outside a group is alone: what reads it. A value joins its reader's group when every reader is in that group, is element-wise and of the same shape, and the group's expression stays under its size limit.
 
@@ -423,6 +439,7 @@ Linear.apply/%5              [2, 4] [4]                   5 points        0.00 �
 mse/%5                       [2, 4] [2, 4]                5 points        0.01 µs    1 within 1 + u  lanes 1, split none
 mse/%6                       [2, 4]                       1 points        0.00 µs    1 within 1 + u  lanes 1, split none
 -- 5 nests at 7 shapes, 143 points costed; u = 0.132
+-- 1 product takes the `add` that alone reads it as its epilogue: Linear.apply/%3
 ```
 
 *Every point's prediction, as `presk plan --cost` prints them, in `listings/plan-cost.txt` (152 lines).*
@@ -443,12 +460,12 @@ Linear.apply/%3 [2, 4] [4, 16] — 93 points, 4 within 1 + u, 1 launch
 
 Linear.apply/%5 [2, 16] [16] — 5 points, 1 within 1 + u, 1 launch
       predicted         λ     spawn      work     loads        L2        L3       mem  bound by
-1        0.0115    0.0000    0.0000    0.0053    0.0014    0.0030    0.0018    0.0009  work
+1        0.0090    0.0000    0.0000    0.0052    0.0016    0.0015    0.0009    0.0004  work
      lanes 1, split none
-2         101.5    0.0000     101.5    0.0027    0.0006    0.0018    0.0022    0.0011  spawn
-     lanes 1, split (0, 10)
-3         101.5    0.0000     101.5    0.0026    0.0008    0.0018    0.0022    0.0011  spawn
+2         101.5    0.0000     101.5    0.0026    0.0009    0.0009    0.0011    0.0005  spawn
      lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0026    0.0010    0.0009    0.0011    0.0005  spawn
+     lanes 1, split (0, 10)
 
 MLP.apply/%4 [2, 16] — 5 points, 1 within 1 + u, 1 launch
       predicted         λ     spawn      work     loads        L2        L3       mem  bound by
@@ -475,9 +492,9 @@ Linear.apply/%5 [2, 4] [4] — 5 points, 1 within 1 + u, 1 launch
 1        0.0043    0.0000    0.0000    0.0014    0.0004    0.0015    0.0009    0.0004  l2
      lanes 1, split none
 2         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0011    0.0005  spawn
-     lanes 1, split (0, 10)
-3         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0011    0.0005  spawn
      lanes 1, split (0, 5)
+3         101.5    0.0000     101.5    0.0007    0.0002    0.0009    0.0011    0.0005  spawn
+     lanes 1, split (0, 10)
 
 mse/%5 [2, 4] [2, 4] — 5 points, 1 within 1 + u, 1 launch
       predicted         λ     spawn      work     loads        L2        L3       mem  bound by
@@ -490,7 +507,7 @@ mse/%5 [2, 4] [2, 4] — 5 points, 1 within 1 + u, 1 launch
 
 mse/%6 [2, 4] — 1 points, 1 within 1 + u, 1 launch
       predicted         λ     spawn      work     loads        L2        L3       mem  bound by
-1        0.0031    0.0000    0.0000    0.0015    0.0001    0.0009    0.0005    0.0003  work
+1        0.0031    0.0000    0.0000    0.0015    0.0002    0.0009    0.0005    0.0003  work
      lanes 1, split none
 ```
 
@@ -501,15 +518,15 @@ mse/%6 [2, 4] — 1 points, 1 within 1 + u, 1 launch
 PSK-Kernel is the loop nests the backends run: one kernel per distinct nest, under its type and its layout. The host program launches them, converting a value where a kernel reads it in another type.
 
 ```text
--- 7 kernels, 7 launches, f64+sequential+3sites
--- fusion: 8 launches without it, 1 saved (12%)
+-- 5 kernels, 5 launches, f64+sequential+5sites+4params
+-- fusion: 8 launches without it, 3 saved (38%)
 ```
 
 Each kernel under the sites that launch it, as the host recorded them:
 
 ```text
-// k0: 1 launch at Linear.apply/%3
-kernel dot (%0 : f32[batch: 2, 4], %1 : f32[4, 16]) -> %2 : f32[batch: 2, 16] {
+// k0: 1 launch at Linear.apply/%3 + Linear.apply/%5
+kernel dot+add (%0 : f32[batch: 2, 4], %1 : f32[4, 16], %2 : bf16[16]) -> %3 : f32[batch: 2, 16] {
   for i0 in 0..1 {
     for i1 in 0..4 {
       v0 = splat(0)
@@ -521,20 +538,14 @@ kernel dot (%0 : f32[batch: 2, 4], %1 : f32[4, 16]) -> %2 : f32[batch: 2, 16] {
         v0 = (v0 + (splat(s0) * v2)<v>)<v>
         v1 = (v1 + (splat(s1) * v2)<v>)<v>
       }
-      %2[((i0 * 2) + 0), ((i1 * 4) + 0)] <v= v0
-      %2[((i0 * 2) + 1), ((i1 * 4) + 0)] <v= v1
+      v0 = (v0 + %2[((i1 * 4) + 0)]<v>)<v>
+      v1 = (v1 + %2[((i1 * 4) + 0)]<v>)<v>
+      %3[((i0 * 2) + 0), ((i1 * 4) + 0)] <v= v0
+      %3[((i0 * 2) + 1), ((i1 * 4) + 0)] <v= v1
     }
   }
 }
-// k1: 1 launch at Linear.apply/%5
-kernel add (%0 : f64[batch: 2, 16], %1 : f64[16]) -> %2 : f64[batch: 2, 16] {
-  for i0 in 0..2 {
-    for i1 in 0..16 {
-      %2[i0, i1] = (%0[i0, i1] + %1[i1])
-    }
-  }
-}
-// k2: 1 launch at MLP.apply/%4
+// k1: 1 launch at MLP.apply/%4
 kernel gelu (%0 : f32[batch: 2, 16]) -> %1 : f32[batch: 2, 16] {
   for i0 in 0..2 {
     for i1 in 0..16 {
@@ -542,8 +553,8 @@ kernel gelu (%0 : f32[batch: 2, 16]) -> %1 : f32[batch: 2, 16] {
     }
   }
 }
-// k3: 1 launch at Linear.apply/%3
-kernel dot (%0 : f32[batch: 2, 16], %1 : f32[16, 4]) -> %2 : f32[batch: 2, 4] {
+// k2: 1 launch at Linear.apply/%3 + Linear.apply/%5
+kernel dot+add (%0 : f32[batch: 2, 16], %1 : f32[16, 4], %2 : bf16[4]) -> %3 : f32[batch: 2, 4] {
   for i0 in 0..1 {
     for i1 in 0..1 {
       v0 = splat(0)
@@ -555,20 +566,14 @@ kernel dot (%0 : f32[batch: 2, 16], %1 : f32[16, 4]) -> %2 : f32[batch: 2, 4] {
         v0 = (v0 + (splat(s0) * v2)<v>)<v>
         v1 = (v1 + (splat(s1) * v2)<v>)<v>
       }
-      %2[((i0 * 2) + 0), ((i1 * 4) + 0)] <v= v0
-      %2[((i0 * 2) + 1), ((i1 * 4) + 0)] <v= v1
+      v0 = (v0 + %2[((i1 * 4) + 0)]<v>)<v>
+      v1 = (v1 + %2[((i1 * 4) + 0)]<v>)<v>
+      %3[((i0 * 2) + 0), ((i1 * 4) + 0)] <v= v0
+      %3[((i0 * 2) + 1), ((i1 * 4) + 0)] <v= v1
     }
   }
 }
-// k4: 1 launch at Linear.apply/%5
-kernel add (%0 : f64[batch: 2, 4], %1 : f64[4]) -> %2 : f64[batch: 2, 4] {
-  for i0 in 0..2 {
-    for i1 in 0..4 {
-      %2[i0, i1] = (%0[i0, i1] + %1[i1])
-    }
-  }
-}
-// k5: 1 launch at mse/%5 (fused)
+// k3: 1 launch at mse/%5 (fused)
 kernel fused 2 steps (%0 : f32[batch: 2, 4], %1 : f32[batch: 2, model: 4]) -> %2 : f32[batch: 2, model: 4] {
   for i0 in 0..2 {
     for i1 in 0..4 {
@@ -576,8 +581,8 @@ kernel fused 2 steps (%0 : f32[batch: 2, 4], %1 : f32[batch: 2, model: 4]) -> %2
     }
   }
 }
-// k6: 1 launch at mse/%6
-kernel mean (%0 : f64[batch: 2, model: 4]) -> %1 : f64[] {
+// k4: 1 launch at mse/%6
+kernel mean (%0 : f32[batch: 2, model: 4]) -> %1 : f32[] {
   s0 = 0
   for i0 in 0..2 {
     for i1 in 0..4 {
@@ -592,80 +597,58 @@ kernel mean (%0 : f64[batch: 2, model: 4]) -> %1 : f64[] {
 
 ```c
 /* Linear.apply at In = 4, Out = 16: 1 call of the recording. */
-static void presk_Linear_apply_In4_Out16(presk_arena *arena, const double *theta_w, const double *theta_b, const double *x, double *out)
+static void presk_Linear_apply_In4_Out16(presk_arena *arena, const float *theta_w, const uint16_t *theta_b, const double *x, float *out)
 {
     const size_t mark = presk_mark(arena);
-    /* Linear.apply/%3 */
+    /* Linear.apply/%3 + Linear.apply/%5 */
     float *x_f32 = presk_alloc(arena, 8 * sizeof(float));
     presk_convert(x_f32, PRESK_F32, x, PRESK_F64, 8);
-    float *theta_w_f32 = presk_alloc(arena, 64 * sizeof(float));
-    presk_convert(theta_w_f32, PRESK_F32, theta_w, PRESK_F64, 64);
-    float *t3 = presk_alloc(arena, 32 * sizeof(float));
-    k0(x_f32, theta_w_f32, t3, 0, 0);
-    /* Linear.apply/%5 */
-    double *t3_f64 = presk_alloc(arena, 32 * sizeof(double));
-    presk_convert(t3_f64, PRESK_F64, t3, PRESK_F32, 32);
-    k1(t3_f64, theta_b, out, 0, 2);
+    k0(x_f32, theta_w, theta_b, out, 0, 0);
     presk_release(arena, mark);
 }
 
 /* Linear.apply at In = 16, Out = 4: 1 call of the recording. */
-static void presk_Linear_apply_In16_Out4(presk_arena *arena, const double *theta_w, const double *theta_b, const float *x, double *out)
+static void presk_Linear_apply_In16_Out4(const float *theta_w, const uint16_t *theta_b, const float *x, float *out)
 {
-    const size_t mark = presk_mark(arena);
-    /* Linear.apply/%3 */
-    float *theta_w_f32 = presk_alloc(arena, 64 * sizeof(float));
-    presk_convert(theta_w_f32, PRESK_F32, theta_w, PRESK_F64, 64);
-    float *t3 = presk_alloc(arena, 8 * sizeof(float));
-    k3(x, theta_w_f32, t3, 0, 0);
-    /* Linear.apply/%5 */
-    double *t3_f64 = presk_alloc(arena, 8 * sizeof(double));
-    presk_convert(t3_f64, PRESK_F64, t3, PRESK_F32, 8);
-    k4(t3_f64, theta_b, out, 0, 2);
-    presk_release(arena, mark);
+    /* Linear.apply/%3 + Linear.apply/%5 */
+    k2(x, theta_w, theta_b, out, 0, 0);
 }
 
 /* MLP.apply at D = 4, hidden = 16: 1 call of the recording. */
-static void presk_MLP_apply(presk_arena *arena, const double *theta_l1_w, const double *theta_l1_b, const double *theta_l2_w, const double *theta_l2_b, const double *x, double *out)
+static void presk_MLP_apply(presk_arena *arena, const float *theta_l1_w, const uint16_t *theta_l1_b, const float *theta_l2_w, const uint16_t *theta_l2_b, const double *x, float *out)
 {
     const size_t mark = presk_mark(arena);
     /* MLP.apply/%3 */
-    double *t3 = presk_alloc(arena, 32 * sizeof(double));
+    float *t3 = presk_alloc(arena, 32 * sizeof(float));
     presk_Linear_apply_In4_Out16(arena, theta_l1_w, theta_l1_b, x, t3);
     /* MLP.apply/%4 */
-    float *t3_f32 = presk_alloc(arena, 32 * sizeof(float));
-    presk_convert(t3_f32, PRESK_F32, t3, PRESK_F64, 32);
     float *t4 = presk_alloc(arena, 32 * sizeof(float));
-    k2(t3_f32, t4, 0, 2);
+    k1(t3, t4, 0, 2);
     /* MLP.apply/%6 */
-    presk_Linear_apply_In16_Out4(arena, theta_l2_w, theta_l2_b, t4, out);
+    presk_Linear_apply_In16_Out4(theta_l2_w, theta_l2_b, t4, out);
     presk_release(arena, mark);
 }
 
 void presk_mse(presk_arena *arena, const presk_mse_in *in, presk_mse_out *out)
 {
-    const double *theta_l1_w = in->theta_l1_w;
-    const double *theta_l1_b = in->theta_l1_b;
-    const double *theta_l2_w = in->theta_l2_w;
-    const double *theta_l2_b = in->theta_l2_b;
+    const float *theta_l1_w = in->theta_l1_w;
+    const uint16_t *theta_l1_b = in->theta_l1_b;
+    const float *theta_l2_w = in->theta_l2_w;
+    const uint16_t *theta_l2_b = in->theta_l2_b;
     const double *x = in->x;
     const double *y = in->y;
-    double *result = presk_alloc(arena, 1 * sizeof(double));
+    float *result = presk_alloc(arena, 1 * sizeof(float));
     const size_t mark = presk_mark(arena);
     /* mse/%3 (ŷ) */
-    double *y_hat = presk_alloc(arena, 8 * sizeof(double));
+    float *y_hat = presk_alloc(arena, 8 * sizeof(float));
     presk_MLP_apply(arena, theta_l1_w, theta_l1_b, theta_l2_w, theta_l2_b, x, y_hat);
     /* mse/%5 (fused) */
-    float *y_hat_f32 = presk_alloc(arena, 8 * sizeof(float));
-    presk_convert(y_hat_f32, PRESK_F32, y_hat, PRESK_F64, 8);
     float *y_f32 = presk_alloc(arena, 8 * sizeof(float));
     presk_convert(y_f32, PRESK_F32, y, PRESK_F64, 8);
     float *t5 = presk_alloc(arena, 8 * sizeof(float));
-    k5(y_hat_f32, y_f32, t5, 0, 2);
+    k3(y_hat, y_f32, t5, 0, 2);
     /* mse/%6 */
-    double *t5_f64 = presk_alloc(arena, 8 * sizeof(double));
-    presk_convert(t5_f64, PRESK_F64, t5, PRESK_F32, 8);
-    k6(t5_f64, result, 0, 0);
+    k4(t5, result, 0, 0);
     out->result = result;
     presk_release(arena, mark);
 }
@@ -675,7 +658,7 @@ void presk_mse(presk_arena *arena, const presk_mse_in *in, presk_mse_out *out)
 
 ## 10 Targets
 
-**Native.** The Cranelift backend compiles each of the 7 kernels to machine code at its first launch, in process, and the host program of §9 runs them.
+**Native.** The Cranelift backend compiles each of the 5 kernels to machine code at its first launch, in process, and the host program of §9 runs them.
 
 ## 11 Measured
 
@@ -689,6 +672,10 @@ A site is named `<function>/%<n>` at every stage, which is what lets one value b
 
 By default, the three largest shares of the solver's estimate (the three largest bounds without a solve), then the three nests of the most predicted time a call; `--site` names others.
 
+**`l2.w`**: not a site of the program.
+
+**`l1.w`**: not a site of the program.
+
 **`MLP.apply/%4`**
 
 | Stage |  |
@@ -696,22 +683,10 @@ By default, the three largest shares of the solver's estimate (the three largest
 | PSK-Core (§3) | `%4 : ℝ[..., hidden] = gelu %3` in `MLP.apply` |
 | Envelope (§6.1) | \|v\| ≤ 6.443e-1, 32 elements |
 | Sensitivity (§6.2) | 3.727e0 |
-| Type (§6.3) | `f32`, decision; term 1.431e-7; narrowed to `f32` (move 1): saves 5.295e-8 s, adds 1.431e-7 to the estimate, then 1.431e-7 |
+| Type (§6.3) | `f32`, decision; term 1.431e-7; narrowed to `f32` (move 8): saves 5.295e-8 s, adds 1.431e-7 to the estimate, then 5.824e-7 |
 | Fusion (§7) | alone: read by `%6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)`: a call |
 | Layout (§8) | nest `MLP.apply/%4`, 5 points at `[2, 16]`; chosen lanes 1, split none, 0.0357 µs, bound by work; runner-up lanes 1, split (1, 5), 101.5 µs |
-| Kernel (§9) | `k2`: `kernel gelu (%0 : f32[batch: 2, 16]) -> %1 : f32[batch: 2, 16]` |
-
-**`mse/%5`**
-
-| Stage |  |
-|------------------|------------------------------------|
-| PSK-Core (§3) | `%5 : ℝ[batch: B, model: D] = pow 2 %4` in `mse` |
-| Envelope (§6.1) | \|v\| ≤ 2.275e0, 8 elements |
-| Sensitivity (§6.2) | 1.000e0 |
-| Type (§6.3) | `f32`, decision; term 1.356e-7; narrowed to `f32` (move 3): saves 1.324e-8 s, adds 2.891e-7 to the estimate, then 7.234e-7 |
-| Fusion (§7) | ends a group of 2: read by `%6 : ℝ[] = mean %5`: a reduction |
-| Layout (§8) | nest `mse/%5`, 5 points at `[2, 4] [2, 4]`; chosen lanes 1, split none, 0.0062 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
-| Kernel (§9) | `k5`: `kernel fused 2 steps (%0 : f32[batch: 2, 4], %1 : f32[batch: 2, model: 4]) -> %2 : f32[batch: 2, model: 4]` |
+| Kernel (§9) | `k1`: `kernel gelu (%0 : f32[batch: 2, 16]) -> %1 : f32[batch: 2, 16]` |
 
 **`Linear.apply/%3`**
 
@@ -720,22 +695,22 @@ By default, the three largest shares of the solver's estimate (the three largest
 | PSK-Core (§3) | `%3 : ℝ[..., Out] = dot x, w` in `Linear.apply` |
 | Envelope (§6.1) | \|v\| ≤ 8.739e-1, 32 elements, condition number 1.664e0 |
 | Sensitivity (§6.2) | 2.360e0 |
-| Type (§6.3) | `f32`, decision; term 1.229e-7; narrowed to `f32` (move 2): saves 5.295e-8 s, adds 2.912e-7 to the estimate, then 4.344e-7 |
+| Type (§6.3) | `f32`, decision; term 1.229e-7; narrowed to `f32` (move 9): saves 5.295e-8 s, adds 1.229e-7 to the estimate, then 7.054e-7 |
 | Fusion (§7) | not an element-wise operation |
-| Layout (§8) | nest `Linear.apply/%3`, 93 points at `[2, 4] [4, 16]`; chosen tiled, tile [2, 4], kblock none, order IJ, lanes 4, split none, no pack, 0.0115 µs, bound by loads; runner-up tiled, tile [2, 16], kblock none, order JI, lanes 4, split none, no pack, 0.0115 µs |
-| Kernel (§9) | `k3`: `kernel dot (%0 : f32[batch: 2, 16], %1 : f32[16, 4]) -> %2 : f32[batch: 2, 4]` |
+| Layout (§8) | nest `Linear.apply/%3`, 93 points at `[2, 4] [4, 16]`; chosen tiled, tile [2, 4], kblock none, order IJ, lanes 4, split none, no pack, epilogue, 0.0115 µs, bound by loads; runner-up tiled, tile [2, 16], kblock none, order JI, lanes 4, split none, no pack, 0.0115 µs |
+| Kernel (§9) | `k2`: `kernel dot+add (%0 : f32[batch: 2, 16], %1 : f32[16, 4], %2 : bf16[4]) -> %3 : f32[batch: 2, 4]` |
 
 **`Linear.apply/%5`**
 
 | Stage |  |
-|------------------|------------------------|
+|------------------|------------------------------------|
 | PSK-Core (§3) | `%5 : ℝ[..., Out] = add %3, b` in `Linear.apply` |
 | Envelope (§6.1) | \|v\| ≤ 8.739e-1, 32 elements |
-| Sensitivity (§6.2) | none |
-| Type (§6.3) | `f64`, decision |
+| Sensitivity (§6.2) | 2.360e0 |
+| Type (§6.3) | `f32`, decision; term 1.229e-7; narrowed to `f32` (move 7): saves 5.295e-8 s, adds 1.229e-7 to the estimate, then 4.393e-7 |
 | Fusion (§7) | alone: the function's result |
-| Layout (§8) | nest `Linear.apply/%5`, 5 points at `[2, 16] [16]`; chosen lanes 1, split none, 0.0115 µs, bound by work; runner-up lanes 1, split (0, 10), 101.5 µs |
-| Kernel (§9) | `k1`: `kernel add (%0 : f64[batch: 2, 16], %1 : f64[16]) -> %2 : f64[batch: 2, 16]` |
+| Layout (§8) | nest `Linear.apply/%5`, 5 points at `[2, 16] [16]`; chosen lanes 1, split none, 0.0090 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
+| Kernel (§9) | none: the host computes it |
 
 *Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (14 lines).*
 

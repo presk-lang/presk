@@ -1446,7 +1446,7 @@ document read the same values. No value the compiler computes changes.
 | 5 | Site traces and the measured section | done (2026-10-09, D115): `--measure` (the realization natively against the exact reference, the solver's gap; a call; each kernel's median launch beside its prediction; the host by phase) over `presk_driver::bench` (`time_call`, `kernel_times`, `host_profile`, moved from the CLI, whose output keeps its form) and `text::host_profile`; `--site` and the default traces (the largest shares of the estimate, the slowest predicted nests), each site through every stage; the index of every site |
 | 6 | The PDF (`make explain-pdf`); the tutorial's step 7 from the tool | done (2026-10-09, D116): `make explain`, `make explain-pdf` (pandoc 3.1.3, LuaLaTeX from TeX Live 2026, the DejaVu fonts; the tutorial's document 19 pages in 6 s), `make explain-manual`; the manual's chapter `explain_loss`, the tutorial's document, held current by a test; the tutorial's step 7 shows `presk explain`; X5 holds: the Llama 2 decoder block at the 7B width, 384 tokens, D106's envelope and realization given, no exact reference, in 40 s and 10.9 GB, D106's 30 inert sites shown as followers and carried values |
 | 7 | The checks of record | done (2026-10-10, D117): version `0.11.0` on `bb78cb8`, with three of D110's defects fixed (`dump --stage elab` and `core` bind `--const`, a missing weights file named once, the PyTorch conformance reports a verification failure) and `check --precision --measure` saying "the kernel interpreter"; on that tree `make test`, `check-examples`, `coverage`, `plan-check`, `c-conformance` (14 of 14), `cargo doc` with no warning; X1 on `out/x1/x1.sh` against `024c44c`, 37 files, each named; `make tutorial` the same but for its times, step 7's `presk explain` and step 15's solve (7 sites, not 22). The paper's runs at 0.11.0: `make precision` 29 sites at 2.14×, the same gap; `make quant-table` byte for byte; the curve 2.87× to 1.09×, every budget inside; BERT-large at two blocks 25 sites at 2.03×, measured 1.05·10⁻⁵ (D101: 63 at 2.00×, 5.1·10⁻⁷; two stored values typed otherwise, `docs/compile-times-2026-10-09.md`); the decoder 24 of 25 sites at 1.96×, measured 1.99·10⁻⁵ (D106: 52 of 56 at 1.99×, 4.3·10⁻⁶; the softmax and RMSNorm's mean now `f32`, `docs/compile-times-2026-10-09-llama.md`) |
-| 8 | Documentation and version `0.11.0` | done (2026-10-10): the CHANGELOG, `CLAUDE.md`, the manual's `precision`, `coverage`, `experiments` and `status` chapters; in presk-specs (!70) the plan marked done, the reference at 0.11.0 (draft v0.15: the Status paragraphs, chapter 4's stored values, W18, the per-parameter float storage type, decided for 0.12.0), the report (the driver and `presk explain` in chapter 8, RA3, the roadmap, the history) and the tooling's pandoc, LuaLaTeX and DejaVu. Tag `v0.11.0` the user's |
+| 8 | Documentation and version `0.11.0` | done (2026-10-10): the CHANGELOG, `CLAUDE.md`, the manual's `precision`, `coverage`, `experiments` and `status` chapters; in presk-specs (!70) the plan marked done, the reference at 0.11.0 (draft v0.15: the Status paragraphs, chapter 4's stored values, W18, the per-parameter float storage type, decided for 0.12.0), the report (the driver and `presk explain` in chapter 8, RA3, the roadmap, the history) and the tooling's pandoc, LuaLaTeX and DejaVu. Tagged `v0.11.0` on 2026-10-12, on `c73a2e1` (presk-specs `ed95d22`) |
 
 ### What 0.11.0 was judged on
 
@@ -1484,3 +1484,96 @@ compilation's parameters; D108's findings 3 and 4 (the entry's arguments
 are not sites of the envelope; one goal per element of a row); D110's
 `reprice`, which can still exit midway; the GPU, and the kernels' speed
 D107 measured (the output projection's tiling).
+
+## Since 0.11.0
+
+- **ε from the margins** (2026-10-12, D118; `make margins`,
+  `docs/epsilon-2026-10-12.md`, the `experiments` chapter §5 and the
+  `precision` chapter's *A budget from an accuracy target*).
+  - *The argument:* a realization within ε of every logit changes a
+    decision only where the exact model's margin, its top logit minus
+    the second, is below 2ε. So the exact margins on held-out data give
+    the largest ε, ε\*(δ), under which at most a fraction δ of the
+    decisions change, with confidence 1 − α.
+  - *The figures:* on the course GPT's 118 016 held-out positions, with
+    the reference at 128 bits, ε\*(10⁻³) = **4.7·10⁻⁴** (5.4·10⁻⁴ before
+    the Clopper–Pearson correction).
+  - *The realizations:* five of the curve's seven are within it on the
+    logits; statement D's measures 3.3·10⁻⁴ and changes one decision
+    where its margins allow 70. Every one of the fourteen realizations
+    measured changes at most as many decisions as its margins allow. The
+    statement fixed beforehand, S, holds.
+  - *The foil:* the margins refuse `bf16` and the `int8` rows, which
+    MLPerf's 99.9 % admits; they change 480, 161 and 168 decisions, more
+    than 10⁻³ of them. A budget on the loss does not bound the logits.
+  - *No compiler change.* `presk solve` takes no tensor-valued entry, so
+    nothing is solved at ε\*.
+- **`presk run --json` prints the arguments it ran on** (2026-10-13,
+  found by D118). With `--data` it printed a synthesized batch, and with
+  `--weights` the synthesized initialization as the parameters, though the
+  entry ran on the data file's samples and the checkpoint's parameters:
+  the result was right, the record of its inputs not. Both are the
+  arguments run now; a checkpoint's parameters are built for printing only
+  under `--json` or `--verbose`, the synthesized tree dropped first
+  (`tests/run_json_inputs.rs`).
+
+## Version 0.12.0
+
+Done 2026-10-13 to 2026-10-15: plan
+`presk-specs/implementation/presk-plan-0.12.0.md` (D119–D125), its steps
+for review as presk !78 to !83 and presk-specs !78 to !80; the user tags
+`v0.12.0`. A realization
+types the values a program stores, but not the two largest: the
+parameters, every one stored in the default type, and the functions'
+results, which the solver never offers. 0.12.0 gives a realization a
+storage type per parameter path, `params` (`f32` or `bf16`, beside
+`quant`'s integer weights): the parameter is rounded once when it is
+loaded, and every nest reads it from that type, with no conversion at a
+kernel's edge. The solver chooses those types, offers the functions'
+results, and takes an entry whose result is a tensor under a budget on
+its largest elementwise gap. A realization that types no parameter keeps
+every output 0.11.0 gave.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements V1–V6, the facts checked again and the user's decisions (D119); version `0.12.0-dev`; V5's baseline, 0.11.0's solved realization of the decoder natively | done (2026-10-13, D119): why no function's result has a sensitivity, confirmed (the interpreter records no 1-norm for a `.vjp`'s cotangent argument); V5's baseline at 384 tokens under the frozen profile's plan, 9 340 ms at batch 1 (all-`f32` 3 356) and 79 758 ms at batch 20, the edge conversion 7 % and 3 % of a call (944 MB and 4 979 MB); the kernels' time varies by a factor of two between processes under that realization, so V5 times each row in several processes |
+| 1 | The language: `params` in the reference's chapter 4 (presk-specs); `Realization::params`, parsed and checked (`E7001`) | done (2026-10-13, D120): the reference at draft v0.17, W18 closed; `params` parsed and checked where the parameters are loaded, refused by training, and refused by every executor until step 2; X1 unchanged. Found: the executors round a `bf16` nest's wider operand to `bf16` at its edge, where the reference reads it in `f32` |
+| 2 | The executors: the parameters stored in their types at load; the kernel interpreter and the native backend read them with no conversion at a kernel's edge; `run`, `serve`, `bench` honour `params`, `train` and `solve --step` refuse it | done (2026-10-13, D121): `Realization::store_params` and `realize_args` store a typed parameter once, from the value given; a kernel of a wider type reads it from an input marked `BufKind::Wide`, its loads widening it (native: four `bf16` lanes into `f32`, two `f32` into `f64`); V2 holds on both executors (56 realizations of the test set, the tutorial and the decoder at tiny constants), V3 as a test (no byte converted at an edge); `presk explain` lists the record's parameters; X1 unchanged |
+| 3 | The C export: the weights in their types in the arena, the kernels' loads, `--serve`'s `generate.c` | done (2026-10-13, D122): the recorded host keeps each weight in its type; the kernel printer widens a marked input's loads; C1 on 48 programs under typed parameters (MiniGPT with typed matrices and quantised biases at once), C5 on `generate` through both hosts |
+| 4 | The solver: the parameters as decisions keyed by path, the functions' results offered, an entry whose result is a tensor (`--budget-abs`); `presk explain`'s decisions table | done (2026-10-13, D123): a `.vjp`'s cotangent argument's 1-norm recorded, so the results are ranked and offered; the parameters decided by path (`solve::ParamSite`, `param_reads`), their term at the narrowest of their type and their readers', their sensitivity the cotangent's 1-norm per leaf, read as the sweep returns; `--budget-abs`, a tensor entry ranked by one sweep seeded with ones, per output element, the measurement deciding; the bound charges the parameter tree at its narrowest type; `presk explain`'s §6.3 lists the parameters among the decisions and, under a given realization, every stored value and every parameter; the decoder's gate on 16 tokens |
+| 5 | The measurements: V1–V6 | done (2026-10-15, D124), alone on falicon: V1 holds, every difference named (the solves, their downstream, the sensitivity listings, the tutorial's solve); V2 and V3 hold, V3 at the decoder's width too (no parameter byte converted under its solved realization; its parameters 1.74 GB at rest in `f32`); V4: the tutorial 11 stored values and 4 parameters at 2.07×, the course GPT 33 and 21 at 2.12×, the curve 2.78× to 1.08×, BERT-large's two blocks 28 and 23 at 2.00×, the decoder 31 of 32 and 13 at 1.99× in 71.7 GB, the weights counted, every gap inside its budget; V5 holds: the decoder block under its solved realization no slower than all-`f32` at batch 1 in any of three rounds (1.00, 0.72, 0.66), 3.5 to 4 times faster than under 0.11.0's, 0.69 of all-`f32` at batch 20; V6: the course GPT's logits at 4.67·10⁻⁴, 1.97×, 7.5·10⁻⁵ measured, no decision changed; `experiments/curve.sh` trains without `params` |
+| 6 | The checks of record, the documents, version `0.12.0` | done (2026-10-15, D125): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` (the ignored tests included) pass, `cargo doc` has no warning (the two of 0.11.0 fixed), `clippy` the warnings of step 0's tree and no other; X1 against step 4 differs by the version line and the envelopes' date alone; the manual (every chapter's figures at 0.12.0, `training`'s refusal of `params`), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.17 (the Status paragraphs at 0.12.0, the question W19, a `bf16` nest's wider operand, decided by the user the same day: the reference amended to what the executors do, no output moved), the report, the slides, the summary and a status note; the poster |
+| 7 | The merge requests and the paper's side | done (2026-10-15): one merge request per step, the write-up as its first comment; the paper's side as a prompt for the paper session (presk-project `docs/prompt-paper-0.12.0-2026-10-15.md`) |
+
+### What 0.12.0 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| V1 | 0.12.0 changes no output of a realization that types no parameter, outside the solver: X1's harness less its solves, the test set on the three executors, the goldens, `check-examples`, `coverage`, `plan-check`, `c-conformance`, `quant-table`, `step-table`, `make tutorial` but for its times and its solve, byte for byte against presk `c73a2e1` | every byte | **holds**, every difference named: X1 at steps 0–3 by the C programs' version line and the envelopes' date, at step 4 by 20 files, all solves, their downstream, the sensitivity listings and the layer norm's module entry now solved (D123); `quant-table` and `step-table` byte for byte; `make tutorial` but for its times and step 15's solve (D124) |
+| V2 | A parameter stored in `f32` or `bf16` is the parameter rounded once to that type; the kernel interpreter, the native backend and the C program agree bit for bit under such realizations, on the test set and on the decoder at tiny constants | holds | **holds**: 56 realizations on both executors, C1 on 48 programs, C5 through both hosts (D121, D122) |
+| V3 | Under a realization that stores a parameter in the type of every nest that reads it, none of its bytes is converted at a kernel's edge; its resident bytes are its elements times its type's width | holds | **holds**, as a test and at the decoder's 7B width: no parameter byte converted under its solved realization, its 13 parameters 1.74 GB at rest in `f32` against 3.47 GB (D124) |
+| V4 | The solver offers the parameters and the functions' results: the tutorial, the course GPT, BERT-large's two blocks and the decoder solved again, beside 0.11.0's; the decoder's solve fits in its 105 GB scope | reported | **reported**, the weights counted: the tutorial 7 → 11 stored values and 4 parameters, 2.07×; the course GPT 29 → 33 and 21, 2.14× → 2.12×; the curve 2.87×–1.09× → 2.78×–1.08×; BERT-large 25 → 28 and 23, 2.03× → 2.00×, 1.05·10⁻⁵ → 9.2·10⁻⁷; the decoder 24 of 25 → 31 of 32 and 13, 1.96× → 1.99×, 2.0·10⁻⁵ → 2.6·10⁻⁵, 71.7 GB; every gap inside its budget (D124) |
+| V5 | The decoder block's forward pass at 384 tokens, batch 1 and 20, under 0.12.0's solved realization, beside 0.11.0's, all-`f64` and all-`f32`, by D100's protocol | at batch 1, no slower than all-`f32` (within 5 %) | **holds**: 1.00, 0.72, 0.66 by round; the fastest of eight processes each equal (2 441 and 2 439 ms); 3.5 to 4 times 0.11.0's; 0.69 of all-`f32` at batch 20 (D124) |
+| V6 | `presk solve` on the course GPT's `logits` at D118's ε\*(10⁻³) = 4.67·10⁻⁴: the realization, its traffic, its gap over the 461 held-out windows and its flips by `make margins`, beside the curve's realization at 10⁻³ | reported | **reported**: 29 of 31 stored values and 21 parameters, 1.97×, 7.5·10⁻⁵ over the 461 windows, 0 flips against a bound of 18 (the curve's realization: 3.3·10⁻⁴, one flip), no widening round (D123, D124) |
+
+## What 0.12.0 has, and what it does not
+
+**Has.** A parameter's floating-point storage type at rest (`params`, the
+`precision` chapter): rounded once when the entry is given it, read in
+place by a nest of its type, widened in the loads of a wider one, with no
+copy at a kernel's edge, on the three executors and in the C program
+alike. The solver chooses it, by path, with the functions' results, which
+it now ranks, and takes an entry whose result is a tensor under a budget on
+its largest elementwise gap (`--budget-abs`). On the Llama 2 decoder block
+at the 7B width, its realization at 10⁻³ runs as fast as all-`f32` and 3.5
+to 4 times faster than 0.11.0's.
+
+**Does not have.** The integer types in the same menu as the float ones
+(`--quant` stays a pass on top, D123); a ranking that sees an output whose
+elements sum to a constant (a layer norm's module entry is solved by
+widening alone; random-sign probes, the decided fallback, were not
+needed on the logits); the cause of all-`f32`'s slow
+processes on the decoder block (D124); and what 0.11.0 did not have but
+`params`: the HTML rendering and the Explorer, Cranelift's IR, the LaTeX
+printer, the memory polynomial, the GPU and the output projection's
+tiling.

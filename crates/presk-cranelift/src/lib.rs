@@ -196,6 +196,7 @@ impl NativeExec {
                 .map(|s| match s.kind {
                     BufKind::Idx => 8,
                     BufKind::Quant { .. } => 1,
+                    BufKind::Wide(d) => d.bytes() as i64,
                     BufKind::Real => real_bytes,
                 })
                 .chain(std::iter::once(if k.output.kind == BufKind::Idx { 8 } else { real_bytes }))
@@ -224,7 +225,8 @@ impl NativeExec {
                 None => Vec::new(),
             };
             let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
-            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, loops, reals, ints, vecs, libm: refs };
+            let wide: Vec<Option<Dtype>> = k.inputs.iter().map(|s| if let BufKind::Wide(d) = s.kind { Some(d) } else { None }).collect();
+            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, vecs, libm: refs };
             // The loop a split divides — the outermost by default, the one at
             // the depth the plan states (0.7.0 step 3) — runs over the range
             // the caller gives; the loops enclosing it run in full. One
@@ -323,6 +325,9 @@ struct Gen<'a> {
     scales: Vec<Option<(CV, Vec<usize>)>>,
     /// Which integer inputs are `int4`, two to a byte (0.6.0 step 5c).
     nibbles: Vec<bool>,
+    /// For an input of reals narrower than the kernel's type, that type
+    /// (plan 0.12.0 step 2): its loads widen it.
+    wide: Vec<Option<Dtype>>,
     loops: Vec<Variable>,
     reals: Vec<Variable>,
     ints: Vec<Variable>,
@@ -350,6 +355,30 @@ impl Gen<'_> {
     /// a kernel may read its own output back.
     fn is_quant(&self, buf: usize) -> bool {
         matches!(self.scales.get(buf), Some(Some(_)))
+    }
+
+    /// The type of buffer `buf` when it holds reals narrower than the
+    /// kernel's, which its loads widen. The output never does.
+    fn wide(&self, buf: usize) -> Option<Dtype> {
+        self.wide.get(buf).copied().flatten()
+    }
+
+    /// Element `ix` of an input of narrower reals, moved `lane` elements
+    /// along the last axis, widened exactly to the kernel's type: a `bf16`
+    /// is the top sixteen bits of its `f32`, and an `f32` is an `f64`.
+    fn load_wide(&mut self, buf: usize, index: &[Expr], lane: i64) -> CV {
+        let d = self.wide(buf).expect("a narrower input");
+        let a = self.addr(buf, index);
+        let x = match d {
+            Dtype::Bf16 => {
+                let h = self.b.ins().load(types::I16, MemFlags::trusted(), a, (2 * lane) as i32);
+                let w = self.b.ins().uextend(types::I32, h);
+                let up = self.b.ins().ishl_imm(w, 16);
+                self.b.ins().bitcast(types::F32, MemFlags::new(), up)
+            }
+            _ => self.b.ins().load(types::F32, MemFlags::trusted(), a, (4 * lane) as i32),
+        };
+        if self.fty == types::F64 { self.b.ins().fpromote(types::F64, x) } else { x }
     }
 
     fn load_quant(&mut self, buf: usize, index: &[Expr], lane: i64) -> CV {
@@ -494,6 +523,35 @@ impl Gen<'_> {
                 };
                 self.b.ins().fmul(q, s)
             }
+            // Four `bf16` lanes into `f32`: eight bytes, each sixteen bits
+            // moved to the top of its lane; two `f32` lanes into `f64`: eight
+            // bytes, promoted. The same widening as the scalar load.
+            Expr::VLoad(buf, ix) if self.wide(*buf) == Some(Dtype::Bf16) && vty == types::F32X4 => {
+                let a = self.addr(*buf, ix);
+                let w = self.b.ins().load(types::I64, MemFlags::trusted(), a, 0);
+                let v = self.b.ins().scalar_to_vector(types::I64X2, w);
+                let v = self.b.ins().bitcast(types::I16X8, MemFlags::new().with_endianness(cranelift_codegen::ir::Endianness::Little), v);
+                let v = self.b.ins().uwiden_low(v);
+                let v = self.b.ins().ishl_imm(v, 16);
+                self.b.ins().bitcast(types::F32X4, MemFlags::new().with_endianness(cranelift_codegen::ir::Endianness::Little), v)
+            }
+            Expr::VLoad(buf, ix) if self.wide(*buf) == Some(Dtype::F32) && vty == types::F64X2 => {
+                let a = self.addr(*buf, ix);
+                let w = self.b.ins().load(types::I64, MemFlags::trusted(), a, 0);
+                let v = self.b.ins().scalar_to_vector(types::I64X2, w);
+                let v = self.b.ins().bitcast(types::F32X4, MemFlags::new().with_endianness(cranelift_codegen::ir::Endianness::Little), v);
+                self.b.ins().fvpromote_low(v)
+            }
+            Expr::VLoad(buf, ix) if self.wide(*buf).is_some() => {
+                let lanes = vty.lane_count() as i64;
+                let first = self.load_wide(*buf, ix, 0);
+                let mut v = self.b.ins().splat(vty, first);
+                for l in 1..lanes {
+                    let x = self.load_wide(*buf, ix, l);
+                    v = self.b.ins().insertlane(v, x, l as u8);
+                }
+                v
+            }
             Expr::VLoad(buf, ix) if self.is_quant(*buf) => {
                 let lanes = vty.lane_count() as i64;
                 let first = self.load_quant(*buf, ix, 0);
@@ -533,6 +591,7 @@ impl Gen<'_> {
         match e {
             Expr::F(x) => fconst(&mut self.b, self.fty, *x),
             Expr::Load(buf, ix) if self.is_quant(*buf) => self.load_quant(*buf, ix, 0),
+            Expr::Load(buf, ix) if self.wide(*buf).is_some() => self.load_wide(*buf, ix, 0),
             Expr::Load(buf, ix) => {
                 let a = self.addr(*buf, ix);
                 if self.narrow {

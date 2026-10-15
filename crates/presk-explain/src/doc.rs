@@ -4,7 +4,7 @@
 //! numbered sections. A section says what its stage does, then shows the
 //! stage's representation and its decisions as prose, tables, code and
 //! notes, then the commands that print the same thing. Nothing here knows
-//! the compiler: the sections are filled by [`crate::build`] from the
+//! the compiler: the sections are filled by the private module `build` from the
 //! driver's values. Markdown is the one renderer; the PDF is made from it
 //! by pandoc (`make explain-pdf`), and an HTML renderer would read the same
 //! model.

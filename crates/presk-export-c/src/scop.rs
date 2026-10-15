@@ -140,6 +140,7 @@ fn elem(k: &Kernel, s: &BufSpec) -> Result<&'static str> {
         (BufKind::Real, Dtype::F32) => "float",
         (BufKind::Real, Dtype::Bf16) => "uint16_t",
         (BufKind::Quant { .. }, _) => return Err(format!("kernel `{}` reads integer weights, which the SCoP mode does not print", k.name)),
+        (BufKind::Wide(_), _) => return Err(format!("kernel `{}` reads reals stored in a narrower type than its own, which the SCoP mode does not print", k.name)),
     })
 }
 

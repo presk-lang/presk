@@ -55,7 +55,7 @@ fn breakdown_sums_to_the_estimate() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: 1e-3, weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
     use presk_precision::solve::Role;
     let sum: f64 = solved.breakdown.iter().map(|s| s.err).sum();
@@ -63,7 +63,9 @@ fn breakdown_sums_to_the_estimate() {
     let decisions: Vec<_> = solved.breakdown.iter().filter(|s| s.role == Role::Decision).collect();
     assert_eq!(decisions.len(), solved.solution.considered);
     let narrowed = decisions.iter().filter(|s| s.dtype != presk_rt::Dtype::F64).count();
-    assert_eq!(narrowed, solved.solution.realization.storage.len());
+    assert_eq!(narrowed, solved.solution.realization.storage.len() + solved.solution.realization.params.len());
+    // The parameters are decisions, keyed by path (plan 0.12.0 step 4).
+    assert!(solved.solution.realization.params.keys().all(|k| decisions.iter().any(|d| d.param && &d.name == k)));
     // Only a decision has a type in the realization (step 2b).
     assert!(solved.solution.realization.storage.keys().all(|k| decisions.iter().any(|d| &d.name == k)));
 }
@@ -87,6 +89,24 @@ fn roles_of_the_tutorial() {
     ] {
         assert_eq!(roles.role(site), role, "{site}");
     }
+}
+
+/// Plan 0.12.0 step 4: the parameter paths each field site reads, through
+/// the fold over the tower's blocks and the calls to `RMSNorm.apply` from
+/// the blocks and for the final norm.
+#[test]
+fn parameter_reads_of_the_tutorial() {
+    use std::collections::BTreeSet;
+    let (_, prog, core) = program(&root().join("tutorial/07_train.psk"), &[]);
+    let (entry, _, _) = presk_interp::run::resolve_entry(&core, &prog, "loss").unwrap();
+    let reads = presk_precision::solve::param_reads(&core, entry);
+    let set = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<BTreeSet<String>>();
+    assert_eq!(reads["Linear.apply/%2"], set(&["blocks.proj.w"]));
+    assert_eq!(reads["Block.apply/%2"], set(&["blocks.norm"]));
+    let gamma: Vec<&BTreeSet<String>> = reads.iter().filter(|(site, _)| site.starts_with("RMSNorm.apply/")).map(|(_, ps)| ps).collect();
+    assert_eq!(gamma, vec![&set(&["blocks.norm.γ", "final.γ"])]);
+    let leaves: BTreeSet<String> = reads.values().flatten().filter(|p| ["blocks.norm.γ", "blocks.proj.w", "blocks.proj.b", "final.γ"].contains(&p.as_str())).cloned().collect();
+    assert_eq!(leaves.len(), 4);
 }
 
 /// D108's finding 1: a module entry's own arguments are dimensions of its

@@ -1,0 +1,6 @@
+{
+  "default": "f64",
+  "storage": { "Linear.apply/%3": "f32" },
+  "order": { "kind": "sequential" },
+  "params": { "blocks.proj.w": "bf16", "final.γ": "f32" }
+}

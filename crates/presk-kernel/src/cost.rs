@@ -35,6 +35,7 @@ fn elem_bytes(kind: BufKind, dtype: Dtype) -> f64 {
         (BufKind::Idx, _) => 8.0,
         // The integers; the scales are one per channel and are not counted.
         (BufKind::Quant { bits, .. }, _) => bits as f64 / 8.0,
+        (BufKind::Wide(d), _) => d.bytes() as f64,
         (BufKind::Real, Dtype::F64) => 8.0,
         (BufKind::Real, Dtype::F32) => 4.0,
         (BufKind::Real, Dtype::Bf16) => 2.0,

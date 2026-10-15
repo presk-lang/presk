@@ -24,6 +24,7 @@
 #   make delta-p          δ_p, the reference's own gap: the interpreter at 128, 256 and 512 bits against itself at 1024 on the course GPT's loss, logits and gradient (W16, D98; about half an hour)
 #   make compile-times    the time presk check, calibrate, solve and the exact reference take per model, into docs/compile-times-<date>.md (the paper's setup table; a quiet machine)
 #   make foil             MLPerf's accuracy rule and a budget on one model (0.6.0 step 8)
+#   make margins          ε from the exact model's margins, every realization's flips (D118)
 #   make bert             BERT-large inference at MLPerf's constants (about five hours; L=2 for minutes)
 #   make llama            the Llama 2 decoder at the 7B width, one block: exact logits, gaps, split, time (D104, D106; about thirteen hours, up to 64 GB, alone)
 #   make experiment       exact versus almost: the realization gap of float32/float64 training (manual, `experiments`)
@@ -93,7 +94,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: margins explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -377,6 +378,17 @@ quant-table:
 foil:
 	$(CARGO) build --release -p presk
 	./experiments/foil.sh out/foil.md
+
+# ε from the margins (D118): the course GPT's exact margins on the held-out
+# tenth (the reference at 128 bits, once), the largest ε on the logits that
+# changes at most a fraction δ of its decisions with confidence 1 − α, and
+# every realization of the foil and the curve against it: its gap on the
+# logits, its flips and the bound the margins give (needs `make curve`'s
+# runs; 5 minutes on falicon). DELTAS, ALPHA, WINDOWS, CHUNK, JOBS: see the
+# script.
+margins:
+	$(CARGO) build --release -p presk
+	./experiments/margins.sh
 bert:
 	$(CARGO) build --release -p presk
 	./experiments/bert.sh out/bert.md

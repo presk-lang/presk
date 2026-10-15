@@ -157,7 +157,7 @@ fn a_quantised_realization_runs_on_dequantised_weights() {
     // path is `f32(q·s)` substituted for the parameters, and nothing else.
     let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
-    args[0] = r.quantized_params(&args[0]).unwrap();
+    args[0] = r.stored_params(&args[0]).unwrap();
     let mut b = InterpBackend::new(&core, &prog, 128);
     let p = presk_rt::Backend::prepare(&mut b, func, &fdims, &r).unwrap();
     let by_hand = presk_rt::Backend::call(&mut b, &p, args).unwrap();
@@ -174,4 +174,20 @@ fn a_quantised_realization_runs_on_dequantised_weights() {
     let mut b = InterpBackend::new(&core, &prog, 64);
     let e = train(&mut b, &core, &prog, &typed, &fns, &topts, |_| {}).unwrap_err();
     assert!(e.message.contains("trained weights"), "{}", e.message);
+}
+
+/// A realization that stores parameters in their own types (`params`, plan
+/// 0.12.0, D120) is refused by training as a quantised one is: a training
+/// step updates master weights in the default type (the plan's §5).
+#[test]
+fn training_refuses_parameters_in_their_own_types() {
+    let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
+    let fns = prepare_training(&mut core, &prog, &typed).unwrap();
+    let mut r = Realization::uniform(Dtype::F64);
+    r.params.insert("l1.w".into(), Dtype::Bf16);
+    let topts = TrainOptions { data: None, steps: Some(1), epochs: None, seed: 0, bits: 64, realize: r, ckpt: None, checkpoints: false };
+    let mut b = InterpBackend::new(&core, &prog, 64);
+    let e = train(&mut b, &core, &prog, &typed, &fns, &topts, |_| {}).unwrap_err();
+    assert_eq!(e.code, "E7001");
+    assert!(e.message.contains("their own types") && e.message.contains("trained weights"), "{}", e.message);
 }

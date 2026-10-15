@@ -1342,3 +1342,105 @@ fn trained_models_on_integer_weights_compute_the_native_backends_bits() {
     assert_c1_c2(&rows);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// The parameter paths of an entry, as `presk quantize --list` prints them.
+fn param_paths(file: &str, entry: &str, args: &[String]) -> Vec<String> {
+    let mut all: Vec<&str> = vec!["quantize", file, "--entry", entry, "--list"];
+    all.extend(args.iter().map(|s| s.as_str()));
+    let r = presk(&all);
+    assert!(r.status.success(), "presk quantize --list: {}", stderr(&r));
+    String::from_utf8(r.stdout).unwrap().lines().filter(|l| l.starts_with("  ")).filter_map(|l| l.split_whitespace().next().map(String::from)).collect()
+}
+
+/// A realization of `default` storing `params` in `own` at rest (plan
+/// 0.12.0, D121), written as `file` in `dir`: `--realize @…`.
+fn typing(dir: &Path, file: &str, default: &str, own: &str, params: &[String]) -> String {
+    let typed: serde_json::Map<String, serde_json::Value> = params.iter().map(|p| (p.clone(), serde_json::json!(own))).collect();
+    let r = serde_json::json!({ "default": default, "order": { "kind": "sequential" }, "params": typed });
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(file);
+    std::fs::write(&path, serde_json::to_string_pretty(&r).unwrap()).unwrap();
+    format!("@{}", path.display())
+}
+
+/// C1 and C2 under parameters stored in their own types (plan 0.12.0 steps
+/// 2 and 3, statement V2): every entry of the test set that takes a
+/// parameter tree, every parameter in `f32` under an `f64` default and in
+/// `bf16` under an `f32` one, the weights stored so in the program's arena
+/// and widened by the kernels' loads; MiniGPT with its matrices in `bf16`
+/// and its biases quantized to `int8` under `f32`, both maps at once; on
+/// synthesized parameters and with their zeros drawn.
+#[test]
+fn typed_parameters_compute_the_native_backends_bits() {
+    let t0 = Instant::now();
+    let base = scratch("typed");
+    let r = base.join("realizations");
+    let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
+    for case in test_set() {
+        let paths = param_paths(&case.file, &case.entry, &case.args);
+        if paths.is_empty() {
+            continue;
+        }
+        let name = case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        for (default, own) in [("f64", "f32"), ("f32", "bf16")] {
+            let realize = typing(&r, &format!("{name}-{default}-{own}.json"), default, own, &paths);
+            let dir = base.join(format!("{name}-{default}-{own}"));
+            let case = Case { file: case.file.clone(), entry: case.entry.clone(), args: case.args.clone() };
+            jobs.push(Box::new(move || both_weights(&format!("{} params {own} under {default}", case.entry), &case, &Under { band: default.into(), ..realized(&realize) }, &[], &dir)));
+        }
+    }
+    // Both maps at once: matrices typed, biases quantized.
+    let mixed = {
+        let matrices: Vec<String> = MINI_MATRICES.iter().map(|(p, _)| p.to_string()).collect();
+        let typed: serde_json::Map<String, serde_json::Value> = matrices.iter().map(|p| (p.clone(), serde_json::json!("bf16"))).collect();
+        let quant: serde_json::Map<String, serde_json::Value> = MINI_BIASES[..6].iter().map(|(p, over)| (p.to_string(), serde_json::json!({ "bits": 8, "over": over }))).collect();
+        let path = r.join("mini-both.json");
+        std::fs::create_dir_all(&r).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&serde_json::json!({ "default": "f32", "order": { "kind": "sequential" }, "params": typed, "quant": quant })).unwrap()).unwrap();
+        format!("@{}", path.display())
+    };
+    let mini: Vec<String> = MINI.iter().map(|s| s.to_string()).collect();
+    for (file, entry) in [("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply"), (SERVE, "next_token")] {
+        let (base, mini, realize) = (base.clone(), mini.clone(), mixed.clone());
+        let case = Case { file: file.into(), entry: entry.into(), args: mini };
+        jobs.push(Box::new(move || both_weights(&format!("{entry} params bf16 and int8 biases under f32"), &case, &Under { band: "f32".into(), ..realized(&realize) }, &[], &base.join(format!("{}-both", entry.replace('.', "_"))))));
+    }
+    let rows: Vec<Checked> = parallel(jobs).into_iter().flatten().collect();
+    report(&rows);
+    eprintln!("{} programs on typed parameters in {:.1} s", rows.len(), t0.elapsed().as_secs_f64());
+    assert!(rows.len() >= 40, "{}", rows.len());
+    assert_c1_c2(&rows);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// C5 under parameters stored in their own types: MiniGPT's `generate`,
+/// its every parameter in `bf16` under `f32` and in `f32` under `f64`,
+/// gives `presk serve`'s tokens, greedy and sampled, with the zeros drawn,
+/// through both hosts.
+#[test]
+fn generate_on_typed_parameters_gives_presk_serves_tokens() {
+    let t0 = Instant::now();
+    let base = scratch("serve-typed");
+    std::fs::create_dir_all(&base).unwrap();
+    let drawn = drawn_weights(&base);
+    let mut args: Vec<String> = TINY.iter().map(|s| s.to_string()).collect();
+    args.extend(["--dim", "B=1", "--dim", "T=8"].iter().map(|s| s.to_string()));
+    let paths = param_paths(SERVE, "next_token", &args);
+    let r = base.join("realizations");
+    let jobs: Vec<Box<dyn FnOnce() -> Vec<String> + Send>> = [("f32", "bf16", false), ("f32", "bf16", true), ("f64", "f32", false)]
+        .into_iter()
+        .map(|(d, own, flat)| {
+            let (base, drawn) = (base.clone(), drawn.clone());
+            let realize = typing(&r, &format!("{own}-{d}.json"), d, own, &paths);
+            Box::new(move || {
+                let dir = base.join(format!("{own}-{d}{}", if flat { "-flat" } else { "" }));
+                let extra: &[&str] = if flat { &["--straight-line"] } else { &[] };
+                export_serve(&realize, Some(&drawn), extra, &dir);
+                c5(&format!("params {own} under {d}{}, zeros drawn", if flat { ", straight-line" } else { "" }), &dir, &realize, &drawn)
+            }) as Box<dyn FnOnce() -> Vec<String> + Send>
+        })
+        .collect();
+    let docs = parallel(jobs);
+    eprintln!("C5 on typed parameters: {} programs, {} documents in {:.1} s", docs.len(), docs.iter().map(|d| d.len()).sum::<usize>(), t0.elapsed().as_secs_f64());
+    let _ = std::fs::remove_dir_all(&base);
+}

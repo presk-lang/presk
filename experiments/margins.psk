@@ -1,0 +1,36 @@
+-- margins.psk — the course GPT's logits and decisions, for `make margins`
+-- (ε from the margins, D118).
+--
+-- The model is 05_gpt.psk's, imported: that file is cited by the paper at
+-- its line count and is not edited, and an import brings modules and
+-- constants and not functions, so the token type is written here again,
+-- as experiments/gpt_grad.psk does. The functions keep 05_gpt.psk's names
+-- (`GPT.apply`, `Block.apply`, …), so a realization `make curve` solved on
+-- its `loss` types the same sites here; its `loss/…` sites name nothing
+-- here and are left out.
+--
+-- The margin, the top logit minus the second, is not written as an entry:
+-- it needs a maximum over the vocabulary, and `max` is not implemented
+-- (E2012). experiments/margins.py takes it from the exact logits that
+-- `logits` prints at 128 bits and 30 digits, as the difference of the two
+-- largest, exact to the digits printed. `decisions` is the realization's own
+-- choice, `argmax` on its logits: the greatest index among equal maxima,
+-- as the reference defines it.
+--
+-- The key: outside a training run `dropout`'s mask is all ones (the
+-- `training` chapter), so no key changes a value here; `--seed 0` is passed
+-- everywhere all the same.
+import "../corpus/nlp/05_gpt.psk" as g
+
+dim B
+dim T <= 1024
+
+type Tokens = idx[g.V][batch: B, seq: T]
+
+fn logits(θ : params g.GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[batch: B, seq: T, vocab: g.V] uses Rand =
+  let (x, _) = batch
+  g.GPT.apply(θ, x, k)
+
+fn decisions(θ : params g.GPT, k : key, batch : (Tokens, Tokens)) -> idx[g.V][batch: B, seq: T] uses Rand =
+  let (x, _) = batch
+  argmax(g.GPT.apply(θ, x, k))

@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.11.0 prints (timings vary from one run and one machine
+shown is what version 0.12.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.11.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
+Presk compiler (0.12.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
 
 Usage: presk <COMMAND>
 
@@ -1321,6 +1321,7 @@ not reach yet.
 | `make gpt-trained`, `make precision` | the corpus GPT trained for 600 steps; its envelope, bound, sensitivities and solved realization (`precision` chapter) |
 | `make curve` | the ε-to-quality curve: seven budgets, each solved and trained from scratch (about half an hour since 0.10.0) |
 | `make quant-table`, `make step-table`, `make j-step`, `make step-train`, `make foil` | the experiments of 0.6.0: integer weights, the training step's budget, statement J′ at course scale, the trajectory, and MLPerf's rule beside a budget (`precision` and `experiments` chapters) |
+| `make margins` | ε from the margins: the exact model's margins on the held-out windows, the largest budget on the logits that changes at most a fraction δ of the decisions, and every realization's flips against it (`experiments` chapter §5, D118; five minutes, needs `make curve`) |
 | `make bert` | BERT-large inference at MLPerf's constants (about five hours; `L=2 make bert` for a quick version) |
 | `make llama` | the Llama 2 decoder at the 7B configuration's width, one block: its exact logits, the gaps of seven realizations, the split of the whole quantisation scheme, the time (`coverage` chapter, D104, D106; about thirteen hours, up to 64 GB, alone); `STAGES=solve` adds the budget's solve (14 h, 72 GB) |
 | `make plan-check` | a plan stating the default layout lowers every example entry to the same kernels, byte for byte |
@@ -1396,23 +1397,28 @@ presk solve tutorial/07_train.psk --precision out/tut_env.json \
 
 ```text
 presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2.104e0)
-  sites       7 narrowable, 7 assigned away from f64
-  cost        2.9000e2 against 5.8400e2 all-f64 (2.01x), relaxation floor 1.4600e2
-  proposal    2.9000e2 before measurement widened anything (time when --profile is given, bytes otherwise)
-  estimate    2.262e-6 (sensitivity-weighted, first order: it ranks, it does not guarantee)
-  measured    3.663e-8 against the exact reference, after 0 widening round(s) — inside the budget
-  optimal     2.9000e2 bytes by exhaustive search under the same estimate — the greedy proposal is 1.000x that
+  sites       11 narrowable, 11 assigned away from f64
+  parameters  4 offered, 4 stored away from f64 (3 f32, 1 bf16): 2.8000e2 bytes at rest against 6.0800e2 in f64
+  cost        7.6600e2 against 1.5840e3 all-f64 (2.07x), relaxation floor 3.9600e2
+  proposal    7.6600e2 before measurement widened anything (time when --profile is given, bytes otherwise)
+  estimate    3.480e-6 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  measured    1.699e-7 against the exact reference, after 0 widening round(s) — inside the budget
+  optimal     not searched (the space is too large); the relaxation floor above is the lower bound
 presk solve: wrote out/tut_solved.json — run it with `--realize @out/tut_solved.json`
 ```
 
-Seven sites, out of the envelope's thirty: the values the program
-**stores**, each a computation's result that is not fused into another.
-A type means something only there. A parameter's field, a call's result
-or a member of a fused group carries a value that another site computes,
-or is computed in its group's root's type, so the solver does not offer it
-(since 0.11.0; until then it offered all twenty-two and counted them, D112).
-With seven sites the space is small enough for an exhaustive search, which
-finds the greedy proposal optimal.
+Eleven sites, out of the envelope's thirty: the values the program
+**stores**, each a computation's result that is not fused into another,
+the results of the functions among them (since 0.12.0). A type means
+something only there. A parameter's field, a call's result or a member of
+a fused group carries a value that another site computes, or is computed in
+its group's root's type, so the solver does not offer it (since 0.11.0;
+until then it offered all twenty-two and counted them, D112). And the four
+parameters, by their paths: a parameter is stored once in the type the
+realization gives it (`params`), and every nest reads it from there, so
+its type is a choice too (since 0.12.0). With eleven sites and four
+parameters the space is too large for the exhaustive search that found the
+greedy proposal optimal on 0.11.0's seven.
 
 Read the `estimate` and `measured` lines together, because they are the
 point. The **estimate** ranks: it says where the budget should go, from one
@@ -1431,7 +1437,7 @@ presk run tutorial/07_train.psk --entry loss --dim B=4 \
 ```
 
 ```text
-ℝ[] = 2.10375823
+ℝ[] = 2.103758097
 ```
 
 Two honest notes to end on. Every stored value got a narrower type and the

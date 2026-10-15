@@ -117,14 +117,27 @@ pub fn lower_launch(l: &Launch, layout: &Layout, workers: Option<usize>) -> Resu
             _ => vec![crate::lower::lower_planned(op, &l.operands, l.dtype, l.order, &eff).unwrap_or_else(|| Err(format!("`{}`: no kernel", op.name())))?.kernel],
         },
     };
-    // Integer weights are marked as the host marks them.
+    // Integer weights are marked as the host marks them, and so are the
+    // narrower reals of a parameter in its own type, which the capture keeps
+    // only under a realization that types parameters (plan 0.12.0).
     let main = kernels.len() - 1;
     for (spec, b) in kernels[main].inputs.iter_mut().zip(l.inputs.iter().chain(epi.map(|a| &a.input))) {
         if let presk_rt::Buf::Quant(q) = b
             && let Some(kind) = crate::ir::BufKind::of_quant(q, &spec.dims)
         {
             spec.kind = kind;
+        } else if spec.kind == crate::ir::BufKind::Real
+            && let Some(kind) = crate::host::narrower(b, l.dtype)
+        {
+            spec.kind = kind;
         }
+    }
+    // A pack copies operand 1, as the host's launch of it reads it.
+    if main == 1
+        && let Some(b) = l.inputs.get(1)
+        && let Some(kind) = crate::host::narrower(b, l.dtype)
+    {
+        kernels[0].inputs[0].kind = kind;
     }
     kernels[main].threads = threads_of(eff.split, &kernels[main], workers, false)?;
     Ok(kernels)

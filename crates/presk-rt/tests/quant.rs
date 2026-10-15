@@ -152,12 +152,12 @@ fn dequantised_parameters_replace_only_their_leaves() {
     // same values everywhere.
     let mut r = Realization::uniform(Dtype::F32);
     r.quant = m;
-    let run_on = r.quantized_params(&theta).unwrap();
+    let run_on = r.stored_params(&theta).unwrap();
     let Some(Value::Real(qw)) = run_on.field("blocks").and_then(|b| b.field("up")).and_then(|u| u.field("w")) else { panic!() };
     assert!(matches!(qw.data, Buf::Quant(_)));
     assert_eq!(qw.data.to_f64(), w.data.to_f64());
     assert_eq!(run_on.sum_squares_f64(), out.sum_squares_f64());
-    assert_eq!(Realization::uniform(Dtype::F32).quantized_params(&theta).unwrap(), theta);
+    assert_eq!(Realization::uniform(Dtype::F32).stored_params(&theta).unwrap(), theta);
 }
 
 /// A misspelt path must fail loudly, never quantise nothing.

@@ -27,8 +27,13 @@ pub enum TimeError {
 #[allow(clippy::too_many_arguments)]
 pub fn time_call(b: &mut dyn Backend, func: FuncId, fdims: &Dims, realize: &Realization, args: &[Value], warmup: usize, repeat: usize) -> Result<(f64, f64), TimeError> {
     let p = b.prepare(func, fdims, realize).map_err(|e| TimeError::Prepare(e.message))?;
-    let mut args: Vec<Value> = args.iter().map(|v| if b.name() == "interp" { v.clone() } else { v.realize(realize.default) }).collect();
-    realize.quantize_args(&mut args).map_err(|e| TimeError::Run(e.message))?;
+    let args: Vec<Value> = if b.name() == "interp" {
+        let mut a = args.to_vec();
+        realize.store_params(&mut a).map_err(|e| TimeError::Run(e.message))?;
+        a
+    } else {
+        realize.realize_args(args).map_err(|e| TimeError::Run(e.message))?
+    };
     for _ in 0..warmup {
         b.call(&p, args.clone()).map_err(|e| TimeError::Run(e.message))?;
     }
@@ -119,8 +124,7 @@ pub fn host_profile(core: &presk_core::Program, prog: &ElabProgram, func: FuncId
         b.set_plan(plan.clone());
     }
     let p = Backend::prepare(&mut b, func, fdims, realize).map_err(|e| e.message)?;
-    let mut args: Vec<Value> = args.iter().map(|v| v.realize(realize.default)).collect();
-    realize.quantize_args(&mut args).map_err(|e| e.message)?;
+    let args = realize.realize_args(args).map_err(|e| e.message)?;
     let profile = HostProfile::shared();
     // A call, timed; `keep`: its result is returned rather than freed (the
     // comparison, untimed).

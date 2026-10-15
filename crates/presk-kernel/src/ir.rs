@@ -28,9 +28,26 @@ pub enum BufKind {
     /// along, as the Llama decoder reads its output projection (D104,
     /// plan 0.10.1 step 6).
     Quant { bits: u8, over: usize, span: usize },
+    /// Reals stored in a machine type narrower than the kernel's, `f32` or
+    /// `bf16` (plan 0.12.0 step 2, D121): a parameter the realization stores
+    /// in its own type (`params`), read by a kernel of a wider one. A `Load`
+    /// or `VLoad` of it widens it, exactly, to the kernel's arithmetic type.
+    /// As for integer weights, the lowering never produces it: the host
+    /// marks the input it hands such a buffer ([`BufKind::widened`]), so
+    /// that no copy of it is converted at the kernel's edge.
+    Wide(Dtype),
 }
 
 impl BufKind {
+    /// The kind of a kernel input of reals of type `stored` read by a kernel
+    /// of type `kernel`: [`BufKind::Wide`] when `stored` is narrower, so
+    /// that the kernel's loads widen it exactly; `None` when it is the same
+    /// type or a wider one, which the host converts at the edge as it
+    /// always has (a `bf16` kernel's inputs are `bf16`).
+    pub fn widened(stored: Dtype, kernel: Dtype) -> Option<BufKind> {
+        (stored.bytes() < kernel.bytes()).then_some(BufKind::Wide(stored))
+    }
+
     /// The kind of a kernel input of integer weights `q` read through a view
     /// of axes `dims`, the elements in their stored order: the run of the
     /// view's axes that is the stored axis the scales are constant along,
@@ -405,6 +422,7 @@ fn spec(s: &BufSpec, dtype: Dtype) -> String {
     }).collect();
     let t = match s.kind {
         BufKind::Real => dtype.to_string(),
+        BufKind::Wide(d) => d.to_string(),
         BufKind::Idx => "i64".into(),
         BufKind::Quant { bits, over, span: 1 } => format!("int{bits}/{over}"),
         BufKind::Quant { bits, over, span } => format!("int{bits}/{over}..{}", over + span),

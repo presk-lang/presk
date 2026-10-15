@@ -87,7 +87,7 @@ presk train FILE.psk [--const NAME=N]… [--data FILE.psk.d] [--steps N] [--epoc
 | `--ckpt DIR` | override the checkpoint directory |
 | `--json` | on standard output: `{model, steps, total, log: [{step, epoch, loss, lr, grad_norm}], final, checkpoints}` |
 | `--backend B` | the executor: `interp` (the default, at `--bits`), `kernel` (PSK-Kernel interpreted) or `native` (compiled by Cranelift) |
-| `--realize R` | the machine types on `kernel` and `native`: `f64` (the default), `f32`, `bf16`, or `@R.json`, a realization file — per site, per function (`presk solve --step`, below) or both; a realization that quantises weights is refused, since gradients and optimizer state are never quantised (D44) |
+| `--realize R` | the machine types on `kernel` and `native`: `f64` (the default), `f32`, `bf16`, or `@R.json`, a realization file — per site, per function (`presk solve --step`, below) or both; a realization that quantises weights is refused, since gradients and optimizer state are never quantised (D44), and since 0.12.0 one that types parameters (`params`, D120): the master weights the step updates stay in the default type (`experiments/curve.sh` trains under a solved realization less its `params`) |
 | `--threads N` | workers a parallel kernel may use on `native` (default: the cores; `native` chapter) |
 | `--opt`, `--profile FILE` | rewrite the program with the e-graph optimizer first, extracting by the profile's predicted time when given (`optimization` chapter) |
 

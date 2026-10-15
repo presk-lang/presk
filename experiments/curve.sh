@@ -82,7 +82,18 @@ open('out/civil_val.txt', 'w').write(' '.join(t[cut:]) + '\n')"
     names=(f64 "${BUDGETS[@]}")
     running=0
     for n in "${names[@]}"; do
-        if [ "$n" = f64 ]; then spec=f64; else spec="@out/curve_$n.json"; fi
+        # A training run keeps its parameters in the default type: they are
+        # the master weights it updates, and `presk train` refuses a
+        # realization that types them (plan 0.12.0, §5). So it trains under
+        # the solved realization less its `params`, the nests' types, which
+        # is what every run before 0.12.0 trained under, its parameters
+        # being in the default type then.
+        if [ "$n" = f64 ]; then
+            spec=f64
+        else
+            python3 -c "import json, sys; r = json.load(open(sys.argv[1])); r.pop('params', None); json.dump(r, open(sys.argv[2], 'w'), indent=2)" "out/curve_$n.json" "out/curve_$n.train.json"
+            spec="@out/curve_$n.train.json"
+        fi
         if [ ! -f "out/curve_train_$n/final.psk.d" ]; then
             train "$n" "$spec" &
             running=$((running + 1))

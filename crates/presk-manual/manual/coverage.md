@@ -329,8 +329,9 @@ and two scalar constants to `bf16` (the head width, exact in it, and the
 norm's ε). The traffic is 1.99× less than all-`f64`'s, and the realization
 measures **4.3·10⁻⁶** against the exact loss, where the budget allows
 1.1·10⁻², with no widening round. BERT-large's two blocks measured 5.1·10⁻⁷
-at 2.00× (D101; 1.05·10⁻⁵ at 2.03× at 0.11.0, D117), the course GPT
-2.1·10⁻⁵ at 2.00× (D102, D117). The solve takes
+at 2.00× (D101; 1.05·10⁻⁵ at 2.03× at 0.11.0, D117; 9.2·10⁻⁷ at 2.00×,
+the weights counted, at 0.12.0, D124), the course GPT 2.1·10⁻⁵ at 2.00×
+(D102, D117; 2.1·10⁻⁶ at 0.12.0, D124). The solve takes
 7.4 times the reference, calibrate 4.4 times. The bound on that realization
 is 6.2·10⁵, vacuous: the discharge is the measurement's (the `precision`
 chapter).
@@ -348,6 +349,26 @@ is `bf16`; the bound is 1.2·10⁶. The 31 sites D106 counted besides change
 no bit when typed: D106's realization, read under 0.11.0's roles, narrows
 22 of the 25 at 1.84×. A function's result is not offered, so the head,
 the output projection and the feed-forward products stay in `f64`.
+
+**At 0.12.0** (D124, `docs/compile-times-2026-10-14-llama.md`) the solver
+also offers the functions' results and the parameters (D123), and the
+traffic counts the weights at rest. The same four commands, run again:
+- *the same envelope and loss,* D106's, the times within 4 % of D117's and
+  the peaks the same, the solve 13 h 32 min and 71.7 GB;
+- *32 stored values offered, 31 narrowed,* 28 to `f32` and 3 to `bf16`.
+  The seven added are results, all in `f32`: the head, the output
+  projection, the feed-forward product, SiLU's product, the norm's
+  output, the block's second residual and the loss. RMSNorm's square
+  stays `f64`;
+- *the 13 parameters in `f32`,* 1.74 GB at rest against 3.47 GB in `f64`;
+- *1.99× less traffic,* the weights counted (1.97× on the stored values
+  alone), measured **2.6·10⁻⁵** against the same 1.1·10⁻², with no
+  widening round. The bound is 1.2·10⁶.
+
+Natively, the block's forward pass under that realization takes 2.4 to
+2.9 s at batch 1, as fast as all-`f32`, where under 0.11.0's it took 9.7 s,
+its results in `f64` and every weight converted at the kernels' edges
+(D124, the `experiments` chapter).
 
 **Two blocks** (D106). The exact logits at two blocks take 3 h 36 min and
 41.4 GB (the largest is 7.21), and the native gaps move little:

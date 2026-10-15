@@ -72,7 +72,7 @@ pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Res
 }
 
 /// An input described by its shape, not drawn (0.8.0 step 1): what
-/// [`synthesize`] would make, for a backend that captures an entry's launches
+/// `synthesize` would make, for a backend that captures an entry's launches
 /// without computing anything and builds the inputs itself.
 #[derive(Clone, Debug)]
 pub enum Shaped {

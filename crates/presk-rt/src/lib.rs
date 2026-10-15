@@ -208,6 +208,13 @@ pub struct Realization {
     /// (D35), so the reference travels with the realization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope: Option<String>,
+    /// Parameters stored at rest in a floating-point type of their own,
+    /// `f32` or `bf16`, keyed by their path like `quant` (plan 0.12.0, D119;
+    /// the reference's chapter 4, W18): the leaf is rounded once to it when
+    /// the entry is given it, and every nest reads it from that type. A
+    /// path here is not in `quant` ([`Realization::check_params`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Dtype>,
     /// Parameters stored as integers with per-channel scales, keyed by their
     /// path in the parameter tree (`blocks.attn.wq.w`), not by site: a
     /// quantised weight is a property of one tensor feeding a contraction,
@@ -221,7 +228,7 @@ impl Realization {
     /// One dtype everywhere, additions in index order: what `--realize f64`
     /// and `--realize f32` meant in every version up to 0.4.0, and still do.
     pub fn uniform(d: Dtype) -> Realization {
-        Realization { default: d, storage: BTreeMap::new(), functions: BTreeMap::new(), accum: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None, quant: BTreeMap::new() }
+        Realization { default: d, storage: BTreeMap::new(), functions: BTreeMap::new(), accum: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None, params: BTreeMap::new(), quant: BTreeMap::new() }
     }
 
     /// `f64`, `f32`, `bf16`, or `@PATH` for a realization file.
@@ -289,7 +296,7 @@ impl Realization {
     /// their order. Uniform realizations are the ones earlier versions could
     /// express, and the ones whose goldens must not move.
     pub fn is_uniform(&self) -> bool {
-        self.storage.is_empty() && self.functions.is_empty() && self.accum.is_empty() && self.order == ReductionOrder::Sequential && self.quant.is_empty()
+        self.storage.is_empty() && self.functions.is_empty() && self.accum.is_empty() && self.order == ReductionOrder::Sequential && self.params.is_empty() && self.quant.is_empty()
     }
 
     /// A short name for reports and cache keys.
@@ -304,6 +311,9 @@ impl Realization {
         if !self.functions.is_empty() {
             s.push_str(&format!("+{}fns", self.functions.len()));
         }
+        if !self.params.is_empty() {
+            s.push_str(&format!("+{}params", self.params.len()));
+        }
         if !self.quant.is_empty() {
             s.push_str(&format!("+{}quant", self.quant.len()));
         }
@@ -314,30 +324,90 @@ impl Realization {
         serde_json::to_string_pretty(self).expect("a realization serializes")
     }
 
-    /// The parameters this realization runs on: `theta` with every quantised
-    /// leaf replaced by its integers and scales ([`Buf::Quant`]), which the
-    /// kernels load as `f32(q)·s` and the reference interpreter reads as the
-    /// same values. The identity when nothing is quantised.
-    pub fn quantized_params(&self, theta: &Value) -> Result<Value> {
+    /// The parameters as this realization stores them (the reference's
+    /// chapter 4, realized value, item 1): `theta` with every leaf `params`
+    /// types converted once to its type, from the value given (an exact
+    /// value through `f64`, as every real enters a realization), and every
+    /// leaf `quant` names replaced by its integers and scales
+    /// ([`Buf::Quant`]), which the kernels load as `f32(q)·s` and the
+    /// reference interpreter reads as the same values. Every other leaf as
+    /// given; the identity when the record types and quantises nothing.
+    pub fn stored_params(&self, theta: &Value) -> Result<Value> {
+        self.check_params(Some(theta))?;
+        let typed = if self.params.is_empty() { theta.clone() } else { quant::typed_leaves(theta, theta, &self.params) };
         if self.quant.is_empty() {
-            return Ok(theta.clone());
+            return Ok(typed);
         }
-        Ok(quant::quantized_leaves(theta, &quant::quantize_params(theta, &self.quant)?))
+        Ok(quant::quantized_leaves(&typed, &quant::quantize_params(theta, &self.quant)?))
     }
 
-    /// Quantise an entry's parameters, its first argument, before a run. A
-    /// realization that quantises must never be run on the true weights
-    /// unnoticed, so an entry without a parameter tree first is refused.
-    pub fn quantize_args(&self, args: &mut [Value]) -> Result<()> {
-        if self.quant.is_empty() {
+    /// The conditions on `params` (the reference's chapter 4, realized
+    /// types, item 3): each type `f32` or `bf16`, no path also in `quant`,
+    /// and, given the entry's parameter tree, each path a real leaf of it.
+    /// A misspelt path quietly typing nothing would be the worst failure
+    /// this could have, as for `quant`.
+    pub fn check_params(&self, theta: Option<&Value>) -> Result<()> {
+        for (path, d) in &self.params {
+            if !matches!(d, Dtype::F32 | Dtype::Bf16) {
+                return err("E7001", format!("the realization stores the parameter `{path}` in `{d}`: a parameter's own type is `f32` or `bf16`, and every other parameter is stored in the default type"));
+            }
+            if self.quant.contains_key(path) {
+                return err("E7001", format!("the realization both stores the parameter `{path}` in `{d}` and quantises it: a parameter is typed or quantised, not both"));
+            }
+        }
+        if let Some(theta) = theta {
+            let paths = quant::param_paths(theta);
+            if let Some(path) = self.params.keys().find(|p| !paths.contains(p)) {
+                return err("E7001", format!("the realization stores `{path}` in its own type, which is not a parameter of the model (it has {})", paths.join(", ")));
+            }
+        }
+        Ok(())
+    }
+
+    /// Store an entry's parameters, its first argument, as this realization
+    /// says before a run ([`Realization::stored_params`]). A realization
+    /// that types or quantises parameters must never be run on the true
+    /// weights unnoticed, so an entry without a parameter tree first is
+    /// refused.
+    pub fn store_params(&self, args: &mut [Value]) -> Result<()> {
+        if self.quant.is_empty() && self.params.is_empty() {
             return Ok(());
         }
         match args.first_mut() {
             Some(theta @ Value::Record(_)) => {
-                *theta = self.quantized_params(theta)?;
+                *theta = self.stored_params(theta)?;
                 Ok(())
             }
+            _ if self.quant.is_empty() => err("E7001", "the realization stores parameters in their own types, and this entry's first argument is not a parameter tree"),
             _ => err("E7001", "the realization quantises parameters, and this entry's first argument is not a parameter tree"),
+        }
+    }
+
+    /// An entry's arguments as this realization realizes them (item 1):
+    /// every real leaf converted to the default type, but the parameters
+    /// `params` types converted to theirs from the values given, not from
+    /// their default-typed copies (under a `bf16` default an `f32` parameter
+    /// keeps its bits), and those `quant` names quantised as
+    /// [`Realization::store_params`] quantises them.
+    pub fn realize_args(&self, args: &[Value]) -> Result<Vec<Value>> {
+        let mut out: Vec<Value> = args.iter().map(|v| v.realize(self.default)).collect();
+        if !self.params.is_empty()
+            && let (Some(theta @ Value::Record(_)), Some(slot)) = (args.first(), out.first_mut())
+        {
+            self.check_params(Some(theta))?;
+            *slot = quant::typed_leaves(slot, theta, &self.params);
+        }
+        self.store_params(&mut out)?;
+        Ok(out)
+    }
+
+    /// The type an entry's real leaf is stored in: its own for a parameter
+    /// `params` types (in argument `arg` 0, the parameter tree, at `path`),
+    /// else the default.
+    pub fn leaf_type(&self, arg: usize, path: &str) -> Dtype {
+        match self.params.get(path) {
+            Some(d) if arg == 0 => *d,
+            _ => self.default,
         }
     }
 }
@@ -618,6 +688,21 @@ impl Value {
         }
     }
 
+    /// [`Value::map_leaves`] with each leaf's path in the tree, as
+    /// [`quant::param_paths`] names it: record fields joined by `.`, tuple
+    /// components by their index.
+    pub fn map_leaves_at(&self, f: &mut dyn FnMut(&str, &Value) -> Value) -> Value {
+        fn go(v: &Value, path: &str, f: &mut dyn FnMut(&str, &Value) -> Value) -> Value {
+            let join = |n: &str| if path.is_empty() { n.to_string() } else { format!("{path}.{n}") };
+            match v {
+                Value::Tuple(vs) => Value::Tuple(vs.iter().enumerate().map(|(i, x)| go(x, &join(&i.to_string()), f)).collect()),
+                Value::Record(fs) => Value::Record(fs.iter().map(|(n, x)| (n.clone(), go(x, &join(n), f))).collect()),
+                leaf => f(path, leaf),
+            }
+        }
+        go(self, "", f)
+    }
+
     pub fn field(&self, name: &str) -> Option<&Value> {
         match self {
             Value::Record(fs) => fs.iter().find(|(n, _)| n == name).map(|(_, v)| v),
@@ -777,7 +862,7 @@ pub fn run_with(backend: &mut dyn Backend, prog: &Program, elab: &ElabProgram, o
     let (func, dims, inputs) = presk_interp::run::prepare_run(prog, elab, opts)?;
     let p = backend.prepare(func, &dims, realize)?;
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<Result<_>>()?;
-    realize.quantize_args(&mut args)?;
+    realize.store_params(&mut args)?;
     let result = backend.call(&p, args)?;
     let dims_named: Vec<(String, u64)> = dims.iter().map(|(v, n)| (elab.dim_name(*v), *n)).collect();
     Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })

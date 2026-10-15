@@ -93,15 +93,37 @@ pub fn bound(env: &Envelope, env_path: &str, realize: &str, b: &Bounded, sites: 
 /// `presk solve`: the budget, the sites, the cost, the estimate and the
 /// measured gap, the parameter menu's with `--quant`, the exhaustive
 /// search's cost, and with `list` the sites assigned away from the default.
-pub fn solve(env: &Envelope, budget: f64, solved: &Solved, list: usize) -> Vec<String> {
+pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &Solved, list: usize) -> Vec<String> {
+    use presk_precision::solve::Budget;
     let (sol, qsol, sens, ref_f64) = (&solved.solution, &solved.quant, &solved.sens, solved.reference_max);
-    let mut out = vec![
-        format!("presk solve: `{}` under budget {:.2e} relative ({:.3e} absolute, |output| {:.3e})", env.entry, budget, sol.budget_abs, ref_f64),
-        format!("  sites       {} narrowable, {} assigned away from f64", sol.considered, sol.realization.storage.len()),
+    // A tensor entry's budget is on its largest elementwise gap (plan
+    // 0.12.0 step 4).
+    let over = if solved.outputs > 1 { format!(" on the largest elementwise gap of its {} outputs", solved.outputs) } else { String::new() };
+    let head = match budget {
+        Budget::Relative(b) => format!("presk solve: `{}` under budget {:.2e} relative{over} ({:.3e} absolute, |output| {:.3e})", env.entry, b, sol.budget_abs, ref_f64),
+        Budget::Absolute(b) => format!("presk solve: `{}` under budget {:.3e} absolute{over} ({:.2e} relative to |output| {:.3e})", env.entry, b, b / ref_f64.max(f64::MIN_POSITIVE), ref_f64),
+    };
+    let params: Vec<&presk_precision::solve::SiteCost> = solved.breakdown.iter().filter(|c| c.param).collect();
+    let mut out = vec![head, format!("  sites       {} narrowable, {} assigned away from f64", sol.considered - params.len(), sol.realization.storage.len())];
+    if !params.is_empty() {
+        let typed = |d: presk_rt::Dtype| sol.realization.params.values().filter(|t| **t == d).count();
+        let at_rest = |c: &&presk_precision::solve::SiteCost| c.elems * c.dtype.bytes() as f64;
+        out.push(format!(
+            "  parameters  {} offered, {} stored away from f64 ({} f32, {} bf16): {:.4e} bytes at rest against {:.4e} in f64",
+            params.len(),
+            sol.realization.params.len(),
+            typed(presk_rt::Dtype::F32),
+            typed(presk_rt::Dtype::Bf16),
+            params.iter().map(at_rest).sum::<f64>(),
+            params.iter().map(|c| c.elems * 8.0).sum::<f64>()
+        ));
+    }
+    let per = if solved.outputs > 1 { "first order, of a mean output element" } else { "first order" };
+    out.extend([
         format!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, sol.speedup(), sol.relaxation_bytes),
         format!("  proposal    {:.4e} before measurement widened anything (time when --profile is given, bytes otherwise)", sol.proposed_bytes),
-        format!("  estimate    {:.3e} (sensitivity-weighted, first order: it ranks, it does not guarantee)", sol.estimated_error),
-    ];
+        format!("  estimate    {:.3e} (sensitivity-weighted, {per}: it ranks, it does not guarantee)", sol.estimated_error),
+    ]);
     match sol.measured {
         Some(g) => out.push(format!("  measured    {:.3e} against the exact reference, after {} widening round(s) — {}", g, sol.rounds, if g <= sol.budget_abs { "inside the budget" } else { "OUTSIDE the budget" })),
         None => out.push("  measured    not checked (--no-verify)".to_string()),
@@ -138,6 +160,12 @@ pub fn solve(env: &Envelope, budget: f64, solved: &Solved, list: usize) -> Vec<S
         out.push(format!("{:<30} {:>8} {:>12} {:>12}", "site", "dtype", "elements", "‖∂L/∂v‖₁"));
         for (site, d) in rows.iter().take(list) {
             out.push(format!("{site:<30} {:>8} {:>12} {:>12.3e}", d.name(), env.elems(site), sens.get(site).unwrap_or(0.0)));
+        }
+    }
+    if list > 0 && !sol.realization.params.is_empty() {
+        out.push(format!("{:<30} {:>8} {:>12} {:>12}", "parameter", "dtype", "elements", "‖∂L/∂θ‖₁"));
+        for c in params.iter().filter(|c| sol.realization.params.contains_key(&c.name)).take(list) {
+            out.push(format!("{:<30} {:>8} {:>12} {:>12.3e}", c.name, c.dtype.name(), c.elems, c.sens));
         }
     }
     out

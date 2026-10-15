@@ -308,7 +308,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
     let scalar = presk_driver::precision::returns_scalar(&pcore, entry);
     let (mut sens, mut sens_none, mut solved) = (None, None, None);
     if let (Some(budget), Some((e, _))) = (o.budget, &env) {
-        let args = presk_driver::precision::SolveArgs { budget, weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None };
+        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None };
         match presk_driver::precision::solve(&mut pcore.clone(), &prog, e, &args) {
             Ok(s) => {
                 if let Err(m) = std::fs::write(art("realization.json"), s.solution.realization.to_json()) {
@@ -325,7 +325,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
                 use presk_driver::precision::SolveError as E;
                 let m = match e {
                     E::NotEntry => format!("presk solve: `{}` is not an entry of {}", o.entry, o.file.display()),
-                    E::NotScalar => format!("presk solve: `{}` must return a scalar `ℝ[]`, since the sites are ranked by its sensitivity `∂L/∂v`", o.entry),
+                    E::NotScalar => format!("presk solve: `{}` must return a real tensor, since the sites are ranked by its sensitivity `∂y/∂v`", o.entry),
                     E::Inputs(m) => format!("presk solve: cannot bind the inputs of `{}`: {m}", o.entry),
                     E::NoGradient(m) => format!("presk solve: the objective does not differentiate: {m}"),
                     E::Reference(m) => format!("presk solve: {m}"),
@@ -709,7 +709,7 @@ fn summary(s: &State) -> Section {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let default = s.realization.default.name();
     let (by_type, decisions, follows, carried) = roles_count(s);
-    let real = if s.realization.storage.is_empty() {
+    let mut real = if s.realization.storage.is_empty() {
         format!("every site in `{default}`")
     } else {
         let types = by_type.iter().map(|(t, n)| format!("{n} in `{t}`")).collect::<Vec<_>>().join(", ");
@@ -719,6 +719,10 @@ fn summary(s: &State) -> Section {
         }
         r
     };
+    if !s.realization.params.is_empty() {
+        let n = s.realization.params.len();
+        real.push_str(&format!("; {n} parameter{} stored in {} own type{} (§6.3)", if n == 1 { "" } else { "s" }, if n == 1 { "its" } else { "their" }, if n == 1 { "" } else { "s" }));
+    }
     let kind = if matches!(s.real_src, RealSrc::Solved) { Kind::Decision } else { Kind::Parameter };
     rows.push(vec!["Realization".into(), real, kind.name().into(), "§6".into()]);
     if let Some(sv) = &s.solved {
@@ -928,7 +932,7 @@ fn precision(s: &State) -> Section {
         Some(sv) => {
             v.purpose.push("The solver ranks the values the program stores by sensitivity and narrows the cheapest first while its first-order estimate Σ s · u(type) · |v| stays under the budget, then measures the candidate against the exact reference and widens until the measurement holds.".into());
             let (env, _) = s.env.as_ref().expect("a solve has an envelope");
-            v.code("text", text::solve(env, s.o.budget.unwrap_or(0.0), sv, 0).join("\n"));
+            v.code("text", text::solve(env, presk_precision::solve::Budget::Relative(s.o.budget.unwrap_or(0.0)), sv, 0).join("\n"));
             breakdown(s, sv, &mut v);
             v.command(format!("presk solve {} --precision {DOC}/artifacts/envelope.json --budget {:e}{}{}{} --sites 30 --out {DOC}/artifacts/realization.json", s.file, s.o.budget.unwrap_or(0.0), weights_args(s), profile_args(s), if s.o.no_exact { " --no-verify" } else { "" }));
         }
@@ -938,12 +942,10 @@ fn precision(s: &State) -> Section {
                 RealSrc::Default => v.prose("No budget and no realization given: every site in `f64`."),
                 RealSrc::Named(n) => v.prose(format!("Given: every site in `{n}`.")),
                 _ => {
-                    v.prose(format!("Given: default `{}`, {} sites typed apart.", s.realization.default.name(), s.realization.storage.len()));
-                    let mut sites: Vec<(&String, &Dtype)> = s.realization.storage.iter().collect();
-                    sites.sort_by_key(|(site, _)| site_order(site));
-                    let rows: Vec<Vec<String>> = sites.iter().map(|(site, d)| vec![format!("`{site}`"), op_of(s, site), role_name(s.roles.0.get(*site)), format!("`{}`", d.name())]).collect();
-                    v.table(&["Site", "Operation", "Role", "Type"], rows);
+                    v.prose(format!("Given: default `{}`, {} sites typed apart, {} parameters stored otherwise.", s.realization.default.name(), s.realization.storage.len(), s.realization.params.len() + s.realization.quant.len()));
+                    stored_values(s, &mut v);
                     roles_note(s, &mut v);
+                    params_table(s, &mut v);
                 }
             }
         }
@@ -989,7 +991,7 @@ fn role_name(r: Option<&Role>) -> String {
 fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
     let sum: f64 = sv.breakdown.iter().map(|c| c.err).sum();
     v.prose(format!(
-        "**Why each site has its type.** The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`). The terms below sum to {}, the solver's {}. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost.",
+        "**Why each site has its type.** The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`). The terms below sum to {}, the solver's {}. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost. A **parameter** is a decision keyed by its path (since 0.12.0): its term is its rounding at the narrowest of its own type and the types of the nests that read it, s its cotangent's 1-norm and |v| its largest magnitude, and the field sites that read it carry none.",
         sci(sum),
         sci(sv.solution.estimated_error)
     ));
@@ -998,7 +1000,7 @@ fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
     let share = |c: &presk_precision::solve::SiteCost| if sum > 0.0 { format!("{:.3} %", 100.0 * c.err / sum) } else { "-".into() };
     let unit = if sv.time { "s" } else { "bytes" };
     let decided: Vec<&&presk_precision::solve::SiteCost> = rows.iter().filter(|c| c.role == Role::Decision).collect();
-    let decisions: Vec<Vec<String>> = decided.iter().map(|c| vec![format!("`{}`", c.name), op_of(s, &c.name), format!("`{}`", c.dtype.name()), format!("{}", c.elems), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
+    let decisions: Vec<Vec<String>> = decided.iter().map(|c| vec![format!("`{}`", c.name), if c.param { "a parameter, by its path".into() } else { op_of(s, &c.name) }, format!("`{}`", c.dtype.name()), format!("{}", c.elems), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
     v.prose("**The decisions**, each with its term of the estimate:");
     v.listing_table(&["Site", "Operation", "Type", "Elements", "|v|", "s", "Term", "Share"], decisions);
     v.prose(format!("**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget ({} absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in {unit}{}.", sci(sv.solution.budget_abs), if sv.time { ", the profile's roofline" } else { "" }));
@@ -1038,6 +1040,66 @@ fn why(sv: &Solved, site: &str, unit: &str) -> String {
         }
     }
     parts.join("; ")
+}
+
+/// Every value the entry's program stores, with the type a given
+/// realization gives it: the record's, or its default where the record
+/// names none (plan 0.12.0 step 4; the decoder's document at 0.11.0 left
+/// out `RMSNorm.apply/%2`, which D117's record leaves at `f64`). Then the
+/// sites the record names that store nothing.
+fn stored_values(s: &State, v: &mut Section) {
+    let r = &s.realization;
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    let mut named: BTreeSet<String> = BTreeSet::new();
+    for f in reach(&s.pcore, s.entry) {
+        let func = s.pcore.func(f);
+        for l in &func.body.lets {
+            let site = format!("{}/%{}", func.name, l.var.0);
+            if s.roles.role(&site) != Role::Decision || !matches!(l.ty, presk_types::ty::Ty::Real(_)) {
+                continue;
+            }
+            let (d, from) = match r.storage.get(&site) {
+                Some(d) => (*d, "the record"),
+                None => (r.dtype_at(&site), if site.rsplit_once('/').is_some_and(|(f, _)| r.functions.contains_key(f)) { "its function's" } else { "the default" }),
+            };
+            named.insert(site.clone());
+            rows.push((site.clone(), vec![format!("`{site}`"), op_of(s, &site), format!("`{}`", d.name()), from.into()]));
+        }
+    }
+    rows.sort_by_key(|(site, _)| site_order(site));
+    v.prose("**Every value the program stores**, the solver's decisions, with its type and where the type comes from:");
+    v.listing_table(&["Site", "Operation", "Type", "From"], rows.into_iter().map(|(_, r)| r).collect());
+    let mut others: Vec<(&String, &Dtype)> = r.storage.iter().filter(|(site, _)| !named.contains(*site)).collect();
+    if !others.is_empty() {
+        others.sort_by_key(|(site, _)| site_order(site));
+        let rows: Vec<Vec<String>> = others.iter().map(|(site, d)| vec![format!("`{site}`"), op_of(s, site), role_name(s.roles.0.get(*site)), format!("`{}`", d.name())]).collect();
+        v.prose("**The sites the record types that store nothing**, whose type changes no bit:");
+        v.table(&["Site", "Operation", "Role", "Type"], rows);
+    }
+}
+
+/// Every parameter of the entry and the type a given realization stores it
+/// in (plan 0.12.0): its own (`params`, rounded once when the entry is
+/// given it), integers (`quant`), or the default.
+fn params_table(s: &State, v: &mut Section) {
+    let r = &s.realization;
+    let paths: Vec<String> = match s.pcore.func(s.entry).params.first().map(|p| &p.ty) {
+        Some(presk_types::ty::Ty::Params(m)) => s.prog.params_tree(m).declared_ranks().into_iter().map(|(p, _)| p).collect(),
+        _ => Vec::new(),
+    };
+    if paths.is_empty() {
+        return;
+    }
+    let rows: Vec<Vec<String>> = paths
+        .iter()
+        .map(|p| match (r.params.get(p), r.quant.get(p)) {
+            (Some(d), _) => vec![format!("`{p}`"), format!("`{}`", d.name()), "its own type, rounded once when the entry is given it (`params`)".into()],
+            (_, Some(q)) => vec![format!("`{p}`"), format!("`{}`", q.name()), "integers with a scale per channel (`quant`)".into()],
+            _ => vec![format!("`{p}`"), format!("`{}`", r.default.name()), "the default".into()],
+        })
+        .collect();
+    v.prose("**Every parameter**, decided by its path, and the type it is stored in:");
+    v.table(&["Parameter", "Stored as", "From"], rows);
 }
 
 fn roles_note(s: &State, v: &mut Section) {
@@ -1417,8 +1479,7 @@ fn measure(o: &Options, core: &Program, prog: &ElabProgram, dims: &[(String, u64
     };
     let workers = o.threads.unwrap_or_else(|| presk_kernel::cost::Machine::detect().workers).max(1);
     let native = with_backend(BackendKind::Native, core, prog, o.bits, plan, report, |b| -> Result<presk_rt::Value, String> {
-        let mut a: Vec<presk_rt::Value> = args.iter().map(|v| v.realize(realize.default)).collect();
-        realize.quantize_args(&mut a).map_err(|e| e.message)?;
+        let a = realize.realize_args(&args).map_err(|e| e.message)?;
         b.prepare(func, &fdims, realize).and_then(|p| b.call(&p, a)).map_err(|e| e.message)
     })?;
     let gap = exact.as_ref().map(|e| presk_driver::gap::leaf_gap(e, &native));

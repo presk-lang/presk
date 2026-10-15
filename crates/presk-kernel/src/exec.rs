@@ -293,9 +293,9 @@ pub fn output_buf(k: &Kernel) -> Buf {
     let n = k.output.numel();
     match (k.output.kind, k.dtype) {
         (BufKind::Idx, _) => Buf::I64(vec![0; n].into()),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n].into()),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n].into()),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n].into()),
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::F64) => Buf::F64(vec![0.0; n].into()),
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::F32) => Buf::F32(vec![0.0; n].into()),
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::Bf16) => Buf::Bf16(vec![0u16; n].into()),
     }
 }
 
@@ -306,8 +306,8 @@ pub fn launch_buf(k: &Kernel) -> Buf {
     let n = k.output.numel();
     match (k.output.kind, k.dtype) {
         (BufKind::Idx, _) => Buf::I64(presk_rt::Elems::fresh(n)),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F64) => Buf::F64(presk_rt::Elems::fresh(n)),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::F32) => Buf::F32(presk_rt::Elems::fresh(n)),
-        (BufKind::Real | BufKind::Quant { .. }, crate::ir::Dtype::Bf16) => Buf::Bf16(presk_rt::Elems::fresh(n)),
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::F64) => Buf::F64(presk_rt::Elems::fresh(n)),
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::F32) => Buf::F32(presk_rt::Elems::fresh(n)),
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::Bf16) => Buf::Bf16(presk_rt::Elems::fresh(n)),
     }
 }

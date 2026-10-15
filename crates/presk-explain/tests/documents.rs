@@ -63,3 +63,12 @@ fn the_minigpt_in_f32() {
 fn the_tutorial_loss_under_a_budget_to_every_target() {
     insta::assert_snapshot!("tutorial", document("tutorial", "tutorial/07_train.psk", "loss", &["B=4"], &[], (Some(1e-3), None), &[Target::Native, Target::C, Target::Pytorch]));
 }
+
+/// A realization given, one nest typed apart and two parameters stored in
+/// their own types (plan 0.12.0, D121): the realization's parameters in §6.3
+/// and the summary, the `bf16` weight a kernel widens as it loads it, and
+/// its own type in the C program's arena.
+#[test]
+fn the_tutorial_loss_under_typed_parameters() {
+    insta::assert_snapshot!("tutorial-typed", document("tutorial-typed", "tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("@../../tests/plan/tutorial-typed.json")), &[Target::Native, Target::C]));
+}

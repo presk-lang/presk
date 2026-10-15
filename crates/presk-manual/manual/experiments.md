@@ -7,7 +7,8 @@ any output directory of `presk export … --conformance-entry train:K`. §3 is
 0.4.0's decisive experiment against PyTorch (`make experiment-gpt`), taken
 again on three sides at 0.9.0 (`make pytorch-baseline`), §4 the
 statements of 0.5.0, §5 MLPerf's acceptance rule set beside a budget on one
-model (`make foil`), §6 the statements of 0.6.0, §7 those of 0.7.0, the
+model (`make foil`) and an accuracy target derived as a budget from the
+exact model's margins (`make margins`), §6 the statements of 0.6.0, §7 those of 0.7.0, the
 first test of the research programme's hypothesis RA4 (`make ra4`), §8
 those of 0.8.0, its second, with a model frozen before two fresh sweeps
 (`make ra4-f2`, `make ra4-f1`), §9 those of 0.9.0, a C export
@@ -515,6 +516,85 @@ within seven of it.)
   number, 2.796875. A budget binds what the entry returns, and this entry
   returns one number stored in eight bits. With the metric in `f64`, the
   `bf16` model's loss is 2.3·10⁻⁵ from `f32`'s.
+
+(Re-run at 0.11.0 on 2026-10-12, with D117's statement D realization:
+the same table but for its wall times.)
+
+### ε from the margins: an accuracy target as a budget (D118)
+
+The accuracy rule tests the realization it ran. A budget on the logits
+says more, once it is derived from the exact model.
+- **A realization within ε of every logit** changes a decision only
+  where the exact margin m, the top logit minus the second, is below 2ε.
+  So its accuracy is at least the exact model's less the fraction of
+  positions with m < 2ε, a property of the exact model alone.
+- **ε\*(δ)** is half the δ-quantile of the exact margins, corrected so
+  that the fraction with m < 2ε\* is at most δ with confidence 1 − α
+  (one-sided Clopper–Pearson). Every realization within ε\* changes at
+  most a fraction δ of the decisions.
+
+`make margins` (`experiments/margins.sh`, five minutes) measures it on
+the foil's model and windows. The exact logits come from the reference
+at 128 bits, the margins from them. Each realization of the foil and of
+the curve gets its gap on the logits (the largest of 10 857 472), its
+flips (where `argmax` natively differs from the exact one) and the
+argument's bound, #{m < 2ε}. The report is `docs/epsilon-2026-10-12.md`,
+the tables `docs/epsilon/`.
+
+The margins have no ties: the smallest is 1.2·10⁻⁵, the median 0.46.
+With α = 0.05, ε\* is 5.4·10⁻³ at δ = 10⁻², **4.7·10⁻⁴ at 10⁻³** and
+2.4·10⁻⁵ at 10⁻⁴ (5.7·10⁻³, 5.4·10⁻⁴ and 4.3·10⁻⁵ before the
+correction). Taken from half the windows, ε\* leaves under δ of the
+other half's margins below 2ε\*, at every δ.
+
+| realization | gap on the logits | flips | bound #{m < 2ε} | certified at 10⁻³ | MLPerf 99.9 % |
+|---|---|---|---|---|---|
+| `f32` | 3.1·10⁻⁶ | 0 | 0 | yes | yes |
+| `bf16` | 5.0·10⁻² | 480 | 13 661 | no | yes |
+| `int8`, `f32` elsewhere | 7.8·10⁻² | 161 | 33 682 | no | yes |
+| `int8` `pow2` | 1.1·10⁻¹ | 168 | 41 830 | no | yes |
+| `int4`, `f32` elsewhere | 1.24 | 2 968 | 118 016 | no | **no** |
+| `int4` `pow2` | 2.08 | 3 488 | 118 016 | no | yes |
+| the curve at 10⁻¹, 10⁻² | 3.2·10⁻², 1.4·10⁻² | 69, 36 | 6 933, 3 090 | no | yes |
+| the curve at 10⁻³ (statement D's) | **3.3·10⁻⁴** | **1** | 70 | **yes** | yes |
+| the curve at 10⁻⁴ … 10⁻⁷ | 7.5·10⁻⁵ … 6.7·10⁻⁸ | 0 | 18 … 0 | yes | yes |
+
+The curve's rows are 0.11.0's (D118). Measured again on 0.12.0's curve
+(D124's realizations, `make margins` on 2026-10-15, D125; the foil's rows
+the same, figure for figure):
+
+| realization | gap on the logits | flips | bound #{m < 2ε} | certified at 10⁻³ |
+|---|---|---|---|---|
+| the curve at 10⁻¹, 10⁻² | 3.6·10⁻², 1.5·10⁻² | 76, 38 | 7 818, 3 174 | no |
+| the curve at 10⁻³ (statement D's) | **2.5·10⁻⁴** | **0** | 51 | **yes** |
+| the curve at 10⁻⁴ … 10⁻⁷ | 7.5·10⁻⁵ … 5.9·10⁻⁸ | 0 | 18 … 0 | yes |
+| solved on the logits at 4.67·10⁻⁴ (V6) | 7.5·10⁻⁵ | 0 | 18 | yes |
+
+Five of seven are within ε\*(10⁻³) again, and S holds.
+
+**What it shows:**
+- **Every realization's flips are within its bound**, by 28 to 250
+  times, and every flip is at a position whose margin is at most twice
+  the gap there. The statement fixed beforehand, S, holds: the curve's
+  realizations within ε\*(10⁻³), five of seven, flip at most δ of the
+  decisions (one at most), and each flips within its bound.
+- **The margins order the realizations by their gap and bound what
+  changes.** The accuracy rule reads a net score, which is not monotone
+  in any gap.
+  - `bf16` and the two `int8` rows change 480, 161 and 168 decisions,
+    more than 10⁻³ of them. MLPerf admits them on net counts of −2, +6
+    and −11; the margins refuse them, rightly at 10⁻³ and conservatively
+    at 10⁻², where their gaps are 9–21× ε\*.
+  - The two `int4` rows, which MLPerf separates, change 2.5 % and 3.0 %
+    of the decisions, the admitted one more.
+- **A budget on the loss does not bound the logits.** The curve's two
+  loosest realizations are inside their budgets on the loss and 30 to 70
+  times ε\*(10⁻³) on the logits. A loss averages the errors that each
+  decision sees alone.
+
+`presk solve` cannot solve at ε\* yet. It takes a scalar entry, ranking
+its sites by `∂L/∂v`, and `max`, which would write the largest gap as a
+scalar, is not implemented.
 
 ## 6. Make it pay: the statements of 0.6.0
 
@@ -1088,10 +1168,17 @@ under a budget of 6.3·10⁻³. At 0.11.0, the solver offering the values the
 program stores alone (D112), the same solve in the same time puts all 25
 away from `f64` (21 in `f32`, 4 in `bf16`), 2.03× less traffic, and
 measures 1.05·10⁻⁵: two of the 25 have another type, the query `bf16`
-and the layer norm's mean `f32` (D117, `docs/compile-times-2026-10-09.md`). `presk solve` takes a scalar entry, a loss,
-and refuses any other at once since D101. BERT's `squad`, which returns its
-logits, was refused that way, so its row is measured on `squad_loss`, the
-loss `run_squad.py` trains it on (the `coverage` chapter).
+and the layer norm's mean `f32` (D117, `docs/compile-times-2026-10-09.md`).
+At 0.12.0, the solver offering the functions' results and the parameters
+too (D123), it puts all 28 stored values and all 23 parameters away from
+`f64`, 2.00× less traffic with the weights counted, in 2 h 49 min, and
+measures 9.2·10⁻⁷ (D124, `docs/compile-times-2026-10-13.md`). Until
+0.12.0 `presk solve` took a scalar entry, a loss, and refused any other at
+once (D101). BERT's `squad`, which returns its logits, was refused that
+way, so its row is measured on `squad_loss`, the loss `run_squad.py`
+trains it on (the `coverage` chapter); since 0.12.0 a tensor entry is
+solved under a budget on its largest elementwise gap (D123), and the row
+stays on the loss, D101's.
 
 **A second model, after the tag.** The Llama 2 decoder of
 `coverage/llama.psk`, at the 7B configuration's width and one of its 32
@@ -1111,9 +1198,11 @@ run*): `presk solve --budget 1e-3` on its next-token loss, one block, 384
 tokens, in 14 h 07 min and 71.7 GB, 52 of 56 sites narrowed, 1.99× less
 traffic than all-`f64`, measured 4.3·10⁻⁶ against 1.1·10⁻² (at 0.11.0,
 the solver offering the stored values alone: 24 of 25 at 1.96×, measured
-2.0·10⁻⁵, D117), beside
-BERT's two blocks above (5.1·10⁻⁷, 2.00×; 1.05·10⁻⁵, 2.03× at 0.11.0)
-and statement D's course GPT (2.1·10⁻⁵, 2.00×, D102 and D117). Every output 0.10.0 gives is 0.10.1's, so every
+2.0·10⁻⁵, D117; at 0.12.0, the results and the parameters offered too: 31
+of 32 and the 13 parameters at 1.99× with the weights counted, measured
+2.6·10⁻⁵, D124), beside BERT's two blocks above (5.1·10⁻⁷, 2.00×;
+1.05·10⁻⁵, 2.03× at 0.11.0; 9.2·10⁻⁷, 2.00× at 0.12.0) and statement D's
+course GPT (2.1·10⁻⁵, 2.00×, D102 and D117; 2.1·10⁻⁶ at 0.12.0, D124). Every output 0.10.0 gives is 0.10.1's, so every
 number of this chapter stands.
 
 **The second model against PyTorch, after 0.10.1.** The same block's
@@ -1125,6 +1214,29 @@ and 8.3× with `int8` weights on every matrix, where the course GPT's
 forward pass took 2.32× (D100); two thirds of its kernels' time is the
 attention's output projection, an `ein` over three summed axes that the
 layout space does not tile.
+
+**The decoder block under its solved realization, at 0.12.0** (V5, D124;
+`ROWS=realizations` of `experiments/pytorch_decoder.sh`, each row in
+several processes). Its forward pass at batch 1, in ms:
+
+| realization | three rounds | batch 20 |
+|---|---|---|
+| all-`f64` | 7 023 / 8 919 / 8 874 | 105 662 |
+| all-`f32` | 2 439 / 3 880 / 3 825 | 67 554 |
+| 0.11.0's solved | 9 714 / 9 670 / 9 800 | 108 394 |
+| 0.12.0's solved | 2 441 / 2 798 / 2 524 | 46 631 |
+
+- *Against 0.11.0's solved realization, 3.5 to 4 times faster.* 0.11.0
+  left the functions' results in `f64`, the output projection among them,
+  and converted every weight at the kernels' edges, 944 MB a call. 0.12.0
+  narrows the results and stores the weights in `f32`, read in place: what
+  it converts is the residual stream, 18.9 MB a call, for the one `f64`
+  nest.
+- *As fast as all-`f32`, not faster.* The two plans are the same but for
+  one scalar nest. All-`f32` ran at 3.7–3.9 s in 7 of its 8 processes
+  (D107's 3 744 ms) and at 2 439 ms in one; the solved realization at
+  2.4–2.9 s in all 8. The cause of all-`f32`'s slow processes is not
+  found.
 
 **What T2 says.** A training step of the course GPT in C is level with
 PyTorch's on these cores, where 0.9.0 left it 12× behind. In order of what

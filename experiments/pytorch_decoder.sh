@@ -43,6 +43,14 @@
 # it again. A command that fails is recorded and the others still run.
 # T=16 is the gate (D107's step 2), which sizes the run of record. A quiet
 # machine: nothing beside it. Writes OUT/report.md.
+#
+# REALIZATIONS (plan 0.12.0, statement V5): further native rows, each
+# `NAME=REALIZATION` (`f64`, `f32`, or `@FILE`, a realization record), under
+# the frozen profile's plan for that realization at every batch size, timed
+# as the rows above, then the host by phase (`--host-profile`) at every batch
+# size: how much of a call converts its inputs at a kernel's edge. ROWS=
+# realizations runs those rows alone: no export, no PyTorch, no `f32` or
+# `int8` rows, no kernels timed alone.
 set -u -o pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -57,12 +65,25 @@ BATCHES=${BATCHES:-1 20}
 REPEAT=${REPEAT:-7}
 REPEAT20=${REPEAT20:-$REPEAT}
 MEM=${MEM:-108G}
+REALIZATIONS=${REALIZATIONS:-}
+ROWS=${ROWS:-all}
 OUT=${1:?usage: experiments/pytorch_decoder.sh OUT}
 FILE=coverage/llama.psk
 CONSTS=(--const G=32 --const L=1)
 
-for f in "$PRESK" "$PY" "$PROFILE"; do
+case $ROWS in all | realizations) ;; *) echo "pytorch_decoder.sh: ROWS is all or realizations, not $ROWS" >&2; exit 1 ;; esac
+ALL=$([ "$ROWS" = all ] && echo 1)
+need=("$PRESK" "$PROFILE")
+[ -n "$ALL" ] && need+=("$PY")
+for f in "${need[@]}"; do
     [ -e "$f" ] || { echo "pytorch_decoder.sh: missing $f" >&2; exit 1; }
+done
+for nr in $REALIZATIONS; do
+    case $nr in
+        *=f64 | *=f32 | *=bf16) ;;
+        *=@*) [ -s "${nr#*=@}" ] || { echo "pytorch_decoder.sh: missing ${nr#*=@}" >&2; exit 1; } ;;
+        *) echo "pytorch_decoder.sh: a realization is NAME=f64, f32, bf16 or @FILE, not $nr" >&2; exit 1 ;;
+    esac
 done
 mkdir -p "$OUT/log" "$OUT/plans"
 OUT=$(cd "$OUT" && pwd)
@@ -100,14 +121,19 @@ else {
     lscpu | grep -E "^(Nom de modèle|Model name|Vitesse maximale|CPU max MHz)" | sed 's/  */ /g'
     echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
     echo "T $T, batches $BATCHES, repeat $REPEAT, repeat at batch 20 (native) $REPEAT20, cores $CORES, one-thread core $ONE"
+    echo "rows $ROWS${REALIZATIONS:+, realizations $REALIZATIONS}"
 } > "$OUT/machine.txt"
 fi
+if [ -n "$ALL" ]; then
 "$PY" -c "import torch; print('torch', torch.__version__); print(torch.__config__.show()); print(torch.__config__.parallel_info())" > "$OUT/torch-config.txt"
 TORCH_LIB=$("$PY" -c "import os, torch; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
 {
     "$PY" -c "import ctypes, sys; l = ctypes.CDLL(sys.argv[1]); l.openblas_get_config.restype = ctypes.c_char_p; print(l.openblas_get_config().decode())" "$TORCH_LIB/libopenblas.so.0"
     grep -a -m1 -o "arm_compute_version=v[0-9.]*" "$TORCH_LIB/libarm_compute.so"
 } > "$OUT/torch-libs.txt"
+else
+    echo "(no PyTorch: ROWS=$ROWS)" > "$OUT/torch-libs.txt"
+fi
 cat "$OUT/machine.txt" "$OUT/torch-libs.txt"
 
 # --- The export and the realizations -----------------------------------------
@@ -124,21 +150,44 @@ if [ -s out/llama/int8_all.json ]; then
 fi
 echo '{"realization": "f32", "layout": {}}' > "$P/f32-default.json"
 echo "{\"realization\": \"@$P/int8_all.json\", \"layout\": {}}" > "$P/int8-default.json"
-[ -s "$OUT/pt/llama.py" ] || rm -f "$OUT/log/export.time"
-run export - "$PRESK" export "$FILE" --target pytorch --mode readable "${CONSTS[@]}" -o "$OUT/pt"
+if [ -n "$ALL" ]; then
+    [ -s "$OUT/pt/llama.py" ] || rm -f "$OUT/log/export.time"
+    run export - "$PRESK" export "$FILE" --target pytorch --mode readable "${CONSTS[@]}" -o "$OUT/pt"
+fi
+# Each further realization as a record of its own, copied, so that the
+# report names what was timed.
+for nr in $REALIZATIONS; do
+    case ${nr#*=} in @*) cp "${nr#*=@}" "$P/${nr%%=*}.realization.json" ;; esac
+done
+realize_of() { # NAME: the realization `--realize` takes for it
+    local nr
+    for nr in $REALIZATIONS; do
+        [ "${nr%%=*}" = "$1" ] || continue
+        case ${nr#*=} in @*) echo "@$P/$1.realization.json" ;; *) echo "${nr#*=}" ;; esac
+    done
+}
 
 # --- Plans -----------------------------------------------------------------
 # The frozen profile's plan per batch size, `f32` and the quantised
 # realization; a refusal is recorded and that row left out.
 for b in $BATCHES; do
+    [ -n "$ALL" ] || break
     run "plan.f32.B$b" - "$PRESK" plan "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B="$b" --dim T="$T" \
         --realize f32 --profile "$PROFILE" --out "$P/f32-plan-B$b.json"
     run "plan.int8.B$b" - "$PRESK" plan "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B="$b" --dim T="$T" \
         --realize "@$P/int8_all.json" --profile "$PROFILE" --out "$P/int8-plan-B$b.json"
 done
+for nr in $REALIZATIONS; do
+    name=${nr%%=*}
+    for b in $BATCHES; do
+        run "plan.$name.B$b" - "$PRESK" plan "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B="$b" --dim T="$T" \
+            --realize "$(realize_of "$name")" --profile "$PROFILE" --out "$P/$name-plan-B$b.json"
+    done
+done
 
 # --- Timing ----------------------------------------------------------------
 for b in $BATCHES; do
+    [ -n "$ALL" ] || break
     rep=$REPEAT
     [ "$b" = 20 ] && rep=$REPEAT20
     say "batch $b"
@@ -169,21 +218,45 @@ done
 # kernels. After every timed row, so that it moves none of them.
 mkdir -p "$OUT/prof"
 for b in $BATCHES; do
+    [ -n "$ALL" ] || break
     [ -s "$P/f32-plan-B$b.json" ] || continue
     run "kernels.f32.plan.B$b" "$CORES" "$PRESK" bench "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B="$b" --dim T="$T" \
         --plan "@$P/f32-plan-B$b.json" --threads 10 --repeat "$REPEAT" --calibrate "$OUT/prof/f32-plan-B$b.json"
 done
 # The host by phase (`--host-profile`, D95) under the `f32` plan at batch 1:
 # what of a call is the kernels' and what the host's, measured in the call.
-if [ -s "$P/f32-plan-B1.json" ] && [[ " $BATCHES " == *" 1 "* ]]; then
+if [ -n "$ALL" ] && [ -s "$P/f32-plan-B1.json" ] && [[ " $BATCHES " == *" 1 "* ]]; then
     run "hostprof.f32.plan.B1" "$CORES" "$PRESK" bench "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B=1 --dim T="$T" \
         --plan "@$P/f32-plan-B1.json" --threads 10 --warmup 1 --repeat 3 --host-profile
 fi
 
+# --- Further realizations (V5) -------------------------------------------------
+# Each under its own plan, at every batch size: the timed row, then the host
+# by phase. Batch by batch, so that a batch's rows are taken together.
+for b in $BATCHES; do
+    rep=$REPEAT
+    [ "$b" = 20 ] && rep=$REPEAT20
+    for nr in $REALIZATIONS; do
+        name=${nr%%=*}
+        plan=$P/$name-plan-B$b.json
+        [ -s "$plan" ] || { say "native.$name.plan.B$b: no plan, left out"; continue; }
+        run "native.$name.plan.B$b" "$CORES" "$PRESK" bench "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B="$b" --dim T="$T" \
+            --plan "@$plan" --plan-only --native-only --warmup 1 --repeat "$rep" --threads 10
+    done
+    for nr in $REALIZATIONS; do
+        name=${nr%%=*}
+        plan=$P/$name-plan-B$b.json
+        [ -s "$plan" ] || continue
+        run "hostprof.$name.plan.B$b" "$CORES" "$PRESK" bench "$FILE" --entry Llama.apply "${CONSTS[@]}" --dim B="$b" --dim T="$T" \
+            --plan "@$plan" --threads 10 --warmup 1 --repeat 3 --host-profile
+    done
+done
+
 # --- The report ------------------------------------------------------------
-python3 - "$OUT" "$T" "$BATCHES" "$ONE" > "$OUT/report.md" <<'EOF'
+python3 - "$OUT" "$T" "$BATCHES" "$ONE" "$ROWS" "$REALIZATIONS" > "$OUT/report.md" <<'EOF'
 import glob, os, re, sys
 out, T, batches, one = sys.argv[1], int(sys.argv[2]), [int(b) for b in sys.argv[3].split()], sys.argv[4]
+rows_all, realizations = sys.argv[5] == "all", [r.split("=", 1) for r in sys.argv[6].split()]
 log = lambda k: f"{out}/log/{k}"
 D, FF, V, L = 4096, 11008, 32000, 1
 
@@ -255,98 +328,137 @@ machine = open(f"{out}/machine.txt").read().strip()
 libs = open(f"{out}/torch-libs.txt").read().strip()
 first = machine.splitlines()
 date, rev, version = first[0].split()[1][:10], first[1].split()[1].rstrip(","), first[1].split(", ", 1)[1]
-print(f"# The Llama 2 decoder block against PyTorch eager: {version}")
-print()
-print(f"One block of the Llama 2 decoder at the 7B configuration's width (`coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}, `f32`; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh`. Two sides on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads): presk's native backend (`presk bench --native-only --plan-only`), under its default layouts and under `presk plan`'s plan with the frozen profile, in `f32` and with `int8` weights on every matrix; and PyTorch running the module `presk export --target pytorch --mode readable` writes, in eval mode under `torch.no_grad()`, with its own draw of the same distributions (every matrix normal(std = 0.02), every γ ones; seed 0) and token ids drawn by `torch.randint` (seed 0). Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
-print()
-counted = {b: flops(b) for b in batches}
-print("**Operations.** The forward pass's contractions, a multiply and an add a term: " + "; ".join(
-    f"batch {b}: {model_flops(b) / 1e9:.2f} GFLOP by the compiler's count of them, {counted[b] / 1e9:.2f} by PyTorch's counter (`torch.utils.flop_counter`)" if counted[b] else f"batch {b}: {model_flops(b) / 1e9:.2f} GFLOP by the compiler's count"
-    for b in batches) + ". The rates below divide PyTorch's count by the median, whatever a side executes.")
+if rows_all:
+    print(f"# The Llama 2 decoder block against PyTorch eager: {version}")
+    print()
+    print(f"One block of the Llama 2 decoder at the 7B configuration's width (`coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}, `f32`; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh`. Two sides on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads): presk's native backend (`presk bench --native-only --plan-only`), under its default layouts and under `presk plan`'s plan with the frozen profile, in `f32` and with `int8` weights on every matrix; and PyTorch running the module `presk export --target pytorch --mode readable` writes, in eval mode under `torch.no_grad()`, with its own draw of the same distributions (every matrix normal(std = 0.02), every γ ones; seed 0) and token ids drawn by `torch.randint` (seed 0). Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
+    print()
+    counted = {b: flops(b) for b in batches}
+    print("**Operations.** The forward pass's contractions, a multiply and an add a term: " + "; ".join(
+        f"batch {b}: {model_flops(b) / 1e9:.2f} GFLOP by the compiler's count of them, {counted[b] / 1e9:.2f} by PyTorch's counter (`torch.utils.flop_counter`)" if counted[b] else f"batch {b}: {model_flops(b) / 1e9:.2f} GFLOP by the compiler's count"
+        for b in batches) + ". The rates below divide PyTorch's count by the median, whatever a side executes.")
 
-SIDES = (("native", "f32"), ("native, int8 every matrix", "int8"))
-for b in batches:
-    print(f"\n## The forward pass, B = {b}\n")
-    base = times(f"pytorch.10.B{b}")
-    fl = counted[b] or model_flops(b)
-    print("| threads | side | layout | median ms | best ms | GFLOP/s | ÷ PyTorch |")
-    print("|---|---|---|---|---|---|---|")
-    rows = []
-    for side, r in SIDES:
-        for layout in ("default", "plan"):
-            rows.append(("10 (ten X925, pinned)", side, layout, f"native.{r}.{layout}.B{b}"))
-    rows.append(("10 (ten X925, pinned)", "PyTorch", "its own", f"pytorch.10.B{b}"))
-    if b == 1:
-        rows.append((f"1 (one X925, cpu {one}, pinned)", "PyTorch", "its own", f"pytorch.1.B{b}"))
-    for th, side, layout, k in rows:
-        t = times(k)
-        if t is None:
-            why = "no plan" if layout == "plan" and not ok(k.replace("native.", "plan.").replace(f".plan.B{b}", f".B{b}")) else f"not measured ({status(k)})"
-            print(f"| {th} | {side} | {layout} | {why} | | | |")
+    SIDES = (("native", "f32"), ("native, int8 every matrix", "int8"))
+    for b in batches:
+        print(f"\n## The forward pass, B = {b}\n")
+        base = times(f"pytorch.10.B{b}")
+        fl = counted[b] or model_flops(b)
+        print("| threads | side | layout | median ms | best ms | GFLOP/s | ÷ PyTorch |")
+        print("|---|---|---|---|---|---|---|")
+        rows = []
+        for side, r in SIDES:
+            for layout in ("default", "plan"):
+                rows.append(("10 (ten X925, pinned)", side, layout, f"native.{r}.{layout}.B{b}"))
+        rows.append(("10 (ten X925, pinned)", "PyTorch", "its own", f"pytorch.10.B{b}"))
+        if b == 1:
+            rows.append((f"1 (one X925, cpu {one}, pinned)", "PyTorch", "its own", f"pytorch.1.B{b}"))
+        for th, side, layout, k in rows:
+            t = times(k)
+            if t is None:
+                why = "no plan" if layout == "plan" and not ok(k.replace("native.", "plan.").replace(f".plan.B{b}", f".B{b}")) else f"not measured ({status(k)})"
+                print(f"| {th} | {side} | {layout} | {why} | | | |")
+                continue
+            ratio = f"{t[0] / base[0]:.2f}" if base else ""
+            print(f"| {th} | {side} | {layout} | {thousands(t[0])} | {thousands(t[1])} | {fl / 1e9 / (t[0] / 1e3):.1f} | {ratio} |")
+        lg = re.search(r"pytorch logits: (.*)", text(log(f"pytorch.10.B{b}") + ".log") or "")
+        if lg:
+            print(f"\nPyTorch's logits on its last call, ten threads: {lg.group(1)}.")
+
+    print("\n## Where the native time goes, under the `f32` plan\n")
+    print("Every launch timed on its own (`presk bench --calibrate`, D100's: a launch's threads' start included, the host's buffers and copies not), each kernel's median launch; the kernels' time a call is each kernel's median launch times its launches. The largest kernels by their launch's time; a kernel is one shape of a nest, so `wk` and `wv` (their output axis `kvout`) are one kernel launched twice, and so are SwiGLU's `gate` and `up`; every other kernel here is launched once. GFLOP: a product's multiplies and adds, from its operands' shapes (a `dot`'s left operand's elements times its right operand's columns, an `ein`'s every axis once), twice its terms; the kernel's own operation count, which weighs index arithmetic too, is not used.")
+    hp = text(log("hostprof.f32.plan.B1") + ".log") or ""
+    hk = re.search(r"^kernels\s+([0-9.]+)", hp, re.M)
+    ht = re.search(r"^total\s+([0-9.]+)", hp, re.M)
+    hh = re.search(r"the host ([0-9.]+) ms", hp)
+    if ok("hostprof.f32.plan.B1") and hk and ht and hh:
+        print()
+        print(f"In the call itself (`presk bench --host-profile`, D95's, at batch 1 under the `f32` plan, three calls timed by phase): the kernels {thousands(float(hk.group(1)))} ms of {thousands(float(ht.group(1)))}, the host {float(hh.group(1)):.1f} ms. So what a call takes beyond its kernels timed alone is not the host's: inside the call a launch takes longer than the same launch timed on its own.")
+
+    def contraction_flops(sig):
+        """Twice the terms of a `dot` or an `ein`, from the full signature's shapes; None for any other kernel.
+        A `dot`: its left operand's elements times its right operand's columns. An `ein`: its output's
+        elements times the axes of operand 0 its output does not keep (its two operands may name an axis
+        alike that the output keeps twice, as the scores' `seq` and `seq2`)."""
+        head, _, out = sig.partition(" -> ")
+        shape = lambda t: [[a.strip() for a in o.split(",") if a.strip()] for o in re.findall(r"\b(?:f64|f32|bf16|i64)\[([^\]]*)\]", t)]
+        ln = lambda a: int(a.rpartition(":")[2])
+        ops, res = shape(head.split("(", 1)[-1]), shape(out)
+        prod = lambda xs: __import__("math").prod(xs)
+        if head.startswith("dot ") and len(ops) == 2:
+            return 2 * prod(ln(a) for a in ops[0]) * ln(ops[1][-1])
+        m = re.match(r"ein\[([^\]]*)\]", head)
+        if m and len(ops) == 2 and res:
+            keep = [x.strip() for x in m.group(1).split(",")]
+            summed = [ln(a) for a in ops[0] if a.rpartition(":")[0].strip() not in keep]
+            return 2 * prod(ln(a) for a in res[0]) * prod(summed)
+        return None
+
+    for b in batches:
+        k = f"kernels.f32.plan.B{b}"
+        t = text(log(k) + ".log") or ""
+        call = re.search(r"-- a call: (\d+) launches, the kernels' time ([0-9.]+) ms", t)
+        prof = text(f"{out}/prof/f32-plan-B{b}.json")
+        if not (ok(k) and call and prof):
+            print(f"\n- batch {b}: not measured ({status(k)}).")
             continue
-        ratio = f"{t[0] / base[0]:.2f}" if base else ""
-        print(f"| {th} | {side} | {layout} | {thousands(t[0])} | {thousands(t[1])} | {fl / 1e9 / (t[0] / 1e3):.1f} | {ratio} |")
-    lg = re.search(r"pytorch logits: (.*)", text(log(f"pytorch.10.B{b}") + ".log") or "")
-    if lg:
-        print(f"\nPyTorch's logits on its last call, ten threads: {lg.group(1)}.")
+        import json
+        ks = sorted(json.loads(prof)["kernels"], key=lambda x: -x["seconds"])
+        row = times(f"native.f32.plan.B{b}")
+        kern = float(call.group(2))
+        print(f"\n### B = {b}\n")
+        print(f"{call.group(1)} launches a call, the kernels' time {thousands(kern)} ms timed alone" + (f", the plan's row {thousands(row[0])} ms." if row else "."))
+        print()
+        print("| kernel | GFLOP a launch | ms a launch | share of the kernels' time | GFLOP/s |")
+        print("|---|---|---|---|---|")
+        for x in ks[:10]:
+            sig = x["signature"].removeprefix("kernel ").split(" -> ")[0]
+            sig = re.sub(r"%\d+ : ", "", sig)
+            f = contraction_flops(x["signature"].removeprefix("kernel "))
+            n = 2 if re.search(r"kvout: 4096\]\)$|\[4096, 11008\]\)$", sig) else 1
+            share = f"{100 * n * x['seconds'] * 1e3 / kern:.1f} %" + (f" ({n} launches)" if n > 1 else "")
+            print(f"| `{sig}` | {f / 1e9:.2f} | {thousands(x['seconds'] * 1e3)} | {share} | {f / 1e9 / x['seconds']:.1f} |" if f else f"| `{sig}` | — | {thousands(x['seconds'] * 1e3)} | {share} | — |")
 
-print("\n## Where the native time goes, under the `f32` plan\n")
-print("Every launch timed on its own (`presk bench --calibrate`, D100's: a launch's threads' start included, the host's buffers and copies not), each kernel's median launch; the kernels' time a call is each kernel's median launch times its launches. The largest kernels by their launch's time; a kernel is one shape of a nest, so `wk` and `wv` (their output axis `kvout`) are one kernel launched twice, and so are SwiGLU's `gate` and `up`; every other kernel here is launched once. GFLOP: a product's multiplies and adds, from its operands' shapes (a `dot`'s left operand's elements times its right operand's columns, an `ein`'s every axis once), twice its terms; the kernel's own operation count, which weighs index arithmetic too, is not used.")
-hp = text(log("hostprof.f32.plan.B1") + ".log") or ""
-hk = re.search(r"^kernels\s+([0-9.]+)", hp, re.M)
-ht = re.search(r"^total\s+([0-9.]+)", hp, re.M)
-hh = re.search(r"the host ([0-9.]+) ms", hp)
-if ok("hostprof.f32.plan.B1") and hk and ht and hh:
-    print()
-    print(f"In the call itself (`presk bench --host-profile`, D95's, at batch 1 under the `f32` plan, three calls timed by phase): the kernels {thousands(float(hk.group(1)))} ms of {thousands(float(ht.group(1)))}, the host {float(hh.group(1)):.1f} ms. So what a call takes beyond its kernels timed alone is not the host's: inside the call a launch takes longer than the same launch timed on its own.")
-
-def contraction_flops(sig):
-    """Twice the terms of a `dot` or an `ein`, from the full signature's shapes; None for any other kernel.
-    A `dot`: its left operand's elements times its right operand's columns. An `ein`: its output's
-    elements times the axes of operand 0 its output does not keep (its two operands may name an axis
-    alike that the output keeps twice, as the scores' `seq` and `seq2`)."""
-    head, _, out = sig.partition(" -> ")
-    shape = lambda t: [[a.strip() for a in o.split(",") if a.strip()] for o in re.findall(r"\b(?:f64|f32|bf16|i64)\[([^\]]*)\]", t)]
-    ln = lambda a: int(a.rpartition(":")[2])
-    ops, res = shape(head.split("(", 1)[-1]), shape(out)
-    prod = lambda xs: __import__("math").prod(xs)
-    if head.startswith("dot ") and len(ops) == 2:
-        return 2 * prod(ln(a) for a in ops[0]) * ln(ops[1][-1])
-    m = re.match(r"ein\[([^\]]*)\]", head)
-    if m and len(ops) == 2 and res:
-        keep = [x.strip() for x in m.group(1).split(",")]
-        summed = [ln(a) for a in ops[0] if a.rpartition(":")[0].strip() not in keep]
-        return 2 * prod(ln(a) for a in res[0]) * prod(summed)
-    return None
-
-for b in batches:
-    k = f"kernels.f32.plan.B{b}"
+def phases(k):
+    """`--host-profile`'s table: a phase's name to its ms a call, its share
+    in percent and its MB a call (None where it prints none)."""
     t = text(log(k) + ".log") or ""
-    call = re.search(r"-- a call: (\d+) launches, the kernels' time ([0-9.]+) ms", t)
-    prof = text(f"{out}/prof/f32-plan-B{b}.json")
-    if not (ok(k) and call and prof):
-        print(f"\n- batch {b}: not measured ({status(k)}).")
-        continue
-    import json
-    ks = sorted(json.loads(prof)["kernels"], key=lambda x: -x["seconds"])
-    row = times(f"native.f32.plan.B{b}")
-    kern = float(call.group(2))
-    print(f"\n### B = {b}\n")
-    print(f"{call.group(1)} launches a call, the kernels' time {thousands(kern)} ms timed alone" + (f", the plan's row {thousands(row[0])} ms." if row else "."))
+    if not ok(k):
+        return None
+    ph = {}
+    for l in t.splitlines():
+        m = re.match(r"^\s*([a-z][a-z.-]*)\s+([0-9.]+)\s+([0-9.]+) %\s+(\S+)", l)
+        if m:
+            ph[m.group(1)] = (float(m.group(2)), float(m.group(3)), None if m.group(4) == "—" else float(m.group(4)))
+    return ph
+
+if not rows_all:
+    print(f"# The Llama 2 decoder block under further realizations: {version}")
     print()
-    print("| kernel | GFLOP a launch | ms a launch | share of the kernels' time | GFLOP/s |")
-    print("|---|---|---|---|---|")
-    for x in ks[:10]:
-        sig = x["signature"].removeprefix("kernel ").split(" -> ")[0]
-        sig = re.sub(r"%\d+ : ", "", sig)
-        f = contraction_flops(x["signature"].removeprefix("kernel "))
-        n = 2 if re.search(r"kvout: 4096\]\)$|\[4096, 11008\]\)$", sig) else 1
-        share = f"{100 * n * x['seconds'] * 1e3 / kern:.1f} %" + (f" ({n} launches)" if n > 1 else "")
-        print(f"| `{sig}` | {f / 1e9:.2f} | {thousands(x['seconds'] * 1e3)} | {share} | {f / 1e9 / x['seconds']:.1f} |" if f else f"| `{sig}` | — | {thousands(x['seconds'] * 1e3)} | {share} | — |")
+    print(f"One block of the Llama 2 decoder at the 7B configuration's width (`coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh` with `ROWS=realizations`: presk's native backend alone (`presk bench --native-only --plan-only`), on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads), D100's protocol as D107 ran it, without PyTorch's rows. Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
+if realizations:
+    print("\n## Further realizations\n")
+    print("Each realization under `presk plan`'s plan for it with the frozen profile, at each batch size; then, in a process of its own, the host by phase (`presk bench --host-profile`, D95's: three calls timed by phase after one warmup call). The kernels' share is their code's time in the call; *converted* is the phase `buffers.convert`, the inputs a launch receives in another type than its kernel's, converted into a new buffer at the kernel's edge, its time and its bytes a call. The GFLOP/s divide the compiler's count of the contractions by the median.")
+    for b in batches:
+        print(f"\n### B = {b}\n")
+        base = times(f"native.f32.plan.B{b}")
+        print("| realization | median ms | best ms | GFLOP/s | ÷ `f32` plan | kernels ms a call | converted ms a call | converted share | converted MB a call | host profile's total ms |")
+        print("|---|---|---|---|---|---|---|---|---|---|")
+        for name, r in realizations:
+            t = times(f"native.{name}.plan.B{b}")
+            ph = phases(f"hostprof.{name}.plan.B{b}") or {}
+            what = f"`{name}` (`{r}`)"
+            if t is None:
+                why = "no plan" if not ok(f"plan.{name}.B{b}") else f"not measured ({status(f'native.{name}.plan.B{b}')})"
+                cells = [why, "", "", ""]
+            else:
+                cells = [thousands(t[0]), thousands(t[1]), f"{model_flops(b) / 1e9 / (t[0] / 1e3):.1f}", f"{t[0] / base[0]:.2f}" if base else ""]
+            k, c, tot = ph.get("kernels"), ph.get("buffers.convert"), ph.get("total")
+            cells += [thousands(k[0]) if k else "", f"{c[0]:.1f}" if c else "", f"{c[1]:.2f} %" if c else "", (thousands(c[2]) if c[2] is not None else "0") if c else "", thousands(tot[0]) if tot else ""]
+            print(f"| {what} | " + " | ".join(cells) + " |")
 
 print("\n## The plans\n")
 for b in batches:
-    for r in ("f32", "int8"):
+    for r in (("f32", "int8") if rows_all else ()) + tuple(name for name, _ in realizations):
         k = f"plan.{r}.B{b}"
         t = text(log(k) + ".log") or ""
         if ok(k):

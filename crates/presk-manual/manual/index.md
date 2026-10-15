@@ -1,6 +1,6 @@
 # Presk compiler — user manual
 
-**Version 0.11.0** (plans 0.1.0 to 0.11.0 and the patch 0.10.1 done; [`status`]). This
+**Version 0.12.0** (plans 0.1.0 to 0.12.0 and the patch 0.10.1 done; [`status`]). This
 manual describes the `presk` tool as it is implemented, no more: every
 chapter was updated at each step of each plan, and features that exist only
 in the language specification are marked *not implemented*. The reference for the language itself is the

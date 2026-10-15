@@ -236,6 +236,11 @@ impl HostProfile {
         self.seconds[p.index()]
     }
 
+    /// The bytes a phase copied, allocated, converted or freed.
+    pub fn bytes_of(&self, p: Phase) -> u64 {
+        self.bytes[p.index()]
+    }
+
     /// Every phase's time.
     pub fn total(&self) -> f64 {
         self.seconds.iter().sum()

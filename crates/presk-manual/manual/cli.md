@@ -144,7 +144,7 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--verbose` | also print the synthesized inputs. |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
 | `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
-| `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), and since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it). The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
+| `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it), and since 0.12.0 step 1 a `params` map giving a parameter its own type at rest, `f32` or `bf16` (`precision` chapter; run by every executor and the C export since step 2). The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
 | `--plan @FILE` | a realization plan (`realize` chapter, "The realization plan"; 0.7.0 step 1): a realization and a layout per nest. `--realize R` is the plan with realization `R` and the default layout, so the two flags are exclusive. The plan is checked against the program before anything runs, and each nest's layout against its shapes and its kernel when it is launched; an ill-formed layout is refused (`E7002`), never ignored. Every decision of the reference is lowered since 0.7.0 step 3. The reference interpreter ignores the layout. Also on `presk train`, `presk bench` and `presk dump`. |
 | `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
@@ -271,7 +271,7 @@ out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" -
 | `--serve` | the generation function of the file's `inference serve` (or `--entry`), at one sequence (`B = 1`, which `--dim` may not change) and the window `--dim T=N` its model's parameters fix, with its greedy copy and `generate`, `presk serve`'s loop (step 6; below). A model whose parameters do not fix the context's length is refused (`E8009`). |
 | `--dim NAME=N`, `--const NAME=N` | as for `presk run`; every dimension must be bound (`E8003`). |
 | `--remat store\|recompute` | as for `presk run` (0.10.0 step 4): a gradient entry is exported with its forward pass stored, `f.bwd` after `f.fwd`, by default; `recompute` exports the recomputing `.vjp`s. The C program follows the native backend's run either way, and C1 holds for both. |
-| `--realize f64\|f32\|bf16\|@FILE` | the realization, `f64` by default; a solved one (`@FILE`) too, its buffers converted at the kernels' edges as the native backend converts them; one with a `quant` map (`int8`, `int4`; `presk quantize`) too since step 7, below. |
+| `--realize f64\|f32\|bf16\|@FILE` | the realization, `f64` by default; a solved one (`@FILE`) too, its buffers converted at the kernels' edges as the native backend converts them; one with a `quant` map (`int8`, `int4`; `presk quantize`) too since step 7, below; one with a `params` map since 0.12.0, each such weight in its own type in the arena and widened by the kernels' loads. |
 | `--plan @P.json` | a realization plan (`presk plan --out`), in place of `--realize`: its realization and a layout per nest, checked as `presk run --plan` checks them (`E7002`); the native run is the plan's, so the program's kernels are the plan's tiles, orders, lanes and packs, and its splits are the program's threads (0.9.0 step 5). |
 | `--threads N` | the native executor's workers, as for `presk run` (default: the cores). A plan's split must state `N` or `N / 2` workers (condition 5), and a kernel the plan leaves to the executor is divided among `N` when its work reaches the executor's threshold: the exported program divides it the same way. |
 | `--weights CKPT.psk.d` | trained parameters for the entry's first argument, a `params M` checkpoint of the dimensions the entry is exported at, as `presk run --weights` reads it. The program reads it where it is: the conformance script names its absolute path. Without it, the parameters are the ones `presk run` synthesizes, written to `conformance/weights.psk.d`. |
@@ -710,7 +710,7 @@ the `precision` chapter, "Does the condition number rescue the bound?".
 ## `presk solve FILE.psk --precision ENVELOPE.json --budget ε`
 
 ```sh
-presk solve FILE.psk --precision ENV.json [--budget 1e-3] [--weights ckpt/final.psk.d]
+presk solve FILE.psk --precision ENV.json [--budget 1e-3 | --budget-abs EPS] [--weights ckpt/final.psk.d]
     [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--no-verify] [--bits 128]
     [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
 ```
@@ -727,16 +727,24 @@ tuple's projection, a call's or a fold's result carry a value another site
 computes, and a fused member is computed in its group's root's type, so a
 type stated for them changes no bit (since 0.11.0, D112: until then the
 solver offered, counted and priced them). Such a value's rounding is
-charged where it happens, a member's to its root, a parameter's to the
-nests that read it. Under a `--profile` every cost it prints is a time in
+charged where it happens, a member's to its root. Since 0.12.0 (D123) it
+also offers every function's result, which a sweep now ranks, and every
+parameter, decided by its path and written in the realization's `params`
+(`f32` or `bf16`): its term is its rounding at the narrowest of its own type
+and the types of the nests that read it, and the fields that read it carry
+none. Under a `--profile` every cost it prints is a time in
 seconds, the exhaustive search's too (until 0.11.0 step 3 its line called
 that time bytes and printed the greedy proposal as 0.000x it, D113).
 `--weights` matters: a sensitivity ranking at
-initialization is vacuous. The envelope's entry must return a scalar `ℝ[]`, a loss: the sites
-are ranked by its sensitivity `∂L/∂v`, as `presk dump --stage sensitivity`
-ranks them, and any other entry is refused (exit 2) before anything is
-computed (D101; until then it failed in the reverse sweep's first `.vjp`,
-after its forward half). The inputs are the envelope's: when it was measured on a data slice,
+initialization is vacuous. The envelope's entry returns a real tensor: a
+loss, its sites ranked by its sensitivity `∂L/∂v` as `presk dump --stage
+sensitivity` ranks them; or, since 0.12.0, any tensor (logits), under a
+budget on its largest elementwise gap, relative to its largest magnitude
+(`--budget`) or absolute (`--budget-abs EPS`), the sites ranked by one
+reverse sweep seeded with ones over the output, read per output element,
+the measurement deciding. Another entry is refused (exit 2) before anything
+is computed (D101; until then it failed in the reverse sweep's first
+`.vjp`, after its forward half). The inputs are the envelope's: when it was measured on a data slice,
 the sweep and every measurement run on that slice. `--quant` also offers every matrix parameter as `int8` or `int4`
 (`--scheme absmax|pow2`), priced by the parameters' gradient and accepted by
 measurement, and prints the three first-order readings per parameter with

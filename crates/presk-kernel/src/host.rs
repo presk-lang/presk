@@ -111,14 +111,24 @@ pub enum LaunchOp {
 }
 
 /// An input as a kernel of type `dtype` receives it: converted at the
-/// kernel's edge unless it is an index, exact, or integer weights.
-fn kernel_input(b: &Buf, dtype: Dtype, keep_quant: bool) -> Buf {
+/// kernel's edge unless it is an index, exact, integer weights, or, under a
+/// realization that types parameters (`keep_narrow`), reals of a narrower
+/// type, which the kernel widens as it loads them ([`narrower`]).
+fn kernel_input(b: &Buf, dtype: Dtype, keep_quant: bool, keep_narrow: bool) -> Buf {
     match b {
         Buf::I64(_) | Buf::Exact(_) => b.clone(),
         Buf::Quant(_) if keep_quant => b.clone(),
         b if b.dtype() == dtype.name() => b.clone(),
+        b if keep_narrow && narrower(b, dtype).is_some() => b.clone(),
         b => Buf::of(dtype, &b.to_f64()),
     }
+}
+
+/// The kind a kernel of type `dtype` reads `b` as when `b` holds reals of a
+/// narrower type: [`BufKind::Wide`], its loads widening it exactly (plan
+/// 0.12.0 step 2, D121). `None` for any other buffer.
+pub fn narrower(b: &Buf, dtype: Dtype) -> Option<BufKind> {
+    BufKind::widened(Dtype::parse(b.dtype())?, dtype)
 }
 
 pub struct KernelBackend<'p> {
@@ -204,9 +214,9 @@ impl Backend for KernelBackend<'_> {
 
     fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value> {
         let t = self.tick();
-        let realized: Vec<Value> = args.iter().map(|a| self.realize_value(a)).collect();
+        let realized: Vec<Value> = args.iter().enumerate().map(|(i, a)| self.realize_value(i, a)).collect();
         // The bytes converted: a leaf already in its type is shared.
-        self.tock(Phase::Entry, t, || args.iter().map(|a| self.converted_bytes(a)).sum());
+        self.tock(Phase::Entry, t, || args.iter().enumerate().map(|(i, a)| self.converted_bytes(i, a)).sum());
         if let Some(r) = self.recorder.as_deref_mut() {
             r.entry(&realized);
         }
@@ -352,28 +362,39 @@ impl<'p> KernelBackend<'p> {
         self.filled.entry((d, n, x.to_bits())).or_insert_with(|| Buf::of(d, &vec![x; n])).clone()
     }
 
-    /// Every real leaf in the backend's dtype (exact inputs rounded once). A
-    /// leaf already in it is shared as it is (plan 0.10.0 step 6): its
-    /// conversion to `f64` and back gave its own bits.
-    fn realize_value(&self, v: &Value) -> Value {
-        v.map_leaves(&mut |leaf| match leaf {
+    /// Argument `arg`'s every real leaf in the backend's dtype (exact inputs
+    /// rounded once), but a parameter the realization stores in its own type
+    /// (`params`, in argument 0, plan 0.12.0) in that type. A leaf already
+    /// in its type is shared as it is (plan 0.10.0 step 6): its conversion
+    /// to `f64` and back gave its own bits.
+    fn realize_value(&self, arg: usize, v: &Value) -> Value {
+        let leaf = |d: Dtype, leaf: &Value| match leaf {
             // Integer weights stay integers: the kernels load them (D44).
             Value::Real(t) if matches!(t.data, Buf::Quant(_)) => leaf.clone(),
-            Value::Real(t) if t.data.dtype() == self.dtype.name() => leaf.clone(),
-            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: self.buf(t.data.to_f64()) }),
+            Value::Real(t) if t.data.dtype() == d.name() => leaf.clone(),
+            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::of(d, &t.data.to_f64()) }),
             other => other.clone(),
-        })
+        };
+        if arg != 0 || self.realize.params.is_empty() {
+            return v.map_leaves(&mut |l| leaf(self.dtype, l));
+        }
+        v.map_leaves_at(&mut |path, l| leaf(self.realize.params.get(path).copied().unwrap_or(self.dtype), l))
     }
 
-    /// The bytes [`KernelBackend::realize_value`] converts of a value.
-    fn converted_bytes(&self, v: &Value) -> u64 {
-        match v {
-            Value::Real(t) if matches!(t.data, Buf::Quant(_)) || t.data.dtype() == self.dtype.name() => 0,
-            Value::Real(t) => (t.numel() * self.dtype.bytes()) as u64,
-            Value::Tuple(vs) => vs.iter().map(|x| self.converted_bytes(x)).sum(),
-            Value::Record(fs) => fs.iter().map(|(_, x)| self.converted_bytes(x)).sum(),
-            _ => 0,
-        }
+    /// The bytes [`KernelBackend::realize_value`] converts of argument `arg`.
+    fn converted_bytes(&self, arg: usize, v: &Value) -> u64 {
+        let mut bytes = 0;
+        v.map_leaves_at(&mut |path, l| {
+            let d = if arg == 0 { self.realize.params.get(path).copied().unwrap_or(self.dtype) } else { self.dtype };
+            if let Value::Real(t) = l
+                && !matches!(t.data, Buf::Quant(_))
+                && t.data.dtype() != d.name()
+            {
+                bytes += (t.numel() * d.bytes()) as u64;
+            }
+            Value::Nat(0)
+        });
+        bytes
     }
 
     pub fn dim(&self, e: &DimExpr, dims: &Dims) -> Result<u64> {
@@ -437,6 +458,14 @@ impl<'p> KernelBackend<'p> {
     fn launch(&mut self, key: String, lowered: impl FnOnce() -> std::result::Result<Lowered, String>, inputs: &[&Buf], split: bool) -> Result<Value> {
         let t = self.tick();
         let pack = key.starts_with("pack|");
+        // Under a realization that stores parameters in their own types
+        // (plan 0.12.0 step 2, D121), an input of a narrower type than the
+        // kernel's is not copied at its edge: the kernel's input is marked,
+        // as integer weights are, and its loads widen it, exactly. The
+        // marking is part of the kernel, so it is part of the key; no other
+        // realization marks anything, so that no other kernel changes.
+        let wide: Vec<Option<BufKind>> = if self.realize.params.is_empty() { Vec::new() } else { inputs.iter().map(|b| narrower(b, self.dtype)).collect() };
+        let key = if wide.iter().any(Option::is_some) { format!("{key}|wide{wide:?}") } else { key };
         let hit = self.cache.get(&key).copied();
         // The key was counted where it was formatted.
         self.tock_time(Phase::Key, t);
@@ -445,6 +474,13 @@ impl<'p> KernelBackend<'p> {
             Some(i) => i,
             None => {
                 let mut l = lowered().map_err(|m| RtError { code: "E7001", message: m, span: None })?;
+                for (spec, w) in l.kernel.inputs.iter_mut().zip(&wide) {
+                    if let Some(kind) = w
+                        && spec.kind == BufKind::Real
+                    {
+                        spec.kind = *kind;
+                    }
+                }
                 if split {
                     l.kernel.threads = self.threads_for(&l.kernel).map_err(|m| RtError { code: "E7002", message: m, span: None })?;
                 }
@@ -475,6 +511,8 @@ impl<'p> KernelBackend<'p> {
                 // any other kernel reads their values, `f32(q)·s`.
                 Buf::Quant(_) if matches!(spec.kind, BufKind::Quant { .. }) => std::borrow::Cow::Borrowed(*b),
                 b if b.dtype() == k.dtype.name() => std::borrow::Cow::Borrowed(*b),
+                // A narrower parameter the kernel widens as it loads it.
+                b if matches!(spec.kind, BufKind::Wide(d) if b.dtype() == d.name()) => std::borrow::Cow::Borrowed(*b),
                 b => std::borrow::Cow::Owned(Buf::of(k.dtype, &b.to_f64())),
             })
             .collect();
@@ -504,7 +542,7 @@ impl<'p> KernelBackend<'p> {
             self.tock(Phase::Free, t, || 0);
         }
         Ok(match kind {
-            BufKind::Real | BufKind::Quant { .. } => Value::Real(Tensor { axes, data: out }),
+            BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_) => Value::Real(Tensor { axes, data: out }),
             BufKind::Idx => Value::Idx { bound, t: Tensor { axes, data: out } },
         })
     }
@@ -750,7 +788,7 @@ impl<'p> KernelBackend<'p> {
         self.tock(Phase::Layout, t, || 0);
         if self.capture.is_some() {
             let accum = self.realize.accum_at(&self.site);
-            self.record(LaunchOp::Fused { steps: g.steps.clone(), out: out.clone() }, &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, false)).collect::<Vec<_>>());
+            self.record(LaunchOp::Fused { steps: g.steps.clone(), out: out.clone() }, &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, false, !self.realize.params.is_empty())).collect::<Vec<_>>());
         }
         let t = self.tick();
         let key = format!("fused|{}|{dtype}|{}|{}|{}", g.signature(), layout.key(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&out));
@@ -837,8 +875,9 @@ impl<'p> KernelBackend<'p> {
         self.tock(Phase::Layout, t, || 0);
         if self.capture.is_some() {
             let accum = self.realize.accum_at(&self.site);
-            self.record(LaunchOp::Prim(op.clone()), &operands[..2], dtype, accum, &[kernel_input(&ins[0].data, dtype, true), kernel_input(&ins[1].data, dtype, true)]);
-            let at = EpilogueAt { operand: operands[2].clone(), input: kernel_input(&ins[2].data, dtype, true), epilogue: epi.clone() };
+            let narrow = !self.realize.params.is_empty();
+            self.record(LaunchOp::Prim(op.clone()), &operands[..2], dtype, accum, &[kernel_input(&ins[0].data, dtype, true, narrow), kernel_input(&ins[1].data, dtype, true, narrow)]);
+            let at = EpilogueAt { operand: operands[2].clone(), input: kernel_input(&ins[2].data, dtype, true, narrow), epilogue: epi.clone() };
             let site = self.site.clone();
             self.note_epilogue(&site, dtype, &operands[..2], at);
         }
@@ -899,7 +938,7 @@ impl<'p> KernelBackend<'p> {
         let Ok((_, epi)) = Self::epilogue_of(op, prod_ty, [x, w, o], e.first, self.realize.order) else { return };
         let dtype = self.dtype;
         let operands = [Operand { axes: x.axes.clone(), kind: BufKind::Real }, Operand { axes: w.axes.clone(), kind: BufKind::Real }];
-        let at = EpilogueAt { operand: Operand { axes: o.axes.clone(), kind: BufKind::Real }, input: kernel_input(&o.data, dtype, true), epilogue: epi };
+        let at = EpilogueAt { operand: Operand { axes: o.axes.clone(), kind: BufKind::Real }, input: kernel_input(&o.data, dtype, true, !self.realize.params.is_empty()), epilogue: epi };
         self.note_epilogue(&prod_site, dtype, &operands, at);
     }
 
@@ -1511,7 +1550,7 @@ impl<'p> KernelBackend<'p> {
         self.tock(Phase::Layout, t, || 0);
         if self.capture.is_some() {
             let accum = self.realize.accum_at(&self.site);
-            self.record(LaunchOp::Prim(op.clone()), &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, true)).collect::<Vec<_>>());
+            self.record(LaunchOp::Prim(op.clone()), &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, true, !self.realize.params.is_empty())).collect::<Vec<_>>());
         }
         let t = self.tick();
         // Integer weights: the lowering sees a real operand and emits real

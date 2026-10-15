@@ -181,6 +181,22 @@ impl<'p, R: Real> Interp<'p, R> {
             return err(format!("`{}` called with {} arguments, {} expected", func.name, args.len(), func.params.len()));
         }
         let deaths = self.deaths_of(f);
+        // A `.vjp`'s cotangent argument is the adjoint of the function's
+        // result (`presk_core::ad::AdjointMap` maps the result to it): its
+        // 1-norm is recorded as a site's are, so that a function's result
+        // has a sensitivity too (plan 0.12.0 step 4, D119). The entry's own
+        // is the sweep's seed.
+        if self.sums.is_some()
+            && func.name.ends_with(".vjp")
+            && let (Some(p), Some(ct)) = (func.params.last(), args.last())
+            && p.name == "ct"
+        {
+            let t = sum_abs(ct);
+            let e = self.sums.as_mut().expect("just checked").entry(format!("{}/%{}", func.name, p.var.0)).or_insert(0.0);
+            if t > *e {
+                *e = t;
+            }
+        }
         let mut env: HashMap<VarId, Value<R>> = HashMap::new();
         for (p, a) in func.params.iter().zip(args) {
             self.bind(&mut env, p.var, a);

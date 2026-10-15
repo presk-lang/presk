@@ -56,8 +56,13 @@ fn the_document_quotes_the_commands() {
     let solve = presk(&["solve", FILE, "--precision", &env, "--budget", "1e-3", "--profile", PROFILE, "--sites", "0"], false);
     quoted(&doc, &solve, "presk solve", |_| false);
     // Under a profile the costs are times: until 0.11.0 the exhaustive
-    // search's line called them bytes, and its ratio read 0.000x.
-    assert!(solve.contains(" s by exhaustive search") && !solve.contains("0.000x"), "{solve}");
+    // search's line called them bytes, and its ratio read 0.000x. Since
+    // 0.12.0 the tutorial's space, with its four parameters, is past the
+    // search's size; the MLP's is not.
+    let mlp_env = dir.join("mlp_env.json");
+    presk(&["calibrate", "--precision", "tests/examples/mlp/mlp.psk", "--entry", "mse", "--dim", "D=4", "--dim", "B=2", "--bits", "128", "--out", mlp_env.to_str().unwrap()], false);
+    let mlp = presk(&["solve", "tests/examples/mlp/mlp.psk", "--precision", mlp_env.to_str().unwrap(), "--budget", "1e-3", "--profile", PROFILE, "--sites", "0"], false);
+    assert!(mlp.contains(" s by exhaustive search") && !mlp.contains("0.000x"), "{mlp}");
     let check = presk(&["check", "--precision", &env, FILE, "--realize", &realization, "--model", "all", "--sites", "8", "--measure"], false);
     quoted(&doc, &check, "presk check --precision", |l| l.starts_with("  envelope "));
     let planned = presk(&["plan", FILE, "--entry", "loss", "--dim", "B=4", "--realize", &realization, "--profile", PROFILE], true);

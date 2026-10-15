@@ -127,15 +127,16 @@ pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], pla
         }
     };
     // A realization with integer weights quantizes drawn values; zeros would
-    // have no scale.
+    // have no scale. Parameters in their own types are zeros of those types.
     let (func, fdims, args) = if mode == Capture::Shapes && realize.quant.is_empty() {
         let (func, fdims, shaped) = presk_interp::run::prepare_shapes(&core, &prog, &opts).map_err(|e| fail(interp_diag(e)))?;
-        let args = shaped.iter().map(|(_, s)| zeros(&mut b, realize, s)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
+        let mut args = shaped.iter().map(|(_, s)| zeros(&mut b, realize, s)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
+        realize.store_params(&mut args).map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
         (func, fdims, args)
     } else {
         let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).map_err(|e| fail(interp_diag(e)))?;
-        let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).map(|v| v.realize(realize.default))).collect::<presk_rt::Result<_>>().map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
-        realize.quantize_args(&mut args).map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
+        let given: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect::<presk_rt::Result<_>>().map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
+        let args = realize.realize_args(&given).map_err(|e| fail(run_diag(e.code, e.message, e.span)))?;
         (func, fdims, args)
     };
     b.capture = Some(Vec::new());
@@ -457,12 +458,13 @@ fn listed(core: &presk_core::Program, prog: &presk_types::elab::ElabProgram, ent
     let (func, fdims, args, names) = if realize.quant.is_empty() {
         let (func, fdims, shaped) = presk_interp::run::prepare_shapes(core, prog, &opts)?;
         let mut init = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(NoRun));
-        let args = shaped.iter().map(|(_, s)| zeros(&mut init, realize, s)).collect::<presk_rt::Result<Vec<_>>>()?;
+        let mut args = shaped.iter().map(|(_, s)| zeros(&mut init, realize, s)).collect::<presk_rt::Result<Vec<_>>>()?;
+        realize.store_params(&mut args)?;
         (func, fdims, args, shaped.iter().map(|(n, _)| n.clone()).collect::<Vec<String>>())
     } else {
         let (func, fdims, inputs) = presk_interp::run::prepare_run(core, prog, &opts)?;
         let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect::<presk_rt::Result<_>>()?;
-        realize.quantize_args(&mut args)?;
+        realize.store_params(&mut args)?;
         (func, fdims, args, inputs.iter().map(|(n, _)| n.clone()).collect::<Vec<String>>())
     };
     let params = match args.first() {

@@ -171,7 +171,7 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
     // reads them, as `presk run` does (step 7). Saved after quantization,
     // they would be `f32(q·s)`, whose scales need not be the same.
     let read = args.clone();
-    if let Err(e) = realize.quantize_args(&mut args) {
+    if let Err(e) = realize.store_params(&mut args) {
         return Err(fail(report, &sm, e.code, e.message));
     }
 

@@ -215,7 +215,7 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
     let template = backend.call(&init, vec![Value::Key(Key::from_seed(opts.seed))])?;
     // Scales are data derived from the realization and these weights, so
     // they are computed here, at load (D44, question 57).
-    let theta = opts.realize.quantized_params(&load_params(&weights, &template)?)?;
+    let theta = opts.realize.stored_params(&load_params(&weights, &template)?)?;
     // The context type's vocabulary.
     let Ty::Idx { bound, shape } = &fns.ctx_ty else { return err("E7001", "the context is not an index tensor") };
     let f = if greedy { fns.greedy } else { fns.generate };

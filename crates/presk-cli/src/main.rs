@@ -745,9 +745,15 @@ enum Command {
         /// The magnitude envelope the bound and the estimate are read from.
         #[arg(long, value_name = "ENVELOPE.json")]
         precision: PathBuf,
-        /// Relative error budget for the entry's output.
+        /// Relative error budget for the entry's output: on its largest
+        /// magnitude, and on its largest elementwise gap when it is a tensor.
         #[arg(long, default_value_t = 1e-3)]
         budget: f64,
+        /// An absolute error budget instead, on the output's largest
+        /// elementwise gap (0.12.0): ε\* from a model's margins is a number
+        /// on its logits.
+        #[arg(long, value_name = "EPS", conflicts_with = "budget")]
+        budget_abs: Option<f64>,
         /// Trained parameters: a sensitivity ranking at initialization is
         /// vacuous, so without these every site scores zero and the solver
         /// narrows by traffic alone.
@@ -1188,7 +1194,7 @@ fn main() -> ExitCode {
             set_remat(remat);
             step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref())
         }
-        Command::Solve { file, precision, budget, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, remat, .. } => {
+        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, remat, .. } => {
             set_remat(remat);
             let scheme = match scheme.as_str() {
                 "absmax" => presk_rt::QuantScheme::Absmax,
@@ -1197,6 +1203,10 @@ fn main() -> ExitCode {
                     eprintln!("presk solve: unknown --scheme `{other}`; expected absmax or pow2");
                     return ExitCode::from(2);
                 }
+            };
+            let budget = match budget_abs {
+                Some(eps) => presk_precision::solve::Budget::Absolute(eps),
+                None => presk_precision::solve::Budget::Relative(budget),
             };
             solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme))
         }
@@ -1357,7 +1367,7 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
 
 /// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
 #[allow(clippy::too_many_arguments)]
-fn solve_precision(file: &Path, env_path: &Path, budget: f64, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>) -> ExitCode {
+fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>) -> ExitCode {
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => {
@@ -1383,7 +1393,7 @@ fn solve_precision(file: &Path, env_path: &Path, budget: f64, weights: Option<&P
             use presk_driver::precision::SolveError as E;
             let (message, code) = match e {
                 E::NotEntry => (format!("presk solve: `{}` is not an entry of {}", env.entry, file.display()), 1),
-                E::NotScalar => (format!("presk solve: `{}` must return a scalar `ℝ[]`, since the sites are ranked by its sensitivity `∂L/∂v`", env.entry), 2),
+                E::NotScalar => (format!("presk solve: `{}` must return a real tensor, since the sites are ranked by its sensitivity `∂y/∂v`", env.entry), 2),
                 E::Inputs(m) => (format!("presk solve: cannot bind the inputs of `{}`: {m}", env.entry), 1),
                 E::NoGradient(m) => (format!("presk solve: the objective does not differentiate: {m}"), 1),
                 E::Reference(m) => (format!("presk solve: {m}"), 1),
@@ -2895,7 +2905,17 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
                 }
             };
             args[0] = presk_rt::load_params(w, &args[0])?;
-            realize.quantize_args(&mut args)?;
+            // What `--json` and `--verbose` print as the parameters is the
+            // checkpoint's, as it is read and before a `quant` map rounds it,
+            // not the initialization synthesized above (D118's follow-up).
+            // Built only to be printed: the synthesized tree is dropped
+            // first, so a model's parameters are never held twice more.
+            let mut inputs = inputs;
+            if json || verbose {
+                inputs[0].1 = presk_interp::Value::Nat(0);
+                inputs[0].1 = args[0].to_interp(opts.bits);
+            }
+            realize.store_params(&mut args)?;
             let p = b.prepare(func, &fdims, realize)?;
             let result = b.call(&p, args)?;
             let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (prog.dim_name(*v), *n)).collect();

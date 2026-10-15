@@ -11992,3 +11992,989 @@ decoder the head (12 288 000 elements, the block's largest value), the
 feed-forward products (4 227 072 each) and the output projection. Whether to offer a
 result is a question for the user, beside 0.12.0's per-parameter storage
 type, which also changes what the solver offers.
+
+## D118 — ε from the margins on the course GPT: the exact model's margins on 118 016 held-out positions give ε\*(10⁻³) = 4.67·10⁻⁴ on the logits (5.38·10⁻⁴ before the Clopper–Pearson correction); five of the curve's seven realizations, statement D's among them, are within it and flip at most one decision; every realization's flips are within the margins' bound, and statement S holds; `presk solve` takes no tensor-valued entry (2026-10-12)
+
+The paper answers "why not an accuracy target" with MLPerf's rule on the
+foil's rows (D53, D102). The note
+`presk-project/docs/presk-epsilon-from-quality-2026-10-01.md` §1 says the
+accuracy target is itself a budget, once it is derived from the exact
+model.
+- **The argument:** a realization within ε of every logit changes a
+  decision only where the margin m, the top logit minus the second, is
+  below 2ε. So accuracy(ŷ) ≥ accuracy(y) − Pr[m < 2ε], and the right side
+  is the exact model's alone.
+- **ε\*(δ)** is half the δ-quantile of the exact margins, corrected so
+  that Pr[m < 2ε\*] ≤ δ with confidence 1 − α.
+
+This measures it, with no compiler change
+(`presk-project/docs/prompt-epsilon-margins-2026-10-12.md`; the report
+`docs/epsilon-2026-10-12.md`; `make margins`, `experiments/margins.sh`,
+`margins.py`, `margins.psk`). It runs on `main` `c73a2e1`, the tag
+`v0.11.0`, on falicon; nothing is timed.
+
+**Fixed before the run.**
+- **The statement, S** (the letter given on 2026-10-13, for the paper's
+  Table 2), in the prompt's words: *at δ = 10⁻³ and α = 0.05 on
+  the 461 held-out windows, every realization of the curve whose measured
+  gap on the logits is at most ε\* flips at most δ of the exact model's
+  decisions, and the number of flips of each is at most the number of
+  positions whose margin is below twice its measured gap.* On its own
+  sample the first clause follows from the second, so the population
+  claim is tested apart: ε\* from the even windows, counted on the odd
+  ones, and the reverse.
+- **The model, weights and data** are `make foil`'s: the course GPT at
+  D = 64, the all-`f64` run of `make curve` (D117's, D102's byte for
+  byte), and the 461 held-out windows, 118 016 positions.
+- **The exact model** is the reference at 128 bits on all of them: 4
+  minutes on falicon in 15 chunks.
+- **δ and α:** δ ∈ {10⁻², 10⁻³, 10⁻⁴}, α = 0.05.
+- **Fourteen realizations:** the foil's seven (`f64`, `f32`, `bf16`,
+  `int8` and `int4` weights in `absmax` and `pow2`) and the curve's
+  seven. The curve's were solved on `loss` and are applied, as the foil
+  applies statement D's, to `logits`, which calls `GPT.apply` under the
+  same site names.
+- **The key:** outside training `dropout`'s mask is all ones, so it
+  changes no value.
+
+**The margin is taken outside the program.** It needs a maximum over the
+vocabulary, and `max` is not implemented (E2012). The prompt's form with
+`c · one_hot(argmax(…))` needs it too. So `experiments/margins.py` takes
+it from the exact logits printed at 30 digits, in decimal; the
+subtraction is exact to 10⁻³⁰. The realizations' decisions are an entry,
+`decisions`, `argmax` natively. That `argmax` takes the greatest index
+among equal maxima, as the reference defines it and both executors do.
+
+**The margins.** There are no ties.
+- The smallest margin is 1.19·10⁻⁵, the median 0.458; the largest
+  |logit| is 5.21.
+- Below 2ε lie 202 positions at ε = 10⁻³, 21 at 10⁻⁴, 1 at 10⁻⁵ and none
+  at 10⁻⁶.
+- The exact model is right on 28 612 positions, as `f32` is.
+
+ε\*(δ), uncorrected → corrected:
+- 10⁻²: 5.66·10⁻³ → **5.36·10⁻³**;
+- 10⁻³: 5.38·10⁻⁴ → **4.67·10⁻⁴**;
+- 10⁻⁴: 4.27·10⁻⁵ → **2.44·10⁻⁵**.
+
+The correction takes k from 1 180, 118 and 11 to 1 123, 99 and 5. At
+10⁻⁴ the sixth margin replaces the twelfth.
+
+**Out of sample**, the other half's margins below 2ε\* stay under δ in all
+six cases: 44 and 49 of about 59 000 at 10⁻³, that is 0.75 and 0.83 δ.
+
+**Per realization**, the gap on the logits is the largest over 10 857 472
+of them; the flips are the positions where `decisions` differs from the
+exact argmax:
+- **Certified at 10⁻³:** `f64`, `f32`, and the curve's 10⁻³ to 10⁻⁷, at
+  6.7·10⁻⁸ to 3.3·10⁻⁴. Statement D's realization, solved at 10⁻³ on the
+  loss, measures **3.35·10⁻⁴** on the logits and flips **1** decision,
+  at the smallest margin, where its bound is 70. The others flip none.
+- **Not certified:** the curve's 10⁻¹ and 10⁻² (3.2·10⁻² and 1.4·10⁻²,
+  69 and 36 flips); `bf16` (5.0·10⁻², 480); `int8` (7.8·10⁻², 161) and
+  `int8 pow2` (1.15·10⁻¹, 168); `int4` (1.24, 2 968) and `int4 pow2`
+  (2.08, 3 488).
+- **Every row's flips are within its bound #{m < 2ε_meas}**, at 28.5 to
+  249 times. Each of the 7 371 flips is at a position whose margin is at
+  most twice that position's own gap. Taking the largest gap over all the
+  positions costs 2–23× of that slack, the error's direction the rest.
+
+**S holds.**
+
+**What it says beyond the statement:**
+- **A budget on the loss does not bound the logits.** The curve's 10⁻¹
+  and 10⁻² realizations are inside their budgets on the loss and 68 and
+  30 times ε\*(10⁻³) on the logits. On two windows at 10⁻³ the logits'
+  gap is 280 times the loss's.
+- **The foil, re-read** (re-run at 0.11.0: D102's table but for its
+  times). MLPerf at 99.9 % admits `bf16`, both `int8` and `int4 pow2`;
+  the margins refuse them at every δ measured.
+  - *At 10⁻³ the margins are right:* `bf16` and the `int8` rows change
+    480, 161 and 168 decisions, each more than δn = 118, which net
+    accuracy (−2, +6, −11) hides.
+  - *At 10⁻² they are conservative:* the gaps are 9–21× ε\*(10⁻²).
+  - *The two `int4` rows,* refused and admitted by MLPerf at −136 and
+    +115 correct, change 2.5 % and 3.0 % of the decisions, the admitted
+    one more.
+  - *So* the margins order by the gap and bound what changes; the
+    accuracy rule reads a net score.
+- **Step 4:** `presk solve` takes a scalar entry only, since its sites
+  are ranked by `∂L/∂v`; on `logits` it stops at once. A budget on the
+  logits needs a sensitivity per output component, or a scalar program
+  bounding the largest gap, which `max` would write. The verification
+  exists: `presk quantize` on a tensor entry measures its ∞-norm gap. It
+  is a note for 0.12.0 or later.
+
+**Found, and left:**
+- **`presk run --json` with `--weights`** prints, as `inputs`, the
+  arguments it synthesized: the initial parameters and a random batch,
+  not the checkpoint's nor `--data`'s. The result is right. The cause is
+  that `presk_train::args_on_data` returns the synthesized inputs beside
+  the arguments it passes. The script takes the targets from `presk data
+  export`. *Fixed on 2026-10-13*, after this decision: `--data` alone
+  printed a synthesized batch too, and both now print the arguments the
+  entry ran on (`tests/run_json_inputs.rs`).
+- **Plan 0.12.0's step 0 names D118**; it will take the next free number.
+
+**The record:**
+- `docs/epsilon/margins.md` and `margins.json`, every figure;
+- `presk-project/data/epsilon-0.11.0.tar.xz`, the 118 016 margins with
+  the exact top two and the target, every realization's flips and
+  decisions, the foil at 0.11.0, the realizations and the logs.
+
+**What it does not say:** one model at 600 steps, one validation set, one
+seed. The margins are of the trained weights; the curve's realizations
+were solved on the loss. The argument bounds flips, not loss. Its
+statistical part assumes independent positions, which 256 consecutive
+characters are not (the split by windows checks it), and fails under a
+shift of distribution; the deterministic part does not.
+
+## D119 — Version 0.12.0 opened: a parameter's floating-point storage type, `params`; the functions' results offered by the solver; a budget on an entry whose result is a tensor. V5's baseline: 0.11.0's solved realization of the decoder natively (2026-10-13)
+
+The plan is `presk-specs/implementation/presk-plan-0.12.0.md` (presk-specs
+!71–!73, and !77's amendment of 2026-10-13, on `main` `d951b3e`). The
+user gave the go on 2026-10-13. The version makes three changes.
+1. **A parameter's storage type (B of D109's finding, the reference's
+   W18).** A realization record gains `params`, a type per parameter path,
+   `f32` or `bf16`, beside `quant`. The parameter is rounded once when it is
+   loaded, and every nest reads it from that type, with no conversion at a
+   kernel's edge. Today every parameter is stored in the default type,
+   `f64` under a solved realization, and an `f32` nest converts it at each
+   launch: typing a weight narrower changed no bit and saved no byte
+   (D109), so 0.11.0's solver stopped offering it (D112).
+2. **The functions' results (D117's finding).** The solver offers them
+   like any other stored value. On the decoder at 0.11.0, 7 of the 32
+   stored values with elements are results, the entry's among them (the
+   head, 12.3 M elements, the feed-forward products, the attention's
+   output projection), and none was offered.
+3. **A budget on an entry whose result is a tensor (D118's finding).**
+   `presk solve` ranks its sites by `∂L/∂v`, so it takes a scalar entry
+   only, and D118 could not solve at the ε\*(10⁻³) = 4.67·10⁻⁴ it derived
+   on the course GPT's logits. 0.12.0 takes such an entry under a budget on
+   its largest elementwise gap.
+
+**The user's decisions.**
+- *2026-10-12, merging the plan (presk-specs !71, !72),* §6's four
+  questions as recommended:
+  1. the type lives in `params`, keyed by path like `quant`, and a path in
+     both is an error;
+  2. training refuses `params`, as it refuses `quant` (`E7001`);
+  3. a parameter's sensitivity is a 1-norm per leaf, accumulated during
+     the reverse sweep without keeping the cotangent whole;
+  4. the paper follows 0.12.0 only if 0.12.0 lands before 12 November
+     2026; otherwise it stays at 0.11.0 and says what B would change.
+- *2026-10-12, presk-specs !73:* `presk explain`'s §6.3, under a given
+  realization, lists every stored value, those the record leaves at the
+  default too (the decoder's `RMSNorm.apply/%2`). Step 4.
+- *2026-10-13, presk-specs !77,* as recommended: the version's decision is
+  D119, D118 being ε from the margins; the reference's next draft is v0.17;
+  §6b's question 5:
+  - `--budget` stays relative to the exact output's largest magnitude for
+    a tensor entry, and `--budget-abs` takes an absolute bound;
+  - the ranking is one reverse sweep seeded with ones over the output,
+    each site's partials accumulated as a 1-norm; it ranks only, the
+    measurement of the largest gap decides, and the solver widens as
+    since D41;
+  - if V6's solve widens much, random-sign probes are reported in step 5.
+
+**Statements, fixed before the work** (the plan's §3).
+- *V1:* no output of a realization that types no parameter changes outside
+  the solver, byte for byte against `c73a2e1` (X1's harness less its
+  solves, the test set on the three executors in three types, the goldens,
+  `check-examples`, `coverage`, `plan-check`, `c-conformance`,
+  `quant-table`, `step-table`, `make tutorial` but for its times and its
+  solve).
+- *V2:* a parameter stored in `f32` or `bf16` is rounded once to that type,
+  and the kernel interpreter, the native backend and the C program agree
+  bit for bit under such realizations, on the test set and on the decoder
+  at tiny constants.
+- *V3:* under a realization that stores a parameter in the type of every
+  nest reading it, none of its bytes is converted at a kernel's edge, and
+  its resident bytes are its elements times its width (the decoder's 466 M
+  block parameters 1.74 GB in `f32` against 3.47 in `f64`).
+- *V4, reported:* the solver offers the parameters (by path; `f64`, `f32`,
+  `bf16`, and `int8`, `int4` under `--quant`) and the functions' results;
+  the tutorial, the course GPT (`make precision`, `make curve`), BERT-large's
+  two blocks and the decoder by D106's whole protocol solved again beside
+  0.11.0's (D117); the decoder's solve fits in its 105 GB scope.
+- *V5:* the decoder block's forward pass at 384 tokens, batch 1 and 20, by
+  D100's protocol under the frozen model's plan, under 0.12.0's solved
+  realization beside 0.11.0's, all-`f64` and all-`f32`: at batch 1 no
+  slower than all-`f32` (within 5 %), the rest reported.
+- *V6, reported:* `presk solve` on `logits` of `experiments/margins.psk` at
+  4.67·10⁻⁴ absolute; the realization, its traffic, its gap over the 461
+  held-out windows and its flips by `make margins`, beside the curve's
+  realization at 10⁻³ (D118: 3.35·10⁻⁴, 1 flip, bound 70).
+
+**§2's facts, checked again on `main` `d784089`** (0.11.0 and presk !77,
+which changes no output V1 compares):
+- *Integer weights are the model to follow.* `Realization::quant` is keyed
+  by path (`presk-rt`, D44); `quantize_args` quantizes the tree once at
+  load; the host marks a kernel input that receives integer weights
+  (`BufKind::Quant`), whose `Load` yields `f32(q)·s`; the C export's
+  `quant_inputs` and `quant_load` (D84); `presk train` refuses `quant` with
+  `E7001` (`presk-train`, "train with a float realization, then run or
+  serve the result with this one").
+- *A mixed realization converts its weights at every launch.*
+  `KernelBackend::realize_value` realizes the entry's arguments in the
+  default type, and `KernelBackend::launch` converts every input not in the
+  kernel's type into a new buffer ("Converting here, at the kernel's
+  edge"), timed as the phase `buffers.convert` with the bytes it converts.
+- *The parameters' cotangent* is kept only under `--quant`
+  (`presk_driver::precision::solve`, D105).
+- *`presk solve` refuses a non-scalar entry* before computing anything
+  (`returns_scalar`, D101; X1's `err-solve-nonscalar`).
+- *Out of B's way:* `presk-export-pytorch` reads no realization; the exact
+  interpreter computes the denotation whatever the realization says.
+
+**Why no function's result has a sensitivity, confirmed.** The plan's
+reading was likely right in its effect and needs one correction in its
+mechanism. `Ad::build_vjp` seeds the reverse sweep with
+`adj[result] = ct`, the `.vjp`'s last parameter, so `AdjointMap` *does*
+name the result's adjoint: the `let` of the result maps to the cotangent
+parameter (or, when the body also reads its result, to the `add` that
+accumulates into it). But the reference interpreter records its 1-norms
+per `let` only (`Interp::call`, over `func.body.lets`), never for a
+function's parameters, and `sensitivity::from_run` looks for the sum at
+`<f>.vjp/%<ct>`, finds none, and drops the site. So a callee's result,
+whose adjoint is its `.vjp`'s `ct` argument, and the entry's, whose adjoint
+is the sweep's seed, get no sensitivity, and `solve::sites()`, which keeps
+the sites with both an envelope magnitude and a sensitivity, never offers
+them. **Step 4** records the 1-norm of a `.vjp`'s cotangent argument as the
+sweep enters it, keyed by its parameter's site, so that `from_run` reads
+it; a function called from several places keeps the largest, as for any
+site. The entry's own result then has the seed's 1-norm: 1 on a scalar
+entry, ∂L/∂L, and the output's element count under the seed of ones a
+tensor entry gets.
+
+Seen on the tutorial's `loss` at `B = 4` (`presk dump --stage sensitivity
+--sites 200`): `loss/%6`, the square the mean reads, at 1.0, and none of
+`loss/%7`, the entry's result, `RMSNorm.apply/%10` and `Block.apply/%8`,
+the callees' results.
+
+**V5's baseline: 0.11.0's solved realization of the decoder natively.**
+D117's realization (`presk-project/data/llama-7b-0.11.0.tar.xz`,
+`llama-7b-L1_solved.json`: default `f64`, 24 stored values narrowed, every
+parameter in `f64`) on `Llama.apply`, 384 tokens, by D100's protocol as
+D107 ran it: the ten X925 cores pinned, ten threads, `presk plan`'s plan
+under the frozen profile (45 nests stated at both batch sizes; one,
+`Attention.apply/%16`, stored in `bf16`, left to the default layout, the
+profile being calibrated in `f32` and `f64` only), the median
+of seven calls after one warmup call, then the host by phase
+(`--host-profile`, three calls timed by phase). The binary is `main`
+`d784089`'s, 0.11.0's code. `experiments/pytorch_decoder.sh` gains the rows
+(`REALIZATIONS="solved-0.11.0=@…" ROWS=realizations`); the run is
+`out/v5-0.12.0/step0/` and a check, `step0-check/`, on 2026-10-13.
+
+| | B = 1 | B = 20 |
+|---|---|---|
+| timed row: the median of seven calls in a process | 9 340 ms, the middle of five processes (7 378, 9 340, 9 362, 9 527, 9 073) | 79 758 ms (one process) |
+| a call in the host profile's process | 9 383 ms (two processes: 4 790, 9 383) | 97 042 ms (one process) |
+| the kernels' code, a call | 8 682 ms (4 141 in the fast process) | 94 250 ms |
+| **converted at the kernels' edges** | **651 ms, 6.95 % of a call; 944 MB** (639 ms, 13.3 %, in the fast process) | **3 057 ms, 3.13 %; 4 979 MB** |
+| fresh pages a call | 2.4 GB | 15.3 GB |
+| all-`f32` under its plan, the same binary | 3 356 ms timed, 3 554 ms profiled, 0 converted | (D107, 0.10.1: 65 196 ms) |
+
+So the solved realization is about 2.8 times all-`f32` at batch 1 in the
+steady processes, and 1.2 times D107's all-`f32` at batch 20. Its edge
+conversion is a minority of that, 7 % and 3 % of a call. Most of the
+difference is the kernels' own time: under D117's realization the
+products the functions return (the head, the feed-forward products, the
+attention's output projection) stay in `f64`, as every parameter does, and
+an `f64` kernel has half the lanes. The conversion moves the same 944 MB and 4 979
+MB in every process, which are the weights its `f32` nests read, copied
+from `f64` at each launch: B removes that copy and those bytes.
+
+**Found: under this mixed realization the kernels' time varies by a factor
+of two between processes.** All-`f32` does not: 3 356 and 3 554 ms here,
+3 744 and 3 827 in D107. The first two processes measured, one after the
+other, were fast (7 378 and 4 790 ms); the five after them took 9 073–9 527
+ms. Transparent huge pages are `madvise` on falicon and the allocator does
+not ask for them, so they are not the cause. The cause is not measured
+here. A median of seven calls inside one process does not see this. So
+V5's rows should each be timed in several processes, alternated with the
+other rows. Step 5 does that, and it times 0.11.0's solved realization
+again in the same session rather than reading the figure above.
+
+## D120 — Plan 0.12.0, step 1: a parameter's storage type in the language, `params` beside `quant`; the compiler parses and checks it, and its executors take it from step 2 (2026-10-13)
+
+**The language** (presk-specs !78, the reference at draft v0.17):
+- *Chapter 4, realized types, item 3:* the parameters of an entry are
+  stored in the default type, unless the record's `params` states a type
+  π for the leaf, `f32` or `bf16`. A record is not a realization of the
+  entry when `params` names a path that is not a leaf of its parameter
+  tree, one that `quant` names too, or a type other than `f32` and `bf16`.
+- *Chapter 4, realized value, item 1:* such a leaf is converted once to π
+  when the entry is given it, from the value given. *Item 2:* a nest of
+  any type reads it with no further rounding, since `bf16` ⊂ `f32` ⊂
+  `f64` and every arithmetic type is `f32` or `f64`.
+- *The paragraph after it:* the choices a realization makes are the stored
+  values' types and, keyed by path, each parameter's type or quantized
+  form.
+- *Chapter 6:* the decision *parameter storage type* (`f32` | `bf16`, unit
+  the parameter, default the program's default, changes bits) in the
+  decisions table and in its own paragraph; the record's member `params`
+  in the serialized form; a uniform realization types no parameter; a
+  well-formed plan types or quantizes a parameter, not both.
+- *Chapter 8:* W18 closed.
+- A Status sentence says what compiler 0.11.0 does: every parameter in the
+  default type, converted at the edge of every `f32` nest at every launch.
+
+**`f64` is not in `params`.** The plan's decision: a parameter's own type
+is narrower than a solved realization's default, and `f64` is the default's
+to state. Under a default of `bf16`, `f32` is a wider type at rest, which
+item 1 allows: the leaf is converted from the value given, not from its
+default-typed copy.
+
+**The compiler** (`presk-rt`):
+- `Realization::params`, a `BTreeMap<String, Dtype>` beside `quant`,
+  written only when it is not empty, so that no record before 0.12.0
+  changes; `is_uniform` is false and `label` gains `+Nparams` when it is
+  not empty.
+- `Realization::check_params`: `E7001` for a type other than `f32` or
+  `bf16`, for a path also quantised and, given the parameter tree, for a
+  path that is not a real leaf of it, naming the paths there are, as
+  `quant` does.
+- It runs where the parameters are loaded, in `quantize_args` and
+  `quantized_params`, which every executor's load goes through (`presk
+  run`, `bench`, `serve`, the measurements of `solve` and `check
+  --precision`, the C export, the launch capture of `plan` and `dump
+  --stage kernel`, which take the loading path when `params` is not empty
+  as they do for `quant`).
+- **Until step 2, a record whose `params` passes the checks is refused
+  there too** (`E7001`, "parses and checks but does not run yet"): no
+  executor stores a parameter in its type yet, and a realization must
+  never be run as another unnoticed. Step 2 replaces that refusal with
+  the storage.
+- `presk train` refuses `params` (`presk_train::refuse_params`, `E7001`),
+  and so does every step `calibrate --step` and `solve --step` measure
+  (`step::StepSetup::step_on`), as decided (§6, question 2): the master
+  weights stay in the default type.
+- `presk explain` shows the parameters' types with step 2, when a
+  realization that types them can be run and listed.
+
+**Found, for the user: a `bf16` nest reads a wider operand rounded to
+`bf16`.** The reference's chapter 4 (realized value, item 2) says a nest of
+storage type σ reads each operand converted to α(σ), its arithmetic type:
+`f32` for a `bf16` nest. The executors convert it to σ itself. At a
+launch, the host converts every input that is not in the kernel's type into
+a new buffer of the kernel's type (`KernelBackend::launch`, `Buf::of`), and
+a `bf16` kernel's real inputs are `bf16` buffers. So under a mixed
+realization, a `bf16` nest that reads an `f32` or `f64` stored value, a
+parameter of the default type or an input reads it rounded to `bf16` (twice
+from `f64`, through `f32`). The C export does the same (`presk_convert`, the
+manual's `export_c` table), so the three executors agree and every measured
+gap is of what runs; only the definition differs. A uniform realization
+is not concerned. Reading such operands as item 2 says would move the
+outputs of every solved realization with a `bf16` nest that reads a wider
+value, and the step table's `recipe` row (the forward and backward
+functions in `bf16` reading `f32` master weights).
+- *Recommended:* amend item 2 to what the kernels do, σ, then extended
+  exactly to α(σ). That is what makes a `bf16` nest's traffic `bf16`'s,
+  and no output moves.
+- *The alternative:* make the executors read such an operand in `f32`,
+  which moves those outputs (V1 would name them) and a `bf16` nest's
+  traffic.
+- *For `params`:* under the recommendation, a parameter stored in `f32` and
+  read by a `bf16` nest is rounded to `bf16` at that nest's edge, as any
+  operand. Step 2 follows the executors until the user decides. Every other
+  pairing of a parameter's type with a nest's widens exactly.
+
+**V1.** X1's harness (`out/x1/x1.sh`, 863 outputs) on this tree's binary:
+no file differs from step 0's (`out/x1/step0-0.12.0`); against
+`out/x1/v0.11.0`, the 22 files of D119, the generated programs' version
+line and the envelopes' date. No realization of X1 has a `params` member.
+
+**Tests:** `presk-rt/tests/params.rs` (the file form, the label, every
+condition, a misspelt path naming those there are), `presk-cli/tests/
+params.rs` (the conditions through `presk run` on the reference
+interpreter, the kernel interpreter and the native backend),
+`presk-train/tests/train.rs` (training refuses `params`).
+
+## D121 — Plan 0.12.0, step 2: the executors store a parameter in its own type once, at load, and a kernel of a wider type widens it in its loads, with no copy at its edge (2026-10-13)
+
+**Loading.** `Realization::quantize_args` and `quantized_params` become
+`store_params` and `stored_params`: the leaves `params` types are
+converted once to their types (`presk_rt::quant::typed_leaves`), the leaves
+`quant` names quantised, the rest as given. A caller that realized the
+arguments to the default type before quantising now calls
+`Realization::realize_args`, which converts a typed leaf from the value
+given, not from its default-typed copy (under a `bf16` default an `f32`
+parameter keeps its bits): `presk bench`'s timed rows and host profile,
+the measurements of `solve` and `check --precision --measure`, `presk
+explain`'s measured section, and the native launch capture. The shapes
+captures of `plan` and `dump --stage kernel` store the typed leaves of
+their zeros. `presk serve` stores its weights so. Step 1's refusal is gone.
+
+**The entry.** `KernelBackend::call` realizes its first argument leaf by
+leaf with the leaf's path (`Value::map_leaves_at`): a typed parameter in
+its type, shared as it is when it already is, every other leaf in the
+default type as before.
+
+**The kernels.** A new buffer kind, `BufKind::Wide(τ)`: reals of a type
+narrower than the kernel's, which the kernel's loads widen exactly.
+- *Where it is set.* `KernelBackend::launch` marks an input whose buffer
+  is narrower than the kernel's type (`host::narrower`) as integer weights
+  are marked, after lowering, and lends the buffer instead of converting
+  it. The marking is part of the cache key. It happens only under a
+  realization that types parameters, so that no other kernel changes.
+  The launch capture keeps such an input (`kernel_input`'s `keep_narrow`),
+  and `plan::lower_launch` marks it in the main kernel and in a pack's
+  copy, so that `presk plan` prices the kernels the host launches
+  (`cost::elem_bytes` counts τ's width).
+- *The native backend.* A scalar load widens a `bf16` by its bits and an
+  `f32` by `fpromote`. A vector load takes four `bf16` lanes into `f32x4`
+  (`uwiden_low`, a shift) or two `f32` into `f64x2` (`fvpromote_low`), and
+  any other pairing lane by lane.
+- *The kernel interpreter* already loads every buffer type exactly, and is
+  unchanged.
+- The listing prints such an input in its own type (`%1 : bf16[4, 4]` in an
+  `f32` `dot`); PSK-Kernel's definition gains the kind (presk-specs, the
+  reference at v0.17).
+
+**Not a copy, mostly.** A parameter read through a reshape (`split`,
+`merge`) is copied by the host's `with_data`, which keeps `f32` and widens
+`bf16` to `f64`, exactly. So a `bf16` parameter read so, as the decoder
+reads its output projection, is still converted where an `f32` nest reads
+the copy, with the same bits. Keeping `bf16` there changes the C export's
+mirror of it, and is left.
+
+**A `bf16` nest and an `f32` parameter** follow the executors (D120's
+finding, the user's to decide): rounded to `bf16` at the nest's edge, as
+every wider operand of a `bf16` nest.
+
+**V2 holds on both executors** (`presk-cranelift/tests/params.rs`).
+- *The cases:* the test set (`tests/plan/entries.txt`), the tutorial's
+  `loss`, and the Llama decoder's `Llama.apply` and `loss` at tiny
+  constants, every parameter typed: `f32` and `bf16` under `f64`, `bf16`
+  under `f32`, `f32` under `bf16`. That makes 56 realizations.
+- *Rounded once:* on the kernel interpreter and on the native backend
+  alike, each gives the bits the same record without `params` gives on the
+  parameters rounded to their types before the run, wherever no parameter
+  is wider than the default.
+- *The two executors against each other:* they agree bit for bit in the
+  30 of 42 comparable cases where they already agree on the rounded
+  parameters; in the other 12 their `exp` and `log` differ (D78).
+- *The C program* is D122's.
+
+**V3 as a test.** On the tutorial and the decoder at tiny constants, with
+every parameter in a type no wider than the nests that read it (`bf16`
+and `f32` under `f64`, `bf16` under `f32`):
+- the host's conversion phase moves no byte (`HostProfile::bytes_of`,
+  public for it);
+- each parameter at rest is a buffer of its own type.
+
+The decoder's figures at the 7B width are step 5's.
+
+**`presk explain`** lists a given realization's parameters stored otherwise
+than in the default type (§6.3, and the summary's count); a snapshot,
+`tutorial-typed`, on `tests/plan/tutorial-typed.json` (one nest typed
+apart, two parameters typed). Step 4 rewrites §6.3.
+
+**V1.** X1 on this tree: no file differs from step 1's. `make test` and
+`plan-check` pass.
+
+## D122 — Plan 0.12.0, step 3: the C export keeps a parameter in its own type in the arena and its kernels widen it as the native ones do; C1 and C5 hold under such realizations (2026-10-13)
+
+The C program needed no change but its kernel printer.
+- *The host and the arena already follow.* The host is recorded from the
+  native run (`presk-kernel/src/record.rs`), and the recorded entry
+  carries each argument in its realized type. So a typed weight has its
+  type in the program's `_in` struct and its arena (`const uint16_t
+  *theta_blocks_proj_w`), and the `.psk.d` reader converts the file's
+  reals to that type as it reads them, as it does every weight.
+- *The kernel printer* gives a widened input its own C type and widens its
+  loads, `presk_bf16_to_f32` or a cast to `double`, as the native backend
+  does (`kernel_fn`, `wide_load`).
+- *The SCoP mode* refuses a kernel with a widened input, as it refuses
+  integer weights.
+- `Store::of_spec` gives a widened input its type's store.
+
+**C1 and C2** (`presk-cli/tests/export_c.rs`,
+`typed_parameters_compute_the_native_backends_bits`, part of `make test`
+and `make c-conformance`):
+- *the cases:* every entry of the test set that takes a parameter tree,
+  every parameter in `f32` under `f64` and in `bf16` under `f32`; and
+  MiniGPT's forward pass and `next_token` with its matrices in `bf16` and
+  its biases quantised to `int8` under `f32`, both maps at once;
+- *the weights:* synthesized, and with their zeros drawn;
+- *the result:* 48 programs, every one the native backend's bits.
+
+**C5** (`generate_on_typed_parameters_gives_presk_serves_tokens`):
+- *the cases:* MiniGPT's `generate`, every parameter in `bf16` under `f32`
+  through both hosts, and in `f32` under `f64`;
+- *the result:* `presk serve`'s tokens, greedy and sampled, at the five
+  settings.
+
+**V1:** X1 is step 2's tree's, no file differs from step 1's.
+
+## D123 — Plan 0.12.0, step 4: the solver offers the functions' results and the parameters by path, and takes an entry whose result is a tensor under a budget on its largest gap (2026-10-13)
+
+**The functions' results.** As D119 found, `AdjointMap` names a result's
+adjoint, a `.vjp`'s cotangent argument, but the reference interpreter
+recorded 1-norms per `let` only. `Interp::call` now records the 1-norm of a
+`.vjp`'s argument named `ct` as it enters, at the site of that parameter,
+the largest over calls as for every site; `sensitivity::from_run` finds
+it. On the tutorial's `loss`: `loss/%7` 1.0 (the seed), `RMSNorm.apply/%10`
+2.41, `Block.apply/%8` 1.23, where none was listed. A result whose role is
+a decision (a primitive's result) is then offered like any stored value;
+one carried (a call's or a fold's result) stays carried.
+
+**The parameters, by path.** `solve::Roles` gains the parameters the
+solver offers (`ParamSite`: path, elements, largest magnitude, sensitivity,
+and the field sites that read it).
+- *Which nests read a parameter* is followed from the entry's first
+  parameter through fields, projections, calls, closures and folds
+  (`solve::param_reads`): a field site of a function called on several
+  subtrees reads several paths (`RMSNorm.apply`'s `θ.γ` reads
+  `blocks.norm.γ` and `final.γ`), and a stacked subtree sliced by a fold
+  keeps its path, as the type is every layer's.
+- *Its term* is `s · u(t) · |θ|` with `t` the narrowest of its own type and
+  the types of the nests that read its fields (or the default, where a
+  field is read by a call, or no field reads it). The value a nest reads is
+  rounded at rest and again at a narrower nest's edge, so this charges
+  both, once. The field sites that read a parameter carry no term of their
+  own any more: until 0.11.0 they followed their readers, and their term
+  is now the parameter's. Typing a parameter `f32` where only `f32` nests
+  read it adds nothing to the estimate and saves its bytes, as it changes
+  no bit.
+- *Its sensitivity* is the 1-norm of its leaf of the parameters' cotangent.
+  This departs from the plan's question 3, which decided the sum of each
+  partial's norm. The sweep returns the cotangent whole anyway, as the
+  `.vjp`'s result (D105's peak holds it), so its leaves' exact 1-norms are
+  read as it returns, and then it is dropped: no memory beyond what the
+  sweep already took, and the exact norm rather than an upper bound. As
+  decided, it is never kept beyond the sweep, but under `--quant`, as
+  before.
+- *Its cost* is its bytes at rest, elements × width (under `--profile`, the
+  roofline's time of those bytes); the nests' costs are unchanged. So the
+  traffic every ratio counts now has the weights in it, D109's "with
+  weights" column.
+- `--quant`'s integer types stay a pass on top of the float assignment
+  (D44's), priced by the whole cotangent, now with each candidate's float
+  bytes at its own type; a parameter it quantises leaves `params`. The plan
+  says the integer types join the same menu. They do not: their rungs are
+  priced element by element (the root-sum-square of D49), the float rungs
+  by a 1-norm, and one estimate for both is a design of its own. Left, and
+  said.
+
+**An entry whose result is a tensor** (the plan's question 5, as decided):
+- `presk solve --budget-abs EPS` beside `--budget` (relative to the
+  output's largest magnitude), one or the other (`solve::Budget`);
+- the entry must return a real tensor of any shape, an open prefix bound at
+  the run included (`returns_real`); a scalar is one;
+- the exact reference now runs before the sweep, to shape the seed: ones
+  over the output;
+- the sweep's sensitivities are divided by the output's elements, so that
+  the estimate is the first-order change of a mean element, compared with
+  the budget on the largest. It ranks; the measured largest elementwise gap
+  decides, and the solver widens as since D41;
+- the output's print says so ("on the largest elementwise gap of its N
+  outputs", "of a mean output element").
+
+*Found:* where the output's elements sum to a constant, as a layer norm's
+do, the seed of ones ranks nothing. On `LayerNorm{8}.apply` every
+sensitivity is about 10⁻⁴⁰, and the solver reaches the budget by seven
+widening rounds from a proposal that narrowed everything. That is the case
+the decided fallback, random-sign probes, is for. The course GPT's logits
+do not sum to a constant; V6 says whether they widen much.
+
+**The bound** charges the parameter tree at the narrowest of the default
+and the types `params` gives its leaves (`propagate`: the tree is one
+bound, the join of its leaves).
+
+**`presk explain`, §6.3.** With a solve, the parameters are decisions in
+the breakdown, by path, their term in the estimate; the prose says how. With
+a realization given, the section lists every value the program stores with
+the type the record gives it, its function's, or the default's (the
+decoder's `RMSNorm.apply/%2` at 0.11.0 is no longer left out), then the
+sites the record types that store nothing, then every parameter with its
+type (`params`, `quant` or the default). The snapshot `tutorial-typed`
+leaves ten stored values and two parameters at the default.
+
+**Tests:** `presk-driver/tests/driver.rs` (`parameter_reads_of_the_tutorial`;
+the breakdown sums to the estimate with the parameters among the
+decisions); `presk-cli/tests/solve_tensor.rs`, which replaces
+`solve_scalar.rs`: a tensor entry solved under both budgets, and the two
+flags exclusive.
+
+**V1.** X1 against steps 2–3: 20 files differ, all by design.
+- *Solves:* every solve's print and record (the tutorial's, with and
+  without `--quant`; the course GPT's at small constants).
+- *Downstream of a solved record:* the bounds and kernel listings under
+  them, the C export of the tutorial's, `presk quantize` on the quantised
+  one.
+- *The two sensitivity listings,* which gain the results' lines; the
+  course GPT's 30-site listing loses four zero sensitivities at its tail,
+  past the cut.
+- *`err-solve-nonscalar`,* the layer norm's module entry, which is now
+  solved and not refused.
+
+No other file moves.
+
+**The decoder's memory gate** (`out/llama_gate-0.12.0/gate.sh`, as D105's
+step 4): the one-block solve at the 7B width on 16 tokens, on D105's
+gate's envelope, in a 108 GB scope, alone:
+- **49 min 46 s and 71.2 GB at its peak**, D105's 50 min 43 s and 71.2 GB.
+  So the exact reference before the sweep, the results' 1-norms and the
+  parameters' leaf norms cost no memory, and the decoder's solve at 384
+  tokens should fit in its 105 GB scope as 0.11.0's did (71.7 GB, D117).
+- **What it solves:** 31 of 32 stored values narrowed, the results among
+  them (the head, `Llama.apply/%14`; the output projection; SiLU's
+  product), and all 13 parameters in `f32` (none in `bf16`).
+- **Traffic:** 2.00× less than all-`f64` with the weights counted. D105's
+  solve on the same tokens was 1.65× without them, and D106's at 384
+  tokens 1.05× with them (D109).
+- **Gap:** measured 1.17·10⁻⁵ against 1.09·10⁻², no widening round.
+
+## D124 — Plan 0.12.0, step 5: the measurements on the version's tree. V1, V2, V3 and V5 hold. The solver narrows the functions' results and types every parameter on the tutorial, the course GPT, BERT-large's two blocks and the Llama 2 decoder, every gap inside its budget, the weights counted in the traffic: the decoder 31 of 32 stored values and 13 of 13 parameters at 1.99×, in 71.7 GB. The decoder block under its solved realization runs as fast as all-`f32`, 3.5 to 4 times faster than under 0.11.0's (2026-10-13/15)
+
+Alone on falicon, on step 4's tree (`7334e31`, the version's code; step 5
+changes two scripts), in its worktree's `out/`, its inputs linked from
+presk's main checkout. Two binaries:
+- *new*: the version's;
+- *old*: 0.11.0's (`out/x1/presk-0.11.0`, `c73a2e1`'s code).
+
+Each command's log and every output are in `presk-project/data/` (below).
+
+### V1: no output of a realization that types no parameter changes, outside the solver
+
+- **X1's harness** (863 outputs), step by step:
+  - steps 0 to 3: no file differs but the C programs' version line and the
+    envelopes' date (D119–D122);
+  - step 4: 20 files differ, all solves, their downstream, the two
+    sensitivity listings and the layer norm's module entry now solved
+    (D123).
+- **The test set on the three executors**, in `f64`, `f32` and `bf16`:
+  X1's 31 entries on the exact interpreter, the kernel interpreter and the
+  native backend; `make test`; C1 on the test set by `make c-conformance`.
+- **The goldens and the rest**:
+  - `make test` passes;
+  - `check-examples`, `coverage` and `plan-check` pass;
+  - `make c-conformance` passes: 16 C export tests and 5 SCoP tests, the
+    ignored ones included (C3 through zig, the trained checkpoints, Polly),
+    in 680 s, the two new ones typed parameters (D122);
+  - `make quant-table`: byte-identical to 0.11.0's binary's and to D117's
+    file of record;
+  - `make step-table`: byte-identical to D117's file of record (0.11.0's).
+    The old binary's run lacked the course GPT's machine profile, as
+    D117's first did; the new one had it linked.
+- **`make tutorial`**: the same but for its times and step 15's solve.
+  - *Times:* `presk bench`, the calibration, the autotune of the RA4
+    sweep, and the plan and statements that follow from those
+    measurements.
+  - *The solve:* 7 → 11 stored values, the 4 parameters typed, 2.01× →
+    2.07× with the weights counted, measured 3.66·10⁻⁸ → 1.70·10⁻⁷; the
+    solved run's loss 2.10375823 → 2.103758097. The tutorial chapter
+    quotes the new output.
+
+**V1 holds**, every difference named.
+
+### V2, V3
+
+Tests since steps 2 and 3:
+- **V2** (`presk-cranelift/tests/params.rs`, `presk-cli/tests/export_c.rs`):
+  - each executor gives the bits of the parameters rounded once, on the
+    test set, the tutorial and the decoder at tiny constants (56
+    realizations);
+  - the kernel interpreter and the native backend agree wherever they
+    agree without `params`;
+  - C1 on 48 programs under typed parameters;
+  - C5 through both hosts.
+- **V3:** no byte converted at a kernel's edge under typed parameters
+  (`a_parameter_in_its_own_type_is_not_converted_at_an_edge`). At the 7B
+  width, V5's host profile of the decoder block under its solved
+  realization (below):
+  - no parameter byte is converted: the 18.9 MB a call is the residual
+    stream, widened for the one `f64` nest;
+  - the block's parameters at rest are 1.74 GB of 2³⁰ bytes in `f32`,
+    against 3.47 GB in `f64`, the plan's figures.
+
+**V2 holds; V3 holds, as a test and at the 7B width.**
+
+### V6: a budget on a tensor-valued entry (the step-4 binary, the version's code)
+
+- **The envelope:** `presk calibrate --precision experiments/margins.psk
+  --entry logits`, the course GPT at D = 64 on `make curve`'s all-`f64`
+  weights (`out/curve_train_f64/final.psk.d`, D117's, the file D118
+  read). It used the first **4 held-out windows** of
+  `out/civil_val_T256.psk.d`, at 128 bits, in 58 s.
+- **The solve:** `presk solve --budget-abs 4.67e-4`, the same weights.
+  - *The realization:* 29 of 31 stored values narrowed, all in `f32` but
+    LayerNorm's ε in `bf16`; all 21 parameters typed, 20 in `f32` and
+    `blocks.attn.wk.b` in `bf16`. That bias has a sensitivity of 10⁻³⁹, as
+    a key bias moves no softmax.
+  - *Traffic:* **1.97×** less than all-`f64`, the weights counted.
+  - *Gap:* estimate 4.14·10⁻⁴ (a mean element's), measured 3.24·10⁻⁵ on
+    the envelope's windows, no widening round.
+  - *Cost:* 1 min 57 s, 376 MB.
+- **`make margins`** with it added (`experiments/margins.sh`'s
+  `EXTRA="logits-4.67e-4=@…"`; the 461 held-out windows, 118 016
+  positions):
+  - *the solved realization:* its gap on the logits is **7.53·10⁻⁵**
+    (relative 1.44·10⁻⁵), its gap on the loss 3.92·10⁻⁸; **0 flips**,
+    against a bound #{m < 2ε} of 18; certified at 10⁻² and 10⁻³;
+  - *beside it, D118's curve realization at 10⁻³:* 3.35·10⁻⁴, 1 flip,
+    bound 70;
+  - *the other fourteen rows* are D118's, every figure;
+  - *statement S* holds again.
+- **No widening, so no fallback.** The random-sign probes are not needed.
+  The estimate is conservative instead: 4.1·10⁻⁴ for a mean element,
+  against 3.2·10⁻⁵ measured on the largest, so the proposal stopped with
+  room left. A solve on the logits gives 4.5× less gap than a solve on the
+  loss at the same nominal 10⁻³, at about the same traffic (1.97× against
+  2.00×).
+
+**V6, reported.**
+
+### V4: the solver offers the parameters and the results
+
+- **The tutorial** (X1's, the tutorial's step 15):
+  - 7 → 11 stored values narrowed, the results `loss/%7`,
+    `RMSNorm.apply/%10` and `Block.apply/%8` among them;
+  - 4 parameters: `blocks.norm.γ`, `blocks.proj.w` and `final.γ` in `f32`,
+    `blocks.proj.b` in `bf16`;
+  - **2.07×** with the weights counted (0.11.0: 2.01× without them);
+  - measured 1.70·10⁻⁷ against 2.10·10⁻³.
+- **`make precision`**, the course GPT at 10⁻³ on its trained weights (the
+  paper's §2):
+  - 29 → **33** stored values;
+  - 21 parameters, 10 in `f32` and 11 in `bf16`, their bytes at rest
+    5.10·10⁵ against 1.03·10⁶ in `f64`;
+  - **2.12×** with the weights (0.11.0: 2.14× without them);
+  - estimate 1.949·10⁻³ → 2.718·10⁻³, measured 1.204·10⁻⁷ →
+    **3.872·10⁻⁶**, inside the 2.8·10⁻³ budget;
+  - the bound `cond` 4.8021·10⁴ → 3.0232·10⁶, the parameter tree charged
+    at `bf16`;
+  - the solved run's loss 4.521788597 → 4.521755695;
+  - everything else in the log is 0.11.0's, but the sensitivities' sums
+    per module, which now count the results.
+- **`make curve`** (statement D, the paper's Figure 3), in 22 min. The
+  training runs are made under each solved realization less its `params`
+  (`experiments/curve.sh`): a training run keeps its master weights in the
+  default type, and `presk train` refuses `params`. That is what every run
+  before 0.12.0 trained under.
+
+  | budget | stored values | vs all-`f64`, with the weights | measured gap | validation loss vs all-`f64` |
+  |---|---|---|---|---|
+  | 10⁻¹ | 29 → 32 | 2.87× → 2.78× | 5.548·10⁻⁴ → 2.401·10⁻⁴ | +1.67·10⁻⁴ → +5.16·10⁻⁵ |
+  | 10⁻² | 29 → 32 | 2.34× → 2.29× | 3.596·10⁻⁵ → 1.308·10⁻⁵ | −4.0·10⁻⁶ → −1.1·10⁻⁶ |
+  | 10⁻³ | 29 → 32 | 2.00×, the same | 2.122·10⁻⁵ → **2.114·10⁻⁶** | −6.5·10⁻⁶ → +1.3·10⁻⁶ |
+  | 10⁻⁴ | 28 → 30 | 1.97×, the same | 1.871·10⁻⁶ → 1.160·10⁻⁶ | +1.3·10⁻⁶, the same |
+  | 10⁻⁵ | 24 → 25 | 1.72× → 1.58× | 1.069·10⁻⁸ → 1.637·10⁻⁶ | 0 → +1.3·10⁻⁶ |
+  | 10⁻⁶ | 14 → 13 | 1.37× → 1.35× | 2.051·10⁻⁸ → 4.542·10⁻⁹ | 0, the same |
+  | 10⁻⁷ | 6, the same | 1.09× → 1.08× | 3.729·10⁻⁹, the same | 0, the same |
+
+  0.11.0's ratios are without the weights, 0.12.0's with them; the column
+  of stored values counts the nests, the parameters apart. Every budget is
+  inside, and statement D holds at every budget. The paper's "2.87× to
+  1.09×" becomes 2.78× to 1.08×, the weights now in the count.
+- **BERT-large's two blocks** (D101's row: `MODELS=bert-large-L2
+  ./experiments/compile_times.sh`, 4 h 18 min in all; the report
+  `docs/compile-times-2026-10-13.md`):
+  - 25 → **28** stored values, every one narrowed;
+  - all **23 parameters typed**, 13 in `f32` and 10 in `bf16`, their bytes
+    at rest 2.27·10⁸ against 4.55·10⁸ in `f64`;
+  - **2.00×** with the weights counted (0.11.0: 2.03× without them);
+  - estimate 6.094·10⁻³ → 1.895·10⁻³, measured 1.046·10⁻⁵ →
+    **9.208·10⁻⁷** against the budget's 6.254·10⁻³, no widening round;
+  - the solve in 10 112.6 s (D117: 10 447.6) and 11.1 GB at its peak,
+    the same; `calibrate` 4 821.6 s, the reference 557.2 s.
+- **The decoder by D106's whole protocol** (`STAGES=solve L=1 T=384
+  ./experiments/llama.sh` in a 105 GB scope, 23 h 46 min in all; D117:
+  24 h 05 min):
+  - 25 → **32** stored values offered, 24 → **31** narrowed, 28 in `f32`
+    and 3 in `bf16`;
+  - the 7 new ones are results, all in `f32`: the head (`Llama.apply/%14`,
+    12 288 000 elements), the output projection (`Attention.apply/%23`),
+    the feed-forward product (`Dense.apply/%3`), SiLU's product
+    (`silu/%2`), the norm's output (`RMSNorm.apply/%10`), the block's
+    second residual (`Block.apply/%12`) and the loss itself (`loss/%6`,
+    the mean, one element);
+  - the 24 that D117 narrowed keep their types, the 3 `bf16` among them;
+    RMSNorm's square (`RMSNorm.apply/%2`) stays `f64`, as in D106 and
+    D117;
+  - all **13 parameters typed, all in `f32`**, their bytes at rest
+    1.864·10⁹ against 3.729·10⁹ in `f64`;
+  - **1.99×** with the weights counted, 1.97× without them (0.11.0: 1.96×
+    without them);
+  - estimate 6.897·10⁻³ → 7.595·10⁻³, measured 1.993·10⁻⁵ →
+    **2.639·10⁻⁵** against the budget's 1.118·10⁻², no widening round;
+  - the bound `cond` 1.1872·10⁶ → 1.1901·10⁶;
+  - the envelope is D106's but for its date, the exact loss the same,
+    11.1761830595;
+  - the times within 4 % of D117's, the peaks the same: `calibrate`
+    8 h 20 min and 32.0 GB, `solve` 13 h 32 min and **71.7 GB**, the
+    reference 1 h 54 min and 29.3 GB. So the exact reference before the
+    sweep and the parameters' leaf norms cost no memory at 384 tokens, as
+    step 4's gate found at 16.
+
+### V5: speed
+
+The decoder block's forward pass, `Llama.apply` at the 7B width and 384
+tokens, natively by D100's protocol (`experiments/pytorch_decoder.sh`
+with `ROWS=realizations`: the ten X925 cores pinned, ten threads, the
+median of seven calls after one warmup, under `presk plan`'s plan for
+each realization with the frozen profile), then the host by phase in a
+process of its own. Four rows: all-`f64`, all-`f32`, 0.11.0's solved
+realization (D117's) and 0.12.0's (the decoder's solve above). Each row
+in several processes, as D119 found the time varying between them: three
+rounds at batch 1, one at batch 20, alone on the machine, from 04:21 to
+06:46 on 2026-10-15 (`out/v5-0.12.0/`).
+
+| realization | B = 1, rounds 1 / 2 / 3 (ms) | ÷ all-`f32`, by round | B = 20 (ms) | ÷ all-`f32` | converted at edges, a call (B = 1 / 20) |
+|---|---|---|---|---|---|
+| all-`f64` | 7 022.7 / 8 919.1 / 8 873.5 | 2.88 / 2.30 / 2.32 | 105 662.4 | 1.56 | 0 |
+| all-`f32` | 2 438.9 / 3 879.5 / 3 825.4 | 1 | 67 553.6 | 1 | 0 |
+| 0.11.0's solved | 9 713.6 / 9 670.1 / 9 800.2 | 3.98 / 2.49 / 2.56 | 108 394.3 | 1.60 | 944 MB, 7.3–7.9 % / 4 979 MB, 2.7 % |
+| **0.12.0's solved** | **2 441.4 / 2 798.4 / 2 524.0** | **1.00 / 0.72 / 0.66** | **46 631.2** | **0.69** | 18.9 MB, 0.3 % / 378 MB, 0.8 % |
+
+- **The verdict at batch 1.** 0.12.0's solved realization is no slower
+  than all-`f32` in any round: 1.001 at worst, within the 5 % asked.
+  **V5 holds.**
+- **Against 0.11.0's solved realization,** 3.5 to 4.0 times faster at
+  batch 1 and 2.3 times at batch 20. 0.11.0's was 2.5 to 4 times slower
+  than all-`f32` (D119: 2.78 in step 0's check).
+- **Why it is faster: the results and the weights.**
+  - *The results.* Under 0.11.0's realization, the functions' results stay
+    in `f64`: the head, the attention's output projection, which is two
+    thirds of the kernels' time under the `f32` plan (D107), and the
+    feed-forward product. So its kernels take 8.8 s of a 9.5 s call (round
+    1's host profile), about all-`f64`'s 9.2 s. Under 0.12.0's, they are
+    `f32`, and the kernels take 2.4 s.
+  - *The weights.* Under 0.11.0's realization, every parameter is stored
+    in `f64`, and each `f32` nest converts the weights it reads at its
+    edge: 944 MB and 0.7 s a call. Under 0.12.0's, every parameter is
+    stored in `f32` and read in place: 7 ms a call converted.
+- **What is still converted** is no parameter (V3 at the 7B width). The
+  18.9 MB a call is the residual stream, `f32`, widened three times a
+  call for RMSNorm's square, the one stored value left in `f64`:
+  3 × 384 × 4 096 × 4 bytes = 18.87 MB; at batch 20, 377.5 MB. The
+  parameters at rest are 1.86·10⁹ bytes, 1.74 GB of 2³⁰ bytes against
+  3.47 GB in `f64`, V3's figures.
+- **The plans** are all-`f32`'s but for one nest. 21 of its 22 layouts
+  are the same. The 22nd is the head width's square root, one element,
+  which the solved realization types `bf16` and plans no layout for.
+  Both calls make 34 launches.
+- **At batch 20,** one process each: 0.69 of all-`f32`. 0.11.0's row took
+  108.4 s here and 79.8 s in step 0, the variance D119 found.
+- **Five more processes each, after the protocol** (`out/v5-0.12.0/b1-extra/`,
+  06:48 to 07:01, alternated, round 1's plans, the same commands): all-`f32`
+  3 819.5, 3 870.5, 3 797.8, 3 749.1, 3 759.4 ms; the solved realization
+  2 451.6, 2 461.2, 2 624.6, 2 906.7, 2 718.2 ms.
+  - *Over the eight processes of each row,* the medians are 3 809 ms and
+    2 574 ms, 0.68.
+  - *The fastest of each* are the same: 2 439 ms and 2 441 ms, 1.001.
+- **Below all-`f32` is not the types.** The two calls launch the same
+  kernels under the same layouts, in the same types but for one stored
+  value in `f64` and three scalars in `bf16`. And in one process of eight
+  all-`f32` ran as fast as the solved realization does.
+  - *All-`f32`, in 7 of its 8 processes and its 3 host profiles,* takes
+    3.7 to 3.9 s. That is D107's 3 744 ms, whose kernels timed one by one
+    added up to 2 470 ms: under all-`f32`, a launch inside the call takes
+    longer than alone.
+  - *The solved realization, in all 11 of its processes,* takes 2.4 to
+    3.0 s, near that sum. Its kernels take 2.4 to 3.0 s of the call too.
+  - *Neither has page faults to speak of:* all-`f32` none a call, the
+    solved realization 4 608, its 18.9 MB converted.
+  - *So the cause is not found.* A guess, untested: where the allocator
+    places the buffers, which the solved realization's `f64` square and
+    its conversions shift. Telling it needs the launches timed inside the
+    call, which the host profile does not do. That is for later, not
+    0.12.0: V5 asks for no slower, and it is no slower by every measure.
+- **So the claim is "as fast as all-`f32`",** not "faster than it". It is
+  3.5 to 4 times faster than 0.11.0's solved realization, at the same
+  budget and a gap of the same order.
+
+### What is archived
+
+What cannot be taken again, in `presk-project/data/`, each with its
+`.sha256`:
+- `llama-7b-0.12.0.tar.xz`: the decoder's solve by D106's whole protocol
+  (`out/llama/compile_times_T384/`, the stage's report and bound, its
+  log), and step 4's memory gate on 16 tokens (`out/llama_gate-0.12.0/`);
+- `paper-0.12.0.tar.xz`: V1's runs (the checks' logs, `make precision`,
+  the quant and step tables and `make tutorial` under both binaries, the
+  tutorial's diff), `make curve`'s realizations, table and training logs,
+  BERT-large's two blocks (`out/compile_times/`), and X1's outputs at
+  step 4;
+- `epsilon-0.12.0.tar.xz`: V6, the solve on the logits and `make
+  margins` with it (`out/v6-0.12.0/`);
+- `v5-0.12.0.tar.xz`: V5, step 0's baseline, the three rounds at batch 1,
+  the one at batch 20 and the five extra processes
+  (`out/v5-0.12.0/`).
+
+## D125 — Plan 0.12.0, step 6: version 0.12.0; the checks of record pass on the version's tree, and the documents are brought to it (2026-10-15)
+
+On the version's tree (step 5's, `0367985`, with version `0.12.0`), alone
+on falicon:
+- `make test` passes, 281 tests, 9 ignored. The version bump moves the
+  version line of the five `presk explain` document snapshots and of the
+  manual's chapter `explain_loss` (`make explain-manual`), which are
+  regenerated; nothing else in them changes.
+- `make check-examples`, `coverage` and `plan-check` pass, and `make
+  c-conformance` passes, the ignored tests included (C3 through zig, the
+  trained checkpoints, Polly), in 650 s.
+- `cargo doc --workspace --no-deps` has no warning. Its two warnings were
+  0.11.0's, already on step 0's tree, two doc links to private items
+  (`presk_interp::run`'s `synthesize`, `presk_explain::doc`'s `build`),
+  now plain code. `cargo doc -p presk-manual` had none.
+- `cargo clippy --workspace --all-targets` gives step 0's 20 warnings, at
+  the same places, and no other.
+- **V1 against step 4 and 0.11.0.** X1 with the version's binary
+  (`out/x1/v0.12.0`):
+  - against step 4's outputs, 22 files differ, each by the C programs'
+    version line (`0.12.0-dev` → `0.12.0`) or an envelope's date;
+  - against `out/x1/v0.11.0`, 38 files: those 22 and step 4's 20 named
+    in D123, four of them in both (the solved tutorial's C program).
+
+**The documents**, checked against what 0.12.0 did (the user,
+2026-09-30):
+- *The manual:* `index`, the tutorial's head, `explain` (the decoder's
+  document under D124's realization, 43 s), `coverage`, `experiments`
+  (BERT-large, the decoder and V5 at 0.12.0), `precision` (`make
+  precision`'s table, the curve, the parameters' measured saving),
+  `training` (`params` refused) and `status` (the version closed, each
+  statement's verdict).
+- *presk-specs:*
+  - the plan marked done;
+  - the reference at draft v0.17, its Status paragraphs at 0.12.0:
+    `presk train` refuses `params`, and chapter 8 gains W19, a `bf16`
+    nest's wider operand (D120), decided the same day (below);
+  - the report: the foreword, RA3, the roadmap, a section of chapter 8
+    on a weight in its own type, chapter 4's budget on the logits, and
+    the history from 13 to 15 October;
+  - the slides, the thesis summary, and a status note for a
+    non-specialist reader (`docs/status-2026-10-15.md`).
+- *presk-project:* the poster at 0.12.0.
+
+**The margins on 0.12.0's curve** (for the paper, whose margins figure
+reads the curve): `make margins` again on 2026-10-15 with the version's
+binary, `OUT=out/margins-curve-0.12.0`, the exact logits D118's and V6's
+reused (the same all-`f64` model and windows), V6's realization added
+(`EXTRA`), 72 s. The foil's rows are D118's, figure for figure. The
+curve's rows are D124's realizations:
+- at 10⁻¹ and 10⁻²: 3.55·10⁻² and 1.45·10⁻² on the logits, 76 and 38
+  flips, against bounds of 7 818 and 3 174;
+- at 10⁻³, statement D's: **2.52·10⁻⁴, 0 flips**, bound 51 (D118, at
+  0.11.0: 3.35·10⁻⁴, one flip, bound 70);
+- at 10⁻⁴ to 10⁻⁷: 7.49·10⁻⁵, 7.61·10⁻⁵, 8.90·10⁻⁷ and 5.94·10⁻⁸, no
+  flip.
+
+Five of seven are within ε\*(10⁻³) = 4.67·10⁻⁴, as at 0.11.0, and
+statement S holds. The run is archived as
+`presk-project/data/epsilon-curve-0.12.0.tar.xz`, its report also in
+`out/paper-0.12.0/margins-curve.md`.
+
+**W19, decided** (the user, 2026-10-15, as D120 recommended): the
+reference's item 2 of the realized value now converts a nest's operand to
+its storage type σ, then widens it exactly to α(σ), which is what the
+executors and the C export do. So a `bf16` nest reads a wider operand,
+and an `f32` parameter, rounded to `bf16` at its edge, and reads what it
+stores. No output of the compiler moves; the reference's question W19 is
+closed (presk-specs !80, draft v0.17).
+
+**Left for the user:**
+- the two departures of step 4 (D123);
+- V5's change of protocol, each row timed in several processes (D119,
+  D124).

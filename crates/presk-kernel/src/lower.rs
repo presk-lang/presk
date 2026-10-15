@@ -310,7 +310,7 @@ pub fn fused(steps: &[Step], ins: &[Operand], out: &[Axis], dtype: Dtype) -> Res
             .map(|src| match src {
                 Src::Input(k) => match ins[*k].kind {
                     BufKind::Idx => Expr::ToF(Box::new(Expr::LoadI(*k, idx[*k].clone()))),
-                    BufKind::Real | BufKind::Quant { .. } => load(*k, idx[*k].clone()),
+                    BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_) => load(*k, idx[*k].clone()),
                 },
                 Src::Step(k) => vals[*k].clone(),
             })

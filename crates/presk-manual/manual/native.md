@@ -64,6 +64,16 @@ record answers both (D34):
 - **`envelope`** names the magnitude measurements any bound about this
   realization assumed, because a bound without one is a different and
   unsupported claim (D35).
+- **`params`** (since 0.12.0) gives a parameter a floating-point type of its
+  own at rest, `f32` or `bf16`, keyed by its path in the tree as `quant`
+  keys integer weights: `"params": { "blocks.ff.up.w": "bf16" }`. Every
+  other parameter is stored in `default`. The `precision` chapter's
+  *Parameters in their own type* says what is checked and what runs. A
+  kernel of a wider type reads such a parameter from an input marked as
+  narrower, `presk dump --stage kernel` printing it in its own type
+  (`%1 : bf16[4, 4]` in an `f32` `dot`), whose loads widen each element
+  exactly, in four lanes at a time for `bf16` into `f32` and two for `f32`
+  into `f64`; it is never copied at the kernel's edge.
 
 A parameter a realization quantises (`precision` chapter) reaches the
 kernels as integers: `presk dump --stage kernel` shows such an input as

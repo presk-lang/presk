@@ -205,7 +205,10 @@ pub fn propagate_with(core: &Program, elab: &ElabProgram, entry: FuncId, dims: &
     }
     let mut p = Prop { core, env, realize, out: &mut a, depth: 0, model, roots };
     // The entry's arguments arrive rounded once into their storage type,
-    // which is what every backend does when a value crosses the seam.
+    // which is what every backend does when a value crosses the seam. The
+    // parameter tree is one bound, the join of its leaves: rounded at the
+    // narrowest of the default and the types `params` stores its leaves in
+    // (plan 0.12.0 step 4).
     let args: Vec<Bound> = core
         .func(entry)
         .params
@@ -213,7 +216,10 @@ pub fn propagate_with(core: &Program, elab: &ElabProgram, entry: FuncId, dims: &
         .map(|param| {
             let site = format!("{}/%{}", core.func(entry).name, param.var.0);
             let mag = p.env.get(&site).unwrap_or(1.0);
-            let u = p.realize.dtype_at(&site).unit_roundoff();
+            let mut u = p.realize.dtype_at(&site).unit_roundoff();
+            if matches!(param.ty, presk_types::ty::Ty::Params(_)) {
+                u = p.realize.params.values().map(|d| d.unit_roundoff()).fold(u, f64::max);
+            }
             Bound { mag, floor: p.env.floor(&site).unwrap_or(0.0), err: u * mag }
         })
         .collect();
