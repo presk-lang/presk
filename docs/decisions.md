@@ -14035,3 +14035,514 @@ falicon:
 
 Version `0.13.0`. The user tags `v0.13.0` after the merges.
 
+## D140 — Version 0.14.0 opened: the network diagram in the pipeline view, the program as boxes and arrows drawn from the provenance table (2026-10-17)
+
+The plan is `presk-specs/implementation/presk-plan-0.14.0.md` (presk-specs
+!88, open). The user ran 0.13.0's pipeline view on their machine and, on
+2026-10-17, asked for a drawing of the network inside the page, to
+understand the model more easily. The design note is presk-project
+`docs/presk-network-diagram-2026-10-17.md`, the prompt
+`docs/prompt-network-diagram-2026-10-17.md`. It is the drawing of
+presk-project `docs/presk-other-export-targets-2026-09-26.md` §4
+(2026-10-01), made from the pipeline view's data.
+
+The drawing is in a second tab of the page, Network, beside Pipeline. By
+default it shows:
+- the printer's formulas on the boxes;
+- the shapes and bytes on the arrows, coloured by their type;
+- the parameter count of each box, with its stored type;
+- the cost model's work W and bytes Q of each box.
+
+A `stack{L}` is one box ×L, which opens to one layer. A box opens in place
+to its own graph. A click selects the same element in the columns. The
+rule that shapes it: **the diagram is a view of the provenance table, not
+a second model.** Every box, node and arrow is an element of the table,
+and the drawing adds positions and numbers to them.
+
+The version makes four things:
+1. **A crate, `presk-diagram`,** with no external dependency: the graph
+   of a function from the table, its numbers, and a layered layout of
+   every level a reader can open, nested boxes included.
+2. **JSON format 2,** `explain.json` with a `network` object.
+3. **The Network tab** of `explain.html`.
+4. **The exports:** `network.svg`, `presk dump --stage network --format
+   json|svg|tikz`, and a generated TikZ figure of the course GPT in the
+   report's chapter 8.
+
+Nothing in the version is timed, and nothing in it is owed to the paper.
+
+**The user's decisions.**
+- *2026-10-17, on the note's §10*, in plan mode, every one as
+  recommended:
+  - the default opening is the entry and its first module box, every
+    stack folded ×L;
+  - the operation nodes are the fusion groups;
+  - an arrow's label shows on hover, with a "labels" toggle;
+  - TikZ is in;
+  - the backward graph is a toggle of the same tab;
+  - the layout is computed in Rust;
+  - the version is 0.14.0, starting now.
+- *2026-10-17, the plan's three questions* (its §6), answered via the
+  paper session, "OK pour tout", each as recommended:
+  1. `presk_kernel::Launched` gains the path of calls above each launch,
+     recorded only when the table is asked, so W and Q are per box;
+  2. a box's own element is its call's `let` (a stack's `fold`), naming
+     its callee's `fn` element beside it, a click lighting both threads;
+  3. N5's bound is P3's 200 ms, the columns' readings reported beside
+     0.13.0's.
+
+**Statements, fixed before the work** (the plan's §3).
+- *N0:* nothing else moves. Byte for byte against `7e215f1`'s, on
+  everything P0 covered: X1's harness, the goldens, `check-examples`,
+  `coverage`, `plan-check`, `c-conformance`, `quant-table`, `step-table`,
+  `make tutorial` but for its times, and the six snapshot documents'
+  Markdown. The version and commit lines are the exception. `explain.json`
+  changes only by its `format` and `network` fields.
+- *N1:* every box, operation node, port and arrow is an element of the
+  table, and a click in the diagram lights the same elements' threads in
+  the columns.
+- *N2:* the numbers are exact:
+  - the parameter count over the entry's `θ` equals `Hosted.params`'
+    total;
+  - at every site the envelope holds, the largest count of elements over
+    the arrows that carry it equals the envelope's `elems`;
+  - Σ W and Σ Q over any one level equal the entry's launches' totals.
+- *N3:* a box's formula is the printer's display of its function, byte for
+  byte; an operation node's is its root `let`'s equation; no second
+  printer.
+- *N4:* the page, the SVG and the TikZ draw one set of positions, and the
+  course GPT at level 2 fits one A4 page.
+- *N5:* on the decoder block at the 7B width, a select, an open and a
+  fold in the diagram take under 200 ms by the page's own counter. The
+  columns' readings are reported beside 0.13.0's.
+
+**Facts checked** on `b7cbe36`, whose code is `7e215f1`'s (the plan's §2),
+on the course GPT at `D` = 64, `H` = 2, `L` = 2, `B` = 2, `T` = 16.
+- *One PSK-Core function per module definition, not per instance.*
+  - Seven functions; `Linear.apply` serves six calls at three instances:
+    `wq`, `wk`, `wv` and `wo` at `Linear{D, D}`, `up` and `down`.
+  - So `core:Linear.apply` is no box's own element, and each call's `let`
+    is.
+  - Its types are in `In`, `Out` and an open prefix
+    (`%3 : ℝ[..., Out] = dot x, w`). An arrow inside an opened box takes
+    the callee's type under the call's dimension arguments, with the
+    prefix bound from the caller's argument.
+- *The use's name and its instance are in PSK-Core,* in the `let` that
+  projects the parameters, `ln1 : params LayerNorm{64} = θ.ln1`. A stack
+  is a `fold` over `params stack{2}(Block)`.
+- *The fusion groups are `presk_core::fusion::plan` and `stops`*: 29
+  fusion elements on the course GPT. The diagram reads them from the
+  table.
+- *A function's parameters are not elements of the table,* only its
+  `let`s and itself. So an arrow from the entry's input names the entry's
+  `fn` element, and one from an opened box's boundary names the caller's
+  argument.
+- *The envelope keeps a site's largest count of elements over its calls*
+  (`observe_elems`, and the interpreter's own maximum). So N2 compares
+  the largest.
+- *W and Q per box are not in the table.* The launch log
+  (`Launched { kernel, nest, epilogue }`) and the host's recording have
+  no call context.
+  - On the course GPT the table says `Linear.apply/%3 at k10, 8 a
+    call`: the four `Linear{D, D}` calls of each of two blocks.
+  - The backend knows the calls while it runs (`call_fn`'s
+    `outer_site`), hence question 1.
+- *Sizes at 0.13.0,* `explain.json` and `explain.html`:
+  - the tutorial's `loss`: 224 KB and 832 KB;
+  - the course GPT: 680 KB and 1.17 MB;
+  - the decoder block at the 7B width: 1.28 MB and 1.79 MB.
+
+**N0's baseline.** X1's harness (`out/x1/x1.sh`) on `7e215f1`'s release
+build, built in a worktree with its own target directory and kept as
+`out/bin/presk-7e215f1`, into `out/x1/base-0.14.0`: 863 outputs in 14 s, the same as
+step 6 of 0.13.0's (`out/x1/v0.13.0`) but for the commit line of four
+READMEs of the C exports. `make
+quant-table`, `make step-table` and `make tutorial`'s outputs beside it
+(`out/x1/base-0.14.0-*`): the two tables byte for byte as step 6's, the
+tutorial but for its measurements and the binary's name.
+
+**Step 0.** Version `0.14.0-dev`. The only outputs that move are the
+version line of the six snapshot documents and of the manual's
+`explain_loss` chapter.
+
+## D141 — The network diagram's graph, numbers and layout (plan 0.14.0 step 1): crate `presk-diagram`, `explain.json` format 2, `network.svg`; N1 and N2 hold (2026-10-17)
+
+Plan 0.14.0's step 1 (presk-specs !88), with the user's answers to its
+three questions (D140): the launch log records the calls above each
+launch, a box's element is its call, N5 at P3's bound.
+
+**What was made.**
+- **`Launched::calls`** (`presk-kernel`). While the launches are logged,
+  the kernel backend keeps the calls it is inside: each call's `let`,
+  `"<function>/%<let>"`, and a fold's with its iteration,
+  `"<function>/%<let>[<i>]"`, the outermost first. `call_fn` pushes its
+  caller's site and pops it on return; a fold sets the iteration before
+  calling its body. Nothing is recorded when the log is off, and no
+  output changes.
+- **Crate `presk-diagram`**, no external dependency, below
+  `presk-explain`:
+  - `build`: the graph of the program the kernels run (the table's stage
+    `ad`, or `opt` under `--opt`), each box drawn at its own call.
+    - A call box per call, named by the field of the parameters it is
+      given (`ln1`), its instance from their type (`LayerNorm{64}`); its
+      element is the call's `let`, and it names its callee's `fn`
+      element, which every instance shares.
+    - A stack box per `fold` over stacked parameters (×L).
+    - An operation node per fusion element of the function (a group or a
+      primitive alone, read from the table's fusion stage), and a host
+      node per primitive the host computes.
+    - A parameter node per parameter an operation reads; the parameters a
+      box is given are its port.
+    - The inputs, the result, and an arrow per value, through the
+      projections and tuples the host carries.
+    - A scalar of literals the host computes is a hyperparameter and is
+      not drawn; one a kernel computes (`sqrt(HD : ℝ)`) is a node, so
+      that W and Q add up.
+  - `shape`: a callee's types at its call. One PSK-Core function serves
+    every instance of its module, so an arrow inside a box takes the
+    callee's type under the call's dimension arguments, the open prefix
+    bound to the caller's argument's leading axes. The entry's own prefix
+    is the `--dim`s it does not have, as `presk run` binds it
+    (`bind_run`). Differentiation copies a callee's result type into its
+    caller with the callee's prefix variable (`.bwd`'s
+    `%8 : (…, ℝ[..., hidden]) = call Linear.apply.bwd…`), so a caller's
+    types take the bindings its callees make.
+  - The numbers:
+    - a box's formula is the printer's display of its callee
+      (`render::aligned`, N3), with its Unicode form for the SVG;
+    - an operation's formula is its root `let`'s equation, the string its
+      column shows, with a contraction's sum and order;
+    - an arrow's type is in the entry's dimension names and at their
+      values, with its realized type and bytes; a parameter flows in its
+      stored type and bytes (D121);
+    - a box's parameters are its subtree of the entry's (a quantized
+      leaf's integers and `f32` scales); inside a stack, a layer's;
+    - a box's W and Q are `kernel_cost`'s over the launches whose calls
+      begin with its own, and an operation's over its nest's launches in
+      its call.
+  - `layout`: layered, top to bottom. Longest-path layers, a source
+    pulled down to just before its first reader, the result last; edges
+    across layers pass through; barycenter ordering over eight sweeps;
+    each layer's items placed near their neighbours' centre, in order.
+    An opened box is its graph laid out inside it, below a header, the
+    arrows into it ending at its own inputs. One layout per opening a
+    reader can reach: the entry alone, then each box opened with the
+    boxes it is inside. The default opening is the entry and its first
+    box.
+  - `json` (format 2's `network`, written by hand), `svg` (one opening,
+    the formulas in Unicode), `text` (the outline the snapshots keep).
+- **`presk explain`.** `explain.json` is format 2, with `network`; the
+  page refuses any other. `--format json|html` also writes `network.svg`,
+  the default opening. `presk_explain::network` returns the diagram with
+  what it is checked against. The manual's `explain` chapter gives the
+  schema.
+
+**Departures from the plan, each with its reason.**
+- *Top to bottom, not left to right* (the note's §3 put the inputs on the
+  left). Left to right, a layer is as wide as its widest formula, and
+  opening a box multiplies the layers. The course GPT at level 2 (`Block`
+  opened) was 4 593 × 345 pt; top to bottom it is 745 × 1 697 pt, about
+  half its size on an A4 page (N4, step 3).
+- *A box opened folds its siblings.* Opening a box moves what is around
+  it, so a layout is computed for each path of opened boxes. Opening two
+  siblings at once would need a layout per combination, or a layout in
+  the page, which the plan excludes.
+- *`network.svg` in step 1*, not step 3: the layout could not be judged
+  without drawing it. Step 3 adds `presk dump --stage network`, the TikZ
+  and N4.
+- *N2's comparison with the envelope* is made where the precision stages
+  read the kernels' program. Under a uniform realization of a gradient,
+  differentiation keeps a fusion group for the precision stages alone
+  (D94), and their program is numbered differently: the MLP's
+  `mse_grad.lambda0.bwd/%10` holds 72 elements in the kernels' program
+  and 80 in theirs.
+
+**Statements.**
+- *N1 holds*: every node, function, member and arrow names an element of
+  the table. *N2 holds*:
+  - the parameters over the entry's `θ` equal `Hosted.params`' total;
+  - at each site the envelope holds, the largest count of elements over
+    the arrows that carry it equals the envelope's (98 arrows);
+  - in every opening, the W and the Q of the nodes drawn and not opened
+    sum exactly to the entry's launches';
+  - every arrow's shape is known at the entry's dimensions.
+- They are checked by `presk-explain`'s `tests/network.rs` on 36
+  diagrams:
+  - the 14 entries of `make plan-check` and the coverage models and the
+    course GPT, with and without the optimizer;
+  - the six snapshot documents' compilations and the MLP's gradient;
+  - the course GPT in `f64`.
+- Outline snapshots keep the graphs and the default opening's positions.
+- On the course GPT at D = 64:
+  - 125 nodes, 133 arrows, 14 openings;
+  - 112 896 parameters;
+  - W = 7 362 769 and Q = 3 309 664 bytes in `f64`;
+  - the four `Linear{64, 64}` boxes of a block each 264 k of W per layer.
+- *N0 holds at this step.*
+  - X1's harness against the baseline differs in the same 19 files as at
+    step 0, by their version lines.
+  - The three documents' `explain.json` (the tutorial, the course GPT
+    under a budget, the decoder block at the 7B width) are 7e215f1's but
+    for `format`, `network` and the finding below; their `explain.md`
+    but for the version line.
+  - Sizes, v0.13.0's then this step's: 224 045 → 288 003 bytes,
+    680 469 → 993 539 and 1 283 647 → 1 481 857. The network is 29, 125
+    and 87 KB compact, as the page inlines it; the file is pretty-printed,
+    a coordinate a line.
+
+**Finding: `explain.json` under the native target is not the same from
+one run to the next.** 0.13.0 step 5 (D138) reads each kernel's machine
+code after the JIT links it, and a kernel that calls a `libm` function
+holds that function's address, which the loader places differently in
+each process. Two runs of v0.13.0 on the tutorial differ in one kernel of
+nine; the bytes' `ranges`, the lines and the sizes do not. The JSON was
+said to be deterministic without `--measure` (D135). Reading the bytes
+before they are linked, with the relocations named, would make it so. It
+changes what the native column shows, and is put to the user on this
+step's merge request; N0 compares the JSON with the native code's `hex`
+and `disasm` aside.
+
+## D142 — The Network tab of the pipeline view (plan 0.14.0 step 2): the diagram drawn from the JSON's positions, a click selecting in the columns; N1's second half and N5 hold (2026-10-17)
+
+`templates/explain.html` gains a tab bar, Pipeline | Network; the columns
+are unchanged. The Network tab draws `explain.json`'s `network` (D141) at
+the positions `presk-diagram` computed, with the page's own pieces: `tex()`
+and its cache for the formulas, `inspectHtml()` (what `inspect()` wrote,
+made a function of the element) and `mathOf()` in the side panel,
+`thread()` for the selection. It lays nothing out and writes no
+mathematics of its own (N3): a box's formula is its `tex`, typeset when
+the box is drawn folded and scaled into it.
+
+- **Opening and folding** in place, by a box's header: the opening laid
+  out for the box's chain, its siblings folded (D141); "default" returns to
+  the entry and its first box. A stack opened is one layer, ℓ.
+- **Hovering** shows a node's numbers (with W/Q), its formula, a group's
+  members' equations, then its element's facts; an arrow's site, type and
+  bytes. "labels" writes them on every arrow.
+- **A click** selects the node's elements in the columns (a box's call and
+  its callee's function, the plan's question 2), opens their functions
+  and switches to the Pipeline tab with their threads lit; with shift it
+  stays, and the diagram's nodes and arrows of the thread light. A
+  selection made in the columns lights the diagram.
+- **"keys"** draws the random keys and their `split_key`s, hidden by
+  default. **"backward"**, shown when the program has `.bwd` functions,
+  draws them and what they hold, hidden by default.
+- **The lesson** records the tab and the opened boxes with each step. The
+  address takes `tab=network`, `net=`, `labels`, `keys`, `backward`, and,
+  for both tabs, `theme=light|dark` and `plain` (nothing selected).
+
+**Fixes to the diagram (D141's), found on the MLP's gradient.**
+- A tree of parameters is a parameter node only when it is a subtree of
+  the entry's `θ`. A gradient, of the same type, is a value that flows: it
+  was drawn as a parameter (`θ.%6`).
+- The entry's parameters are its first argument only, not every tree of
+  their type (an optimizer's step also takes the gradient).
+- A box's port is the subtree of `θ` it is given; any other tree is an
+  arrow.
+- An arrow carrying a tree holds its leaves' elements, in the site's
+  realized type: it held none.
+- An arrow from a parameter node takes the parameter's stored type and
+  bytes (a quantized leaf's integers and scales).
+
+**Statements.**
+- *N1's second half holds.* Under `#bench`, the page clicks each box of
+  the default opening and checks that its elements light in the columns,
+  their shown card or the shown element they pass through to: the course
+  GPT's three (`GPT.apply`, `blocks`, `lnf`) and the decoder block's
+  three.
+- *N5 holds,* by the page's own clock in headless Firefox on falicon,
+  three runs each:
+  - the course GPT at D = 64: 15 openings drawn in at most 20.0 ms, 21
+    selects in at most 1.0 ms; the columns' select at most 7.0 ms, fold or
+    open at most 34.0 ms (0.13.0: 6.0 and 33.0);
+  - the Llama 2 decoder block at the 7B width: 13 openings in at most
+    20.0 ms, 19 selects in at most 2.0 ms; the columns' select at most
+    7.0 ms, fold or open at most 45.0 ms (0.13.0: 7.0 and 44.0).
+  - All are under P3's 200 ms, the bound the user chose.
+- *The page's size.*
+  - The course GPT's page grows from 1.17 MB to 1.31 MB.
+  - The decoder block's page grows from 1.79 MB to 1.90 MB. Its JSON
+    grows from 1.28 MB to 1.48 MB, the network 87 KB of it compact.
+- *N0 holds:* X1's harness differs from the baseline in the same 19 files
+  as at step 0, by their version lines. `presk-explain`'s tests pass,
+  with the gradient's outline snapshot following the fixes above.
+
+## D143 — The network diagram's exports (plan 0.14.0 step 3): `presk dump --stage network`, TikZ, the course GPT's figure in the report and the manual; N4 holds (2026-10-17)
+
+- **`presk dump FILE --stage network --entry E`.** It runs every stage as
+  `presk explain` does, on the native target, without the exact
+  reference and without writing a document; the directory its artifacts
+  would go to is temporary and removed. It takes `--dim`, `--const`,
+  `--realize` or `--plan`, `--profile` and `--weights`.
+  - `--format text`, the default, prints the outline (every box's graph,
+    each node and arrow with its element and its numbers, the default
+    opening's positions).
+  - `json` prints the `network` object.
+  - `svg` and `tikz` print one opening, `--level N`: 0 the entry alone, 1
+    its first box opened (the default), then at each level, in the box
+    opened last, its first stack, else its first box (`layout::level`).
+  - `--standalone` makes the TikZ a document (LuaLaTeX).
+  - `--format json|svg|tikz` on another stage is refused, and
+    `latex|unicode` on this one.
+- **`tikz`** (`presk-diagram`): the same positions in points, y down, the
+  boxes carrying the printer's LaTeX.
+  - Each formula is shrunk to its box's width when it is wider
+    (`\prfit`).
+  - The reference's macros `\code` and `\den` are provided where the
+    document has none; Greek letters, `×`, `·` and `ℓ` in labels are set
+    as mathematics, which a typewriter font may lack.
+  - The first comment names the command that made it.
+- **`make network-figure`.**
+  - The course GPT at level 2 (`loss` at D = 64, H = 2, L = 2, B = 2,
+    T = 16, in `f64`) goes into the manual's new chapter
+    `explain_network` as SVG, which rustdoc keeps inline, held current by
+    a test of `presk-explain`.
+  - The same opening goes into `out/network/` as SVG, TikZ and a
+    standalone document.
+  - Its TikZ goes into presk-specs `report/figures/network-gpt.tex`, the
+    report's figure 9.1 in chapter 8's section on the pipeline view
+    (presk-specs MR, which adds `graphicx` and `tikz` to the report's
+    preamble).
+- **The layout's gaps** narrowed for the page to hold more: 24 pt between
+  layers (30 before), 12 pt between nodes (14). The outline snapshots
+  moved by their positions alone.
+
+**N4 holds.** `presk-explain`'s `tests/network.rs` checks, on the course
+GPT's default opening and level 2:
+- every rectangle and both ends of every arrow of the JSON's view are
+  where the SVG and the TikZ draw them;
+- the manual's SVG is the dump's, byte for byte;
+- the page reads the same view's `rects` and `routes`.
+
+Level 2 is 741 × 1 569 pt. An A4 page with margins of 2 cm holds it at
+0.46 of its size (asserted ≥ 0.45). The report's text area holds it at
+0.85 of its height, with its caption, on one page. Its 9 pt labels then
+print at about 3.5 to 4 pt: legible in a PDF reader, not on paper. A
+smaller figure would leave out the formulas or the levels around the
+block, and the plan asks for both.
+
+**N0.** No output of record moves: `presk dump --help` is in no harness,
+and `presk --help`'s line for `dump` is unchanged.
+
+**Amended the same day: two figures** (the user, 2026-10-17, via the paper
+session, on presk !102's question: "ok pour deux figures"). The report gets
+two generated figures, each readable on paper, in place of level 2 on one
+page; level 2 stays the page's, the SVG's and the manual's.
+- `presk dump --stage network --box NAME` draws the box called `NAME`
+  opened by itself, without what is around it (`layout::alone`,
+  `find_box`). Its graph is laid out as the page lays it out inside the
+  box, so its positions are the page's, relative to the box.
+- `make network-figure` writes level 1 (the GPT, `blocks` folded,
+  `network-gpt.tex`, 647 × 899 pt) and `Block` alone (`--box blocks`,
+  `network-gpt-block.tex`, 693 × 808 pt) into presk-specs
+  `report/figures/`, the report's figures 9.1 and 9.2, each on its page
+  at the text's width.
+- An A4 page with margins of 2 cm holds them at 0.74 and 0.69 of their
+  size, their 9 pt labels printing at about 6 pt. N4's test asserts at
+  least two thirds for both, and checks the box drawn alone's positions in
+  the SVG and the TikZ as it does the views'.
+
+## D144 — Version 0.14.0: the checks of record pass on the version's tree, and the documents are brought to it (plan 0.14.0 step 4) (2026-10-17)
+
+Version `0.14.0` (`Cargo.toml` and the presk packages of `Cargo.lock`;
+the version line of `presk explain`'s six snapshot documents and of the
+manual's `explain_loss` chapter; `presk --help`'s first line, which
+carries the version).
+
+**The checks of record, on the version's tree.**
+- `make test`, `check-examples`, `coverage`, `plan-check` and
+  `c-conformance` pass, the ignored tests included where they run.
+- `cargo doc -p presk-manual` has no warning.
+- After D143's amendment (`--box`, `layout::alone`), `make test`, X1 and
+  the manual were run again; the amendment touches no output of record.
+
+**N0 holds** against `7e215f1`, by X1's harness on the version's release
+build (`out/bin/presk-0.14.0`, `out/x1/v0.14.0`) and on each step's:
+- the 863 outputs differ in 19 files, by their version and commit lines
+  alone, at every step and at the version;
+- `make quant-table` and `make step-table` are byte for byte the
+  baseline's;
+- `make tutorial` differs only in what it measures (the times, the
+  autotuned layouts' timings, the Spearman of the measured times) and in
+  `presk --help`'s version;
+- `explain.json` on the tutorial, the course GPT and the decoder block at
+  the 7B width is v0.13.0's but for `format`, `network` and the native
+  code's bytes, which differ from one run of v0.13.0 to the next (D141);
+  `explain.md`, but for its version line.
+
+**The statements of plan 0.14.0, at the version.** N0 to N5 hold (D140 to
+D143):
+- N1 and N2 on 36 diagrams;
+- N1's clicks and N5 in headless Firefox (the decoder block: an opening
+  in at most 20.0 ms, a select in at most 2.0 ms);
+- N3 by construction, the printer's strings;
+- N4 with the user's two figures.
+
+**The documents at 0.14.0** (the user's rule of 2026-09-30).
+- The manual: index, tutorial (the Network tab and `--stage network`, as
+  text, no command added to `make tutorial`), `cli`, `explain` ("The
+  network diagram", "The Network tab"), the new chapter
+  `explain_network`, `status` (each step, each statement's verdict, what
+  0.14.0 has and does not). `dependencies` is unchanged: no dependency
+  entered.
+- The CHANGELOG's 0.14.0 section; `CLAUDE.md` (the crate `presk-diagram`,
+  `explain`'s format 2 and tab).
+- In presk-specs (!90, stacked on !89):
+  - the plan marked done (!88);
+  - the reference at draft v0.19, which changes no rule: the Status
+    paragraphs and the two "Status in" sections at 0.14.0, section 3.10's
+    Status with the diagram's boxes, the kernels' with the launches' calls;
+  - the report: the foreword, chapter 8's section and its two figures
+    (!89), the roadmap, the history;
+  - the slides, the summary, and a status note
+    (`docs/status-2026-10-17-0.14.0.md`).
+- The poster at 0.14.0 (presk-project).
+
+**Left to the user.**
+- !100's question: whether `explain.json` should hold each kernel's bytes
+  before linking, so that it is the same from run to run.
+- The merges, and the tag `v0.14.0`.
+
+## D145 — The native code's bytes before linking: `explain.json` the same from one run to the next (plan 0.14.0, the user's answer on presk !100) (2026-10-17)
+
+D141 found that `explain.json` under the native target differed from one
+run to the next. 0.13.0's native column (D138) read each kernel's bytes
+after the JIT linked them, and a kernel that calls a `libm` function holds
+that function's address in a literal: on the tutorial, the 8 bytes at
+128–136 of `k4`, `erff`'s address, which the loader places differently in
+each process. D135 had said the JSON was deterministic without
+`--measure`. The user answered the question on presk !100, 2026-10-17:
+"yes", keep the bytes before linking.
+
+- **`presk_cranelift::MachineCode`.**
+  - `bytes` are now the buffer Cranelift emitted, before the JIT links it
+    (`compiled_code().code_buffer()`).
+  - A new field, `relocs`, gives each field the linker fills,
+    `(start, end, symbol)`, from the buffer's relocations, each target
+    named by the `libm` function it is (`exp`, `erff`).
+  - `plain_code`, the test that the lines change no byte, keeps the same
+    bytes without the lines.
+- **The text of the instructions also varied**, found by running the
+  course GPT twice: a kernel calling two `libm` functions declared them
+  into its function in a `HashMap`'s order, so that Cranelift's text
+  numbered them `userextname0` and `userextname1` either way. They are now
+  declared in their names' order. The bytes do not encode that number.
+- **`explain.json`** gains the native facts' `relocs`. The page
+  underlines those bytes and names their function. The manual's `explain`
+  chapter says so.
+
+**Checks.**
+- `presk-driver`'s `tests/native.rs` (P4) also checks that every field
+  the linker writes is zero before linking and names a `libm` function:
+  129 fields in the test set's 1 164 kernels.
+- `presk-cli`'s `tests/explain.rs` runs `presk explain --format json` on
+  the tutorial twice, in two processes, and finds the same bytes.
+- By hand, two runs each give the same `explain.json`, byte for byte:
+  - the tutorial under a budget;
+  - the course GPT under a budget;
+  - the decoder block at the 7B width.
+- Against step 1's JSON, the bytes differ only inside the relocation
+  fields, and the lines' ranges are the same.
+- The code a run executes is unchanged: the same bytes, linked. X1's
+  harness differs from the baseline in the same 19 files, by their version
+  lines. `make test` passes, and the manual builds without a warning.

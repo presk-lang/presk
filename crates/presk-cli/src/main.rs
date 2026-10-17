@@ -217,9 +217,19 @@ enum Command {
         #[arg(long, value_enum)]
         stage: DumpStage,
         /// `text`, the stage's own listing; `latex` or `unicode`, its
-        /// functions as equations (plan 0.13.0 step 4).
+        /// functions as equations (plan 0.13.0 step 4); for `--stage
+        /// network`, `json`, `svg` or `tikz` (plan 0.14.0 step 3).
         #[arg(long, value_enum, default_value_t = DumpFormat::Text)]
         format: DumpFormat,
+        /// For `--stage network --format svg|tikz`: the opening drawn, 0 the
+        /// entry alone, 1 its first box opened (the default), then a stack,
+        /// else the first box, opened at each level.
+        #[arg(long)]
+        level: Option<usize>,
+        /// For `--stage network --format svg|tikz`: the box called NAME
+        /// (`blocks`) opened by itself, without what is around it.
+        #[arg(long = "box", value_name = "NAME", conflicts_with = "level")]
+        boxed: Option<String>,
         /// With `--format latex|unicode`: only this module.
         #[arg(long)]
         module: Option<String>,
@@ -1088,6 +1098,9 @@ enum DumpFormat {
     Text,
     Latex,
     Unicode,
+    Json,
+    Svg,
+    Tikz,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -1108,6 +1121,10 @@ enum DumpStage {
     /// (needs --entry, --dim/--const as `presk run`; `--data` for real
     /// batches). Ranks where a precision budget should *not* be spent.
     Sensitivity,
+    /// The network diagram of an entry, as `presk explain` draws it (needs
+    /// --entry, --dim/--const as `presk run`): text, or --format
+    /// json|svg|tikz.
+    Network,
 }
 
 fn main() -> ExitCode {
@@ -1117,10 +1134,17 @@ fn main() -> ExitCode {
             Some(env) => check_precision(&file, &env, &parse_realize(&realize), sites, &model, measure),
             None => check(&file, &consts, summary, json),
         },
-        Command::Dump { file, stage, format, module, function, standalone, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
+        Command::Dump { file, stage, format, level, boxed, module, function, standalone, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
             set_remat(remat);
+            if let DumpStage::Network = stage {
+                return dump_network(&file, format, (level, boxed.as_deref()), standalone, entry.as_deref(), &dims, &consts, &realize, plan.as_deref(), profile, weights);
+            }
             match format {
                 DumpFormat::Text => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, &parse_plan(plan.as_deref(), &realize), plan.is_some(), profile, weights, sites),
+                DumpFormat::Json | DumpFormat::Svg | DumpFormat::Tikz => {
+                    eprintln!("presk dump: --format json|svg|tikz is the network diagram's: --stage network");
+                    ExitCode::from(2)
+                }
                 DumpFormat::Latex | DumpFormat::Unicode => {
                     let f = if let DumpFormat::Latex = format { presk_print_math::Format::Latex } else { presk_print_math::Format::Unicode };
                     dump_math(&file, stage, f, &presk_print_math::Select { module, function }, standalone, &consts, unroll_stack, plan.as_deref().map(|_| parse_plan(plan.as_deref(), &realize)).as_ref())
@@ -2803,7 +2827,7 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
         Err(c) => return c,
     };
     match stage {
-        DumpStage::Kernel | DumpStage::Sensitivity => unreachable!("handled above"),
+        DumpStage::Kernel | DumpStage::Sensitivity | DumpStage::Network => unreachable!("handled above"),
         DumpStage::Tokens => {
             let lexed = lexer::lex(id, sm.text(id));
             print!("{}", lexer::dump_tokens(&lexed.tokens));
@@ -2898,6 +2922,79 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
             }
         },
     }
+}
+
+/// `presk dump --stage network` (plan 0.14.0 step 3, D143): the network
+/// diagram of an entry, as `presk explain` draws it. Every stage runs as for
+/// the document, on the native target and without the exact reference; the
+/// directory its artifacts would go to is removed afterwards.
+#[allow(clippy::too_many_arguments)]
+fn dump_network(file: &Path, format: DumpFormat, (level, boxed): (Option<usize>, Option<&str>), standalone: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, profile: Option<PathBuf>, weights: Option<PathBuf>) -> ExitCode {
+    let Some(entry) = entry else {
+        eprintln!("presk dump --stage network: --entry is required (the diagram is an entry's, its arrows at the entry's shapes)");
+        return ExitCode::from(2);
+    };
+    if matches!(format, DumpFormat::Latex | DumpFormat::Unicode) {
+        eprintln!("presk dump --stage network: --format text, json, svg or tikz");
+        return ExitCode::from(2);
+    }
+    let out = std::env::temp_dir().join(format!("presk-network-{}", std::process::id()));
+    let o = presk_explain::Options {
+        file: file.to_path_buf(),
+        entry: entry.to_string(),
+        dims: dims.to_vec(),
+        consts: consts.to_vec(),
+        budget: None,
+        realize: plan.is_none().then(|| realize.to_string()),
+        plan: plan.map(String::from),
+        profile,
+        threads: None,
+        remat: crate::remat(),
+        opt: false,
+        weights,
+        seed: 0,
+        bits: 128,
+        envelope: None,
+        no_exact: true,
+        targets: vec![presk_explain::Target::Native],
+        measure: false,
+        sites: Vec::new(),
+        json: true,
+        html: false,
+        out: out.clone(),
+    };
+    let got = presk_explain::network(&o, &mut stderr());
+    let _ = std::fs::remove_dir_all(&out);
+    let n = match got {
+        Ok(n) => n,
+        Err(stop) => return exit(stop),
+    };
+    let Some(n) = n.network else {
+        eprintln!("presk dump --stage network: `{entry}` has no diagram");
+        return ExitCode::from(1);
+    };
+    let alone;
+    let v = match boxed {
+        Some(name) => match presk_diagram::layout::find_box(&n, name) {
+            Some(b) => {
+                alone = presk_diagram::layout::alone(&n, b);
+                &alone
+            }
+            None => {
+                eprintln!("presk dump --stage network: no box called `{name}`");
+                return ExitCode::from(1);
+            }
+        },
+        None => &n.views[presk_diagram::layout::level(&n, level.unwrap_or(1))],
+    };
+    let command = std::iter::once("presk".to_string()).chain(std::env::args().skip(1)).collect::<Vec<_>>().join(" ");
+    match format {
+        DumpFormat::Json => println!("{}", presk_diagram::json::network(&n)),
+        DumpFormat::Svg => print!("{}", presk_diagram::svg::svg(&n, v, false)),
+        DumpFormat::Tikz => print!("{}", presk_diagram::tikz::tikz(&n, v, standalone, &command)),
+        _ => print!("{}", presk_diagram::text::outline(&n)),
+    }
+    ExitCode::SUCCESS
 }
 
 /// `presk dump --format latex|unicode` (plan 0.13.0 step 4): the typed

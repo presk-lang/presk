@@ -27,8 +27,9 @@ use presk_provenance::{How, Id, Stage};
 use super::State;
 use crate::doc::{Block, Document, Section};
 
-/// The layout's version, `format` in the file.
-pub const FORMAT: u64 = 1;
+/// The layout's version, `format` in the file: 2 since plan 0.14.0 step 1
+/// (D141), which added `network`.
+pub const FORMAT: u64 = 2;
 
 /// A number in LaTeX, three significant digits: `3.12 \cdot 10^{-2}`.
 fn tex_num(x: f64) -> String {
@@ -59,6 +60,8 @@ fn unit(ty: &str) -> &'static str {
 pub(crate) struct Math {
     displays: HashMap<String, String>,
     formulas: HashMap<String, String>,
+    /// The listing itself, which the diagram's boxes read.
+    listing: presk_print_math::Listing,
 }
 
 impl Math {
@@ -77,8 +80,23 @@ impl Math {
             }
         }
         let formulas = l.formulas.iter().map(|(sp, m)| (presk_driver::provenance::span_key(*sp), m.render(Format::Latex))).collect();
-        Math { displays, formulas }
+        Math { displays, formulas, listing: l }
     }
+}
+
+/// The network diagram (plan 0.14.0, D141): the graph of the program the
+/// kernels run, a view of the table, with its numbers and its layout.
+/// `None` when the entry does not resolve.
+pub(crate) fn network(s: &State, listing: &presk_print_math::Listing) -> Option<presk_diagram::Network> {
+    let (program, stage) = if s.before_opt.is_some() { (&s.xcore, Stage::Opt) } else { (&s.ad_program, Stage::Ad) };
+    // The entry as `presk run` binds it: its dimensions, and the `--dim`s it
+    // does not have as its open prefix.
+    let opts = presk_interp::RunOptions { entry: s.o.entry.clone(), dims: s.dims.clone(), seed: 0, bits: 64, digits: 12 };
+    let (f, dims, prefix) = presk_interp::run::bind_run(program, &s.prog, &opts).ok()?;
+    let prefix: Vec<(Option<String>, u64)> = prefix.iter().map(|a| (a.name.clone(), a.len as u64)).collect();
+    let kernels = s.hosted.as_ref().ok().map(|h| (h.listing.kernels.as_slice(), h.launched.as_slice()));
+    let i = presk_diagram::Inputs { prog: &s.prog, listing: Some(listing), program, stage, table: &s.table, entry: &program.func(f).name, dims: &dims, prefix: &prefix, realization: &s.realization, kernels };
+    presk_diagram::network(&i)
 }
 
 /// The bound by the conditioned rule, the default, which §6 reports.
@@ -332,14 +350,16 @@ fn facts(s: &State, id: &Id, math: &Math) -> Map<String, Value> {
         }
         Stage::Native => {
             // The kernel's machine code (plan 0.13.0 step 5, D138): its
-            // bytes, each line's ranges of them, the ranges Cranelift gave no
-            // line, and its text of the instructions.
+            // bytes, before they are linked (D145), each line's ranges of
+            // them, the ranges Cranelift gave no line, its text of the
+            // instructions, and the fields the linker writes.
             if let Some(code) = id.key.strip_prefix("native k").and_then(|j| j.parse::<usize>().ok()).and_then(|j| s.native.as_ref()?.get(j)) {
                 m.insert("bytes".into(), json!(code.bytes.len()));
                 m.insert("hex".into(), json!(code.bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()));
                 m.insert("ranges".into(), json!(code.ranges));
                 m.insert("given".into(), json!(code.given));
                 m.insert("disasm".into(), json!(code.disasm));
+                m.insert("relocs".into(), json!(code.relocs));
             }
         }
         Stage::C => {
@@ -358,7 +378,7 @@ fn facts(s: &State, id: &Id, math: &Math) -> Map<String, Value> {
 }
 
 /// The JSON of a document and the compilation it was built from.
-pub(crate) fn json(s: &State, doc: &Document, traced: &[String]) -> Value {
+pub(crate) fn json(s: &State, doc: &Document, traced: &[String]) -> (Value, Option<presk_diagram::Network>) {
     let t = &s.table;
     let math = Math::new(s);
     let mut stages = Vec::new();
@@ -431,7 +451,9 @@ pub(crate) fn json(s: &State, doc: &Document, traced: &[String]) -> Value {
     });
     let sources: Vec<Value> = s.sm.files().map(|(id, f)| json!({ "id": id.0, "path": crate::shown(std::path::Path::new(&f.name)), "text": f.text })).collect();
     let dims: Vec<Value> = s.dims.iter().map(|(n, v)| json!([n, v])).collect();
-    json!({
+    let net = network(s, &math.listing);
+    let net_json = net.as_ref().and_then(|n| serde_json::from_str(&presk_diagram::json::network(n)).ok()).unwrap_or(Value::Null);
+    let v = json!({
         "format": FORMAT,
         "compiler": env!("CARGO_PKG_VERSION"),
         "program": {
@@ -450,6 +472,8 @@ pub(crate) fn json(s: &State, doc: &Document, traced: &[String]) -> Value {
         "sources": sources,
         "stages": stages,
         "links": links,
+        "network": net_json,
         "document": document(doc),
-    })
+    });
+    (v, net)
 }

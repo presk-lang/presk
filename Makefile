@@ -73,6 +73,7 @@
 #   make explain-pdf      the PDF of a presk explain document, EXPLAIN=DIR (out/explain/loss by default): pandoc and lualatex (TeX Live 2026), DejaVu fonts
 #   make explain-manual   the tutorial's document regenerated into the manual's chapter explain_loss, which a test holds current
 #   make math-check       the printer of the denotation's standalone LaTeX of the tutorial, the examples and the course GPT, each compiled by LuaLaTeX into out/math/ (0.13.0 step 4)
+#   make network-figure   the course GPT's network diagram: level 2 into the manual's chapter explain_network (SVG); level 1 and Block alone into out/network/ (SVG, TikZ, standalone documents) and the report's two figures, $(PRESK_SPECS_DIR)/report/figures/network-gpt{,-block}.tex (0.14.0 step 3)
 #   make clean
 
 PRESK_SPECS_DIR ?= ../presk-specs
@@ -98,7 +99,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: math-check margins widening pytorch-gap gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: network-figure math-check margins widening pytorch-gap gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -1092,6 +1093,26 @@ math-check: build
 
 explain-manual:
 	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk --test explain the_manual_holds_the_tutorial_s_document
+
+# The course GPT's network diagram (plan 0.14.0 step 3, D143), one layout:
+# level 2 into the manual's chapter explain_network, its SVG, which a test of
+# presk-explain holds current; level 1 and Block alone, the report's two
+# figures (the user's decision of 2026-10-17: each readable on paper), as TikZ
+# in presk-specs, each with the command that made it in its first lines.
+NETWORK_GPT = corpus/nlp/05_gpt.psk --stage network --entry loss --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16
+network-figure: build
+	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk-explain --test network the_manual_holds_the_course_gpt_s_network
+	@mkdir -p out/network
+	$(PRESK) dump $(NETWORK_GPT) --level 2 --format svg > out/network/gpt-level2.svg
+	$(PRESK) dump $(NETWORK_GPT) --level 1 --format svg > out/network/gpt-level1.svg
+	$(PRESK) dump $(NETWORK_GPT) --box blocks --format svg > out/network/gpt-block.svg
+	$(PRESK) dump $(NETWORK_GPT) --level 1 --format tikz > out/network/gpt-level1.tex
+	$(PRESK) dump $(NETWORK_GPT) --box blocks --format tikz > out/network/gpt-block.tex
+	$(PRESK) dump $(NETWORK_GPT) --level 1 --format tikz --standalone > out/network/gpt-level1-standalone.tex
+	$(PRESK) dump $(NETWORK_GPT) --box blocks --format tikz --standalone > out/network/gpt-block-standalone.tex
+	@mkdir -p $(PRESK_SPECS_DIR)/report/figures
+	cp out/network/gpt-level1.tex $(PRESK_SPECS_DIR)/report/figures/network-gpt.tex
+	cp out/network/gpt-block.tex $(PRESK_SPECS_DIR)/report/figures/network-gpt-block.tex
 
 clean:
 	$(CARGO) clean

@@ -180,17 +180,25 @@ pub fn explain(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Exp
     write(&path, text.as_bytes(), report)?;
     let json_path = o.out.join("explain.json");
     let html_path = o.out.join("explain.html");
+    let svg_path = o.out.join("network.svg");
     match &json {
-        Some(v) => write(&json_path, (serde_json::to_string_pretty(v).unwrap_or_default() + "\n").as_bytes(), report)?,
+        Some((v, _)) => write(&json_path, (serde_json::to_string_pretty(v).unwrap_or_default() + "\n").as_bytes(), report)?,
         // A JSON of an earlier run would be read as this run's.
         None => {
             let _ = std::fs::remove_file(&json_path);
         }
     }
     match (&json, o.html) {
-        (Some(v), true) => write(&html_path, page(v).as_bytes(), report)?,
+        (Some((v, _)), true) => write(&html_path, page(v).as_bytes(), report)?,
         _ => {
             let _ = std::fs::remove_file(&html_path);
+        }
+    }
+    // The network diagram's default opening (plan 0.14.0, D141).
+    match json.as_ref().and_then(|(_, n)| n.as_ref()) {
+        Some(n) => write(&svg_path, presk_diagram::svg::svg(n, &n.views[n.default], false).as_bytes(), report)?,
+        None => {
+            let _ = std::fs::remove_file(&svg_path);
         }
     }
     let sums = checksums(&o.out.join("artifacts"));
@@ -207,6 +215,33 @@ pub fn provenance(o: &Options, report: &mut dyn Report) -> presk_driver::Result<
         return Err(Stop(2));
     }
     build::table(o, report)
+}
+
+/// The network diagram of the compilation `o` names (plan 0.14.0, D141),
+/// with what it is checked against.
+pub struct Network {
+    /// The diagram; `None` when the entry does not resolve.
+    pub network: Option<presk_diagram::Network>,
+    pub table: presk_provenance::Table,
+    /// The entry's parameters, each leaf and its elements, when the kernels
+    /// were listed.
+    pub params: Option<Vec<(String, usize)>>,
+    /// The envelope's elements per site, when there is an envelope and it
+    /// names the sites of the program the kernels run: not under the
+    /// optimizer, and not when differentiation kept a fusion group for the
+    /// precision stages alone (D94).
+    pub elems: Option<std::collections::BTreeMap<String, u64>>,
+}
+
+/// The network diagram of the compilation `o` names: every stage run as for
+/// the document, whose artifacts are written under `o.out`; the document
+/// itself is not.
+pub fn network(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Network> {
+    if let Err(e) = std::fs::create_dir_all(o.out.join("artifacts")) {
+        report.line(&format!("presk explain: cannot create {}: {e}", o.out.display()));
+        return Err(Stop(2));
+    }
+    build::network(o, report)
 }
 
 /// The pipeline view's template (plan 0.13.0 step 3, D136).

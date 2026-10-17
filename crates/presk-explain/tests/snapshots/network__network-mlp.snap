@@ -1,0 +1,65 @@
+---
+source: crates/presk-explain/tests/network.rs
+expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
+---
+network of `mse`, read off the stage `ad`: 24 nodes, 19 arrows, 4 openings
+parameters: 148 (552 bytes, f32, bf16)
+work W = 969, bytes Q = 1260, over every launch of the entry
+default opening: [3], 405 × 584 pt
+[0] root mse  ad:mse @ 0,0 405×584
+    θ 148 f32/bf16 · W 969 · Q 1.26 kB
+  [1] input x #1  ad:mse @ 169,38 40×22
+  [2] input y #2  ad:mse @ 353,38 40×22
+  [3] call MLP.apply · MLP{D, 4*D}  ad:mse/%3 fn ad:MLP.apply @ 12,84 354×342
+      θ 148 f32/bf16 · W 936 · Q 1.13 kB
+    [7] input x #1  ad:mse @ 138,122 40×22
+    [8] call l1 · Linear{D, 4*D}  ad:MLP.apply/%3 fn ad:Linear.apply @ 24,168 268×63
+        θ 80 f32/bf16 · W 288 · Q 448B
+      [12] input x #1  ad:mse
+      [13] op dot  fusion:Linear.apply/%3
+          W 288 · Q 448B
+      [14] op add  fusion:Linear.apply/%5
+      [15] param θ.w  ad:Linear.apply/%2
+          θ 64 f32
+      [16] param θ.b  ad:Linear.apply/%4
+          θ 16 bf16
+      [17] result  ad:Linear.apply/%5
+      12 → 13: ad:mse  ℝ[batch: B, D] = ℝ[batch: 2, 4], f64, 8 elements, 64 B
+      15 → 13: ad:Linear.apply/%2  ℝ[D, 4*D] = ℝ[4, 16], f32, 64 elements, 256 B
+      13 → 14: ad:Linear.apply/%3  ℝ[batch: B, 4*D] = ℝ[batch: 2, 16], f32, 32 elements, 128 B
+      16 → 14: ad:Linear.apply/%4  ℝ[4*D] = ℝ[16], bf16, 16 elements, 32 B
+      14 → 17: ad:Linear.apply/%5  ℝ[batch: B, 4*D] = ℝ[batch: 2, 16], f32, 32 elements, 128 B
+    [9] op gelu  fusion:MLP.apply/%4 @ 133,255 50×26
+        W 384 · Q 256B
+    [10] call l2 · Linear{4*D, D}  ad:MLP.apply/%6 fn ad:Linear.apply @ 24,305 268×63
+        θ 68 f32/bf16 · W 264 · Q 424B
+      [18] input x #1  ad:MLP.apply/%4
+      [19] op dot  fusion:Linear.apply/%3
+          W 264 · Q 424B
+      [20] op add  fusion:Linear.apply/%5
+      [21] param θ.w  ad:Linear.apply/%2
+          θ 64 f32
+      [22] param θ.b  ad:Linear.apply/%4
+          θ 4 bf16
+      [23] result  ad:Linear.apply/%5
+      18 → 19: ad:MLP.apply/%4  ℝ[batch: B, 4*D] = ℝ[batch: 2, 16], f32, 32 elements, 128 B
+      21 → 19: ad:Linear.apply/%2  ℝ[4*D, D] = ℝ[16, 4], f32, 64 elements, 256 B
+      19 → 20: ad:Linear.apply/%3  ℝ[batch: B, D] = ℝ[batch: 2, 4], f32, 8 elements, 32 B
+      22 → 20: ad:Linear.apply/%4  ℝ[D] = ℝ[4], bf16, 4 elements, 8 B
+      20 → 23: ad:Linear.apply/%5  ℝ[batch: B, D] = ℝ[batch: 2, 4], f32, 8 elements, 32 B
+    [11] result  ad:MLP.apply/%6 @ 126,392 64×22
+    7 → 8 #1: ad:mse  ℝ[batch: B, D] = ℝ[batch: 2, 4], f64, 8 elements, 64 B
+    8 → 9: ad:MLP.apply/%3  ℝ[batch: B, 4*D] = ℝ[batch: 2, 16], f64, 32 elements, 256 B
+    9 → 10 #1: ad:MLP.apply/%4  ℝ[batch: B, 4*D] = ℝ[batch: 2, 16], f32, 32 elements, 128 B
+    10 → 11: ad:MLP.apply/%6  ℝ[batch: B, D] = ℝ[batch: 2, 4], f64, 8 elements, 64 B
+  [4] group pow 2 · sub  fusion:mse/%5 @ 233,450 97×26
+      W 24 · Q 96B
+      members mse/%5, mse/%4
+  [5] op mean  fusion:mse/%6 @ 256,500 50×26
+      W 9 · Q 36B
+  [6] result  ad:mse/%6 @ 249,550 64×22
+  1 → 3 #1: ad:mse  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f64, 8 elements, 64 B
+  3 → 4: ad:mse/%3  ℝ[batch: B, D] = ℝ[batch: 2, 4], f64, 8 elements, 64 B
+  2 → 4: ad:mse  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f64, 8 elements, 64 B
+  4 → 5: ad:mse/%5  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f32, 8 elements, 32 B
+  5 → 6: ad:mse/%6  ℝ[] = ℝ[], f32, 1 elements, 4 B

@@ -726,13 +726,14 @@ dependencies = [
 
 [[package]]
 name = "presk"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "clap",
  "insta",
  "presk-core",
  "presk-cranelift",
  "presk-data",
+ "presk-diagram",
  "presk-driver",
  "presk-explain",
  "presk-export-c",
@@ -753,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "presk-core"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "indexmap",
  "insta",
@@ -764,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "presk-cranelift"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -785,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "presk-data"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "presk-syntax",
@@ -795,8 +796,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "presk-diagram"
+version = "0.14.0"
+dependencies = [
+ "insta",
+ "presk-core",
+ "presk-driver",
+ "presk-kernel",
+ "presk-precision",
+ "presk-print-math",
+ "presk-provenance",
+ "presk-rt",
+ "presk-syntax",
+ "presk-types",
+]
+
+[[package]]
 name = "presk-driver"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "presk-core",
  "presk-cranelift",
@@ -816,11 +833,12 @@ dependencies = [
 
 [[package]]
 name = "presk-explain"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "presk-core",
  "presk-cranelift",
+ "presk-diagram",
  "presk-driver",
  "presk-export-c",
  "presk-export-pytorch",
@@ -839,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "presk-export-c"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "libc",
@@ -859,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "presk-export-pytorch"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "indexmap",
  "insta",
@@ -869,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "presk-interp"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "indexmap",
  "insta",
@@ -886,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "presk-kernel"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "libm",
@@ -906,11 +924,11 @@ dependencies = [
 
 [[package]]
 name = "presk-manual"
-version = "0.13.0"
+version = "0.14.0"
 
 [[package]]
 name = "presk-opt"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "egg",
  "insta",
@@ -931,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "presk-precision"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "num-traits",
@@ -948,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "presk-print-math"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "presk-core",
@@ -960,11 +978,11 @@ dependencies = [
 
 [[package]]
 name = "presk-provenance"
-version = "0.13.0"
+version = "0.14.0"
 
 [[package]]
 name = "presk-realize"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "presk-core",
@@ -974,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "presk-rt"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "presk-core",
  "presk-data",
@@ -988,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "presk-serve"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "presk-core",
  "presk-cranelift",
@@ -1000,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "presk-syntax"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "ariadne",
  "insta",
@@ -1010,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "presk-train"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "presk-core",
@@ -1026,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "presk-types"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "indexmap",
  "insta",

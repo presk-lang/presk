@@ -12,7 +12,10 @@
   framework, no build step and nothing fetched: the page works offline.
   Written by presk-explain from crates/presk-explain/templates/explain.html.
   The formulas are the printer of the denotation's (plan 0.13.0 step 4,
-  D137), typeset by KaTeX 0.19.0 (MIT), inlined with its fonts.
+  D137), typeset by KaTeX 0.19.0 (MIT), inlined with its fonts. The second
+  tab, Network (plan 0.14.0 step 2, D142), draws the program as boxes and
+  arrows at the positions `presk-diagram` computed, every box and arrow an
+  element of the same table.
 -->
 <style>
 :root {
@@ -93,7 +96,41 @@ svg#arrows path.dim { opacity: 0.07; }
 #panel table.code td:first-child { text-align: right; }
 #panel table.code i { color: var(--muted); }
 #bench { position: fixed; right: 8px; bottom: 6px; background: var(--card); border: 1px solid var(--line); padding: 4px 8px; font-size: 11px; color: var(--muted); z-index: 9; }
-@media (max-width: 760px) { #panel { display: none; } #scroll { height: auto; } }
+#tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+#bar #tabs button { border: 0; border-radius: 0; background: var(--card); }
+#bar #tabs button.on { background: var(--fg); color: var(--bg); }
+.netonly { display: none; }
+body.network .netonly { display: inline-block; }
+body.network .pipeonly { display: none; }
+#bar button.on:not(#tabs button) { border-color: var(--fg); font-weight: 600; }
+#net { position: relative; overflow: auto; flex: 1 1 auto; height: calc(100vh - 92px); padding: 8px 16px 40px; }
+#net svg { display: block; }
+#net .frame { fill: var(--card); stroke: var(--line); stroke-width: 1.2; }
+#net .frame.root { fill: none; stroke: none; }
+#net .box > rect.b { fill: var(--panel); stroke-width: 1.4; }
+#net .box.open > rect.b { fill: var(--card); }
+#net .box .hd { cursor: pointer; }
+#net .box .hd:hover > rect { fill: var(--lit); }
+#net .box .hd > rect { fill: transparent; }
+#net text { fill: var(--fg); font: 11px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+#net text.t { font-weight: 600; }
+#net text.n { fill: var(--muted); font-size: 10px; }
+#net .op > rect { fill: var(--card); stroke: #9a7b4f; }
+#net .op.group > rect { fill: color-mix(in srgb, #f0b860 22%, var(--card)); }
+#net .op.host > rect { stroke-dasharray: 2 2; fill: var(--panel); }
+#net .param > rect { fill: color-mix(in srgb, var(--int) 10%, var(--card)); stroke: var(--int); }
+#net .io > rect { fill: var(--card); stroke: var(--muted); }
+#net .node { cursor: pointer; }
+#net .nf { overflow: hidden; color: var(--fg); transform-origin: 0 0; white-space: nowrap; }
+#net .nf .katex-display { margin: 0; text-align: left; }
+#net .nf .katex { font-size: 0.9em; }
+#net path.e { fill: none; opacity: 0.8; }
+#net path.e.key { stroke-dasharray: 3 3; }
+#net text.el { fill: var(--muted); font-size: 9.5px; }
+#net.dimmed .node:not(.lit), #net.dimmed path.e:not(.lit) { opacity: 0.25; }
+#net .node.lit > rect { stroke-width: 2.6; }
+#net path.e.lit { opacity: 1; }
+@media (max-width: 760px) { #panel { display: none; } #scroll, #net { height: auto; } }
 </style>
 <style>/*KATEX_CSS*/</style>
 </head>
@@ -103,18 +140,24 @@ svg#arrows path.dim { opacity: 0.07; }
   <div class="sub" id="sub"></div>
 </header>
 <div id="bar">
+  <span id="tabs"><button id="tab-pipeline" class="on" title="the stages as columns">Pipeline</button><button id="tab-network" title="the program as boxes and arrows">Network</button></span>
   <button id="prev" title="previous step (←)">◀</button>
   <button id="next" title="next step (→)">▶</button>
   <span id="caption"></span>
   <button id="add" title="add the current selection to the lesson in the address">add step</button>
-  <button id="fold" title="fold every function to one card">fold all</button>
-  <button id="unfold" title="open every function">open all</button>
+  <button id="fold" class="pipeonly" title="fold every function to one card">fold all</button>
+  <button id="unfold" class="pipeonly" title="open every function">open all</button>
+  <button id="labels" class="netonly" title="every arrow's shape, type and bytes written on it">labels</button>
+  <button id="keys" class="netonly" title="the random keys and their split_keys">keys</button>
+  <button id="backward" class="netonly" title="the backward pass: the functions differentiation generated for it" hidden>backward</button>
+  <button id="netreset" class="netonly" title="the default opening">default</button>
   <button id="math" title="the cards as formulas, or as text">∑ math</button>
   <button id="theme" title="light or dark">◐</button>
   <span id="legend"></span>
 </div>
 <div id="main">
   <div id="scroll"><div id="cols"></div><svg id="arrows"></svg></div>
+  <div id="net" hidden><svg id="netsvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
   <aside id="panel"><p>Select an element: its origins and what it became light up through every stage. Hover for its facts. A function folds and opens by its header. <kbd>←</kbd> <kbd>→</kbd> step through the lesson in the address; <kbd>Esc</kbd> clears.</p></aside>
 </div>
 <div id="bench" hidden></div>
@@ -493,7 +536,9 @@ function mathOf(x) {
 // A kernel's machine code (plan 0.13.0 step 5): each range of bytes with
 // the kernel's line it compiles, in the order of the code; a byte Cranelift
 // gave no line (a register move, a branch at a block's edge) is in italics,
-// with the line before it. Then Cranelift's text of the instructions.
+// with the line before it. The bytes are those before linking (plan 0.14.0,
+// D145): a field the linker fills with a function's address is zero here,
+// underlined, and named. Then Cranelift's text of the instructions.
 function nativeOf(x) {
   const f = x.facts;
   if (!f.ranges) return "";
@@ -501,10 +546,13 @@ function nativeOf(x) {
   const lines = k && k.facts.text ? k.facts.text.split("\n") : [];
   const given = new Uint8Array(f.bytes);
   for (const [a, b] of f.given || []) given.fill(1, a, b);
+  const linked = new Uint8Array(f.bytes);
+  for (const [a, b] of f.relocs || []) linked.fill(1, a, b);
   const hex = (a, b) => {
     let out = "";
     for (let i = a; i < b; i++) {
-      const byte = f.hex.slice(2 * i, 2 * i + 2);
+      let byte = f.hex.slice(2 * i, 2 * i + 2);
+      if (linked[i]) byte = `<u>${byte}</u>`;
       out += (given[i] ? `<i>${byte}</i>` : byte) + ((i - a) % 4 === 3 ? " " : "");
     }
     return out;
@@ -512,12 +560,16 @@ function nativeOf(x) {
   const nGiven = (f.given || []).reduce((n, [a, b]) => n + b - a, 0);
   let h = `<div class="what">${f.bytes} bytes; every one with the line of the kernel it compiles. ${nGiven} had no line from Cranelift, in italics: they take the line before them.</div>`;
   h += `<table class="code"><tr><td>line</td><td>of the kernel</td><td>bytes</td></tr>` + f.ranges.map(([a, b, l]) => `<tr><td>${l}</td><td>${esc((lines[l - 1] || "").trim())}<br>${hex(a, b)}</td><td>${a}–${b}</td></tr>`).join("") + "</table>";
+  if ((f.relocs || []).length) h += `<div class="what">The bytes before linking, the same in every run: underlined, the fields the linker fills with an address, ${f.relocs.map(([a, b, t]) => `${a}–${b} with <code>${esc(t)}</code>'s`).join(", ")}.</div>`;
   h += `<div class="what">Cranelift's text of the instructions (register allocated)</div><pre>${esc(f.disasm)}</pre>`;
   return h;
 }
 const FACT_NAMES = { span: "source", name: "name", magnitude: "|v| ≤", elements: "elements", condition: "condition number", sensitivity: "‖∂L/∂v‖₁", type: "type", term: "term of the estimate", rounded_in: "rounded in", why: "why", shape: "shape", predicted_us: "predicted (µs)", runner_up: "runner-up", runner_up_us: "runner-up (µs)", dtype: "type", measured_us: "measured (µs, a launch)", bound: "the bound's error here", order: "reduction order", bytes: "machine code (bytes)" };
 function inspect(x) {
   if (!x) return;
+  $("#panel").innerHTML = inspectHtml(x);
+}
+function inspectHtml(x) {
   const st = order.find((s) => s.stage === x.stage);
   let h = `<div class="stage">${esc(st ? "§" + st.section + " " + st.title : x.stage)}</div><h3>${esc(x.key)}</h3>`;
   if (x.stage === "kernel" || x.stage === "c") h += `<pre>${esc(x.facts.text || x.label)}</pre>`;
@@ -528,7 +580,7 @@ function inspect(x) {
   if (rows.length) h += "<table>" + rows.map(([k, v]) => `<tr><td>${esc(FACT_NAMES[k] || k)}</td><td>${esc(typeof v === "number" ? (Math.abs(v) < 1e-3 || Math.abs(v) >= 1e5 ? v.toExponential(3) : +v.toPrecision(4)) : v)}</td></tr>`).join("") + "</table>";
   for (const l of x.made) h += `<div class="made">◂ ${esc((WORDS[l.how] || (() => l.how))(l))}<br><span class="stage">from ${l.parents.map(esc).join(", ")}</span></div>`;
   if (x.ends) h += `<div class="made">▸ ends here: ${esc(x.ends)}</div>`;
-  $("#panel").innerHTML = h;
+  return h;
 }
 
 // ----- the lesson: selections with captions, in the address -------------------------
@@ -547,7 +599,9 @@ function go(i) {
   selection = new Set(s.sel.filter((k) => E.has(k)));
   for (const k of selection) open.add(E.get(k).group);
   if (s.open) for (const g of s.open) open.add(g);
-  render();
+  // A step of the lesson may be on the network, with its boxes opened.
+  if (N && s.net) netPath = s.net.filter((i) => i < N.nodes.length);
+  showTab(s.tab === "network" && N ? "network" : "pipeline");
   $("#caption").innerHTML = `<b>${L.step + 1}/${L.lesson.length}</b> ${esc(s.caption || "")}`;
   const q = new URLSearchParams(location.hash.slice(1));
   q.set("step", L.step);
@@ -562,7 +616,7 @@ $("#add").onclick = () => {
   if (caption === null) return;
   const q = new URLSearchParams(location.hash.slice(1));
   const lesson = q.get("lesson") ? JSON.parse(q.get("lesson")) : [];
-  lesson.push({ sel: [...selection], open: [...open], caption });
+  lesson.push({ sel: [...selection], open: [...open], caption, tab, net: netPath.slice() });
   q.set("lesson", JSON.stringify(lesson));
   q.set("step", lesson.length - 1);
   location.hash = q.toString();
@@ -581,12 +635,247 @@ document.addEventListener("keydown", (ev) => {
   if (ev.target.tagName === "INPUT") return;
   if (ev.key === "ArrowRight") go(L.step + 1);
   else if (ev.key === "ArrowLeft") go(L.step - 1);
-  else if (ev.key === "Escape") { selection = new Set(); light(); }
+  else if (ev.key === "Escape") { selection = new Set(); light(); lightNet(); }
 });
 cols.addEventListener("click", () => { selection = new Set(); light(); });
 let pending = 0;
 $("#scroll").addEventListener("scroll", () => {});
 window.addEventListener("resize", () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(() => { draw(); light(); }); });
+
+
+// ----- the network (plan 0.14.0 step 2, D142) -----------------------------------------
+// The program as boxes and arrows, at the positions presk-diagram computed
+// for each opening (the page lays nothing out). Every box, node and arrow is
+// an element of the table above: a click selects it in the columns; with
+// Shift it is lit here. A box opens and folds by its header, in place.
+const N = D.network || null;
+const net = $("#net");
+const nsvg = $("#netsvg");
+const SVGNS = "http://www.w3.org/2000/svg";
+let tab = "pipeline";
+let netPath = N ? N.views[N.default].open.slice() : [];
+let labelsOn = false, keysOn = false, backwardOn = false;
+const viewOf = new Map(N ? N.views.map((v, i) => [v.open.join(","), i]) : []);
+const nodeOf = (i) => N.nodes[i];
+// A box's chain of boxes from the entry's frame, itself last.
+function chainOf(i) {
+  const c = [];
+  for (let n = nodeOf(i); n && n.kind !== "root"; n = n.parent == null ? null : nodeOf(n.parent)) c.unshift(n.id);
+  return c;
+}
+// The backward pass: a `.bwd` box differentiation generated, and what is
+// drawn inside it. Folded away until asked for.
+const inBackward = (n) => {
+  for (let x = n; x; x = x.parent == null ? null : nodeOf(x.parent)) if (x.generated && x.generated.kind === "bwd") return true;
+  return false;
+};
+const hasBackward = N ? N.nodes.some((n) => n.generated && n.generated.kind === "bwd") : false;
+const shownNode = (n) => (keysOn || !n.key) && (backwardOn || !inBackward(n));
+const DTYPE = { f64: "--f64", f32: "--f32", bf16: "--bf16", int8: "--int", int4: "--int" };
+const ecolor = (d) => `var(${DTYPE[d] || "--none"})`;
+const ewidth = (b) => (b > 0 ? Math.min(4, Math.max(0.9, 0.8 + Math.log10(b) * 0.35)) : 0.9);
+// A route: each segment a curve leaving and arriving vertically.
+function routePath(pts) {
+  let d = `M${pts[0]},${pts[1]}`;
+  for (let k = 2; k < pts.length; k += 2) {
+    const px = pts[k - 2], py = pts[k - 1], x = pts[k], y = pts[k + 1], my = (py + y) / 2;
+    d += ` C${px},${my} ${x},${my} ${x},${y}`;
+  }
+  return d;
+}
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function text(parent, x, y, s, cls) {
+  const t = el("text", { x, y }, parent);
+  if (cls) t.setAttribute("class", cls);
+  t.textContent = s;
+  return t;
+}
+let netNodes = new Map(), netEdges = [];
+// The formulas of the folded boxes drawn, typeset once each and scaled into
+// their box.
+function fitFormulas() {
+  for (const f of nsvg.querySelectorAll("foreignObject.fo")) {
+    const div = f.firstChild;
+    if (div.dataset.done) continue;
+    div.dataset.done = "1";
+    div.innerHTML = tex(div.dataset.tex, true);
+    const w = +f.getAttribute("width"), h = +f.getAttribute("height");
+    const s = Math.min(1, w / Math.max(1, div.scrollWidth), h / Math.max(1, div.scrollHeight));
+    if (s < 1) div.style.transform = `scale(${s})`;
+  }
+}
+function drawNet() {
+  const t0 = performance.now();
+  if (!N) return 0;
+  const vi = viewOf.get(netPath.join(","));
+  const v = N.views[vi === undefined ? N.default : vi];
+  if (vi === undefined) netPath = v.open.slice();
+  nsvg.textContent = "";
+  nsvg.setAttribute("width", v.width + 8);
+  nsvg.setAttribute("height", v.height + 8);
+  nsvg.setAttribute("viewBox", `-4 -4 ${v.width + 8} ${v.height + 8}`);
+  const defs = el("defs", {}, nsvg);
+  const m = el("marker", { id: "ah", viewBox: "0 0 10 10", refX: 9, refY: 5, markerUnits: "userSpaceOnUse", markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0 L10,5 L0,10 z", fill: "context-stroke" }, m);
+  const rect = new Map(v.rects.map(([id, x, y, w, h]) => [id, { x, y, w, h }]));
+  const opened = new Set([0, ...v.open]);
+  netNodes = new Map();
+  netEdges = [];
+  const ids = [...rect.keys()].filter((i) => shownNode(nodeOf(i))).sort((a, b) => nodeOf(a).depth - nodeOf(b).depth || a - b);
+  const frames = el("g", {}, nsvg), edges = el("g", {}, nsvg), nodes = el("g", {}, nsvg);
+  for (const i of ids) {
+    const n = nodeOf(i), r = rect.get(i);
+    const isBox = ["root", "call", "stack"].includes(n.kind);
+    const g = el("g", { class: "node " + (isBox ? "box" + (opened.has(i) ? " open" : "") : n.kind === "param" ? "param" : ["input", "output"].includes(n.kind) ? "io" : "op " + n.kind) }, isBox && opened.has(i) ? frames : nodes);
+    g.dataset.id = i;
+    netNodes.set(i, g);
+    if (isBox) {
+      const stroke = n.params && n.params.types.length ? ecolor(n.params.types[0]) : "var(--line)";
+      if (n.kind === "stack" && !opened.has(i)) el("rect", { x: r.x + 4, y: r.y + 4, width: r.w, height: r.h, rx: 6, class: "b", stroke }, g);
+      if (n.kind !== "root") el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 6, class: "b", stroke }, g);
+      const hd = el("g", { class: "hd" }, g);
+      el("rect", { x: r.x, y: r.y, width: r.w, height: 34 }, hd);
+      const open = opened.has(i);
+      const mark = n.kind === "root" ? "" : open ? "▾ " : "▸ ";
+      text(hd, r.x + 8, r.y + 15, mark + n.title + (open && n.kind === "stack" ? " — one layer, ℓ" : ""), "t");
+      text(hd, r.x + 8 + (mark ? 13 : 0), r.y + 29, n.numbers + (n.runs > 1 && n.numbers ? ` · each of ${n.runs} runs` : ""), "n");
+      if (n.kind !== "root") hd.onclick = (ev) => { ev.stopPropagation(); openBox(i); };
+      if (!open && n.tex && mathOn) {
+        const fo = el("foreignObject", { x: r.x + 8, y: r.y + 36, width: Math.max(10, r.w - 16), height: Math.max(10, r.h - 40), class: "fo" }, g);
+        const div = document.createElement("div");
+        div.className = "nf";
+        div.dataset.tex = n.tex;
+        fo.appendChild(div);
+      } else if (!open && n.text) {
+        n.text.split("\n").forEach((l, k) => text(g, r.x + 8, r.y + 51 + 15 * k, l));
+      }
+    } else if (n.kind === "param") {
+      el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 3 }, g);
+      text(g, r.x + 6, r.y + 14, "θ." + n.label);
+      if (n.numbers) text(g, r.x + 6, r.y + 29, n.numbers, "n");
+    } else {
+      const round = ["input", "output"].includes(n.kind) ? 11 : r.h / 2;
+      el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: round }, g);
+      const t = text(g, r.x + r.w / 2, r.y + r.h / 2 + 4, n.label);
+      t.setAttribute("text-anchor", "middle");
+    }
+    g.addEventListener("mouseenter", () => inspectNode(n));
+    g.addEventListener("click", (ev) => { ev.stopPropagation(); pickNode(n, ev.shiftKey); });
+  }
+  for (const [id, ...pts] of v.routes) {
+    const e = N.edges[id];
+    if (!rect.has(e.from) || !rect.has(e.to) || !shownNode(nodeOf(e.from)) || !shownNode(nodeOf(e.to))) continue;
+    if (e.key && !keysOn) continue;
+    const p = el("path", { d: routePath(pts), class: "e" + (e.key ? " key" : ""), stroke: ecolor(e.dtype), "stroke-width": ewidth(e.bytes), "marker-end": "url(#ah)" }, edges);
+    const t = el("title", {}, p);
+    t.textContent = `${e.site}\n${e.at}, ${e.dtype}, ${e.bytes} B`;
+    p.addEventListener("mouseenter", () => inspectEdge(e));
+    netEdges.push({ el: p, e });
+    if (labelsOn) {
+      const k = Math.floor(pts.length / 4) * 2;
+      const lx = (pts[k] + pts[k + 2 < pts.length ? k + 2 : k]) / 2 + 4, ly = (pts[k + 1] + pts[k + 2 < pts.length ? k + 3 : k + 1]) / 2;
+      text(edges, lx, ly, `${e.at.replace(/^ℝ/, "")} ${e.dtype}`, "el");
+    }
+  }
+  fitFormulas();
+  lightNet();
+  return performance.now() - t0;
+}
+// Opens a folded box in place, or folds an open one: the opening laid out
+// for it, its siblings folded.
+function openBox(i) {
+  const c = chainOf(i);
+  netPath = netPath.join(",") === c.join(",") || netPath.includes(i) ? c.slice(0, -1) : c;
+  return drawNet();
+}
+function lightNet() {
+  if (!N) return;
+  const lit = thread(selection);
+  const any = selection.size > 0;
+  net.classList.toggle("dimmed", any);
+  for (const [i, g] of netNodes) {
+    const n = nodeOf(i);
+    g.classList.toggle("lit", any && (lit.has(n.element) || (n.function && lit.has(n.function))));
+  }
+  for (const { el: p, e } of netEdges) p.classList.toggle("lit", any && lit.has(e.site));
+}
+// A node's elements: its own, and a box's callee's function.
+const elementsOf = (n) => [n.element, ...(n.function && n.function !== n.element ? [n.function] : [])].filter((k) => E.has(k));
+// A click selects in the columns and shows them; with Shift, it stays here.
+function pickNode(n, stay) {
+  const t0 = performance.now();
+  selection = new Set(elementsOf(n));
+  if (stay) {
+    lightNet();
+    inspectNode(n);
+    return performance.now() - t0;
+  }
+  for (const k of selection) open.add(E.get(k).group);
+  showTab("pipeline");
+  const first = [...selection][0];
+  if (first) {
+    inspect(E.get(first));
+    const c = cardOf.get(first);
+    if (c) c.scrollIntoView({ block: "center", inline: "center" });
+  }
+  return performance.now() - t0;
+}
+const fmt = (x) => (x == null ? "–" : Math.abs(x) >= 1e5 ? x.toExponential(3) : String(+x.toPrecision(4)));
+function inspectNode(n) {
+  const KIND = { root: "the entry", call: "a call", stack: "a stack: one box for its layers", group: "a fusion group: one loop nest", op: "a primitive in a loop nest of its own", host: "a primitive the host computes", param: "a parameter", input: "an argument", output: "the result" };
+  let h = `<div class="stage">network · ${esc(KIND[n.kind] || n.kind)}</div><h3>${esc(n.title)}</h3><table>`;
+  const row = (k, v) => { if (v != null && v !== "") h += `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`; };
+  row("element", n.element);
+  row("function", n.function !== n.element ? n.function : null);
+  row("instance", n.instance);
+  row("parameters", n.path === "" ? "θ" : n.path ? "θ." + n.path : null);
+  if (n.params) row("their count", `${n.params.count} (${n.params.bytes} bytes, ${n.params.types.join(", ")})${n.runs > 1 ? ", a layer's" : ""}`);
+  if (n.work != null) row("work W", fmt(n.work) + (n.runs > 1 ? ` over ${n.runs} runs` : ""));
+  if (n.bytes != null) row("bytes Q", fmt(n.bytes) + (n.runs > 1 ? ` over ${n.runs} runs` : ""));
+  if (n.work && n.bytes) row("intensity W/Q", fmt(n.work / n.bytes));
+  if (n.generated) row("generated", `.${n.generated.kind} of ${n.generated.of}`);
+  if (n.members && n.members.length > 1) row("members", n.members.join(", "));
+  h += "</table>";
+  if (mathOn && n.tex) h += `<div class="math"><div class="what">${["call", "stack", "root"].includes(n.kind) ? "its function's display (the reference, section 3.10)" : "its equation (section 3.10)"}</div>${tex(n.tex, true)}${n.sum ? `<div class="what">the sum it computes</div>${tex(n.sum, true)}<div class="what">its terms added in the order</div>${tex(n.order, true)}` : ""}</div>`;
+  else if (n.text) h += `<pre>${esc(n.text)}</pre>`;
+  // A group's members, each with its equation: what never reaches memory.
+  if (n.members && n.members.length > 1) for (const m of n.members.slice(1)) { const x = E.get(m); if (x && x.facts.tex && mathOn) h += `<div class="math"><div class="what">${esc(m)}, inside the nest</div>${tex(x.facts.tex, false)}</div>`; }
+  const x = E.get(n.element);
+  if (x) h += `<hr>` + inspectHtml(x);
+  $("#panel").innerHTML = h;
+}
+function inspectEdge(e) {
+  let h = `<div class="stage">network · an arrow: the value of a site</div><h3>${esc(e.site)}</h3><table>`;
+  for (const [k, v] of [["its type", e.ty], ["at the dimensions", e.at], ["realized", e.dtype], ["elements", e.elems], ["bytes", e.bytes]]) h += `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`;
+  h += "</table>";
+  const x = E.get(e.site);
+  if (x) h += `<hr>` + inspectHtml(x);
+  $("#panel").innerHTML = h;
+}
+function showTab(t) {
+  tab = t;
+  document.body.classList.toggle("network", t === "network");
+  $("#tab-pipeline").classList.toggle("on", t === "pipeline");
+  $("#tab-network").classList.toggle("on", t === "network");
+  $("#scroll").hidden = t !== "pipeline";
+  net.hidden = t !== "network";
+  if (t === "network") drawNet(); else render();
+}
+$("#tab-pipeline").onclick = () => showTab("pipeline");
+$("#tab-network").onclick = () => showTab("network");
+const toggleBtn = (id, f) => { $(id).onclick = () => { f(); $(id).classList.toggle("on"); drawNet(); }; };
+toggleBtn("#labels", () => { labelsOn = !labelsOn; });
+toggleBtn("#keys", () => { keysOn = !keysOn; });
+toggleBtn("#backward", () => { backwardOn = !backwardOn; });
+$("#netreset").onclick = () => { netPath = N.views[N.default].open.slice(); drawNet(); };
+if (hasBackward) $("#backward").hidden = false;
+if (!N) $("#tab-network").disabled = true;
+net.addEventListener("click", () => { selection = new Set(); lightNet(); });
 
 // ----- the header and the legend --------------------------------------------------
 const P = D.program || {};
@@ -596,11 +885,22 @@ $("#sub").textContent = `presk ${D.compiler} · ${P.file} · entry ${P.entry}` +
 $("#legend").innerHTML = [["lowering", "--how-lower"], ["differentiation", "--how-ad"], ["optimizer", "--how-opt"], ["fusion and sites", "--how-fuse"], ["pass-through", "--how-pass"], ["f64", "--f64"], ["f32", "--f32"], ["bf16", "--bf16"]].map(([n, c]) => `<span style="--c: var(${c})">${n}</span>`).join("");
 
 // ----- start, and the bench of statement P3 -----------------------------------------
-if (D.format !== 1) {
-  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 1; this one is format ${esc(D.format)}.</p>`;
+if (D.format !== 2) {
+  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 2; this one is format ${esc(D.format)}.</p>`;
 } else {
   const first = render();
   if (L.lesson.length) go(L.step);
+  // `#tab=network` opens on the diagram, `net=` with its boxes opened (their
+  // ids, outermost first), and `labels`, `keys`, `backward` as their
+  // buttons set them.
+  const q0 = new URLSearchParams(location.hash.slice(1));
+  if (N && q0.get("net")) netPath = q0.get("net").split(",").map(Number).filter((i) => i < N.nodes.length);
+  for (const [k, set] of [["labels", () => { labelsOn = true; }], ["keys", () => { keysOn = true; }], ["backward", () => { backwardOn = true; }]]) if (q0.has(k)) { set(); $("#" + k).classList.add("on"); }
+  // `theme=light|dark`; `plain`: nothing selected.
+  if (["light", "dark"].includes(q0.get("theme"))) document.documentElement.dataset.theme = q0.get("theme");
+  if (q0.has("plain")) selection = new Set();
+  if (N && q0.get("tab") === "network") showTab("network");
+  else if (q0.has("plain")) light();
   if (L.bench) {
     // Statement P3: a select and a collapse redraw under 200 ms. Every
     // traced site selected, every function folded and opened, by the page's
@@ -617,6 +917,31 @@ if (D.format !== 1) {
     const el = $("#bench");
     el.hidden = false;
     el.textContent = `P3 bench: first draw ${times.first.toFixed(0)} ms; select ${sel.length}, at most ${times.select.toFixed(1)} ms; fold or open ${tog.length}, at most ${times.collapse.toFixed(1)} ms; ${E.size} elements, ${paths.length} arrows drawn`;
+    if (N) {
+      // Statement N5: the diagram's open, fold and select under P3's bound;
+      // and N1's second half: a click on a box of the default opening
+      // selects its elements in the columns, which light.
+      showTab("network");
+      const opens = [], picks = [];
+      for (const v of N.views) { netPath = v.open.slice(); opens.push(drawNet()); }
+      netPath = N.views[N.default].open.slice();
+      opens.push(drawNet());
+      for (const i of netNodes.keys()) picks.push(pickNode(nodeOf(i), true));
+      const boxes = N.views[N.default].rects.map((r) => nodeOf(r[0])).filter((n) => ["call", "stack"].includes(n.kind));
+      const bad = [];
+      for (const n of boxes) {
+        showTab("network");
+        pickNode(n, false);
+        for (const k of elementsOf(n)) {
+          const x = E.get(k);
+          const shown = hidden(x) ? shownParents(x).map((p) => p.id) : [k];
+          const ok = shown.some((id) => { const c = cardOf.get(id); return c && (c.classList.contains("lit") || c.classList.contains("sel") || (c.parentNode && c.parentNode.classList.contains("lit"))); });
+          if (!ok) bad.push(`${n.title}: ${k}`);
+        }
+      }
+      showTab("pipeline");
+      el.textContent += ` · N5: ${opens.length} openings drawn, at most ${max(opens).toFixed(1)} ms; ${picks.length} selects, at most ${max(picks).toFixed(1)} ms · N1: ${boxes.length} boxes clicked, ${bad.length ? "NOT LIT: " + bad.join("; ") : "every one lit in the columns"}`;
+    }
     document.title = el.textContent;
   }
 }

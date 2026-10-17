@@ -36,7 +36,7 @@ fn kernels(file: &str, entry: &str, flags: &str, plan: Option<&str>, realize: &s
 #[test]
 fn every_byte_of_every_kernel_has_its_line() {
     let entries = std::fs::read_to_string(root().join("tests/plan/entries.txt")).unwrap();
-    let (mut n, mut bytes, mut given, mut prologue, mut tail) = (0usize, 0usize, 0u32, 0u32, 0u32);
+    let (mut n, mut bytes, mut given, mut prologue, mut tail, mut relocs) = (0usize, 0usize, 0u32, 0u32, 0u32, 0usize);
     for line in entries.lines().filter(|l| !l.trim().is_empty()) {
         let mut parts = line.splitn(3, '|');
         let (file, entry, flags) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap_or(""));
@@ -63,6 +63,13 @@ fn every_byte_of_every_kernel_has_its_line() {
                 }
                 assert_eq!(at as usize, m.bytes.len(), "{what}: the ranges stop at {at} of {}", m.bytes.len());
                 assert!(!m.disasm.is_empty(), "{what}: no disassembly");
+                // The bytes before linking (D145): every field the linker
+                // writes is zero, and names a function of `libm`.
+                for (a, b, t) in &m.relocs {
+                    assert!(m.bytes[*a as usize..*b as usize].iter().all(|x| *x == 0), "{what}: the field {a}–{b} for {t} is not zero before linking");
+                    assert!(["exp", "log", "tanh", "sin", "cos", "erf", "expf", "logf", "tanhf", "sinf", "cosf", "erff"].contains(&t.as_str()), "{what}: a relocation to {t}");
+                    relocs += 1;
+                }
                 n += 1;
                 bytes += m.bytes.len();
                 for &(a, b) in &m.given {
@@ -80,6 +87,7 @@ fn every_byte_of_every_kernel_has_its_line() {
             }
         }
     }
-    eprintln!("P4: {n} kernels, {bytes} bytes; Cranelift gave no line to {prologue} bytes of prologues (given to the header), {given} bytes inside the code and {tail} at its end (given to the line before them)");
+    eprintln!("P4: {n} kernels, {bytes} bytes; Cranelift gave no line to {prologue} bytes of prologues (given to the header), {given} bytes inside the code and {tail} at its end (given to the line before them); {relocs} fields the linker writes, zero before linking");
+    assert!(relocs > 0, "no kernel calls libm: the relocations are not tested");
     assert!(n > 200, "only {n} kernels");
 }

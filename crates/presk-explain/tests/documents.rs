@@ -142,7 +142,9 @@ fn the_json_holds_the_document_and_the_table() {
         let (md, json) = written(name, "tutorial/07_train.psk", "loss", &["B=4"], &[], how, &[Target::Native, Target::C], opt, true);
         let json = json.expect("explain.json written");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["format"], 1);
+        assert_eq!(v["format"], 2);
+        // The network diagram, since format 2 (plan 0.14.0, D141).
+        assert!(v["network"]["nodes"].as_array().is_some_and(|n| !n.is_empty()), "{name}: no network");
         let again = presk_explain::doc::markdown(&from_json(&v)).0;
         assert!(again == md, "{name}: the Markdown rendered from the JSON differs from explain.md");
         let stages: Vec<&str> = v["stages"].as_array().unwrap().iter().map(|s| s["stage"].as_str().unwrap()).collect();

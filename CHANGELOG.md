@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.14.0 — 2026-10-17
+
+The network diagram: the program drawn as boxes and arrows in a second
+tab of the pipeline view, read off the provenance table
+(`presk-specs/implementation/presk-plan-0.14.0.md`, D140–D145; the
+reference at draft v0.19). A box is a call, opening in place to its
+callee's graph at that call, a stack of layers one box; an operation node
+a loop nest; an arrow a value; each an element of the table, so that a
+click selects it in the columns. The boxes carry the printer's formulas,
+their parameters and the cost model's W and Q, the arrows their shapes,
+types and bytes. The compiler lays it out, once per opening a reader can
+reach, and the page, `network.svg`, `presk dump --stage network` and a
+TikZ figure draw the same positions. Nothing a program computes changes.
+Judged on six statements fixed before the work:
+- nothing else moves (N0, holds: X1, the tables and the tutorial, every
+  difference a version line or a measurement; `explain.json` by its
+  `format` and `network` alone);
+- every box, node and arrow is an element of the table, and a click on it
+  lights its thread in the columns (N1, holds, on 36 diagrams and in a
+  browser);
+- the numbers are exact: the parameters, each arrow's elements, every
+  opening's W and Q (N2, holds);
+- a box's formula is the printer's (N3, holds);
+- one set of positions, the course GPT at level 2 on one A4 page (N4,
+  holds, its labels printing small);
+- the page answers within P3's 200 ms on the decoder block at the 7B
+  width (N5, holds: at most 20 ms).
+
+- Plan 0.14.0, the network diagram in the pipeline view (D140): the
+  program as boxes and arrows in a second tab of the page, drawn from the
+  provenance table (a crate `presk-diagram`, JSON format 2, the Network
+  tab, `network.svg`, `presk dump --stage network`, a TikZ figure);
+  version `0.14.0-dev`. Found: one PSK-Core function serves every
+  instance of its module, so a box's own element is its call; the
+  envelope keeps a site's largest count of elements over its calls; and
+  the launch log holds no call above a launch, which W and Q per box
+  need, so it gains the path of calls (the plan's question 1, the user's
+  answer).
+- The network diagram (D141, plan 0.14.0 step 1): crate `presk-diagram`
+  draws the program the kernels run as boxes and arrows read off the
+  provenance table, with the printer's formulas, each arrow's shape, type
+  and bytes, each box's parameters and the cost model's W and Q over the
+  launches inside its call, laid out top to bottom once for every opening
+  a reader can reach. `explain.json` is format 2, with `network`;
+  `presk explain --format json|html` also writes `network.svg`. The kernel
+  backend's launch log records the calls above each launch
+  (`Launched::calls`). Found: `explain.json` under the native target is
+  not the same from one run to the next, since a kernel that calls a
+  `libm` function holds its address in its machine code (0.13.0 step 5).
+- The Network tab (D142, plan 0.14.0 step 2): `explain.html` draws the
+  program as boxes and arrows beside the columns, a box opening in place,
+  a click selecting in the columns; "labels", "keys", "backward"; the
+  lesson records the tab. A gradient is drawn as a value, not as a
+  parameter.
+- The native code's bytes before linking (D145, the user's answer on
+  presk !100): `explain.json` keeps each kernel's machine code as
+  Cranelift emitted it, the fields the linker fills with a `libm` address
+  zero and named (`relocs`), and is the same from one run to the next; the
+  code a run executes is unchanged.
+- The exports (D143, plan 0.14.0 step 3): `presk dump --stage network`
+  (the outline, `--format json|svg|tikz`, `--level N`, `--standalone`);
+  `make network-figure` writes the course GPT at level 2 into the
+  manual's new chapter `explain_network`, and level 1 and `Block` alone
+  (`--box`) into the report's two figures, each readable on paper; the
+  SVG and the TikZ draw the JSON's positions (N4).
+
 ## 0.13.0 — 2026-10-17
 
 The pipeline view: one compilation drawn as columns, one per stage, from

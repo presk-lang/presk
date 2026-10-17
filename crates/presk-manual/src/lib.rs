@@ -48,6 +48,11 @@ pub mod explain {}
 #[doc = include_str!("../manual/explain_loss.md")]
 pub mod explain_loss {}
 
+/// The course GPT's network diagram at level 2, generated (`make
+/// network-figure`) and held current by a test.
+#[doc = include_str!("../manual/explain_network.md")]
+pub mod explain_network {}
+
 /// The corpus: models from an NLP course, used as a forcing function.
 #[doc = include_str!("../manual/corpus.md")]
 pub mod corpus {}

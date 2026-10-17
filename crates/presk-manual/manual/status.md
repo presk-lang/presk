@@ -1521,8 +1521,8 @@ D107 measured (the output projection's tiling).
 
 Done 2026-10-13 to 2026-10-15: plan
 `presk-specs/implementation/presk-plan-0.12.0.md` (D119–D125), its steps
-for review as presk !78 to !83 and presk-specs !78 to !80; the user tags
-`v0.12.0`. A realization
+for review as presk !78 to !83 and presk-specs !78 to !80, merged and
+tagged `v0.12.0` on 2026-10-15 (presk `2fb6a90`, presk-specs `c539807`). A realization
 types the values a program stores, but not the two largest: the
 parameters, every one stored in the default type, and the functions'
 results, which the solver never offers. 0.12.0 gives a realization a
@@ -1599,7 +1599,8 @@ tiling.
 
 Done 2026-10-17: plan `presk-specs/implementation/presk-plan-0.13.0.md`
 (D133–D139), its steps for review as presk !91 to !97 and presk-specs !84
-to !86; the user tags `v0.13.0`. The pipeline view: one compilation drawn as columns, one per
+to !87, merged and tagged `v0.13.0` the same day (presk `7e215f1`,
+presk-specs `d11c2b1`). The pipeline view: one compilation drawn as columns, one per
 stage, each element linked to the elements of the stage before it came
 from. A provenance table every stage appends to makes the links, with the
 IRs unchanged; `presk explain` writes it as JSON with the document's
@@ -1650,3 +1651,60 @@ the optimized program, so `--opt` and a site-typed realization stay
 exclusive; and what 0.12.0 did not have but the HTML rendering and the
 LaTeX printer: the Explorer in the browser, the memory polynomial, the GPU
 and the output projection's tiling.
+
+## Version 0.14.0
+
+Done 2026-10-17: plan `presk-specs/implementation/presk-plan-0.14.0.md`
+(D140–D145), its steps for review as presk !99 to !104 and presk-specs !88
+to !90. The network diagram in the pipeline view: the program drawn as
+boxes and arrows in a second tab of the page, Network, beside Pipeline,
+and as `network.svg`, `presk dump --stage network` and a TikZ figure. The
+printer's formulas are on the boxes, the shapes and bytes on the arrows
+(the type as their colour), and each box carries its parameters and the
+cost model's W and Q. A `stack{L}` is one box ×L, a box opens in place,
+and a click selects the same element in the columns. The diagram is a
+view of the provenance table, not a second model: every box, node and
+arrow is an element of the table.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements N0–N5, the facts checked, the user's decisions; version `0.14.0-dev`; N0's baseline | done (2026-10-17, D140): one PSK-Core function per module definition, so a box's own element is its call's `let`; the envelope keeps a site's largest count of elements over its calls; W and Q per box need the calls above each launch, which the launch log did not hold (the plan's question 1, the user's answer: record them); N0's baseline, X1's harness on `7e215f1` (863 outputs) and `make quant-table`, `step-table` and `tutorial` |
+| 1 | `presk-diagram`: the graph from the table, its numbers, the layered layout; JSON format 2 | done (2026-10-17, D141): the kernel backend's launch log records the calls above each launch (`Launched::calls`); crate `presk-diagram` draws the program the kernels run as call and stack boxes, operation, host and parameter nodes and arrows, each naming its element, with the printer's formulas, the arrows' types and bytes, each box's parameters and W and Q, laid out top to bottom once per opening reachable (a box opened folds its siblings); `explain.json` format 2 with `network`, and `network.svg`; N1 and N2 hold on 36 diagrams (`presk-explain/tests/network.rs`); found: `explain.json` under the native target varies from run to run by a `libm` address in a kernel's code |
+| 2 | The Network tab | done (2026-10-17, D142): the page's second tab draws the diagram from `explain.json`'s positions, a box's header opening and folding it in place, hover the numbers and formulas, a click selecting the node's elements in the columns (shift: lit on the diagram), "labels", "keys" and "backward", the lesson recording the tab and the opened boxes; N1's second half and N5 hold; the diagram's parameter rules fixed on the MLP's gradient |
+| 3 | `network.svg`, `presk dump --stage network`, TikZ; the course GPT's figure in the report | done (2026-10-17, D143): `presk dump --stage network` (outline, `--format json\|svg\|tikz`, `--level N`, `--standalone`); TikZ with the printer's LaTeX in the boxes; `make network-figure` writes the course GPT at level 2 into the manual's chapter `explain_network`, and level 1 and `Block` alone (`--box`) into the report's figures 9.1 and 9.2 (presk-specs !89), each readable on paper (the user's decision); N4 holds |
+| 4 | The checks of record, the documents, version `0.14.0` | done (2026-10-17, D144): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` pass, `cargo doc -p presk-manual` has no warning; N0: X1's 863 outputs against `7e215f1` differ in 19 files, by their version and commit lines alone, `make quant-table` and `step-table` byte for byte, `make tutorial` but for its measurements; the manual (index, tutorial, cli, explain, `explain_network`, status), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.19 (its Status paragraphs at 0.14.0), the report (the foreword, chapter 8's section and its two figures, the roadmap, the history), the slides, the summary and a status note (`docs/status-2026-10-17-0.14.0.md`, presk-specs !90); the poster at 0.14.0 |
+| 4b | The native code's bytes before linking (the user's answer on presk !100) | done (2026-10-17, D145): each kernel's machine code kept as Cranelift emitted it, the fields the linker fills with a `libm` address zero and named (`relocs`), the `libm` functions declared in their names' order; `explain.json` the same from one run to the next on the tutorial, the course GPT and the decoder block; the code a run executes unchanged (X1) |
+
+### What 0.14.0 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| N0 | Nothing else moves: everything P0 covered, byte for byte against `7e215f1`, but for the version and commit lines; `explain.json` changes by its `format` and `network` fields only | every byte | **holds**: X1 at every step against `7e215f1` by the version and commit lines alone; `make quant-table` and `step-table` byte for byte; `make tutorial` but for its measurements (times, the autotuned layouts' timings, the measured Spearman) and `presk --help`'s version; `explain.json` on the tutorial, the course GPT and the decoder block v0.13.0's but for `format`, `network` and the native code's bytes, which differed from one run of v0.13.0 to the next (D141) and are, since D145, the same in every run |
+| N1 | Every box, operation node, port and arrow of the diagram is an element of the provenance table, and a click on it lights the same threads in the columns | holds | **holds** (D141, D142): on 36 diagrams every element named is in the table; in headless Firefox each box of the course GPT's and the decoder block's default opening lights its elements in the columns |
+| N2 | The parameter count over the entry's `θ` equals `Hosted.params`' total; at every site the envelope holds, the largest count of elements over the arrows carrying it equals the envelope's; Σ W and Σ Q over any one level equal the entry's launches' totals | holds | **holds** (D141): on 36 diagrams, every opening's W and Q summing exactly; 98 arrows compared with an envelope, where it names the kernels' program (D94 aside) |
+| N3 | A box's formula is the printer's display of its function, byte for byte; an operation node's its root `let`'s equation | holds | **holds** (D141): the strings the columns show; the page and the SVG compute none |
+| N4 | The page, the SVG and the TikZ draw one set of positions; the course GPT at level 2 fits one A4 page | holds | **holds** (D143): every rectangle and arrow's ends at the JSON's positions in the SVG and the TikZ; level 2, 741 × 1 569 pt, fits an A4 page at 0.46, its labels printing at about 4 pt, so the report has two figures instead (the user's decision), level 1 and `Block` alone, at 0.74 and 0.69, their labels at about 6 pt |
+| N5 | On the decoder block at the 7B width, a select, an open and a fold in the diagram under 200 ms by the page's own counter | holds | **holds** (D142): an opening drawn in at most 20.0 ms, a select in at most 2.0 ms; the columns as at 0.13.0 (7.0 and 45.0 ms) |
+
+## What 0.14.0 has, and what it does not
+
+**Has.** The program drawn as a network, read off the provenance table
+(`presk-diagram`): a box per call of a function at that call, a stack of
+layers as one box, an operation node per loop nest, a parameter node per
+parameter an operation reads, an arrow per value, each an element of the
+table, with the printer's formulas, the arrows' shapes, types and bytes,
+each box's parameters in their stored types and the cost model's W and Q
+over the launches inside it. The layout computed by the compiler, once per
+opening a reader can reach. The page's Network tab, a box opening in
+place, a click selecting in the columns; `network.svg`; `presk dump
+--stage network` as text, JSON, SVG or TikZ; the course GPT's figure in
+the manual and the report. The kernel backend's record of the calls above
+each launch.
+
+**Does not have.** Two siblings opened at once (opening a box folds its
+siblings); a figure of a whole model opened two levels deep legible on
+paper (the report has the model and one block apart); the memory a value holds while
+it is alive, which the diagram's data would give; and what 0.13.0
+did not have: a nest's loops as nested sums, the optimizer's rule per
+binding, Cranelift's IR, the precision stages on the optimized program,
+the Explorer in the browser, the GPU.

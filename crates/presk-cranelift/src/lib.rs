@@ -81,13 +81,20 @@ pub struct NativeExec {
     /// [`machine_code`], so that a run compiles as it always has.
     keep: bool,
     kept: Vec<Option<MachineCode>>,
+    /// Whether each kernel's bytes are kept without the lines, for
+    /// [`plain_code`].
+    plain: bool,
+    plain_kept: Vec<Vec<u8>>,
     /// The size of the last kernel compiled, in bytes.
     last_size: usize,
 }
 
 /// The machine code of a compiled kernel (plan 0.13.0 step 5, D138): its
-/// bytes as the JIT holds them, the bytes each line of the kernel's text
-/// compiles to, and Cranelift's text of its instructions.
+/// bytes as Cranelift emitted them, before the JIT links them (since plan
+/// 0.14.0, D145: the linked bytes hold the address of a `libm` function,
+/// which differs from one process to the next), the bytes each line of the
+/// kernel's text compiles to, Cranelift's text of its instructions, and the
+/// fields the linker writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineCode {
     pub bytes: Vec<u8>,
@@ -103,6 +110,9 @@ pub struct MachineCode {
     /// Cranelift's text of the instructions it emitted, the register
     /// allocator's result (`Context::set_disasm`).
     pub disasm: String,
+    /// `(start, end, target)`: each field the linker writes, zero in
+    /// `bytes`, and the symbol whose address it receives (`exp`).
+    pub relocs: Vec<(u32, u32, String)>,
 }
 
 /// The machine code of each kernel, compiled as `presk run --backend
@@ -118,17 +128,15 @@ pub fn machine_code(kernels: &[Kernel]) -> Result<Vec<MachineCode>> {
 }
 
 /// The machine code of each kernel compiled as a run compiles it, without
-/// the lines: the test that the lines change no byte.
+/// the lines, before it is linked as [`machine_code`]'s is: the test that
+/// the lines change no byte.
 pub fn plain_code(kernels: &[Kernel]) -> Result<Vec<Vec<u8>>> {
     let mut x = NativeExec::new()?;
-    let mut out = Vec::new();
+    x.plain = true;
     for (j, k) in kernels.iter().enumerate() {
-        let f = x.compile(j, k)?;
-        let n = x.last_size;
-        // SAFETY: the JIT holds `n` bytes of finalized code at `f`.
-        out.push(unsafe { std::slice::from_raw_parts(f as *const u8, n) }.to_vec());
+        x.compile(j, k)?;
     }
-    Ok(out)
+    Ok(x.plain_kept)
 }
 
 impl NativeExec {
@@ -161,7 +169,7 @@ impl NativeExec {
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
             .unwrap_or(1)
             .max(1);
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), last_size: 0 })
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0 })
     }
 
     /// The pool, of `threads − 1` workers: made, or made again when
@@ -208,7 +216,9 @@ impl NativeExec {
         // Declare the libm functions the kernel needs before building.
         let mut needed: Vec<&'static str> = Vec::new();
         collect_libm(&k.body, &mut needed);
-        let mut libm_ids: HashMap<&'static str, FuncId> = HashMap::new();
+        // In the names' order, so that the function declares them, and its
+        // text numbers them, the same way in every process (D145).
+        let mut libm_ids: std::collections::BTreeMap<&'static str, FuncId> = std::collections::BTreeMap::new();
         for n in needed {
             let name = match (k.dtype, n) {
                 (Dtype::F64, n) => n.to_string(),
@@ -300,19 +310,48 @@ impl NativeExec {
             g.b.finalize();
         }
         self.module.define_function(fid, &mut self.ctx).map_err(|e| RtError { code: "E10001", message: format!("cranelift: {e}"), span: None })?;
-        let code = self.ctx.compiled_code().map(|c| (c.code_buffer().len(), c.buffer.get_srclocs_sorted().iter().map(|l| (l.start, l.end, l.loc.bits())).collect::<Vec<_>>(), c.vcode.clone().unwrap_or_default()));
+        // The bytes before the JIT links them, and the fields it writes, when
+        // they are kept: the same in every process (D145).
+        let want = keep || self.plain;
+        let named: HashMap<u32, &str> = self.libm.iter().map(|(n, id)| (id.as_u32(), n.as_str())).collect();
+        let params = &self.ctx.func.params;
+        let code = self.ctx.compiled_code().map(|c| {
+            let relocs: Vec<(u32, u32, String)> = if want {
+                c.buffer
+                    .relocs()
+                    .iter()
+                    .map(|r| {
+                        let size = match r.kind {
+                            cranelift_codegen::binemit::Reloc::Abs8 => 8,
+                            _ => 4,
+                        };
+                        let target = match &r.target {
+                            cranelift_codegen::FinalizedRelocTarget::ExternalName(cranelift_codegen::ir::ExternalName::User(u)) => params.user_named_funcs().get(*u).and_then(|n| named.get(&n.index).map(|s| s.to_string())).unwrap_or_else(|| r.target.display(Some(params))),
+                            t => t.display(Some(params)),
+                        };
+                        (r.offset, r.offset + size, target)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (c.code_buffer().len(), c.buffer.get_srclocs_sorted().iter().map(|l| (l.start, l.end, l.loc.bits())).collect::<Vec<_>>(), c.vcode.clone().unwrap_or_default(), if want { c.code_buffer().to_vec() } else { Vec::new() }, relocs)
+        });
         self.module.clear_context(&mut self.ctx);
         self.module.finalize_definitions().map_err(|e| RtError { code: "E10001", message: e.to_string(), span: None })?;
         let ptr = self.module.get_finalized_function(fid);
         self.last_size = code.as_ref().map_or(0, |c| c.0);
-        if keep && let Some((len, locs, disasm)) = code {
-            // SAFETY: the JIT holds `len` bytes of finalized code at `ptr`.
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
-            let (ranges, given) = cover(len as u32, &locs);
-            if self.kept.len() <= idx {
-                self.kept.resize(idx + 1, None);
+        if let Some((len, locs, disasm, bytes, relocs)) = code {
+            if self.plain {
+                self.plain_kept.push(bytes.clone());
             }
-            self.kept[idx] = Some(MachineCode { bytes, ranges, given, disasm });
+            if keep {
+                let (ranges, given) = cover(len as u32, &locs);
+                if self.kept.len() <= idx {
+                    self.kept.resize(idx + 1, None);
+                }
+                self.kept[idx] = Some(MachineCode { bytes, ranges, given, disasm, relocs });
+            }
         }
         self.compiled_count += 1;
         // SAFETY: the function was built with the signature `fn(*const *mut u8, i64, i64)`.

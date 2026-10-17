@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.13.0 prints (timings vary from one run and one machine
+shown is what version 0.14.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.13.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
+Presk compiler (0.14.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
 
 Usage: presk <COMMAND>
 
@@ -791,7 +791,12 @@ linked to what it was made from, its equations and each kernel's machine
 code (the `explain` chapter); and `presk dump tutorial/04_grad.psk --stage
 core-after-ad --format unicode` prints the derivatives above as equations,
 each with the rule it was made by (the `language` chapter, "Reading a
-program as mathematics").
+program as mathematics"). Since 0.14.0 the page has a second tab, Network:
+the program as boxes and arrows, each box a call with its formula, its
+parameters and its work, opening in place, every box and arrow an element
+of the columns; `presk explain` also writes it as `network.svg`, and
+`presk dump tutorial/07_train.psk --stage network --entry loss --dim B=4`
+prints its outline (the `explain` chapter, "The network diagram").
 
 ## 8. Export to PyTorch and check the export
 

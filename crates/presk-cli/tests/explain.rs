@@ -123,3 +123,21 @@ fn the_manual_holds_the_tutorial_s_document() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `explain.json` is the same from one process to the next under the native
+/// target (plan 0.14.0, D145): each kernel's machine code is kept before it
+/// is linked, where a kernel that calls `libm` held the function's address,
+/// which the loader places differently in each process.
+#[test]
+fn the_json_is_the_same_from_one_run_to_the_next() {
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("explain-twice");
+    let mut texts = Vec::new();
+    for k in ["a", "b"] {
+        let out = base.join(k);
+        let o = out.to_str().unwrap();
+        presk(&["explain", "tutorial/07_train.psk", "--entry", "loss", "--dim", "B=4", "--realize", "f32", "--no-exact", "--target", "native", "--format", "json", "--out", o], false);
+        texts.push(std::fs::read_to_string(out.join("explain.json")).unwrap());
+    }
+    assert!(texts[0].contains("\"relocs\": [\n") || texts[0].contains("\"relocs\""), "no relocations recorded");
+    assert!(texts[0] == texts[1], "explain.json differs between two runs");
+}

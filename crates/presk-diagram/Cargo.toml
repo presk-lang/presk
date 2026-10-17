@@ -1,0 +1,22 @@
+[package]
+name = "presk-diagram"
+description = "The network diagram: a program as boxes and arrows, a view of the provenance table, with its numbers and a layered layout (plan 0.14.0 step 1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+presk-types.workspace = true
+presk-core.workspace = true
+presk-provenance.workspace = true
+presk-print-math.workspace = true
+presk-rt.workspace = true
+presk-kernel.workspace = true
+
+[dev-dependencies]
+presk-driver.workspace = true
+presk-syntax.workspace = true
+presk-precision.workspace = true
+insta.workspace = true

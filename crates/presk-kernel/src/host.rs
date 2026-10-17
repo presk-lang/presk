@@ -196,6 +196,11 @@ pub struct KernelBackend<'p> {
     pub launch_log: Option<Vec<Launched>>,
     /// The `add` of the epilogue being launched, for the log.
     epilogue_of: Option<String>,
+    /// While the launches are logged: the calls the backend is inside, the
+    /// outermost first, as [`Launched::calls`] names them (plan 0.14.0 step
+    /// 1, D141), and the iteration of the fold whose body is called next.
+    calls: Vec<String>,
+    iteration: Option<usize>,
 }
 
 /// One launch as [`KernelBackend::launch_log`] logs it.
@@ -207,6 +212,11 @@ pub struct Launched {
     pub nest: String,
     /// The `add` the nest's kernel computes as its epilogue, when it does.
     pub epilogue: Option<String>,
+    /// The calls the launch is inside, the outermost first: each call's
+    /// `let`, `"<function>/%<let>"`, and a fold's with the iteration,
+    /// `"<function>/%<let>[<i>]"` (plan 0.14.0 step 1, D141). The entry's own
+    /// call is not one: a launch of the entry's body has none.
+    pub calls: Vec<String>,
 }
 
 impl Backend for KernelBackend<'_> {
@@ -258,7 +268,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -511,7 +521,7 @@ impl<'p> KernelBackend<'p> {
             }
         };
         if let Some(log) = self.launch_log.as_mut() {
-            log.push(Launched { kernel: idx, nest: self.site.clone(), epilogue: self.epilogue_of.clone() });
+            log.push(Launched { kernel: idx, nest: self.site.clone(), epilogue: self.epilogue_of.clone(), calls: self.calls.clone() });
         }
         let t = self.tick();
         let k = &self.kernels[idx];
@@ -613,6 +623,15 @@ impl<'p> KernelBackend<'p> {
         self.tock(Phase::Groups, t, || 0);
         let outer_site = std::mem::take(&mut self.site);
         let outer_dtype = self.dtype;
+        // The call this is, when the launches are logged: the caller's `let`.
+        let logged = self.launch_log.is_some() && !outer_site.is_empty();
+        if logged {
+            let call = match self.iteration.take() {
+                Some(i) => format!("{outer_site}[{i}]"),
+                None => outer_site.clone(),
+            };
+            self.calls.push(call);
+        }
         for l in &func.body.lets {
             // An interior `let` of a group never reaches memory: its value is
             // an expression inside the group's single loop nest.
@@ -702,6 +721,9 @@ impl<'p> KernelBackend<'p> {
         }
         self.site = outer_site;
         self.dtype = outer_dtype;
+        if logged {
+            self.calls.pop();
+        }
         let result = env.remove(&func.body.result).ok_or_else(|| RtError { code: "E7001", message: "result variable undefined".into(), span: Some(func.span) });
         if self.profile.is_some() {
             // Freed in the order they would be at the end of the function.
@@ -1077,6 +1099,9 @@ impl<'p> KernelBackend<'p> {
                     self.tock(Phase::Fold, t, || ex.iter().map(copied_bytes).sum());
                     if let Some(r) = self.recorder.as_deref_mut() {
                         r.fold_iter(i);
+                    }
+                    if self.launch_log.is_some() {
+                        self.iteration = Some(i);
                     }
                     acc = self.call_fn(*body, callee_dims.clone(), args)?;
                     if let Some(r) = self.recorder.as_deref_mut() {

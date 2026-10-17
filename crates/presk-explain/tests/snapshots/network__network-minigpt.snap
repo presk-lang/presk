@@ -1,0 +1,321 @@
+---
+source: crates/presk-explain/tests/network.rs
+expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
+---
+network of `MiniGPT.apply`, read off the stage `ad`: 116 nodes, 114 arrows, 14 openings
+parameters: 8768 (35072 bytes, f32)
+work W = 301056, bytes Q = 185580, over every launch of the entry
+default opening: [3], 574 × 658 pt
+[0] root MiniGPT.apply  ad:MiniGPT.apply @ 0,0 574×658
+    θ 8.77 k f32 · W 301 k · Q 186 kB
+  [1] input ids #1  ad:MiniGPT.apply @ 340,38 44×22
+  [2] op causal_mask seq  fusion:MiniGPT.apply/%2 @ 27,84 123×26
+      W 128 · Q 512B
+  [3] call emb · Embedding  ad:MiniGPT.apply/%4 fn ad:Embedding.apply @ 162,84 400×232
+      θ 1.15 k f32 · W 256 · Q 8.96 kB
+    [9] input ids #1  ad:MiniGPT.apply @ 174,122 44×22
+    [10] op embed  fusion:Embedding.apply/%3 @ 283,182 57×26
+        Q 5.25 kB
+    [11] op positions seq  fusion:Embedding.apply/%5 @ 345,122 110×26
+        Q 64B
+    [12] op embed  fusion:Embedding.apply/%6 @ 352,182 57×26
+        Q 1.09 kB
+    [13] op add  fusion:Embedding.apply/%7 @ 324,232 44×26
+        W 256 · Q 2.56 kB
+    [14] param θ.tok  ad:Embedding.apply/%2 @ 230,122 103×36
+        θ 1.02 k f32
+    [15] param θ.pos  ad:Embedding.apply/%4 @ 467,122 83×36
+        θ 128 f32
+    [16] result  ad:Embedding.apply/%7 @ 315,282 64×22
+    14 → 10: ad:Embedding.apply/%2  ℝ[64, 16] = ℝ[64, 16], f32, 1024 elements, 4096 B
+    9 → 10: ad:MiniGPT.apply  idx[64][batch: B, seq: T] = idx[64][batch: 2, seq: 8], idx, 0 elements, 128 B
+    15 → 12: ad:Embedding.apply/%4  ℝ[T, 16] = ℝ[8, 16], f32, 128 elements, 512 B
+    11 → 12: ad:Embedding.apply/%5  idx[T][seq: T] = idx[8][seq: 8], idx, 0 elements, 64 B
+    10 → 13: ad:Embedding.apply/%3  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+    12 → 13: ad:Embedding.apply/%6  ℝ[seq: T, 16] = ℝ[seq: 8, 16], f32, 128 elements, 512 B
+    13 → 16: ad:Embedding.apply/%7  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+  [4] stack blocks ×2 · Block  ad:MiniGPT.apply/%6 fn ad:Block.apply @ 12,340 427×78
+      θ 6.56 k f32 · W 265 k · Q 160 kB
+    [17] input x #1  ad:MiniGPT.apply/%4
+    [18] input mask #2  ad:MiniGPT.apply/%2
+    [19] call ln1 · LayerNorm{16}  ad:Block.apply/%5 fn ad:LayerNorm.apply
+        θ 32 f32 · W 2.48 k · Q 6.72 kB (per run; 2 runs)
+      [26] input x #1  ad:MiniGPT.apply/%4
+      [27] input eps #2  ad:Block.apply/%4
+      [28] op mean axis model  fusion:LayerNorm.apply/%3
+          W 272 · Q 1.09 kB
+      [29] group pow 2 · sub  fusion:LayerNorm.apply/%5
+          W 768 · Q 2.11 kB
+          members LayerNorm.apply/%5, LayerNorm.apply/%4
+      [30] op mean axis model  fusion:LayerNorm.apply/%6
+          W 272 · Q 1.09 kB
+      [31] host real  ad:LayerNorm.apply/%8
+      [32] group sqrt · add  fusion:LayerNorm.apply/%10
+          W 144 · Q 132B
+          members LayerNorm.apply/%10, LayerNorm.apply/%9
+      [33] group add · sub · div · mul  fusion:LayerNorm.apply/%15
+          W 1.02 k · Q 2.30 kB
+          members LayerNorm.apply/%15, LayerNorm.apply/%7, LayerNorm.apply/%11, LayerNorm.apply/%13
+      [34] param θ.γ  ad:LayerNorm.apply/%12
+          θ 16 f32
+      [35] param θ.β  ad:LayerNorm.apply/%14
+          θ 16 f32
+      [36] result  ad:LayerNorm.apply/%15
+      26 → 28: ad:MiniGPT.apply/%4  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      26 → 29: ad:MiniGPT.apply/%4  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      28 → 29: ad:LayerNorm.apply/%3  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      29 → 30: ad:LayerNorm.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      26 → 33: ad:MiniGPT.apply/%4  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      28 → 33: ad:LayerNorm.apply/%3  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      27 → 31: ad:Block.apply/%4  f64 = f64, host, 0 elements, 0 B
+      30 → 32: ad:LayerNorm.apply/%6  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      31 → 32: ad:LayerNorm.apply/%8  ℝ[] = ℝ[], f32, 1 elements, 4 B
+      32 → 33: ad:LayerNorm.apply/%10  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      34 → 33: ad:LayerNorm.apply/%12  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+      35 → 33: ad:LayerNorm.apply/%14  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+      33 → 36: ad:LayerNorm.apply/%15  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    [20] call attn · SelfAttention  ad:Block.apply/%7 fn ad:SelfAttention.apply
+        θ 1.09 k f32 · W 48.1 k · Q 33.5 kB (per run; 2 runs)
+      [37] input x #1  ad:Block.apply/%5
+      [38] input mask #2  ad:MiniGPT.apply/%2
+      [39] call wq · Linear{16, 16}  ad:SelfAttention.apply/%4 fn ad:Linear.apply
+          θ 272 f32 · W 8.45 k · Q 3.14 kB (per run; 2 runs)
+        [53] input x #1  ad:Block.apply/%5
+        [54] op dot  fusion:Linear.apply/%3
+            W 8.45 k · Q 3.14 kB
+        [55] op add  fusion:Linear.apply/%5
+        [56] param θ.w  ad:Linear.apply/%2
+            θ 256 f32
+        [57] param θ.b  ad:Linear.apply/%4
+            θ 16 f32
+        [58] result  ad:Linear.apply/%5
+        53 → 54: ad:Block.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        56 → 54: ad:Linear.apply/%2  ℝ[16, 16] = ℝ[16, 16], f32, 256 elements, 1024 B
+        54 → 55: ad:Linear.apply/%3  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        57 → 55: ad:Linear.apply/%4  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+        55 → 58: ad:Linear.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      [40] op split_heads 2x8  fusion:SelfAttention.apply/%5
+          Q 2.05 kB
+      [41] call wk · Linear{16, 16}  ad:SelfAttention.apply/%7 fn ad:Linear.apply
+          θ 272 f32 · W 8.45 k · Q 3.14 kB (per run; 2 runs)
+        [59] input x #1  ad:Block.apply/%5
+        [60] op dot  fusion:Linear.apply/%3
+            W 8.45 k · Q 3.14 kB
+        [61] op add  fusion:Linear.apply/%5
+        [62] param θ.w  ad:Linear.apply/%2
+            θ 256 f32
+        [63] param θ.b  ad:Linear.apply/%4
+            θ 16 f32
+        [64] result  ad:Linear.apply/%5
+        59 → 60: ad:Block.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        62 → 60: ad:Linear.apply/%2  ℝ[16, 16] = ℝ[16, 16], f32, 256 elements, 1024 B
+        60 → 61: ad:Linear.apply/%3  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        63 → 61: ad:Linear.apply/%4  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+        61 → 64: ad:Linear.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      [42] op split_heads 2x8  fusion:SelfAttention.apply/%8
+          Q 2.05 kB
+      [43] call wv · Linear{16, 16}  ad:SelfAttention.apply/%10 fn ad:Linear.apply
+          θ 272 f32 · W 8.45 k · Q 3.14 kB (per run; 2 runs)
+        [65] input x #1  ad:Block.apply/%5
+        [66] op dot  fusion:Linear.apply/%3
+            W 8.45 k · Q 3.14 kB
+        [67] op add  fusion:Linear.apply/%5
+        [68] param θ.w  ad:Linear.apply/%2
+            θ 256 f32
+        [69] param θ.b  ad:Linear.apply/%4
+            θ 16 f32
+        [70] result  ad:Linear.apply/%5
+        65 → 66: ad:Block.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        68 → 66: ad:Linear.apply/%2  ℝ[16, 16] = ℝ[16, 16], f32, 256 elements, 1024 B
+        66 → 67: ad:Linear.apply/%3  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        69 → 67: ad:Linear.apply/%4  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+        67 → 70: ad:Linear.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      [44] op split_heads 2x8  fusion:SelfAttention.apply/%11
+          Q 2.05 kB
+      [45] op ein[batch, heads, seq, seq2]  fusion:SelfAttention.apply/%12
+          W 4.10 k · Q 5.12 kB
+      [46] op sqrt  fusion:SelfAttention.apply/%15
+          W 8 · Q 8B
+      [47] op div  fusion:SelfAttention.apply/%16
+          W 256 · Q 2.05 kB
+      [48] op softmax axis seq2  fusion:SelfAttention.apply/%17
+          W 5.89 k · Q 2.56 kB
+      [49] op ein[batch, heads, seq, hd]  fusion:SelfAttention.apply/%18
+          W 4.10 k · Q 3.07 kB
+      [50] op merge_heads 2x8  fusion:SelfAttention.apply/%19
+          Q 2.05 kB
+      [51] call wo · Linear{16, 16}  ad:SelfAttention.apply/%21 fn ad:Linear.apply
+          θ 272 f32 · W 8.45 k · Q 3.14 kB (per run; 2 runs)
+        [71] input x #1  ad:SelfAttention.apply/%19
+        [72] op dot  fusion:Linear.apply/%3
+            W 8.45 k · Q 3.14 kB
+        [73] op add  fusion:Linear.apply/%5
+        [74] param θ.w  ad:Linear.apply/%2
+            θ 256 f32
+        [75] param θ.b  ad:Linear.apply/%4
+            θ 16 f32
+        [76] result  ad:Linear.apply/%5
+        71 → 72: ad:SelfAttention.apply/%19  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        74 → 72: ad:Linear.apply/%2  ℝ[16, 16] = ℝ[16, 16], f32, 256 elements, 1024 B
+        72 → 73: ad:Linear.apply/%3  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        75 → 73: ad:Linear.apply/%4  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+        73 → 76: ad:Linear.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      [52] result  ad:SelfAttention.apply/%21
+      37 → 39 #1: ad:Block.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      39 → 40: ad:SelfAttention.apply/%4  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      37 → 41 #1: ad:Block.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      41 → 42: ad:SelfAttention.apply/%7  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      37 → 43 #1: ad:Block.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      43 → 44: ad:SelfAttention.apply/%10  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      40 → 45: ad:SelfAttention.apply/%5  ℝ[batch: B, heads: 2, seq: T, hd: 8] = ℝ[batch: 2, heads: 2, seq: 8, hd: 8], f32, 256 elements, 1024 B
+      42 → 45: ad:SelfAttention.apply/%8  ℝ[batch: B, heads: 2, seq: T, hd: 8] = ℝ[batch: 2, heads: 2, seq: 8, hd: 8], f32, 256 elements, 1024 B
+      45 → 47: ad:SelfAttention.apply/%12  ℝ[batch: B, heads: 2, seq: T, seq2: T] = ℝ[batch: 2, heads: 2, seq: 8, seq2: 8], f32, 256 elements, 1024 B
+      46 → 47: ad:SelfAttention.apply/%15  ℝ[] = ℝ[], f32, 1 elements, 4 B
+      47 → 48: ad:SelfAttention.apply/%16  ℝ[batch: B, heads: 2, seq: T, seq2: T] = ℝ[batch: 2, heads: 2, seq: 8, seq2: 8], f32, 256 elements, 1024 B
+      38 → 48: ad:MiniGPT.apply/%2  bool[seq: T, seq2: T] = bool[seq: 8, seq2: 8], bool, 0 elements, 512 B
+      48 → 49: ad:SelfAttention.apply/%17  ℝ[batch: B, heads: 2, seq: T, seq2: T] = ℝ[batch: 2, heads: 2, seq: 8, seq2: 8], f32, 256 elements, 1024 B
+      44 → 49: ad:SelfAttention.apply/%11  ℝ[batch: B, heads: 2, seq: T, hd: 8] = ℝ[batch: 2, heads: 2, seq: 8, hd: 8], f32, 256 elements, 1024 B
+      49 → 50: ad:SelfAttention.apply/%18  ℝ[batch: B, heads: 2, seq: T, hd: 8] = ℝ[batch: 2, heads: 2, seq: 8, hd: 8], f32, 256 elements, 1024 B
+      50 → 51 #1: ad:SelfAttention.apply/%19  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      51 → 52: ad:SelfAttention.apply/%21  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+    [21] op add  fusion:Block.apply/%8
+        W 256 · Q 3.07 kB
+    [22] call ln2 · LayerNorm{16}  ad:Block.apply/%11 fn ad:LayerNorm.apply
+        θ 32 f32 · W 2.48 k · Q 6.72 kB (per run; 2 runs)
+      [77] input x #1  ad:Block.apply/%8
+      [78] input eps #2  ad:Block.apply/%10
+      [79] op mean axis model  fusion:LayerNorm.apply/%3
+          W 272 · Q 1.09 kB
+      [80] group pow 2 · sub  fusion:LayerNorm.apply/%5
+          W 768 · Q 2.11 kB
+          members LayerNorm.apply/%5, LayerNorm.apply/%4
+      [81] op mean axis model  fusion:LayerNorm.apply/%6
+          W 272 · Q 1.09 kB
+      [82] host real  ad:LayerNorm.apply/%8
+      [83] group sqrt · add  fusion:LayerNorm.apply/%10
+          W 144 · Q 132B
+          members LayerNorm.apply/%10, LayerNorm.apply/%9
+      [84] group add · sub · div · mul  fusion:LayerNorm.apply/%15
+          W 1.02 k · Q 2.30 kB
+          members LayerNorm.apply/%15, LayerNorm.apply/%7, LayerNorm.apply/%11, LayerNorm.apply/%13
+      [85] param θ.γ  ad:LayerNorm.apply/%12
+          θ 16 f32
+      [86] param θ.β  ad:LayerNorm.apply/%14
+          θ 16 f32
+      [87] result  ad:LayerNorm.apply/%15
+      77 → 79: ad:Block.apply/%8  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      77 → 80: ad:Block.apply/%8  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      79 → 80: ad:LayerNorm.apply/%3  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      80 → 81: ad:LayerNorm.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      77 → 84: ad:Block.apply/%8  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+      79 → 84: ad:LayerNorm.apply/%3  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      78 → 82: ad:Block.apply/%10  f64 = f64, host, 0 elements, 0 B
+      81 → 83: ad:LayerNorm.apply/%6  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      82 → 83: ad:LayerNorm.apply/%8  ℝ[] = ℝ[], f32, 1 elements, 4 B
+      83 → 84: ad:LayerNorm.apply/%10  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+      85 → 84: ad:LayerNorm.apply/%12  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+      86 → 84: ad:LayerNorm.apply/%14  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+      84 → 87: ad:LayerNorm.apply/%15  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    [23] call mlp · MLP{16, 64}  ad:Block.apply/%13 fn ad:MLP.apply
+        θ 2.13 k f32 · W 79.1 k · Q 26.9 kB (per run; 2 runs)
+      [88] input x #1  ad:Block.apply/%11
+      [89] call l1 · Linear{16, 64}  ad:MLP.apply/%3 fn ad:Linear.apply
+          θ 1.09 k f32 · W 33.8 k · Q 9.47 kB (per run; 2 runs)
+        [93] input x #1  ad:Block.apply/%11
+        [94] op dot  fusion:Linear.apply/%3
+            W 33.8 k · Q 9.47 kB
+        [95] op add  fusion:Linear.apply/%5
+        [96] param θ.w  ad:Linear.apply/%2
+            θ 1.02 k f32
+        [97] param θ.b  ad:Linear.apply/%4
+            θ 64 f32
+        [98] result  ad:Linear.apply/%5
+        93 → 94: ad:Block.apply/%11  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        96 → 94: ad:Linear.apply/%2  ℝ[16, 64] = ℝ[16, 64], f32, 1024 elements, 4096 B
+        94 → 95: ad:Linear.apply/%3  ℝ[batch: B, seq: T, 64] = ℝ[batch: 2, seq: 8, 64], f32, 1024 elements, 4096 B
+        97 → 95: ad:Linear.apply/%4  ℝ[64] = ℝ[64], f32, 64 elements, 256 B
+        95 → 98: ad:Linear.apply/%5  ℝ[batch: B, seq: T, 64] = ℝ[batch: 2, seq: 8, 64], f32, 1024 elements, 4096 B
+      [90] op gelu  fusion:MLP.apply/%4
+          W 12.3 k · Q 8.19 kB
+      [91] call l2 · Linear{64, 16}  ad:MLP.apply/%6 fn ad:Linear.apply
+          θ 1.04 k f32 · W 33.0 k · Q 9.28 kB (per run; 2 runs)
+        [99] input x #1  ad:MLP.apply/%4
+        [100] op dot  fusion:Linear.apply/%3
+            W 33.0 k · Q 9.28 kB
+        [101] op add  fusion:Linear.apply/%5
+        [102] param θ.w  ad:Linear.apply/%2
+            θ 1.02 k f32
+        [103] param θ.b  ad:Linear.apply/%4
+            θ 16 f32
+        [104] result  ad:Linear.apply/%5
+        99 → 100: ad:MLP.apply/%4  ℝ[batch: B, seq: T, 64] = ℝ[batch: 2, seq: 8, 64], f32, 1024 elements, 4096 B
+        102 → 100: ad:Linear.apply/%2  ℝ[64, 16] = ℝ[64, 16], f32, 1024 elements, 4096 B
+        100 → 101: ad:Linear.apply/%3  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+        103 → 101: ad:Linear.apply/%4  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+        101 → 104: ad:Linear.apply/%5  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      [92] result  ad:MLP.apply/%6
+      88 → 89 #1: ad:Block.apply/%11  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+      89 → 90: ad:MLP.apply/%3  ℝ[batch: B, seq: T, 64] = ℝ[batch: 2, seq: 8, 64], f32, 1024 elements, 4096 B
+      90 → 91 #1: ad:MLP.apply/%4  ℝ[batch: B, seq: T, 64] = ℝ[batch: 2, seq: 8, 64], f32, 1024 elements, 4096 B
+      91 → 92: ad:MLP.apply/%6  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+    [24] op add  fusion:Block.apply/%14
+        W 256 · Q 3.07 kB
+    [25] result  ad:Block.apply/%14
+    17 → 19 #1: ad:MiniGPT.apply/%4  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    19 → 20 #1: ad:Block.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    18 → 20 #2: ad:MiniGPT.apply/%2  bool[seq: T, seq2: T] = bool[seq: 8, seq2: 8], bool, 0 elements, 512 B
+    17 → 21: ad:MiniGPT.apply/%4  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    20 → 21: ad:Block.apply/%7  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    21 → 22 #1: ad:Block.apply/%8  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    22 → 23 #1: ad:Block.apply/%11  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    21 → 24: ad:Block.apply/%8  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    23 → 24: ad:Block.apply/%13  ℝ[batch: B, seq: T, 16] = ℝ[batch: 2, seq: 8, 16], f32, 256 elements, 1024 B
+    24 → 25: ad:Block.apply/%14  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+  [5] call lnf · LayerNorm{16}  ad:MiniGPT.apply/%9 fn ad:LayerNorm.apply @ 78,442 295×108
+      θ 32 f32 · W 2.48 k · Q 6.72 kB
+    [105] input x #1  ad:MiniGPT.apply/%6
+    [106] input eps #2  ad:MiniGPT.apply/%8
+    [107] op mean axis model  fusion:LayerNorm.apply/%3
+        W 272 · Q 1.09 kB
+    [108] group pow 2 · sub  fusion:LayerNorm.apply/%5
+        W 768 · Q 2.11 kB
+        members LayerNorm.apply/%5, LayerNorm.apply/%4
+    [109] op mean axis model  fusion:LayerNorm.apply/%6
+        W 272 · Q 1.09 kB
+    [110] host real  ad:LayerNorm.apply/%8
+    [111] group sqrt · add  fusion:LayerNorm.apply/%10
+        W 144 · Q 132B
+        members LayerNorm.apply/%10, LayerNorm.apply/%9
+    [112] group add · sub · div · mul  fusion:LayerNorm.apply/%15
+        W 1.02 k · Q 2.30 kB
+        members LayerNorm.apply/%15, LayerNorm.apply/%7, LayerNorm.apply/%11, LayerNorm.apply/%13
+    [113] param θ.γ  ad:LayerNorm.apply/%12
+        θ 16 f32
+    [114] param θ.β  ad:LayerNorm.apply/%14
+        θ 16 f32
+    [115] result  ad:LayerNorm.apply/%15
+    105 → 107: ad:MiniGPT.apply/%6  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    105 → 108: ad:MiniGPT.apply/%6  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    107 → 108: ad:LayerNorm.apply/%3  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+    108 → 109: ad:LayerNorm.apply/%5  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    105 → 112: ad:MiniGPT.apply/%6  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+    107 → 112: ad:LayerNorm.apply/%3  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+    106 → 110: ad:MiniGPT.apply/%8  f64 = f64, host, 0 elements, 0 B
+    109 → 111: ad:LayerNorm.apply/%6  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+    110 → 111: ad:LayerNorm.apply/%8  ℝ[] = ℝ[], f32, 1 elements, 4 B
+    111 → 112: ad:LayerNorm.apply/%10  ℝ[batch: B, seq: T] = ℝ[batch: 2, seq: 8], f32, 16 elements, 64 B
+    113 → 112: ad:LayerNorm.apply/%12  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+    114 → 112: ad:LayerNorm.apply/%14  ℝ[16] = ℝ[16], f32, 16 elements, 64 B
+    112 → 115: ad:LayerNorm.apply/%15  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+  [6] op dot  fusion:MiniGPT.apply/%11 @ 309,574 44×26
+      W 32.8 k · Q 9.22 kB
+  [7] param θ.head  ad:MiniGPT.apply/%10 @ 385,442 103×36
+      θ 1.02 k f32
+  [8] result  ad:MiniGPT.apply/%11 @ 299,624 64×22
+  1 → 3 #1: ad:MiniGPT.apply  idx[64][batch: B, seq: T] = idx[64][batch: 2, seq: 8], idx, 0 elements, 128 B
+  3 → 4 #1: ad:MiniGPT.apply/%4  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+  2 → 4 #2: ad:MiniGPT.apply/%2  bool[seq: T, seq2: T] = bool[seq: 8, seq2: 8], bool, 0 elements, 512 B
+  4 → 5 #1: ad:MiniGPT.apply/%6  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+  5 → 6: ad:MiniGPT.apply/%9  ℝ[batch: B, seq: T, model: 16] = ℝ[batch: 2, seq: 8, model: 16], f32, 256 elements, 1024 B
+  7 → 6: ad:MiniGPT.apply/%10  ℝ[16, 64] = ℝ[16, 64], f32, 1024 elements, 4096 B
+  6 → 8: ad:MiniGPT.apply/%11  ℝ[batch: B, seq: T, 64] = ℝ[batch: 2, seq: 8, 64], f32, 1024 elements, 4096 B

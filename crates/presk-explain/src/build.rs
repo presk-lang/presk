@@ -204,7 +204,11 @@ fn given(path: &Path, report: &mut dyn Report) -> presk_driver::Result<Provenanc
     }
 }
 
-pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Result<(Document, Vec<Artifact>, Option<serde_json::Value>)> {
+/// The document, its artifacts, and under `--format json|html` its JSON and
+/// the network diagram drawn in it.
+pub(crate) type Built = (Document, Vec<Artifact>, Option<(serde_json::Value, Option<presk_diagram::Network>)>);
+
+pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Built> {
     let mut tee = Tee { inner: report, kept: Collect::default(), seen: BTreeSet::new() };
     let s = run(o, &mut tee)?;
     let diags: Vec<String> = tee.kept.items.iter().filter_map(|r| if let Reported::Diagnostics(t, _) = r { Some(t.clone()) } else { None }).collect();
@@ -221,6 +225,21 @@ pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Resul
         json::json(&s, &doc, &traced)
     });
     Ok((doc, s.artifacts, json))
+}
+
+/// The network diagram of the compilation (plan 0.14.0, D141), and the
+/// provenance table and the entry's parameters it was drawn from.
+pub(crate) fn network(o: &Options, report: &mut dyn Report) -> presk_driver::Result<crate::Network> {
+    let mut tee = Tee { inner: report, kept: Collect::default(), seen: BTreeSet::new() };
+    let s = run(o, &mut tee)?;
+    let l = presk_print_math::typed_program(&s.sm, &s.prog, &s.typed);
+    let network = json::network(&s, &l);
+    let params = s.hosted.as_ref().ok().map(|h| h.params.clone());
+    // The envelope names the sites of the program the precision stages
+    // read, which is the kernels' unless differentiation kept a fusion
+    // group for them alone (D94).
+    let elems = s.env.as_ref().filter(|_| s.before_opt.is_none() && format!("{:?}", s.pcore.funcs) == format!("{:?}", s.ad_program.funcs)).map(|(e, _)| e.elems.clone());
+    Ok(crate::Network { network, table: s.table, params, elems })
 }
 
 /// The provenance table of the compilation, alone.

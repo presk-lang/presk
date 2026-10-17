@@ -28,6 +28,7 @@ presk-opt.workspace = true
 presk-precision.workspace = true
 presk-driver.workspace = true
 presk-explain.workspace = true
+presk-diagram.workspace = true
 presk-print-math.workspace = true
 
 [dev-dependencies]

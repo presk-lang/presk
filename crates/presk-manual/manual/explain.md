@@ -49,7 +49,7 @@ The flags are the commands' own, with the same names and defaults.
 | `--target native,c,pytorch` | the targets, `native` by default |
 | `--measure` | also run it on this machine: §11 |
 | `--site S` | a site to trace through every stage (§12), the option repeated |
-| `--format md\|json\|html` | `json`: `explain.json` beside `explain.md`, the document's facts and the provenance table as values (below; since 0.13.0 step 2); `html`: `explain.html` too, the pipeline view (below; since step 3) |
+| `--format md\|json\|html` | `json`: `explain.json` beside `explain.md`, the document's facts and the provenance table as values (below; since 0.13.0 step 2), and `network.svg`, the network diagram (below; since 0.14.0 step 1); `html`: `explain.html` too, the pipeline view (below; since 0.13.0 step 3) |
 | `--out DIR` | where the document and its files go |
 
 `--budget`, `--realize` and `--plan` exclude one another. Without any of
@@ -256,27 +256,118 @@ D135), for a program that reads a compilation rather than a person: the
 pipeline view's page reads it. It holds the document's facts as values and
 the provenance table of §12, and it is deterministic without `--measure`,
 as the Markdown is: no time, no absolute path. Its fields, in layout
-`format` 1:
+`format` 2 (0.14.0 step 1, D141, which added `network`; format 1 is
+0.13.0's):
 
 | Field | What it holds |
 |---|---|
-| `format` | `1`, the layout's version; a reader refuses one it does not know |
+| `format` | `2`, the layout's version; a reader refuses one it does not know |
 | `compiler` | the compiler's version |
 | `program` | `file`, `entry`, `dims` (`[name, value]` pairs), `consts`, `realization` (its label), `opt`, `planned` (a profile planned the layouts), `differentiated` (the program has generated functions) |
 | `traced` | the sites §12 traces: `--site`'s, or the default ones |
 | `sources` | each file read: `id` (the file number the source stage's keys use), `path`, `text` |
 | `stages` | one per stage that has elements, in the compiler's order (source, elab, core, ad, precision, opt, fusion, layout, kernel, launch, c): `stage`, `title`, `section` (the document's section that shows it) and `elements` |
 | `stages[].elements[]` | `key` (the element's key in its stage: a span `file:start-end`, `fn NAME`, a site `f/%n`, a nest, `k<j>`, `kernels.c k<n>`, `native k<j>`), `label` (the line the document prints for it), `group` (the function it belongs to, which the page folds by), `facts`, and `ends`, why it has no child at the next stage |
-| `facts` | by stage: a `let`'s `span` and source `name`; a precision site's `magnitude`, `elements`, `condition`, `sensitivity`, `type`, `term`, `rounded_in`, `bound` (the conditioned bound's error at the site) and, for a decision, `why`; a layout's `shape`, `predicted_us`, `runner_up`, `runner_up_us` and, for a contraction nest, `order` (the realization's reduction order); a kernel's `text` and `dtype`; a C function's `text`; a kernel's machine code, under the native target (0.13.0 step 5, D138): `bytes` (its size), `hex` (its bytes), `ranges` (`[start, end, line]`, the bytes each line of the kernel's text compiles to, in the code's order, every byte in one range) and `given` (`[start, end]`, the bytes Cranelift gave no line, which `ranges` gives to the line before them), and `disasm`, Cranelift's text of the instructions. And `tex`, the element's formula in LaTeX (0.13.0 step 4, D137): a function's display and an expression's formula on the elaborated program, a `let`'s equation on PSK-Core and the stages after it, a site's term of the solver's estimate, a contraction nest's sum, with `order_tex`, the order its terms are added in |
+| `facts` | by stage: a `let`'s `span` and source `name`; a precision site's `magnitude`, `elements`, `condition`, `sensitivity`, `type`, `term`, `rounded_in`, `bound` (the conditioned bound's error at the site) and, for a decision, `why`; a layout's `shape`, `predicted_us`, `runner_up`, `runner_up_us` and, for a contraction nest, `order` (the realization's reduction order); a kernel's `text` and `dtype`; a C function's `text`; a kernel's machine code, under the native target (0.13.0 step 5, D138): `bytes` (its size), `hex` (its bytes, before they are linked, since 0.14.0, D145), `ranges` (`[start, end, line]`, the bytes each line of the kernel's text compiles to, in the code's order, every byte in one range) and `given` (`[start, end]`, the bytes Cranelift gave no line, which `ranges` gives to the line before them), `disasm`, Cranelift's text of the instructions, and `relocs` (`[start, end, symbol]`, the fields the linker fills with a `libm` function's address, zero in `hex`; D145). And `tex`, the element's formula in LaTeX (0.13.0 step 4, D137): a function's display and an expression's formula on the elaborated program, a `let`'s equation on PSK-Core and the stages after it, a site's term of the solver's estimate, a contraction nest's sum, with `order_tex`, the order its terms are added in |
 | `rules` | the rules the links name, in LaTeX: `adjoint`, the contributions of each primitive's derivative as the reference's table `core-adjoint` writes them, by the rule a link names; `rewrite`, the identity of each rewrite rule of the optimizer (tables `core-algebra`, `core-structure`) |
 | `precision` | under `--budget`: `estimate` (the solver's first-order estimate, the sum of the terms), `budget` (absolute), `measured` (the gap measured against the exact reference) and `bound` (the conditioned rule's, on the output), or `null` |
 | `links` | every link: `child` and `parents` as `stage:key`, `how` (the reason's name, from the `presk_provenance::How` list) and its fields: `rule`, `kind`, `mode`, `role`, `rules`, `members`, `stop`, `point`, `points`, `shared_by`, `count`, `lines` |
+| `network` | the network diagram (below), or `null` when the entry does not resolve |
 | `document` | the document itself: `title`, `subtitle`, `header` and `sections` (`number`, `title`, `purpose`, `blocks`, `commands`, `sections`), each block one of `prose`, `table` (`head`, `rows`), `code` (`lang`, `text`, `name`), `note` (`title`, `text`), `attach` (`name`, `text`) |
 
 The document's strings are those the Markdown prints, and the Markdown is
 rendered again from them byte for byte (a test of `presk-explain`). On the
 Llama 2 decoder block at the 7B width (X5's parameters, `--no-exact`) it is
 1.1 MB.
+
+## The network diagram (format 2's `network`)
+
+Since 0.14.0 step 1 (D141), `explain.json` holds the program drawn as
+boxes and arrows, and `presk explain` writes its default opening as
+`network.svg` beside it. The diagram is a view of the provenance table,
+not a second model: every node and every arrow names an element of the
+table, and the drawing adds positions and numbers to them. Crate
+`presk-diagram` reads the program the kernels run (the table's stage `ad`,
+or `opt` under `--opt`):
+
+- a **call box** for each call of a function, named by the field of the
+  parameters it is given (`ln1`, `attn`), its instance from their type
+  (`LayerNorm{64}`); its element is the call's `let`, and `function` names
+  its callee's, which every instance shares;
+- a **stack** box for a `fold` over stacked parameters, `stack{L}` once ×L,
+  which opens to one layer;
+- an **operation node** for each fusion element of the function, a group
+  (`add · mul`) or a primitive alone, and a **host** node for a primitive
+  the host computes (`split_key`, a dropout's mask outside training);
+- a **parameter** node for each parameter an operation reads (`θ.w`); the
+  parameters a box is given are its port;
+- the function's **inputs** and its **result**;
+- an **arrow** for each value that flows, through the projections and
+  tuples the host carries, named by the value's site, or by the entry's
+  function for the entry's inputs (the table has no element for a
+  function's parameters).
+
+A box's graph is its callee's, drawn at its call: one PSK-Core function
+serves every instance of its module, its types in the module's dimensions
+(`ℝ[..., Out]`), so an arrow inside a box takes the type under the call's
+dimension arguments, the open prefix `...` bound to the leading axes of the
+caller's argument. Under `grad`, the generated functions are boxes like any
+other (`MLP.apply.fwd`, `MLP.apply.bwd`), each naming the function it was
+generated from.
+
+The numbers, each from where the compiler keeps it (statement N2):
+
+| On the drawing | From |
+|---|---|
+| a box's formula | the printer's display of its function (`render::aligned`, the elaborated column's `tex`), and the same in Unicode |
+| an operation's formula | its root `let`'s equation, the string its column shows, and a contraction's sum and order |
+| an arrow's type, elements and bytes | the `let`'s type at the call, at the entry's dimensions; the realized type (`Realization::dtype_at`); elements × the type's bytes |
+| a box's parameters | its subtree of the entry's parameters, each leaf in its stored type (a quantized leaf's integers and `f32` scales); inside a stack, a layer's |
+| a box's work W and bytes Q | the cost model's (`kernel_cost`) over the launches inside its call: the kernel backend's launch log records, since this step, the calls above each launch (`Launched::calls`) |
+
+W and Q are over every run of a node; `numbers`, the line the drawing
+writes, divides them by `runs`, the layers of the stacks the node is
+inside, so that a layer shows a layer's. A test (`presk-explain`'s
+`tests/network.rs`) checks, on `make plan-check`'s entries, the coverage
+models, the six snapshot documents and the course GPT, with and without
+the optimizer, that every element the diagram names is in the table
+(statement N1), that the parameters sum to the entry's, that each arrow's
+elements are the envelope's at the sites the envelope holds (the largest
+over the instances, which is what the envelope keeps), and that in every
+opening the work and the bytes of the nodes drawn sum to the entry's
+launches' (N2).
+
+The layout is layered, top to bottom, computed in Rust once for every
+opening a reader can reach: the entry alone, then each box opened with the
+boxes it is inside, a box opened folding its siblings. The default opening
+is the entry and its first box. Sizes come from the strings' lengths, no
+text being measured. The `network` object:
+
+| Field | What it holds |
+|---|---|
+| `entry`, `stage` | the entry, and the table's stage the graph is read from |
+| `default` | the view the page opens on |
+| `params`, `work`, `bytes` | the entry's: `{count, bytes, types}`, and W and Q over its launches (`null` when the kernels were not listed) |
+| `nodes[]` | `id`, `kind` (`root`, `call`, `stack`, `group`, `op`, `host`, `param`, `input`, `output`), `parent` (the box it is drawn in), `element` and `function` (`stage:key`), `callee`, `label`, `title` and `numbers` (the lines the drawing writes), `instance`, `stack` (L), `runs`, `path` (in the entry's parameters), `tex` and `text` (the formula in LaTeX and in Unicode), `sum` and `order` (a contraction's, in LaTeX), `params`, `work`, `bytes`, `generated` (`{kind, of}`), `members` (a group's sites), `index` (an input's place), `children`, `depth`, `key` (it carries keys only) |
+| `edges[]` | `id`, `from`, `to`, `parent`, `arg` (its place among `to`'s arguments), `site`, `ty` (in the entry's dimension names), `at` (at their values), `dtype`, `elems`, `bytes`, `key` |
+| `views[]` | `open` (the boxes opened, outermost first), `width`, `height`, `rects` (`[id, x, y, w, h]`, in points) and `routes` (`[id, x0, y0, x1, y1, …]`) of every node and arrow drawn |
+
+`presk dump FILE --stage network --entry E` (0.14.0 step 3, D143; `cli`
+chapter) prints the same diagram without writing a document: its outline,
+its JSON, or one opening as SVG or TikZ (`--level N`), or one box opened by
+itself, without what is around it (`--box NAME`). Every format draws
+the positions of the one layout (statement N4, a test of `presk-explain`):
+the page, `network.svg`, the SVG and the TikZ. The TikZ's boxes carry the
+printer's LaTeX, each formula shrunk to its box when it is wider, with the
+reference's macros provided where the document has none. `make
+network-figure` writes the course GPT at level 2 into the chapter
+`explain_network` of this manual (741 × 1 569 pt, to be read on a screen),
+and the report's two figures as TikZ (presk-specs `report/figures/`), each
+readable on paper, as the user decided on 2026-10-17: level 1, the GPT
+with its stack of blocks folded (`network-gpt.tex`, 647 × 899 pt, on an A4
+page at 0.74 of its size), and `Block` opened by itself
+(`network-gpt-block.tex`, `--box blocks`, 693 × 808 pt, at 0.69), their
+9 pt labels printing at about 6 pt.
 
 ## The pipeline view (`--format html`)
 
@@ -339,6 +430,56 @@ elements, 237 arrows drawn, the formulas on), the first drawing took 19
 ms, a select at most 7.0 ms, a fold or an open at most 44.0 ms (0.13.0
 step 5); on the course GPT at `D = 64`, 31, 6.0 and 33.0 ms.
 
+## The Network tab
+
+Since 0.14.0 step 2 (D142), the page has two tabs. **Pipeline** is the
+columns above; **Network** draws the program as boxes and arrows from the
+JSON's `network` (above), at the positions `presk-diagram` computed: the
+page lays nothing out. It opens on the default opening, the entry and its
+first box opened.
+
+- **A box** is a call: its name and instance, its parameters with their
+  stored type, the cost model's W and Q (a box inside a stack shows one
+  run's, "each of L runs"), and folded, its function's display typeset in
+  it, scaled to fit. A stack is one box ×L, its border doubled.
+- **Opening.** A box's header opens it in place, to its callee's graph at
+  that call, and folds it again; a stack opens to one layer, ℓ. Opening a
+  box folds its siblings. "default" goes back to the default opening.
+- **Operation nodes** are the fusion groups (`add · mul`) and the
+  primitives alone; dashed, a primitive the host computes. Parameter nodes
+  are the leaves an operation reads (`θ.w`).
+- **Arrows** are coloured by their realized type (a parameter's by its
+  stored type) and their width grows with their bytes. Hovering an arrow
+  shows its site, its type and its bytes; "labels" writes them on every
+  arrow. "keys" draws the random keys and their `split_key`s, dashed,
+  which are hidden by default. Under `grad`, "backward" draws the `.bwd`
+  boxes beside their `.fwd`, each naming the function it was generated
+  from, hidden by default.
+- **Hovering** a node shows its numbers (W/Q, its intensity), its formula
+  and, for a group, each member's equation, the values that never reach
+  memory; then its element's facts, as in the columns.
+- **A click** selects the node's elements in the columns, a box's call and
+  its callee's function, and switches to the Pipeline tab with their
+  threads lit. With shift it stays on the diagram, where the nodes and
+  arrows of the thread light. A selection made in the columns lights the
+  diagram too.
+- **The lesson** records the tab and the opened boxes with each step.
+
+The address takes `tab=network`, `net=` (the opened boxes' ids, outermost
+first), `labels`, `keys`, `backward`, `theme=light|dark` and `plain`
+(nothing selected).
+
+Under `#bench`, after P3's timings, the page draws every opening and
+selects every node of the default one by its own clock (statement N5), and
+clicks each box of the default opening, checking that its elements light
+in the columns (N1). In headless Firefox on falicon, three runs each: on
+the course GPT at `D = 64`, 15 openings drawn in at most 20.0 ms and 21
+selects in at most 1.0 ms, the columns' select at most 7.0 ms and fold at
+most 34.0 ms; on the Llama 2 decoder block at the 7B width (1.9 MB), 13 openings in at
+most 20.0 ms and 19 selects in at most 2.0 ms, the columns' select at
+most 7.0 ms and fold at most 45.0 ms, as at 0.13.0 (7.0 and 44.0). Every
+box clicked lit its elements.
+
 ## The native column
 
 Under `--format json` or `html` with the native target, each kernel of the
@@ -354,6 +495,14 @@ the test set with them and without them and finds the same code.
 Hovering a kernel's machine code shows each range with its line of the
 kernel and its bytes, then Cranelift's text of the instructions, register
 allocated.
+
+The bytes are those Cranelift emitted, before the JIT links them (0.14.0,
+D145, the user's answer on presk !100). Linked, a kernel that calls a
+`libm` function (`exp`, `erff`) holds that function's address, which the
+loader places differently in each process, so that `explain.json` differed
+from one run to the next. Before linking the field is zero; the page
+underlines it and names the function whose address it receives (`relocs`).
+The kernel a run executes is unchanged: the same bytes, linked.
 
 On the test set's 1 164 kernels Cranelift gives a line to 88 % of the
 bytes; on the decoder block at the 7B width, to 65 %, its 4 × 16 tiles in
