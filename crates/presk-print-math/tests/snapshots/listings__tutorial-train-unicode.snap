@@ -1,0 +1,47 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(\"tutorial/07_train.psk\", Format::Unicode)"
+---
+-- presk dump --stage elab --format unicode: 07_train.psk and its imports, as the equations
+-- of the language reference's chapter 3
+
+== 01_linear.psk
+
+module Linear{In, Out}
+  parameters  w : ℝ[In, Out],  b : ℝ[Out]
+
+  Linear.apply, of x : ℝ[…, In]
+      ⟦Linear.apply⟧(θ, x) = (dot x, w) + b
+
+== 02_norm.psk
+
+module RMSNorm{D}
+  parameters  γ : ℝ[D]
+
+  RMSNorm.apply, of x : ℝ[…, model: D],  eps : f64 = 1e-6
+      ms = mean axis model x²
+      ⟦RMSNorm.apply⟧(θ, x, eps) = (x / √(ms + eps)) × γ
+
+== 06_tower.psk
+  constants  D = 4,  L = 3
+
+module Block
+  parameters  norm : norm.RMSNorm{D},  proj : lin.Linear{D, D}
+
+  Block.apply, of x : ℝ[…, model: D]
+      ⟦Block.apply⟧(θ, x) = x + ⟦proj.apply⟧(gelu ⟦norm.apply⟧(x))
+
+module Tower
+  parameters  blocks : stack{L}(Block),  final : norm.RMSNorm{D}
+
+  Tower.apply, of x : ℝ[…, model: D]
+      y₀ = x
+      y_(ℓ + 1) = ⟦Block.apply⟧(θ.blocks[ℓ], y_ℓ)    (0 ≤ ℓ < L)
+      ⟦Tower.apply⟧(θ, x) = ⟦final.apply⟧(y_L)
+
+== 07_train.psk
+  dimensions  B
+
+loss, of θ : params t.Tower,  batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])
+    (x, y) = batch
+    ⟦loss⟧(θ, batch) = mean (⟦t.Tower.apply⟧(θ, x) − y)²

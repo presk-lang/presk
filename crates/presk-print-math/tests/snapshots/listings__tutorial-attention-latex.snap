@@ -1,0 +1,22 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(\"tutorial/03_attention.psk\", Format::Latex)"
+---
+% presk dump --stage elab --format latex: 03_attention.psk and its imports, as the equations
+% of the language reference's chapter 3. A fragment: it compiles with the reference's
+% preamble, whose macros \code and \den it uses (--standalone: a document).
+
+\subsection*{\texttt{03\_attention.psk}}
+Constants $D = 8$, $H = 2$, $\mathit{HD} = \frac{D}{H} = 4$; dimensions $B$, $T \le 1024$; types $\code{Q} = \mathbb{R}[\code{batch}{:}\,B, \code{heads}{:}\,H, \code{seq}{:}\,T, \code{hd}{:}\,\mathit{HD}]$; asserted $D \bmod H = 0$.
+
+\paragraph{Function $\code{scores}$.} Of $q : \code{Q}$, $k : \code{Q}$:
+\begin{alignat*}{2}
+\den{\code{scores}}(q, k)[\code{batch}, \code{heads}, \code{seq}, \code{seq2}] &= \frac{\sum_{\code{hd}} q[\code{batch}, \code{heads}, \code{seq}, \code{hd}]\, k[\code{batch}, \code{heads}, \code{seq2}, \code{hd}]}{\sqrt{\mathit{HD}}}
+\end{alignat*}
+
+\paragraph{Function $\code{attend}$.} Of $q : \code{Q}$, $k : \code{Q}$, $v : \code{Q}$:
+\begin{alignat*}{2}
+s &= \den{\code{scores}}(q, k) \\
+a &= \code{softmax axis}\ \code{seq2}\ s, (\code{causal\_mask}\ \code{seq}{:}\,T) \\
+\den{\code{attend}}(q, k, v)[\code{batch}, \code{heads}, \code{seq}, \code{hd}] &= \sum_{\code{seq2}} a[\code{batch}, \code{heads}, \code{seq}, \code{seq2}]\, v[\code{batch}, \code{heads}, \code{seq2}, \code{hd}]
+\end{alignat*}

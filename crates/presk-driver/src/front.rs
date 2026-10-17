@@ -73,8 +73,14 @@ pub fn core(file: &Path, consts: &[String], unroll_stack: bool, report: &mut dyn
 
 /// [`core()`], and the typed program it was lowered from.
 pub fn typed_core(file: &Path, consts: &[String], unroll_stack: bool, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, TypedProgram, presk_core::Program)> {
+    typed_core_traced(file, consts, unroll_stack, report).map(|(sm, prog, typed, core, _)| (sm, prog, typed, core))
+}
+
+/// [`typed_core`], and what the lowering made each `let` from (plan 0.13.0
+/// step 1, D134).
+pub fn typed_core_traced(file: &Path, consts: &[String], unroll_stack: bool, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, TypedProgram, presk_core::Program, presk_core::lower::Trace)> {
     let (sm, prog, typed) = typed_front(file, consts, report)?;
-    let (core, diags) = presk_core::lower::lower_with(&prog, &typed, &presk_core::lower::Options { unroll_stack });
+    let (core, diags, trace) = presk_core::lower::lower_traced(&prog, &typed, &presk_core::lower::Options { unroll_stack });
     report.diagnostics(&diags, &sm);
     if has_errors(&diags) {
         return Err(Stop(1));
@@ -85,5 +91,5 @@ pub fn typed_core(file: &Path, consts: &[String], unroll_stack: bool, report: &m
         }
         return Err(Stop(2));
     }
-    Ok((sm, prog, typed, core))
+    Ok((sm, prog, typed, core, trace))
 }

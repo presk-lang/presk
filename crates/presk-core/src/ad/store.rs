@@ -87,19 +87,16 @@ pub struct Stored {
     pub folds: usize,
 }
 
-/// Splits every `.vjp` of `built` that can be split exactly, callees first,
-/// and rewrites its callers to call `.fwd` in their forward pass and `.bwd`
-/// in their sweep. New functions are appended to `generated`.
-pub(crate) fn split(prog: &mut Program, built: &HashMap<FuncId, Built>, generated: &mut Vec<FuncId>, groups: bool) -> Stored {
-    split_with(prog, built, generated, groups).0
-}
-
-/// [`split`], and how each `.vjp` split was split.
+/// [`split_with`]'s splits alone.
 pub(crate) fn split_all(prog: &mut Program, built: &HashMap<FuncId, Built>, generated: &mut Vec<FuncId>, groups: bool) -> HashMap<FuncId, Split> {
     split_with(prog, built, generated, groups).1
 }
 
-fn split_with(prog: &mut Program, built: &HashMap<FuncId, Built>, generated: &mut Vec<FuncId>, groups: bool) -> (Stored, HashMap<FuncId, Split>) {
+/// Splits every `.vjp` of `built` that can be split exactly, callees first,
+/// and rewrites its callers to call `.fwd` in their forward pass and `.bwd`
+/// in their sweep. New functions are appended to `generated`. Returns what
+/// was done and how each `.vjp` split was split.
+pub(crate) fn split_with(prog: &mut Program, built: &HashMap<FuncId, Built>, generated: &mut Vec<FuncId>, groups: bool) -> (Stored, HashMap<FuncId, Split>) {
     let order = post_order(prog, built);
     let mut splits: HashMap<FuncId, Split> = HashMap::new();
     let mut steps: HashMap<FuncId, FuncId> = HashMap::new();

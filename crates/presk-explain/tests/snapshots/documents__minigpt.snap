@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.12.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.13.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -1091,13 +1091,13 @@ By default, the three largest shares of the solver's estimate (the three largest
 **`Linear.apply/%5`**
 
 | Stage |  |
-|---------------|------------------------|
+|---------------|------------------------------------|
 | PSK-Core (§3) | `%5 : ℝ[..., Out] = add %3, b` in `Linear.apply` |
 | Envelope (§6.1) | \|v\| ≤ 3.264e0, 1024 elements |
 | Type (§6.3) | `f32`, decision |
 | Fusion (§7) | alone: the function's result |
 | Layout (§8) | nest `Linear.apply/%5`, 7 points at `[2, 8, 16] [16]`; chosen lanes 1, split none, 0.0683 µs, bound by work; runner-up lanes 1, split (1, 10), 101.5 µs |
-| Kernel (§9) | none: the host computes it |
+| Kernel (§9) | `k9`, as the epilogue of `Linear.apply/%3`'s kernel: `kernel dot+add (%0 : f32[batch: 2, seq: 8, 16], %1 : f32[16, 16], %2 : f32[16]) -> %3 : f32[batch: 2, seq: 8, 16]` |
 
 *Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (70 lines).*
 

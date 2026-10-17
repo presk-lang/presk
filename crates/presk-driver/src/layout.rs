@@ -439,6 +439,9 @@ pub struct Hosted {
     /// When the first argument is a parameter tree: its leaves' paths and
     /// their elements, at the entry's dimensions.
     pub params: Vec<(String, usize)>,
+    /// Every launch of the call: its kernel's place in the listing and its
+    /// nest (plan 0.13.0 step 1, D134).
+    pub launched: Vec<presk_kernel::Launched>,
 }
 
 /// [`kernels`], and the host program of the call that launched them, as the
@@ -474,13 +477,15 @@ fn listed(core: &presk_core::Program, prog: &presk_types::elab::ElabProgram, ent
     let p = presk_rt::Backend::prepare(&mut b, func, &fdims, realize)?;
     if record {
         b.recorder = Some(Box::new(presk_kernel::record::Recorder::named(names.clone())));
+        b.launch_log = Some(Vec::new());
     }
     presk_rt::Backend::call(&mut b, &p, args)?;
+    let launched = b.launch_log.take().unwrap_or_default();
     let recording = match b.recorder.take() {
         Some(r) => r.finish().map_err(|e| e.message),
         None => Err("not recorded".into()),
     };
-    Ok(Hosted { listing: Listing { kernels: std::mem::take(&mut b.kernels), launches: b.launches, fused: b.fused, label: b.realize.label() }, recording, names, params })
+    Ok(Hosted { listing: Listing { kernels: std::mem::take(&mut b.kernels), launches: b.launches, fused: b.fused, label: b.realize.label() }, recording, names, params, launched })
 }
 
 /// One kernel of a point, priced: its group, the model's inputs and the

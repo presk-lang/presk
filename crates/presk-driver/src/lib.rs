@@ -25,6 +25,7 @@ pub mod layout;
 pub mod opt;
 pub mod plan;
 pub mod precision;
+pub mod provenance;
 pub mod report;
 pub mod text;
 

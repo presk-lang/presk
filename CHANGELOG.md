@@ -1,5 +1,139 @@
 # Changelog
 
+## 0.13.0 — 2026-10-17
+
+The pipeline view: one compilation drawn as columns, one per stage, from
+the source to the machine code, every element linked to what it was made
+from (`presk-specs/implementation/presk-plan-0.13.0.md`, D133–D139; the
+reference at draft v0.18). A provenance table, filled by the stages as
+they run with the IRs unchanged, makes the links; `presk explain` reads
+its traces off it, writes it as JSON, and draws it as a page with each
+element's equations in the reference's notation and each kernel's machine
+code by line. Nothing a program computes changes, but for one refusal:
+`--opt` with a realization that types sites. Judged on six statements
+fixed before the work:
+- nothing else moves (P0, holds: X1, the tables and the tutorial, every
+  difference a version line or a measurement);
+- `presk explain`'s traces read off the table print what 0.12.0 printed,
+  every difference named (P1, holds: two rows corrected);
+- every element of every stage has an origin (P2, holds);
+- the page answers a select or a fold in under 200 ms on the Llama 2
+  decoder block at the 7B width (P3, holds: 7 and 44 ms);
+- every byte of every kernel's machine code lies in one range of one
+  line (P4, holds, 88 % of the bytes with Cranelift's own line);
+- the printer writes the reference's equations (P5, holds, checked by
+  the user).
+
+The entries below since 0.12.0 also hold the paper's measurements on
+0.12.0 (D126–D132), which came before the plan.
+
+- The user's decisions after 0.12.0 (D126). A parameter's sensitivity stays
+  the exact 1-norm of its leaf of the cotangent, and `--quant` stays a pass
+  on top of the float assignment; one menu for both kinds of type is a
+  design for later (`docs/precision-menu-roadmap.md`). Every timing of
+  record runs each row in several processes, at least three, and reports
+  the median across them and the fastest, since a process may run its
+  kernels in a slower mode for its whole life (`docs/kernels-roadmap.md`).
+  No code changes.
+- The course GPT's timings across five processes, by that protocol (D127,
+  `docs/retime-2026-10-15.md`). The C training step is 0.98× PyTorch's (T2
+  holds). The native backend is 1.52× and 1.60× the C program (T4 fails).
+  The solved step is 1.75× all-`f64` (J′ holds). Each figure is the median
+  of five processes and within 0.01 of its one-process figure, and no
+  process ran in a slow mode on these rows.
+  `experiments/retime_processes.py` combines the rounds.
+- Where the measurement changes the solver's decision (D128,
+  `docs/widening-2026-10-16.md`, `make widening`): an unshifted softmax
+  (overflow), the two-pass standard deviation (a mean whose sensitivity is
+  zero) and a sum of equal terms (correlated roundings) make the solver
+  widen; the softmax primitive, the one-pass formula and noisy terms do
+  not. The widening reaches the misjudged value last. Fixed: an entry
+  whose first argument is a tensor no longer has it offered as a
+  parameter, which no executor runs and every measurement refused.
+- PyTorch's own gap to the exact model (D130,
+  `docs/pytorch-gap-2026-10-16.md`, `make pytorch-gap`): the course GPT at
+  D = 64 exported and run by PyTorch eager in `float32` is 2.95·10⁻⁶ from
+  the exact logits on the 461 held-out windows, flips no decision and lies
+  158 times inside ε\*(10⁻³); the compiler's all-`f32` is 3.12·10⁻⁶.
+- The course GPT trained at its course constants (600 steps in `f64`, 4 h)
+  and taken through the margins (D129, `docs/margins-course-2026-10-16.md`):
+  validation loss 2.3307, accuracy 0.3037, ε\*(10⁻³) = 4.96·10⁻⁴; the
+  curve's realization at 10⁻³ (1.98×, eight parameters in `bf16`) and the
+  one solved on the logits (1.97×) flip none of 118 016 decisions, and
+  statement S holds. New scripts `experiments/curve_course.sh`,
+  `margins_course.sh`, `margins_rechunk.py`, `margins_loss.py`,
+  `val_loss.sh`.
+- A contraction's bound proved in Gappa (D131, `docs/gappa-dot-2026-10-16.md`,
+  `make gappa-dot`): one element of `[8, K]·[K, 8]` in `f32` at K = 8 to 128,
+  sequential and `interleaved(n)`; the proof stays 2.6 to 3.1 times `cond`
+  under the sequential order, flat in K, 3.3 to 6.0 times interleaved.
+  `experiments/gappa_dot.{psk,py,sh}`; Gappa 1.6.0 built from source on
+  falicon (the manual's dependencies).
+- The curve and the envelope-stability figure on the trained weights (D132,
+  `docs/envelope-state-2026-10-16.md`): calibrated on the trained model and
+  two held-out windows instead of the initialization and random tokens,
+  the curve narrows more (D = 64: 3.17× to 1.15×; course: 2.68× to 1.03×),
+  never widens, and its 10⁻³ realization flips 30 and 29 decisions on the
+  logits, outside ε\*; statement S holds under both envelopes; the trained
+  model's stability factor is 1.25×; the quality axis stays flat (every
+  realization trains to within 1.3·10⁻⁴ of all-`f64`).
+  `experiments/curve_trained.sh` (`QUALITY=1` for the quality axis),
+  `curve_course_trained.sh`.
+- Plan 0.13.0, the pipeline view (D133): a provenance table every stage
+  appends to, `presk explain --format json`, the page, the math printer
+  and the native column; version `0.13.0-dev`. Found under `--opt`: the
+  optimizer renumbers every `let`, so a realization that types sites
+  types nothing it names (refused from step 1), and `presk explain`'s §12
+  names no kernel for the sites it traces (rebuilt over the table in step
+  1).
+- The provenance table (D134, crate `presk-provenance`): every element of
+  every stage of one compilation, from a span of the source to a function
+  of `kernels.c`, and for each one what it was made from and how (the
+  lowering's rule, the derivative rule an adjoint is made by, unchanged or
+  rewritten by the optimizer, the fusion group, the kernel the nests
+  share). The IRs do not change: the lowering, differentiation, the
+  optimizer, the kernel backend and the C export return their links beside
+  their values, and `presk_driver::provenance` puts them together.
+  `presk explain` §12 reads it: under `--opt` it follows each site to the
+  `let` the optimizer made of it, and an `add` a contraction's kernel
+  computes as its epilogue is no longer said to be computed by the host.
+  `--opt` with a realization that types sites, or a plan's layouts, is
+  refused (`E7002`), each site named with its new name; `presk explain`
+  refuses `--opt` with `--budget`.
+- `presk explain --format json` (D135): `explain.json` beside `explain.md`,
+  the document's facts and the provenance table as values: the document's
+  sections (from which the Markdown is rendered again byte for byte), each
+  stage's elements with their facts (the envelope's magnitude, the
+  sensitivity, the type and its term, the layout, the kernel's text, the C
+  function's lines), the links and the sources. Deterministic without
+  `--measure`; its schema is in the manual's `explain` chapter.
+- The pipeline view (D136): `presk explain --format html` writes
+  `explain.html`, one offline file with the JSON inside it. The stages are
+  columns, every element is linked by an arrow to what it was made from,
+  and an unchanged element passes through. Functions fold, with §12's sites
+  open and lit; selecting lights a thread through every stage; hovering
+  gives the facts and the reasons; a lesson of captioned selections lives
+  in the page's address.
+- The printer of the denotation (D137): `presk dump --stage elab
+  --format latex|unicode` prints each function of a program as the
+  equations of the language reference's chapter 3, whose new section 3.10
+  states the notation (presk-specs !85, draft v0.18): an operation by its
+  name, `ein` as its sum at an index named by its axes, a stack as its
+  recurrence. `--stage core-after-ad` prints PSK-Core after differentiation,
+  one equation per binding, each generated binding with what it was made
+  for. `--module`, `--function`, `--standalone`; `make math-check` compiles
+  the documents. The pipeline view shows the same formulas on its cards,
+  with a derivative's rule and a rewrite's identity on the links, a site's
+  term of the estimate and a contraction nest's order of summation;
+  KaTeX 0.19.0 is inlined in the page.
+- The native column (D138): `presk explain --format json|html` with the
+  native target writes each kernel's machine code, compiled as a run
+  compiles it, every byte with the line of the kernel it compiles (from
+  Cranelift's `SourceLoc`s; the register allocator's moves, to which
+  Cranelift gives none, take the line before them), and Cranelift's text
+  of the instructions. The page's last column shows it. A run's code does
+  not change.
+
 ## 0.12.0 — 2026-10-15
 
 A parameter's floating-point storage type at rest, `params` (`f32` or

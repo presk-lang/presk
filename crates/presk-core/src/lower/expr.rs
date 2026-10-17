@@ -15,8 +15,17 @@ impl Lowerer<'_> {
         self.typed.ty_of.get(&e.span()).cloned().unwrap_or(Ty::Nat)
     }
 
-    /// Lower an expression; the result is a variable of the block.
+    /// Lower an expression; the result is a variable of the block. Every
+    /// `let` it emits is recorded with the expression's kind, the innermost
+    /// one's ([`super::Trace`]).
     pub(crate) fn expr(&mut self, e: &Expr, b: &mut Builder) -> Option<VarId> {
+        let saved = std::mem::replace(&mut b.rule, rule_of(e).to_string());
+        let r = self.expr_at(e, b);
+        b.rule = saved;
+        r
+    }
+
+    fn expr_at(&mut self, e: &Expr, b: &mut Builder) -> Option<VarId> {
         let ty = self.ty_of(e);
         let span = e.span();
         match e {
@@ -243,6 +252,7 @@ impl Lowerer<'_> {
         lam.params = params;
         lam.ret = ret;
         lam.body = Block { lets: lb.lets, result };
+        self.rules.insert(lam_id, lb.rules);
         Some(b.emit(None, ty.clone(), Rhs::Closure { f: lam_id, captured: captured.iter().map(|(_, v)| *v).collect() }, span))
     }
 
@@ -439,6 +449,7 @@ impl Lowerer<'_> {
             let stacked = theta?;
             let x = *call_args.get(1)?;
             let rest: Vec<VarId> = call_args[2..].to_vec();
+            b.rule = "stack".into();
             return Some(b.emit(None, ty.clone(), Rhs::Fold { body: core, dim_args, n: n.clone(), stacked: vec![stacked], init: x, extra: rest, index: false, reverse: false, scan: false }, span));
         }
         if let Some(ModRef::Stack { n, .. }) = &module {
@@ -450,6 +461,7 @@ impl Lowerer<'_> {
             let mut x = *call_args.get(1)?;
             let rest: Vec<VarId> = call_args[2..].to_vec();
             let inner_ty = ty.clone();
+            b.rule = "stack, unrolled".into();
             for i in 0..count {
                 let inner_ref = match &module {
                     Some(ModRef::Stack { inner, .. }) => (**inner).clone(),
@@ -466,6 +478,9 @@ impl Lowerer<'_> {
     }
 
     fn builtin(&mut self, name: &str, args: Vec<LArg>, ty: &Ty, span: Span, b: &mut Builder) -> Option<VarId> {
+        // Its arguments were lowered under their own kinds: what it emits
+        // is the builtin's.
+        b.rule = name.to_string();
         let vals: Vec<VarId> = args.iter().filter_map(|a| match a {
             LArg::Val(v) | LArg::Named(_, v) => Some(*v),
             _ => None,
@@ -614,5 +629,35 @@ pub(crate) fn pat_names(p: &Pat) -> Vec<String> {
     match p {
         Pat::Ident(i) => vec![i.name.clone()],
         Pat::Tuple { elems, .. } => elems.iter().flat_map(pat_names).collect(),
+    }
+}
+
+/// The lowering rule of an expression's kind, which the `let`s it emits are
+/// recorded with ([`super::Trace`]); a call is refined by its callee in
+/// [`Lowerer::builtin`] and in a call of a function.
+fn rule_of(e: &Expr) -> &'static str {
+    match e {
+        Expr::Lit { .. } => "literal",
+        Expr::Var { .. } => "variable",
+        Expr::Let { .. } => "let",
+        Expr::Lambda { .. } => "lambda",
+        Expr::Call { .. } => "call",
+        Expr::Field { .. } | Expr::Inst { .. } => "member",
+        Expr::Index { .. } => "index",
+        Expr::Ein { .. } => "ein",
+        Expr::Binary { op, .. } => match op {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Pow => "^",
+            BinOp::Dot => "·",
+            BinOp::Compose => "∘",
+            BinOp::Pipe => "|>",
+            other => other.text(),
+        },
+        Expr::Unary { .. } => "unary",
+        Expr::Ascribe { .. } => "ascription",
+        Expr::Tuple { .. } => "tuple",
     }
 }

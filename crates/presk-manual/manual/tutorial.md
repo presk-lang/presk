@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.12.0 prints (timings vary from one run and one machine
+shown is what version 0.13.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.12.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
+Presk compiler (0.13.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
 
 Usage: presk <COMMAND>
 
@@ -785,7 +785,13 @@ that realization (`cond`, 2.4·10⁻¹² against a measured 4.4·10⁻¹⁶) and
 says nothing is planned. Steps 15 and 17 add a budget (`--budget`) and a
 machine (`--profile`); `make explain` writes the document of step 15's
 `loss` under both, the manual's chapter `explain_loss`, and `make
-explain-pdf` its PDF.
+explain-pdf` its PDF. Since 0.13.0, `--format html` also writes
+`explain.html`, the pipeline view: the stages as columns, every element
+linked to what it was made from, its equations and each kernel's machine
+code (the `explain` chapter); and `presk dump tutorial/04_grad.psk --stage
+core-after-ad --format unicode` prints the derivatives above as equations,
+each with the rule it was made by (the `language` chapter, "Reading a
+program as mathematics").
 
 ## 8. Export to PyTorch and check the export
 

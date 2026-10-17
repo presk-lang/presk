@@ -1,0 +1,68 @@
+-- widening.psk — programs on which the solver's estimate misjudges a
+-- rounding and the measurement refuses its proposal, each beside the form
+-- on which it does not, for `experiments/widening.sh` (D128).
+--
+-- The solver proposes with a first-order estimate, Σ s · u(type) · |v| over
+-- the stored values, s the cotangent's 1-norm per output element and |v| the
+-- envelope's magnitude: one rounding per stored value, at its magnitude
+-- (precision chapter). It verifies by running the proposal against the exact
+-- reference and widens while the measured gap is over the budget. Three
+-- things the estimate does not see, one pair each:
+--
+-- * a value outside its type's range. `attn_raw` is one attention row,
+--   the weights an unshifted softmax of logits near 84: the row's sum of
+--   `exp` passes `f32`'s largest finite value, 3.4·10³⁸, where the exact
+--   value is finite. `attn_softmax` is the same row by the primitive, whose
+--   kernel subtracts the row's maximum first. The entry returns the row's
+--   output Σ p·v and not the weights p, whose sum is 1 whatever the
+--   logits, so that the sensitivities of a seed of ones are not all zero
+--   (precision chapter, "An entry whose result is a tensor").
+-- * a sensitivity that vanishes where the error does not. `std_two_pass`
+--   is the standard deviation by the two-pass formula on rows offset to
+--   1 000: the result is stationary in the mean μ (Σ(z − μ) = 0), so the
+--   cotangent of μ is zero to the digits of the reference and the estimate
+--   charges μ nothing in any type, while μ rounded to `bf16` (a spacing of
+--   4 at 1 000) moves every deviation z − μ by its whole error. The effect
+--   is of second order, (δμ)² / 2σ, which a first-order estimate drops.
+--   `std_one_pass` is the textbook's bad formula, E[z²] − μ², whose
+--   cancellation the estimate does see: it charges the rounding of E[z²] at
+--   E[z²]'s magnitude, 10⁶.
+-- * a sum's own roundings. The estimate charges a stored sum one rounding;
+--   the kernel rounds every partial sum, K − 1 times, in the storage's
+--   arithmetic type. `clock` adds K equal terms, whose roundings share their
+--   sign (the textbook's sum of 0.1 taken K times), so the sum's error
+--   grows as K and not as √K; `noisy` adds the same terms with a little
+--   noise, which decorrelates them.
+--
+-- Every argument but the first tensor is an `f64` with a default, which the
+-- commands take as given (`c`, `h`); the tensors are synthesized from the
+-- seed, standard normal.
+
+dim B
+const D : nat = 64          -- a row's width
+const K : nat = 4096        -- the long sum's length
+
+fn attn_raw(s : ℝ[batch: B, model: D], v : ℝ[batch: B, model: D], c : f64 = 84.0) -> ℝ[batch: B] =
+  let e = exp(s + real(c))
+  let p = e / sum(axis model, e)
+  sum(axis model, p * v)
+
+fn attn_softmax(s : ℝ[batch: B, model: D], v : ℝ[batch: B, model: D], c : f64 = 84.0) -> ℝ[batch: B] =
+  sum(axis model, softmax(axis model, s + real(c)) * v)
+
+fn std_two_pass(x : ℝ[batch: B, model: D], c : f64 = 1000.0) -> ℝ[batch: B] =
+  let z = x + real(c)
+  let μ = mean(axis model, z)
+  sqrt(mean(axis model, (z - μ)^2))
+
+fn std_one_pass(x : ℝ[batch: B, model: D], c : f64 = 1000.0) -> ℝ[batch: B] =
+  let z  = x + real(c)
+  let μ  = mean(axis model, z)
+  let m2 = mean(axis model, z^2)
+  sqrt(m2 - μ^2)
+
+fn clock(x : ℝ[batch: B, step: K], h : f64 = 0.1) -> ℝ[batch: B] =
+  sum(axis step, x * real(0.0) + real(h))
+
+fn noisy(x : ℝ[batch: B, step: K], h : f64 = 0.1) -> ℝ[batch: B] =
+  sum(axis step, x * real(0.01) + real(h))

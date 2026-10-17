@@ -1,0 +1,20 @@
+-- gappa_dot.psk — one contraction for `make gappa-dot` (D131): the product
+-- of an [M, K] and a [K, N] matrix, the shape that dominates a network, beside
+-- the layer norm D108 proved.
+--
+-- The operands go through a site each, `+ 0`, which is exact in every type,
+-- so that the envelope records their magnitudes: an entry's arguments are not
+-- sites of the envelope (D108), and the magnitudes are the hypotheses Gappa
+-- is given. The `dot` nest reads the two sites; its kernel is the one the
+-- bare product `a · b` launches (experiments/gappa_dot.sh compares the dumps).
+-- The width is a constant of the file, `--const K=8, 16, …, 128`.
+dim M
+dim N
+const K : nat = 8
+
+fn dot(a : ℝ[M, K], b : ℝ[K, N]) -> ℝ[M, N] =
+  let x = a + real(0.0)
+  let w = b + real(0.0)
+  x · w
+
+fn bare(a : ℝ[M, K], b : ℝ[K, N]) -> ℝ[M, N] = a · b

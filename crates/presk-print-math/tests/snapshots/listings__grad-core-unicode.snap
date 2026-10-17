@@ -1,0 +1,110 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "core_listing(\"tutorial/04_grad.psk\", Format::Unicode)"
+---
+-- presk dump --stage core-after-ad --format unicode: 04_grad.psk, PSK-Core after differentiation,
+-- one equation per binding, in the notation of the language reference's chapter 3
+
+Linear.apply, of θ : params Linear{In, Out},  x : ℝ[…, In]; dimensions In,  Out
+    w = θ.w
+    %3 = dot x, w
+    b = θ.b
+    %5 = %3 + b
+    ⟦Linear.apply⟧(θ, x) = %5
+
+loss, of θ : params Linear{D, 1},  x : ℝ[batch: B, D],  y : ℝ[batch: B, 1]; dimensions D,  B
+    ŷ = ⟦Linear.apply{In = D, Out = 1}⟧(θ, x)
+    %4 = ŷ − y
+    %5 = %4²
+    %6 = mean %5
+    ⟦loss⟧(θ, x, y) = %6
+
+loss_grad, of θ : params Linear{D, 1},  x : ℝ[batch: B, D],  y : ℝ[batch: B, 1]; dimensions D,  B
+    %3 = v ↦ ⟦loss_grad.lambda0⟧(x, y, v)
+    %4 = v ↦ ⟦loss_grad.lambda0.grad⟧(x, y, v)
+    %5 = %4(θ)
+    ⟦loss_grad⟧(θ, x, y) = %5
+
+Linear.init, of key : key; dimensions In,  Out, uses Rand
+    %1 = split_key 2 key
+    %2 = %1.0
+    %3 = %1.1
+    w = xavier_uniform %2
+    b = zeros
+    %6 = {w = w, b = b}
+    ⟦Linear.init⟧(key) = %6
+
+loss_grad.lambda0, of x : ℝ[batch: B, D],  y : ℝ[batch: B, 1],  θ : params Linear{D, 1}; dimensions D,  B
+    %3 = ⟦loss{D = D, B = B}⟧(θ, x, y)
+    ⟦loss_grad.lambda0⟧(x, y, θ) = %3
+
+loss_grad.lambda0.vjp, of x : ℝ[batch: B, D],  y : ℝ[batch: B, 1],  θ : params Linear{D, 1},  ct : ℝ[]; dimensions D,  B  -- generated (vjp) from loss_grad.lambda0
+    %4 = ⟦loss_grad.lambda0.fwd{D = D, B = B}⟧(x, y, θ)
+    %5 = %4.0
+    %6 = ⟦loss_grad.lambda0.bwd{D = D, B = B}⟧(x, θ, %5, ct)
+    ⟦loss_grad.lambda0.vjp⟧(x, y, θ, ct) = %6
+
+loss.vjp, of θ : params Linear{D, 1},  x : ℝ[batch: B, D],  y : ℝ[batch: B, 1],  ct : ℝ[]; dimensions D,  B  -- generated (vjp) from loss
+    %4 = ⟦loss.fwd{D = D, B = B}⟧(θ, x, y)
+    %5 = %4.0
+    %6 = ⟦loss.bwd{D = D, B = B}⟧(θ, x, %5, ct)
+    ⟦loss.vjp⟧(θ, x, y, ct) = %6
+
+Linear.apply.vjp, of θ : params Linear{In, Out},  x : ℝ[…, In],  ct : ℝ[…, Out]; dimensions In,  Out  -- generated (vjp) from Linear.apply
+    %3 = ⟦Linear.apply.bwd{In = In, Out = Out}⟧(θ, x, ct)
+    ⟦Linear.apply.vjp⟧(θ, x, ct) = %3
+
+loss_grad.lambda0.grad, of x : ℝ[batch: B, D],  y : ℝ[batch: B, 1],  θ : params Linear{D, 1}; dimensions D,  B  -- generated (grad) from loss_grad.lambda0
+    %3 = 1                                                     -- the cotangent 1
+    %4 = %3                                                    -- the cotangent 1
+    %5 = ⟦loss_grad.lambda0.vjp{D = D, B = B}⟧(x, y, θ, %4)
+    %6 = %5.0
+    ⟦loss_grad.lambda0.grad⟧(x, y, θ) = %6
+
+Linear.apply.bwd, of θ : params Linear{In, Out},  x : ℝ[…, In],  ct : ℝ[…, Out]; dimensions In,  Out  -- generated (bwd) from Linear.apply
+    b = θ.b                               -- primal b, kept
+    %8 = sum_to ct, b                     -- adjoint of %5 (add)
+    %9 = zeros_like θ                     -- adjoint of b (field)
+    %10 = set_field b %9, %8              -- adjoint of b (field)
+    %12 = dot_vjp_r x, ct                 -- adjoint of %3 (dot)
+    %13 = zeros_like θ                    -- adjoint of w (field)
+    %14 = set_field w %13, %12            -- adjoint of w (field)
+    %15 = %10 + %14                       -- accumulates the adjoint of a parameter of Linear.apply
+    %16 = (%15)
+    ⟦Linear.apply.bwd⟧(θ, x, ct) = %16
+
+loss.bwd, of θ : params Linear{D, 1},  x : ℝ[batch: B, D],  residuals : (ℝ[batch: B, 1], ℝ[batch: B, 1]),  ct : ℝ[]; dimensions D,  B  -- generated (bwd) from loss
+    %5 = residuals.0                                        -- primal %4, kept
+    %6 = residuals.1                                        -- primal %5, kept
+    %8 = mean_vjp ct, %6                                    -- adjoint of %6 (mean)
+    %9 = 2                                                  -- adjoint of %5 (pow)
+    %10 = %9                                                -- adjoint of %5 (pow)
+    %11 = %5¹                                               -- adjoint of %5 (pow)
+    %12 = %10 × %11                                         -- adjoint of %5 (pow)
+    %13 = %8 × %12                                          -- adjoint of %5 (pow)
+    %17 = ⟦Linear.apply.bwd{In = D, Out = 1}⟧(θ, x, %13)    -- adjoint of ŷ (call)
+    %18 = %17.0                                             -- adjoint of ŷ (call)
+    %20 = (%18)
+    ⟦loss.bwd⟧(θ, x, residuals, ct) = %20
+
+loss.fwd, of θ : params Linear{D, 1},  x : ℝ[batch: B, D],  y : ℝ[batch: B, 1]; dimensions D,  B  -- generated (fwd) from loss
+    ŷ = ⟦Linear.apply{In = D, Out = 1}⟧(θ, x)    -- primal ŷ, stored
+    %4 = ŷ − y                                   -- primal %4, stored
+    %5 = %4²                                     -- primal %5, stored
+    %7 = (%4, %5)
+    %8 = (%7)
+    ⟦loss.fwd⟧(θ, x, y) = %8
+
+loss_grad.lambda0.bwd, of x : ℝ[batch: B, D],  θ : params Linear{D, 1},  residuals : ((ℝ[batch: B, 1], ℝ[batch: B, 1])),  ct : ℝ[]; dimensions D,  B  -- generated (bwd) from loss_grad.lambda0
+    %10 = residuals.0
+    %5 = ⟦loss.bwd{D = D, B = B}⟧(θ, x, %10, ct)         -- adjoint of %3 (call)
+    %6 = %5.0                                            -- adjoint of %3 (call)
+    %9 = (%6)
+    ⟦loss_grad.lambda0.bwd⟧(x, θ, residuals, ct) = %9
+
+loss_grad.lambda0.fwd, of x : ℝ[batch: B, D],  y : ℝ[batch: B, 1],  θ : params Linear{D, 1}; dimensions D,  B  -- generated (fwd) from loss_grad.lambda0
+    %4 = ⟦loss.fwd{D = D, B = B}⟧(θ, x, y)
+    %5 = %4.0
+    %6 = (%5)
+    %7 = (%6)
+    ⟦loss_grad.lambda0.fwd⟧(x, y, θ) = %7

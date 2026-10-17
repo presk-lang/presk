@@ -1577,3 +1577,76 @@ processes on the decoder block (D124); and what 0.11.0 did not have but
 `params`: the HTML rendering and the Explorer, Cranelift's IR, the LaTeX
 printer, the memory polynomial, the GPU and the output projection's
 tiling.
+
+## Since 0.12.0
+
+- **The user's decisions after the tag** (2026-10-15, D126): a
+  parameter's sensitivity stays its leaf's exact 1-norm, `--quant` stays a
+  pass on top of the float assignment, and every timing of record runs
+  each row in several processes, at least three.
+- **The paper's results runs at 0.12.0** (2026-10-15 to 2026-10-16):
+  - the course GPT's T2, T4 and J′ across five processes (D127);
+  - where the measurement refuses the solver's estimate (D128, `make
+    widening`), with a solver defect fixed: an entry whose first argument
+    is a tensor no longer has it offered as a parameter;
+  - the course GPT trained at its course constants through the margins
+    (D129);
+  - PyTorch's own gap to the exact model (D130, `make pytorch-gap`);
+  - a contraction's bound proved in Gappa (D131, `make gappa-dot`);
+  - the curve and the envelope's stability on the trained weights (D132).
+
+## Version 0.13.0
+
+Done 2026-10-17: plan `presk-specs/implementation/presk-plan-0.13.0.md`
+(D133–D139), its steps for review as presk !91 to !97 and presk-specs !84
+to !86; the user tags `v0.13.0`. The pipeline view: one compilation drawn as columns, one per
+stage, each element linked to the elements of the stage before it came
+from. A provenance table every stage appends to makes the links, with the
+IRs unchanged; `presk explain` writes it as JSON with the document's
+facts, and a page beside the document draws it. The math printer gives
+each element its mathematics, and the native column each kernel's machine
+code. Nothing a program computes changes, but for one refusal: `--opt`
+with a realization that types sites.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements P0–P5, the facts checked, the user's decisions; version `0.13.0-dev`; P0's baseline | done (2026-10-17, D133): the optimizer renumbers every `let`, so under `--opt` a realization that types sites types nothing it names (refused from step 1, the user's decision) and `presk explain`'s §12 rows were false; P0's baseline, X1's harness on `08d0cf3` (863 outputs) and `make quant-table`, `step-table` and `tutorial` |
+| 1 | The provenance table (`presk-provenance`), §12 over it, the orphan test; `--opt` with a realization that types sites refused | done (2026-10-17, D134): the crate, the links of the lowering, differentiation, the optimizer, fusion, the kernels and the C, put together by `presk_driver::provenance`; `presk explain` §12 over it (P1 holds on the five snapshot documents but for two rows, an epilogue's `add` that 0.12.0 said the host computes; a sixth, under `--opt`, follows the optimizer); P2 holds (`presk-explain/tests/provenance.rs`); `--opt` with a realization that types sites, or a plan's layouts, refused (`E7002`); egg's explanations change an extraction, so a rewritten `let` names its function's rules; P0 holds on X1's harness |
+| 2 | `presk explain --format json` | done (2026-10-17, D135): `explain.json` beside `explain.md`, layout `format` 1, its schema in the `explain` chapter: the document as values (the Markdown rendered again from it byte for byte), the provenance table's stages with each element's facts, the links, the sources; deterministic; 189 KB on the tutorial, 1.1 MB on the decoder block at the 7B width |
+| 3 | The page, v1 | done (2026-10-17, D136): `presk explain --format html` writes `explain.html`, the template `presk-explain/templates/explain.html` with the JSON inlined: columns in the compiler's order, arrows coloured by reason then by type, pass-throughs, folding by function with §12's sites open and lit, select, hover, a lesson in the address; P3 holds (the decoder block at the 7B width: a select at most 2.0 ms, a fold or an open at most 15.0 ms, headless Firefox); KaTeX deferred to step 4, where the first formula is drawn |
+| 4 | The math printer's two entries (`presk-print-math`, `presk dump --format latex\|unicode`), then the page's math layer | done (2026-10-17, D137): the notation first, the reference's chapter 3 gaining its section 3.10, "Programs as equations" (presk-specs !85, draft v0.18); the crate `presk-print-math`, one tree of formulas rendered in LaTeX (the reference's macros) or Unicode, and two entries: the typed program (a function as the equations of its `let`s, an operation by its name, `ein` as its sum at an index named by its axes, a stack as its recurrence, a rebound name primed) and PSK-Core after differentiation (one equation per binding, a generated binding with what the provenance table says it was made for); `presk dump --stage elab\|core-after-ad --format latex\|unicode`, `--module`, `--function`, `--standalone`; the 56 programs of the repository that type print with no gap; `make math-check` compiles 14 standalone documents; the page's math layer: a formula on every elaborated function and expression, every `let` of PSK-Core and after, each precision site's term of the estimate, each contraction nest's sum and order, a derivative's rule (table `core-adjoint`) and a rewrite's identity on the links; KaTeX 0.19.0 inlined; P3 holds with the formulas on (the decoder block: first draw 19 ms, a select at most 7.0 ms, a fold or an open at most 45.0 ms); P5 holds, the user having checked the listing (`docs/printer-p5-2026-10-17/listing.pdf`, 2026-10-17); P0 holds on X1's harness |
+| 5 | The native column | done (2026-10-17, D138): `presk_cranelift::machine_code` compiles each kernel as `presk run --backend native` does, each statement's instructions carrying its line of the kernel's text as a Cranelift `SourceLoc` (the header the prologue, the closing brace the return), and keeps the bytes, each line's ranges and Cranelift's text of the instructions (`set_disasm`, question 9); a byte Cranelift gives no line (the register allocator's moves, a branch at a block's edge) takes the line before it, marked; `presk explain --format json\|html` with the native target writes them (`native k<j>`, linked to its kernel by `code`), and the page's last column shows them; P4 holds on the 1 164 kernels of the test set in three types and two plans (197 252 bytes, 88 % with Cranelift's own line; the decoder block's, 65 %), and the lines change no byte; P3 holds with the column (the decoder block: a select at most 7.0 ms, a fold or an open at most 44.0 ms); P0 holds on X1's harness |
+| 6 | The checks of record, the documents, version `0.13.0` | done (2026-10-17, D139): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` (the ignored tests included) pass, `cargo doc -p presk-manual` has no warning; P0: X1's 863 outputs against `08d0cf3` differ in 19 files, by their version and commit lines alone, `make quant-table` and `step-table` byte for byte, `make tutorial` but for its measurements (times, the autotuned layouts' measured winners, `u`, RA4's percentages) and cargo's version line; `presk --help` unchanged but for the version; the manual (index, tutorial, cli, language, explain, native, dependencies, install, status), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.18 (chapter 3's section 3.10, its Status paragraphs at 0.13.0), the report (the foreword, chapter 8's section on the pipeline view, the roadmap, the history), the slides, the summary and a status note (`docs/status-2026-10-17.md`); the poster at 0.13.0 |
+| 7 | The merge requests | done (2026-10-17): one merge request per step, stacked, the write-up as its description; the paper session told at each |
+
+### What 0.13.0 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| P0 | Nothing else moves: X1's harness, the test set on the three executors in three types, the goldens, `check-examples`, `coverage`, `plan-check`, `c-conformance`, `quant-table`, `step-table`, `make tutorial` but for its times, and the five snapshot documents' Markdown, byte for byte against `08d0cf3`, but for `presk explain`'s new files, §12 under `--opt` and the refusal | every byte | **holds**: X1 at every step against `08d0cf3` and against the step before, by the version and commit lines alone; `quant-table`, `step-table` byte for byte; the tutorial but for its measurements; the snapshot documents but for their version line, the two corrected §12 rows and the sixth under `--opt` (D133–D139) |
+| P1 | Every row of §12 that 0.12.0 printed on the five snapshot documents is a path in the table, and §12 over it prints the same bytes; a sixth snapshot under `--opt` follows the optimizer's links | holds | **holds** (D134): two rows of §12 changed, an epilogue's `add` that 0.12.0 said the host computes, now its product's kernel; the sixth snapshot, under `--opt`, follows the optimizer |
+| P2 | On the test set, the entries `run-examples` and `plan-check` run, the coverage models and the course GPT's `loss`: every element of every stage but the source has a parent, every link a `how` | holds | **holds** (D134): on 28 tables and the test set, every element but the source's made by a link, every link's elements in the table, none backwards |
+| P3 | The page draws the Llama 2 decoder block at the 7B width at the module level; a select or a collapse under 200 ms | holds | **holds** (D136–D138): on the decoder block, 473 elements, the first drawing 19 ms, a select at most 7.0 ms, a fold or an open at most 44.0 ms, the formulas and the native column on |
+| P4 | Every byte of every kernel's machine code lies in one range mapped to one line of the kernel, no two overlapping | holds | **holds** (D138): 1 164 kernels, 197 252 bytes; 88 % with Cranelift's own line, the rest given the line before them and marked (the decoder block's 65 %); the lines change no byte |
+| P5 | The printer prints chapter 3's equations on the tutorial and the course GPT (checked by the user), and the adjoints of `grad` as chapter 3's rules write them | holds | **holds** (D137): the user checked the listing (`docs/printer-p5-2026-10-17/listing.pdf`) on 2026-10-17, "this is chapter's mathematics" |
+
+## What 0.13.0 has, and what it does not
+
+**Has.** The provenance table (`presk-provenance`): every element of
+every stage of one compilation, from a span of the source to the machine
+code, linked to what it was made from and how, filled by the stages as
+they run, the IRs unchanged. `presk explain` reads its traces off it,
+writes it with the document's facts as JSON, and draws it as the pipeline
+view: the stages as columns, every element linked to its origins, each
+one's equations in the reference's notation, each kernel's machine code
+by line. The printer of the denotation (`presk dump --format
+latex|unicode`). `--opt` with a realization that types sites is refused.
+
+**Does not have.** A written form of a nest's loops (tiles, k-blocks,
+loop order) as nested sums, which the reference does not state; the
+optimizer's rule per rewritten binding, egg recording it only by changing
+an extraction; Cranelift's IR (CLIF) on the page; the precision stages on
+the optimized program, so `--opt` and a site-typed realization stay
+exclusive; and what 0.12.0 did not have but the HTML rendering and the
+LaTeX printer: the Explorer in the browser, the memory polynomial, the GPU
+and the output projection's tiling.

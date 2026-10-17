@@ -1,0 +1,54 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(\"tutorial/07_train.psk\", Format::Latex)"
+---
+% presk dump --stage elab --format latex: 07_train.psk and its imports, as the equations
+% of the language reference's chapter 3. A fragment: it compiles with the reference's
+% preamble, whose macros \code and \den it uses (--standalone: a document).
+
+\subsection*{\texttt{01\_linear.psk}}
+
+\paragraph{Module $\code{Linear}\{\mathit{In}, \mathit{Out}\}$.} Its parameters and modules: $w : \mathbb{R}[\mathit{In}, \mathit{Out}]$, $b : \mathbb{R}[\mathit{Out}]$.
+
+\noindent $\code{Linear.apply}$, of $x : \mathbb{R}[\ldots, \mathit{In}]$:
+\begin{alignat*}{2}
+\den{\code{Linear.apply}}(\theta, x) &= (\code{dot}\ x, w) + b
+\end{alignat*}
+
+\subsection*{\texttt{02\_norm.psk}}
+
+\paragraph{Module $\code{RMSNorm}\{D\}$.} Its parameters and modules: $\gamma : \mathbb{R}[D]$.
+
+\noindent $\code{RMSNorm.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$, $\mathit{eps} : \code{f64} = 10^{-6}$:
+\begin{alignat*}{2}
+\mathit{ms} &= \code{mean axis}\ \code{model}\ x^{2} \\
+\den{\code{RMSNorm.apply}}(\theta, x, \mathit{eps}) &= \frac{x}{\sqrt{\mathit{ms} + \mathit{eps}}} \times \gamma
+\end{alignat*}
+
+\subsection*{\texttt{06\_tower.psk}}
+Constants $D = 4$, $L = 3$.
+
+\paragraph{Module $\code{Block}$.} Its parameters and modules: $\mathit{norm} : \code{norm.RMSNorm}\{D\}$, $\mathit{proj} : \code{lin.Linear}\{D, D\}$.
+
+\noindent $\code{Block.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$:
+\begin{alignat*}{2}
+\den{\code{Block.apply}}(\theta, x) &= x + \den{\code{proj.apply}}(\code{gelu}\ \den{\code{norm.apply}}(x))
+\end{alignat*}
+
+\paragraph{Module $\code{Tower}$.} Its parameters and modules: $\mathit{blocks} : \code{stack}\{L\}(\code{Block})$, $\mathit{final} : \code{norm.RMSNorm}\{D\}$.
+
+\noindent $\code{Tower.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$:
+\begin{alignat*}{2}
+y_{0} &= x \\
+y_{\ell + 1} &= \den{\code{Block.apply}}(\theta.\mathit{blocks}[\ell], y_{\ell}) &\qquad& 0 \le \ell < L \\
+\den{\code{Tower.apply}}(\theta, x) &= \den{\code{final.apply}}(y_{L})
+\end{alignat*}
+
+\subsection*{\texttt{07\_train.psk}}
+Dimensions $B$.
+
+\paragraph{Function $\code{loss}$.} Of $\theta : \code{params}\ \code{t.Tower}$, $\mathit{batch} : (\mathbb{R}[\code{batch}{:}\,B, \code{model}{:}\,4], \mathbb{R}[\code{batch}{:}\,B, \code{model}{:}\,4])$:
+\begin{alignat*}{2}
+(x, y) &= \mathit{batch} \\
+\den{\code{loss}}(\theta, \mathit{batch}) &= \code{mean}\ (\den{\code{t.Tower.apply}}(\theta, x) - y)^{2}
+\end{alignat*}

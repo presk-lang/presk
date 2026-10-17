@@ -95,6 +95,12 @@ pub struct Options {
     /// three largest shares of the estimate and the three slowest predicted
     /// nests.
     pub sites: Vec<String>,
+    /// `--format json`: `explain.json` beside `explain.md`, the document's
+    /// facts and the provenance table as values (plan 0.13.0 step 2, D135).
+    pub json: bool,
+    /// `--format html`: `explain.html` too, the pipeline view, the JSON
+    /// inlined (plan 0.13.0 step 3, D136); it implies `json`.
+    pub html: bool,
     pub out: PathBuf,
 }
 
@@ -136,6 +142,13 @@ pub fn explain(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Exp
         report.line("presk explain: --opt with a layout plan: `presk plan` plans the program the optimizer has not rewritten, whose nests the rewritten one may not have; give one or the other");
         return Err(Stop(2));
     }
+    // A solve types the sites of the program before the optimizer, which
+    // writes each function back with new numbers (D133's finding 1; refused,
+    // the user's decision of 2026-10-17, D134).
+    if o.opt && o.budget.is_some() {
+        report.line("presk explain: --opt with --budget: the solver types the sites of the program before the optimizer, which writes each function it optimizes back with new numbers, so the kernels would run none of its types (D133); give one or the other");
+        return Err(Stop(2));
+    }
     for d in [o.out.clone(), o.out.join("artifacts")] {
         if let Err(e) = std::fs::create_dir_all(&d) {
             report.line(&format!("presk explain: cannot create {}: {e}", d.display()));
@@ -143,7 +156,7 @@ pub fn explain(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Exp
         }
     }
     clear(o);
-    let (document, artifacts) = build::build(o, report)?;
+    let (document, artifacts, json) = build::build(o, report)?;
     let (text, listings) = doc::markdown(&document);
     let dir = o.out.join("listings");
     // A listing of an earlier run that this one does not write would be
@@ -165,10 +178,106 @@ pub fn explain(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Exp
     }
     let path = o.out.join("explain.md");
     write(&path, text.as_bytes(), report)?;
+    let json_path = o.out.join("explain.json");
+    let html_path = o.out.join("explain.html");
+    match &json {
+        Some(v) => write(&json_path, (serde_json::to_string_pretty(v).unwrap_or_default() + "\n").as_bytes(), report)?,
+        // A JSON of an earlier run would be read as this run's.
+        None => {
+            let _ = std::fs::remove_file(&json_path);
+        }
+    }
+    match (&json, o.html) {
+        (Some(v), true) => write(&html_path, page(v).as_bytes(), report)?,
+        _ => {
+            let _ = std::fs::remove_file(&html_path);
+        }
+    }
     let sums = checksums(&o.out.join("artifacts"));
     write(&o.out.join("artifacts").join("SHA256SUMS"), sums.as_bytes(), report)?;
     Ok(Explained { document: path, sections: document.sections.len(), listings: listings.len(), artifacts })
 }
+
+/// The provenance table of the compilation `o` names (plan 0.13.0 step 1,
+/// D134): every stage run as for the document, whose artifacts are written
+/// under `o.out` as the document's are; the document itself is not.
+pub fn provenance(o: &Options, report: &mut dyn Report) -> presk_driver::Result<presk_provenance::Table> {
+    if let Err(e) = std::fs::create_dir_all(o.out.join("artifacts")) {
+        report.line(&format!("presk explain: cannot create {}: {e}", o.out.display()));
+        return Err(Stop(2));
+    }
+    build::table(o, report)
+}
+
+/// The pipeline view's template (plan 0.13.0 step 3, D136).
+const TEMPLATE: &str = include_str!("../templates/explain.html");
+
+/// KaTeX 0.19.0, vendored (`templates/katex/README.md`): the page's
+/// formulas (plan 0.13.0 step 4c, D137).
+const KATEX_JS: &str = include_str!("../templates/katex/katex.min.js");
+const KATEX_CSS: &str = include_str!("../templates/katex/katex.min.css");
+/// The fonts the stylesheet names, by name.
+const KATEX_FONTS: [(&str, &[u8]); 20] = [
+    ("KaTeX_AMS-Regular", include_bytes!("../templates/katex/fonts/KaTeX_AMS-Regular.woff2")),
+    ("KaTeX_Caligraphic-Bold", include_bytes!("../templates/katex/fonts/KaTeX_Caligraphic-Bold.woff2")),
+    ("KaTeX_Caligraphic-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Caligraphic-Regular.woff2")),
+    ("KaTeX_Fraktur-Bold", include_bytes!("../templates/katex/fonts/KaTeX_Fraktur-Bold.woff2")),
+    ("KaTeX_Fraktur-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Fraktur-Regular.woff2")),
+    ("KaTeX_Main-Bold", include_bytes!("../templates/katex/fonts/KaTeX_Main-Bold.woff2")),
+    ("KaTeX_Main-BoldItalic", include_bytes!("../templates/katex/fonts/KaTeX_Main-BoldItalic.woff2")),
+    ("KaTeX_Main-Italic", include_bytes!("../templates/katex/fonts/KaTeX_Main-Italic.woff2")),
+    ("KaTeX_Main-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Main-Regular.woff2")),
+    ("KaTeX_Math-BoldItalic", include_bytes!("../templates/katex/fonts/KaTeX_Math-BoldItalic.woff2")),
+    ("KaTeX_Math-Italic", include_bytes!("../templates/katex/fonts/KaTeX_Math-Italic.woff2")),
+    ("KaTeX_SansSerif-Bold", include_bytes!("../templates/katex/fonts/KaTeX_SansSerif-Bold.woff2")),
+    ("KaTeX_SansSerif-Italic", include_bytes!("../templates/katex/fonts/KaTeX_SansSerif-Italic.woff2")),
+    ("KaTeX_SansSerif-Regular", include_bytes!("../templates/katex/fonts/KaTeX_SansSerif-Regular.woff2")),
+    ("KaTeX_Script-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Script-Regular.woff2")),
+    ("KaTeX_Size1-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Size1-Regular.woff2")),
+    ("KaTeX_Size2-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Size2-Regular.woff2")),
+    ("KaTeX_Size3-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Size3-Regular.woff2")),
+    ("KaTeX_Size4-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Size4-Regular.woff2")),
+    ("KaTeX_Typewriter-Regular", include_bytes!("../templates/katex/fonts/KaTeX_Typewriter-Regular.woff2")),
+];
+
+/// Base64, the standard alphabet with its padding (RFC 4648).
+fn base64(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for k in 0..4 {
+            if k <= c.len() {
+                out.push(A[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// KaTeX's stylesheet with its fonts inlined: each `url(fonts/…woff2)` a
+/// `data:` URL, the `.woff` and `.ttf` fallbacks dropped, so that the page
+/// fetches nothing.
+fn katex_css() -> String {
+    let mut css = KATEX_CSS.to_string();
+    for (name, bytes) in KATEX_FONTS {
+        css = css.replace(&format!(",url(fonts/{name}.woff) format(\"woff\"),url(fonts/{name}.ttf) format(\"truetype\")"), "");
+        css = css.replace(&format!("url(fonts/{name}.woff2)"), &format!("url(data:font/woff2;base64,{})", base64(bytes)));
+    }
+    css
+}
+
+/// The pipeline view of a document's JSON: the template with KaTeX and the
+/// JSON inlined. A `</` in a string would end the data element early, so it
+/// is written `<\/`, and a `<!--` would open a comment, so it is written
+/// `\u003c!--`: JSON reads both as the same string.
+pub fn page(json: &serde_json::Value) -> String {
+    let data = serde_json::to_string(json).unwrap_or_else(|_| "null".into()).replace("</", "<\\/").replace("<!--", "\\u003c!--");
+    TEMPLATE.replacen("/*KATEX_CSS*/", &katex_css(), 1).replacen("/*KATEX_JS*/", KATEX_JS, 1).replacen("/*PRESK_DATA*/null", &data, 1)
+}
+
 
 /// Removes what an earlier run wrote under `artifacts/` and this one may
 /// not write again, but for the files this run is given.
@@ -236,4 +345,25 @@ pub fn shown(path: &Path) -> String {
         return format!("~/{}", rel.display());
     }
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_is_rfc_4648() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn the_page_fetches_no_font() {
+        let css = katex_css();
+        assert!(!css.contains("url(fonts/"), "a font left to fetch");
+        assert_eq!(css.matches("data:font/woff2;base64,").count(), KATEX_FONTS.len());
+    }
 }

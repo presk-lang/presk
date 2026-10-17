@@ -451,3 +451,34 @@ which Cranelift's allocator would then not have to discover; a backend
 whose code generator schedules and allocates as GCC's does (LLVM, at the
 seam the C export already uses); or the C export as the fast path, its
 bits the native backend's (C1).
+
+## A launch inside a call slower than alone (2026-10-15, D107, D124, D126)
+
+The Llama 2 decoder block's forward pass at the 7B width, all-`f32` under
+the frozen profile's plan, at batch 1:
+- *D107:* its kernels took 3 824 ms of a 3 827 ms call, where the same
+  kernels timed one by one added up to 2 470 ms.
+- *D124 (V5):* in 7 of 8 processes the call took 3.7 to 3.9 s, and in the
+  eighth 2 439 ms. 0.12.0's solved realization, under the same plan but
+  for one scalar nest, took 2.4 to 2.9 s in all of its 8.
+
+So a call runs in one of two modes, chosen per process and kept for its
+life. In the fast mode the call is near its kernels' one-by-one sum.
+- *Not the host:* it is under 1 % of the call in both.
+- *Not page faults:* all-`f32` has none a call.
+- *A guess, untested:* where the allocator places the large buffers. That
+  could make two launches' inputs and outputs collide in the caches, the
+  output projection's especially, two thirds of the kernels' time.
+
+**What would tell it.** The host profile times phases, not launches. A
+per-launch timer inside a call (`presk bench --host-profile` gaining the
+kernels' times as `--calibrate` takes them, but in the call's order and
+memory), in the fast and the slow mode of the same plan, would name the
+kernels that slow down. Beside it, the buffers' addresses modulo the page
+and the cache sizes. If it is placement, an allocator that aligns the
+large buffers apart, or a plan that states it, would put every process in
+the fast mode, about 1.5× on this block.
+
+**Until then** (D126): every timing of record runs each row in several
+processes and reports the median across them and the fastest. A single
+process, as D100's protocol ran it, may land in either mode.

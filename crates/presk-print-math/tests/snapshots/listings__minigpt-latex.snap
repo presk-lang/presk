@@ -1,0 +1,99 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(file, Format::Latex)"
+---
+% presk dump --stage elab --format latex: minigpt.psk and its imports, as the equations
+% of the language reference's chapter 3. A fragment: it compiles with the reference's
+% preamble, whose macros \code and \den it uses (--standalone: a document).
+
+\subsection*{\texttt{layernorm.psk}}
+
+\paragraph{Module $\code{LayerNorm}\{D\}$.} Its parameters and modules: $\gamma : \mathbb{R}[D]$, $\beta : \mathbb{R}[D]$.
+
+\noindent $\code{LayerNorm.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$, $\mathit{eps} : \code{f64} = 10^{-5}$:
+\begin{alignat*}{2}
+\mu &= \code{mean axis}\ \code{model}\ x \\
+\sigma_{2} &= \code{mean axis}\ \code{model}\ (x - \mu)^{2} \\
+\hat{x} &= \frac{x - \mu}{\sqrt{\sigma_{2} + \mathit{eps}}} \\
+\den{\code{LayerNorm.apply}}(\theta, x, \mathit{eps}) &= \hat{x} \times \gamma + \beta
+\end{alignat*}
+
+\paragraph{Module $\code{RMSNorm}\{D\}$.} Its parameters and modules: $\gamma : \mathbb{R}[D]$.
+
+\noindent $\code{RMSNorm.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$, $\mathit{eps} : \code{f64} = 10^{-6}$:
+\begin{alignat*}{2}
+\mathit{ms} &= \code{mean axis}\ \code{model}\ x^{2} \\
+\den{\code{RMSNorm.apply}}(\theta, x, \mathit{eps}) &= \frac{x}{\sqrt{\mathit{ms} + \mathit{eps}}} \times \gamma
+\end{alignat*}
+
+\subsection*{\texttt{mlp.psk}}
+
+\paragraph{Module $\code{Linear}\{\mathit{In}, \mathit{Out}\}$.} Its parameters and modules: $w : \mathbb{R}[\mathit{In}, \mathit{Out}]$, $b : \mathbb{R}[\mathit{Out}]$.
+
+\noindent $\code{Linear.apply}$, of $x : \mathbb{R}[\ldots, \mathit{In}]$:
+\begin{alignat*}{2}
+\den{\code{Linear.apply}}(\theta, x) &= (\code{dot}\ x, w) + b
+\end{alignat*}
+
+\paragraph{Module $\code{MLP}\{D, \mathit{hidden}\}$.} Its parameters and modules: $l_{1} : \code{Linear}\{D, \mathit{hidden}\}$, $l_{2} : \code{Linear}\{\mathit{hidden}, D\}$.
+
+\noindent $\code{MLP.apply}$, of $x : \mathbb{R}[\ldots, D]$:
+\begin{alignat*}{2}
+\den{\code{MLP.apply}}(\theta, x) &= \den{\code{l2.apply}}(\code{gelu}\ \den{\code{l1.apply}}(x))
+\end{alignat*}
+
+\paragraph{Function $\code{mse}$.} Of $\mathit{net} : \code{MLP}\{D, 4 \cdot D\}$, $\theta : \code{params}\ \code{net}$, $x : \mathbb{R}[\code{batch}{:}\,B, \code{model}{:}\,D]$, $y : \mathbb{R}[\code{batch}{:}\,B, \code{model}{:}\,D]$:
+\begin{alignat*}{2}
+\hat{y} &= \den{\code{net.apply}}(\theta, x) \\
+\den{\code{mse}}(\theta, x, y) &= \code{mean}\ (\hat{y} - y)^{2}
+\end{alignat*}
+
+\paragraph{Function $\code{mse\_grad}$.} Of $\mathit{net} : \code{MLP}\{D, 4 \cdot D\}$, $\theta : \code{params}\ \code{net}$, $x : \mathbb{R}[\code{batch}{:}\,B, \code{model}{:}\,D]$, $y : \mathbb{R}[\code{batch}{:}\,B, \code{model}{:}\,D]$:
+\begin{alignat*}{2}
+\den{\code{mse\_grad}}(\theta, x, y) &= \nabla (\theta \mapsto \den{\code{mse}}(\theta, x, y))(\theta)
+\end{alignat*}
+
+\subsection*{\texttt{minigpt.psk}}
+Constants $V = 50257$, $D = 768$, $H = 12$, $\mathit{HD} = \frac{D}{H} = 64$, $L = 12$; dimensions $B$, $T \le 1024$; types $\code{Tokens} = \code{idx}[V][\code{batch}{:}\,B, \code{seq}{:}\,T]$, $\code{Acts} = \mathbb{R}[\code{batch}{:}\,B, \code{seq}{:}\,T, \code{model}{:}\,D]$, $\code{Mask} = \code{bool}[\code{seq}{:}\,T, \code{seq2}{:}\,T]$; asserted $D \bmod H = 0$.
+
+\paragraph{Module $\code{SelfAttention}$.} Its parameters and modules: $\mathit{wq} : \code{ff.Linear}\{D, D\}$, $\mathit{wk} : \code{ff.Linear}\{D, D\}$, $\mathit{wv} : \code{ff.Linear}\{D, D\}$, $\mathit{wo} : \code{ff.Linear}\{D, D\}$.
+
+\noindent $\code{SelfAttention.apply}$, of $x : \code{Acts}$, $\mathit{mask} : \code{Mask}$:
+\begin{alignat*}{2}
+q &= \code{split\_heads}\ H\code{x}\mathit{HD}\ \den{\code{wq.apply}}(x) \\
+k &= \code{split\_heads}\ H\code{x}\mathit{HD}\ \den{\code{wk.apply}}(x) \\
+v &= \code{split\_heads}\ H\code{x}\mathit{HD}\ \den{\code{wv.apply}}(x) \\
+s[\code{batch}, \code{heads}, \code{seq}, \code{seq2}] &= \frac{\sum_{\code{hd}} q[\code{batch}, \code{heads}, \code{seq}, \code{hd}]\, k[\code{batch}, \code{heads}, \code{seq2}, \code{hd}]}{\sqrt{\mathit{HD}}} \\
+a &= \code{softmax axis}\ \code{seq2}\ s, \mathit{mask} \\
+o[\code{batch}, \code{heads}, \code{seq}, \code{hd}] &= \sum_{\code{seq2}} a[\code{batch}, \code{heads}, \code{seq}, \code{seq2}]\, v[\code{batch}, \code{heads}, \code{seq2}, \code{hd}] \\
+\den{\code{SelfAttention.apply}}(\theta, x, \mathit{mask}) &= \den{\code{wo.apply}}(\code{merge\_heads}\ H\code{x}\mathit{HD}\ o)
+\end{alignat*}
+
+\paragraph{Module $\code{Block}$.} Its parameters and modules: $\mathit{attn} : \code{SelfAttention}$, $\mathit{mlp} : \code{ff.MLP}\{D, 4 \cdot D\}$, $\mathit{ln}_{1} : \code{norm.LayerNorm}\{D\}$, $\mathit{ln}_{2} : \code{norm.LayerNorm}\{D\}$.
+
+\noindent $\code{Block.apply}$, of $x : \code{Acts}$, $\mathit{mask} : \code{Mask}$:
+\begin{alignat*}{2}
+x' &= x + \den{\code{attn.apply}}(\den{\code{ln1.apply}}(x), \mathit{mask}) \\
+\den{\code{Block.apply}}(\theta, x, \mathit{mask}) &= x' + \den{\code{mlp.apply}}(\den{\code{ln2.apply}}(x'))
+\end{alignat*}
+
+\paragraph{Module $\code{Embedding}$.} Its parameters and modules: $\mathit{tok} : \code{param}\ \mathbb{R}[V, D]$, $\mathit{pos} : \code{param}\ \mathbb{R}[T, D]$.
+
+\noindent $\code{Embedding.apply}$, of $\mathit{ids} : \code{Tokens}$:
+\begin{alignat*}{2}
+e &= \code{embed}\ \mathit{tok}, \mathit{ids} \\
+p &= \code{embed}\ \mathit{pos}, (\code{positions}\ \code{seq}{:}\,T) \\
+\den{\code{Embedding.apply}}(\theta, \mathit{ids}) &= e + p
+\end{alignat*}
+
+\paragraph{Module $\code{MiniGPT}$.} Its parameters and modules: $\mathit{emb} : \code{Embedding}$, $\mathit{blocks} : \code{stack}\{L\}(\code{Block})$, $\mathit{lnf} : \code{norm.LayerNorm}\{D\}$, $\mathit{head} : \code{param}\ \mathbb{R}[D, V]$.
+
+\noindent $\code{MiniGPT.apply}$, of $\mathit{ids} : \code{Tokens}$:
+\begin{alignat*}{2}
+\mathit{mask} &= \code{causal\_mask}\ \code{seq}{:}\,T \\
+h_{0} &= \den{\code{emb.apply}}(\mathit{ids}) \\
+y_{0} &= h_{0} \\
+y_{\ell + 1} &= \den{\code{Block.apply}}(\theta.\mathit{blocks}[\ell], y_{\ell}, \mathit{mask}) &\qquad& 0 \le \ell < L \\
+\mathit{hL} &= y_{L} \\
+\den{\code{MiniGPT.apply}}(\theta, \mathit{ids}) &= \code{dot}\ \den{\code{lnf.apply}}(\mathit{hL}), \mathit{head}
+\end{alignat*}

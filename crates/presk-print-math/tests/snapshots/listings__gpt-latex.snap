@@ -1,0 +1,88 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(\"corpus/nlp/05_gpt.psk\", Format::Latex)"
+---
+% presk dump --stage elab --format latex: 05_gpt.psk and its imports, as the equations
+% of the language reference's chapter 3. A fragment: it compiles with the reference's
+% preamble, whose macros \code and \den it uses (--standalone: a document).
+
+\subsection*{\texttt{05\_gpt.psk}}
+Constants $V = 92$, $D = 384$, $H = 6$, $\mathit{HD} = \frac{D}{H} = 64$, $L = 6$; dimensions $B$, $T \le 1024$; types $\code{Tokens} = \code{idx}[V][\code{batch}{:}\,B, \code{seq}{:}\,T]$, $\code{Acts} = \mathbb{R}[\code{batch}{:}\,B, \code{seq}{:}\,T, \code{model}{:}\,D]$, $\code{Mask} = \code{bool}[\code{seq}{:}\,T, \code{seq2}{:}\,T]$, $\code{Acc} = (\code{Acts}, \code{key})$; asserted $D \bmod H = 0$.
+
+\paragraph{Module $\code{Linear}\{\mathit{In}, \mathit{Out}\}$.} Its parameters and modules: $w : \mathbb{R}[\mathit{In}, \mathit{Out}]$, $b : \mathbb{R}[\mathit{Out}]$.
+
+\noindent $\code{Linear.apply}$, of $x : \mathbb{R}[\ldots, \mathit{In}]$:
+\begin{alignat*}{2}
+\den{\code{Linear.apply}}(\theta, x) &= (\code{dot}\ x, w) + b
+\end{alignat*}
+
+\paragraph{Module $\code{LayerNorm}\{\mathit{Dm}\}$.} Its parameters and modules: $\gamma : \mathbb{R}[\mathit{Dm}]$, $\beta : \mathbb{R}[\mathit{Dm}]$.
+
+\noindent $\code{LayerNorm.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,\mathit{Dm}]$:
+\begin{alignat*}{2}
+\mu &= \code{mean axis}\ \code{model}\ x \\
+\sigma_{2} &= \code{mean axis}\ \code{model}\ (x - \mu)^{2} \\
+\den{\code{LayerNorm.apply}}(\theta, x) &= \frac{x - \mu}{\sqrt{\sigma_{2} + 10^{-5}}} \times \gamma + \beta
+\end{alignat*}
+
+\paragraph{Module $\code{SelfAttention}$.} Its parameters and modules: $\mathit{wq} : \code{Linear}\{D, D\}$, $\mathit{wk} : \code{Linear}\{D, D\}$, $\mathit{wv} : \code{Linear}\{D, D\}$, $\mathit{wo} : \code{Linear}\{D, D\}$.
+
+\noindent $\code{SelfAttention.apply}$, of $x : \code{Acts}$, $\mathit{mask} : \code{Mask}$, $\mathit{kd} : \code{key}$, uses Rand:
+\begin{alignat*}{2}
+q &= \code{split\_heads}\ H\code{x}\mathit{HD}\ \den{\code{wq.apply}}(x) \\
+k &= \code{split\_heads}\ H\code{x}\mathit{HD}\ \den{\code{wk.apply}}(x) \\
+v &= \code{split\_heads}\ H\code{x}\mathit{HD}\ \den{\code{wv.apply}}(x) \\
+s[\code{batch}, \code{heads}, \code{seq}, \code{seq2}] &= \frac{\sum_{\code{hd}} q[\code{batch}, \code{heads}, \code{seq}, \code{hd}]\, k[\code{batch}, \code{heads}, \code{seq2}, \code{hd}]}{\sqrt{\mathit{HD}}} \\
+a &= \code{dropout}\ 0.2, \mathit{kd}, (\code{softmax axis}\ \code{seq2}\ s, \mathit{mask}) \\
+u[\code{batch}, \code{heads}, \code{seq}, \code{hd}] &= \sum_{\code{seq2}} a[\code{batch}, \code{heads}, \code{seq}, \code{seq2}]\, v[\code{batch}, \code{heads}, \code{seq2}, \code{hd}] \\
+\den{\code{SelfAttention.apply}}(\theta, x, \mathit{mask}, \mathit{kd}) &= \den{\code{wo.apply}}(\code{merge\_heads}\ H\code{x}\mathit{HD}\ u)
+\end{alignat*}
+
+\paragraph{Module $\code{FeedForward}$.} Its parameters and modules: $\mathit{up} : \code{Linear}\{D, 4 \cdot D\}$, $\mathit{down} : \code{Linear}\{4 \cdot D, D\}$.
+
+\noindent $\code{FeedForward.apply}$, of $x : \code{Acts}$:
+\begin{alignat*}{2}
+\den{\code{FeedForward.apply}}(\theta, x) &= \den{\code{down.apply}}(\code{gelu}\ \den{\code{up.apply}}(x))
+\end{alignat*}
+
+\paragraph{Module $\code{Block}$.} Its parameters and modules: $\mathit{attn} : \code{SelfAttention}$, $\mathit{ff} : \code{FeedForward}$, $\mathit{ln}_{1} : \code{LayerNorm}\{D\}$, $\mathit{ln}_{2} : \code{LayerNorm}\{D\}$.
+
+\noindent $\code{Block.apply}$, of $s : \code{Acc}$, $\mathit{mask} : \code{Mask}$, uses Rand:
+\begin{alignat*}{2}
+(x, k) &= s \\
+(\mathit{katt}, k_{1}) &= \code{split\_key}\ 2\ k \\
+(\mathit{kres}, k_{2}) &= \code{split\_key}\ 2\ k_{1} \\
+(\mathit{kff}, k_{3}) &= \code{split\_key}\ 2\ k_{2} \\
+h &= x + (\code{dropout}\ 0.2, \mathit{kres}, \den{\code{attn.apply}}(\den{\code{ln1.apply}}(x), \mathit{mask}, \mathit{katt})) \\
+\den{\code{Block.apply}}(\theta, s, \mathit{mask}) &= (h + (\code{dropout}\ 0.2, \mathit{kff}, \den{\code{ff.apply}}(\den{\code{ln2.apply}}(h))), k_{3})
+\end{alignat*}
+
+\paragraph{Module $\code{GPT}$.} Its parameters and modules: $\mathit{tok} : \mathbb{R}[\code{vocab}{:}\,V, \code{model}{:}\,D]$, $\mathit{pos} : \mathbb{R}[T, D]$, $\mathit{blocks} : \code{stack}\{L\}(\code{Block})$, $\mathit{lnf} : \code{LayerNorm}\{D\}$, $\mathit{head} : \mathbb{R}[D, V]$.
+
+\noindent $\code{GPT.apply}$, of $\mathit{ids} : \code{Tokens}$, $k : \code{key}$, uses Rand:
+\begin{alignat*}{2}
+\mathit{mask} &= \code{causal\_mask}\ \code{seq}{:}\,T \\
+h_{0} &= (\code{embed}\ \mathit{tok}, \mathit{ids}) + (\code{embed}\ \mathit{pos}, (\code{positions}\ \code{seq}{:}\,T)) \\
+(\mathit{ke}, \mathit{kb}) &= \code{split\_key}\ 2\ k \\
+y_{0} &= ((\code{dropout}\ 0.2, \mathit{ke}, h_{0}), \mathit{kb}) \\
+y_{\ell + 1} &= \den{\code{Block.apply}}(\theta.\mathit{blocks}[\ell], y_{\ell}, \mathit{mask}) &\qquad& 0 \le \ell < L \\
+(\mathit{hL}, \_) &= y_{L} \\
+\den{\code{GPT.apply}}(\theta, \mathit{ids}, k) &= \code{dot}\ \den{\code{lnf.apply}}(\mathit{hL}), \mathit{head}
+\end{alignat*}
+
+\paragraph{Function $\code{loss}$.} Of $\theta : \code{params}\ \code{GPT}$, $k : \code{key}$, $\mathit{batch} : (\code{Tokens}, \code{Tokens})$, uses Rand:
+\begin{alignat*}{2}
+(x, y) &= \mathit{batch} \\
+\den{\code{loss}}(\theta, k, \mathit{batch}) &= \code{mean}\ (\code{cross\_entropy}\ \den{\code{GPT.apply}}(\theta, x, k), y)
+\end{alignat*}
+
+\paragraph{Function $\code{hits}$.} Of $p : \mathbb{R}[\code{batch}{:}\,B, \code{seq}{:}\,T, \code{vocab}{:}\,V]$, $q : \mathbb{R}[\code{batch}{:}\,B, \code{seq}{:}\,T, \code{vocab}{:}\,V]$:
+\begin{alignat*}{2}
+\den{\code{hits}}(p, q) &= \code{sum axis}\ \code{vocab}\ (p \times q)
+\end{alignat*}
+
+\paragraph{Function $\code{accuracy}$.} Of $\theta : \code{params}\ \code{GPT}$, $k : \code{key}$, $\mathit{batch} : (\code{Tokens}, \code{Tokens})$, uses Rand:
+\begin{alignat*}{2}
+(x, y) &= \mathit{batch} \\
+\den{\code{accuracy}}(\theta, k, \mathit{batch}) &= \code{mean}\ \den{\code{hits}}((\code{one\_hot}\ (\code{argmax}\ \den{\code{GPT.apply}}(\theta, x, k))), (\code{one\_hot}\ y))
+\end{alignat*}

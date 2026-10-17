@@ -14,12 +14,15 @@ use presk_driver::{Collect, Report, Stop, text};
 use presk_precision::envelope::Envelope;
 use presk_precision::sensitivity::Sensitivity;
 use presk_precision::solve::{Role, Roles};
+use presk_provenance::{Id, Stage};
 use presk_rt::{Dtype, Plan, Realization};
 use presk_syntax::SourceMap;
 use presk_types::check::TypedProgram;
 use presk_types::elab::ElabProgram;
 
 use crate::doc::{Block, Document, Kind, Section};
+
+mod json;
 use crate::{Artifact, Options, Provenance, Target, shown};
 
 /// A report that forwards to the command's and keeps a copy: the
@@ -122,6 +125,15 @@ struct State<'a> {
     pytorch: Option<Result<Vec<(String, String)>, String>>,
     artifacts: Vec<Artifact>,
     measured: Option<Result<Measured, String>>,
+    /// The provenance table of the compilation (plan 0.13.0 step 1, D134):
+    /// what §12 reads.
+    table: presk_provenance::Table,
+    /// The program after differentiation the table's stage `ad` names: the
+    /// kernels' before the optimizer.
+    ad_program: Program,
+    /// Each listed kernel's machine code with its lines, under `--format
+    /// json` or `html` with the native target (plan 0.13.0 step 5).
+    pub(crate) native: Option<Vec<presk_cranelift::MachineCode>>,
 }
 
 /// What `--measure` measured.
@@ -146,6 +158,8 @@ struct CExport {
     line: String,
     files: Vec<(String, usize)>,
     kernels: Vec<presk_kernel::Kernel>,
+    /// `kernels.c`, its text.
+    kernels_c: Option<String>,
 }
 
 /// The functions `entry` reaches through calls, closures and folds, itself
@@ -190,7 +204,7 @@ fn given(path: &Path, report: &mut dyn Report) -> presk_driver::Result<Provenanc
     }
 }
 
-pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Result<(Document, Vec<Artifact>)> {
+pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Result<(Document, Vec<Artifact>, Option<serde_json::Value>)> {
     let mut tee = Tee { inner: report, kept: Collect::default(), seen: BTreeSet::new() };
     let s = run(o, &mut tee)?;
     let diags: Vec<String> = tee.kept.items.iter().filter_map(|r| if let Reported::Diagnostics(t, _) = r { Some(t.clone()) } else { None }).collect();
@@ -202,14 +216,24 @@ pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Resul
         sections: vec![summary(&s), source(&s), elaboration(&s), core(&s), differentiation(&s), optimizer(&s), precision(&s), fusion(&s), machine(&s), kernels(&s), targets(&s), measured(&s), traces(&s), appendix_placeholder()],
     };
     let doc = with_appendix(doc);
-    Ok((doc, s.artifacts))
+    let json = (o.json || o.html).then(|| {
+        let traced = if o.sites.is_empty() { default_sites(&s) } else { o.sites.clone() };
+        json::json(&s, &doc, &traced)
+    });
+    Ok((doc, s.artifacts, json))
+}
+
+/// The provenance table of the compilation, alone.
+pub(crate) fn table(o: &Options, report: &mut dyn Report) -> presk_driver::Result<presk_provenance::Table> {
+    let mut tee = Tee { inner: report, kept: Collect::default(), seen: BTreeSet::new() };
+    Ok(run(o, &mut tee)?.table)
 }
 
 /// Runs the compilation, stage by stage, and keeps every value.
 fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<State<'a>> {
     let file = shown(&o.file);
     let dims = presk_driver::front::parse_dims(&o.dims, report)?;
-    let (sm, prog, typed, core) = presk_driver::front::typed_core(&o.file, &o.consts, false, report)?;
+    let (sm, prog, typed, core, lowered) = presk_driver::front::typed_core_traced(&o.file, &o.consts, false, report)?;
     let (analysis, diags) = presk_core::analyze(&core, &prog);
     report.diagnostics(&diags, &sm);
     if presk_syntax::diag::has_errors(&diags) {
@@ -258,7 +282,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
 
     // ----- precision -----------------------------------------------------------
     let mut pcore = core.clone();
-    let d = presk_driver::ad::differentiate(&mut pcore, o.remat, true);
+    let (d, pcore_links) = presk_driver::ad::differentiate_traced(&mut pcore, o.remat, true);
     report.diagnostics(&d, &sm);
     if presk_syntax::diag::has_errors(&d) {
         return Err(Stop(1));
@@ -356,12 +380,14 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
 
     // ----- the program the kernels run -------------------------------------------
     let mut xcore = core.clone();
-    let mut d = presk_driver::ad::differentiate(&mut xcore, o.remat, realization.groups_visible());
+    let (mut d, ad_links) = presk_driver::ad::differentiate_traced(&mut xcore, o.remat, realization.groups_visible());
     d.extend(presk_driver::ad::stored_vjps(&xcore, &realization));
     report.diagnostics(&d, &sm);
     if presk_syntax::diag::has_errors(&d) {
         return Err(Stop(1));
     }
+    // The table's differentiated program: the kernels' before the optimizer.
+    let ad_program = xcore.clone();
     let bounded = match &env {
         Some((e, _)) => match presk_driver::precision::bound(&xcore, &prog, e, &realization, &presk_precision::propagate::Model::ALL, !o.no_exact) {
             Ok(b) => Some(b),
@@ -374,8 +400,16 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
         None => None,
     };
     let before_opt = o.opt.then(|| xcore.clone());
-    let opt_report = presk_driver::opt::Opt { on: o.opt, profile: o.profile.clone() }.apply_report(&mut xcore, &prog, true, &dims, &mut Collect::default())?;
+    let optimizer = presk_driver::opt::Opt { on: o.opt, profile: o.profile.clone() };
+    let (opt_report, opt_links, opt_ends) = match optimizer.apply_traced(&mut xcore, &prog, true, &dims, &mut Collect::default())? {
+        Some((r, links, ends)) => (Some(r), links, ends),
+        None => (None, Vec::new(), Vec::new()),
+    };
     let opt_summary = opt_report.as_ref().map(|r| r.summary());
+    if let Err(m) = presk_driver::opt::check_sites(&Plan::from_realization(realization.clone()), &opt_links) {
+        report.diagnostics(&[presk_syntax::Diagnostic::error("E7002", m)], &sm);
+        return Err(Stop(1));
+    }
 
     // ----- the plan --------------------------------------------------------------
     let fit = presk_driver::layout::load_fit(o.profile.as_deref(), report)?;
@@ -416,12 +450,16 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
 
     // ----- the kernels and the host ------------------------------------------------
     let hosted = presk_driver::layout::kernels_with_host(&xcore, &prog, &o.entry, dims.clone(), &plan, o.seed).map_err(|e| e.message);
-    let host_c = match &hosted {
+    let host_exported = match &hosted {
         Ok(h) => match &h.recording {
             Ok(rec) => host_text(o, &xcore, &prog, entry, &dims, &realization, h, rec),
             Err(_) => None,
         },
         Err(_) => None,
+    };
+    let (host_c, c_names) = match host_exported {
+        Some((text, of, lines)) => (Some(text), Some((of, lines))),
+        None => (None, None),
     };
 
     // ----- the targets ---------------------------------------------------------------
@@ -457,7 +495,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
                 let mut files: Vec<(String, usize)> = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_file()).map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read_to_string(e.path()).map(|t| t.lines().count()).unwrap_or(0))).collect();
                 files.sort();
                 let kernels = hosted.as_ref().map(|h| h.listing.kernels.clone()).unwrap_or_default();
-                Ok(CExport { line: said(&kept), files, kernels })
+                Ok(CExport { line: said(&kept), files, kernels, kernels_c: std::fs::read_to_string(dir.join("kernels.c")).ok() })
             }
             Err(_) => Err(said(&kept)),
         }
@@ -484,13 +522,60 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
         artifacts.push(Artifact { what: "the PyTorch module".into(), path: "artifacts/pytorch/".into(), provenance: Provenance::Computed });
     }
     let measured = o.measure.then(|| measure(o, &xcore, &prog, &dims, &realization, &plan, !matches!(plan_src, PlanSrc::None), report));
-    Ok(State { measured, o, file, sm, prog, typed, core, analysis, entry, dims, diags: Vec::new(), pcore, env, env_src, sens, sens_none, sweep, solved, roles, realization, real_src, bounded, xcore, opt_summary, opt_report, before_opt, plan, plan_src, profile, captured, planned, hosted, host_c, c, pytorch, artifacts })
+
+    // ----- the provenance table ------------------------------------------------------
+    let layouts = match (&captured, &planned) {
+        (Some(c), Some(p)) => {
+            let mut nests: Vec<(String, String, usize)> = Vec::new();
+            for k in &p.costed {
+                let nest = &c.launches[k.launch].nest;
+                if !nests.iter().any(|(n, _, _)| n == nest) {
+                    let chosen = p.layout.get(nest).map(|x| x.to_string()).unwrap_or_else(|| k.scored[0].1.to_string());
+                    nests.push((nest.clone(), chosen, k.space));
+                }
+            }
+            Some(presk_driver::provenance::Layouts { nests })
+        }
+        _ => None,
+    };
+    let entry_name = core.func(entry).name.clone();
+    // The native column (plan 0.13.0 step 5, D138): each listed kernel
+    // compiled as the native backend compiles it, every byte with its line,
+    // for the JSON and the page; the document does not print it.
+    let native = match &hosted {
+        Ok(h) if (o.json || o.html) && o.targets.contains(&Target::Native) => presk_cranelift::machine_code(&h.listing.kernels).ok(),
+        _ => None,
+    };
+    let table = presk_driver::provenance::table(&presk_driver::provenance::Stages {
+        sm: &sm,
+        prog: &prog,
+        typed: &typed,
+        core: &core,
+        lowered: &lowered,
+        entry: &entry_name,
+        ad: &ad_program,
+        ad_links: &ad_links,
+        precision: Some(presk_driver::provenance::Precision { links: &pcore_links, env: env.as_ref().map(|(e, _)| e), roles: &roles, realization: &realization, solved: solved.as_ref() }),
+        opt: o.opt.then_some((&xcore, &opt_links[..], &opt_ends[..])),
+        layouts,
+        kernels: hosted.as_ref().ok().map(|h| (&h.listing.kernels[..], &h.launched[..])),
+        c: match (&c, &c_names) {
+            (Some(Ok(_)), Some((of, lines))) => Some((&of[..], &lines[..])),
+            _ => None,
+        },
+        native: native.as_deref(),
+    });
+    Ok(State { measured, o, file, sm, prog, typed, core, analysis, entry, dims, diags: Vec::new(), pcore, env, env_src, sens, sens_none, sweep, solved, roles, realization, real_src, bounded, xcore, opt_summary, opt_report, before_opt, plan, plan_src, profile, captured, planned, hosted, host_c, c, pytorch, artifacts, table, ad_program, native })
 }
 
+/// The C host's functions, and the C names and lines of the kernels.
+type HostText = (String, Vec<(usize, usize)>, Vec<(usize, usize)>);
+
 /// The host as the C export prints it, from the recording of the shapes'
-/// run: its functions, without the file's preamble.
+/// run: its functions, without the file's preamble; and which `k<n>` of
+/// `kernels.c` each kernel is, with its lines.
 #[allow(clippy::too_many_arguments)]
-fn host_text(o: &Options, core: &Program, prog: &ElabProgram, entry: FuncId, dims: &[(String, u64)], r: &Realization, h: &Hosted, rec: &presk_kernel::record::Recording) -> Option<String> {
+fn host_text(o: &Options, core: &Program, prog: &ElabProgram, entry: FuncId, dims: &[(String, u64)], r: &Realization, h: &Hosted, rec: &presk_kernel::record::Recording) -> Option<HostText> {
     let params_module = core.func(entry).params.first().and_then(|p| match &p.ty {
         presk_types::ty::Ty::Params(presk_types::ty::ModRef::Inst { def, .. }) => Some(prog.module(*def).name.clone()),
         _ => None,
@@ -523,7 +608,7 @@ fn host_text(o: &Options, core: &Program, prog: &ElabProgram, entry: FuncId, dim
     {
         start = prev + 1;
     }
-    Some(model[start..].to_string())
+    Some((model[start..].to_string(), exported.kernel_of.clone(), exported.kernel_lines.clone()))
 }
 
 // ----- the header ------------------------------------------------------------------
@@ -1499,7 +1584,9 @@ fn scalar(v: &presk_rt::Value) -> Option<String> {
 
 /// The sites each kernel of the shapes' listing is launched at, by its text:
 /// the bare site, without the `(fused)` or the source name the host's
-/// comment adds.
+/// comment adds. §11 names the kernels `presk bench` timed by it: they are
+/// another run's, whose places in its own listing may differ, and their text
+/// is what the two share; every other section reads the provenance table.
 fn kernel_sites(s: &State) -> BTreeMap<String, (usize, Vec<String>)> {
     let mut out: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
     if let Ok(h) = &s.hosted
@@ -1651,15 +1738,40 @@ fn trace(s: &State, site: &str) -> Option<Vec<Vec<String>>> {
         }
     }
     rows.push(vec!["Type (§6.3)".into(), typed]);
-    // Fusion, in the program the kernels run.
+    // The site in the program the kernels run, and its nest, its kernel and
+    // its C function: the provenance table's links from it (plan 0.13.0
+    // step 1, D134). Under `--opt` the site the earlier stages name is the
+    // program's before the optimizer, which renumbers every `let`.
+    let t = &s.table;
+    let kstage = if s.o.opt { Stage::Opt } else { Stage::Ad };
+    let start = [Stage::Ad, Stage::Opt].into_iter().map(|st| Id::new(st, site)).find(|id| t.has(id));
+    let at = start.as_ref().and_then(|id| t.descendants(id, kstage).into_iter().next());
     let mut nest = site.to_string();
-    if let Some((xf, xl)) = site_let(&s.xcore, site) {
+    if s.o.opt
+        && let Some(at) = &at
+        && let Some((xf, xl)) = site_let(&s.xcore, &at.key)
+    {
+        let how = match t.made(at).first().map(|l| &l.how) {
+            Some(presk_provenance::How::Unchanged) if at.key == site => "left as it was".to_string(),
+            Some(presk_provenance::How::Unchanged) => format!("`{site}` under a new number, no rule changed it"),
+            Some(presk_provenance::How::Rewritten { .. }) => format!("the cheapest term of the class of `{site}`{}", match t.made(at).first().map(|l| l.parents.len()) {
+                Some(n) if n > 1 => format!(", and of {} other `let`s", n - 1),
+                _ => String::new(),
+            }),
+            Some(presk_provenance::How::Introduced) => "a `let` a rewrite introduced".to_string(),
+            _ => "not traced".to_string(),
+        };
+        rows.push(vec!["Optimizer (§5)".into(), format!("`{}` in `{}`: {how}", presk_core::pretty::pretty_let(xf, xl, &s.xcore, &s.prog), xf.name)]);
+    }
+    if let Some(at) = &at
+        && let Some((xf, xl)) = site_let(&s.xcore, &at.key)
+    {
         let plan = presk_realize::plan(xf);
+        let nests = t.descendants(at, Stage::Fusion);
+        if let Some(n) = nests.first() {
+            nest = n.key.clone();
+        }
         let fusion = if plan.interior.contains(&xl.var) {
-            let root = plan.groups.iter().find(|(_, g)| g.members.contains(&xl.var)).map(|(r, _)| *r);
-            if let Some(r) = root {
-                nest = format!("{}/%{}", xf.name, r.0);
-            }
             format!("a member of the group that ends at `{nest}`: computed there, never stored")
         } else {
             match presk_core::fusion::stops(xf, &plan).into_iter().find(|(v, _)| *v == xl.var) {
@@ -1682,12 +1794,29 @@ fn trace(s: &State, site: &str) -> Option<Vec<Vec<String>>> {
             rows.push(vec!["Layout (§8)".into(), "not a nest: no layout space".into()]);
         }
     }
-    // The kernel, and its C.
-    let sites = kernel_sites(s);
-    let kern = sites.iter().find(|(_, (_, ss))| ss.contains(&nest)).map(|(text, (j, _))| (*j, text.lines().next().unwrap_or("").trim_end_matches(" {").to_string()));
-    match &kern {
-        Some((j, head)) => rows.push(vec!["Kernel (§9)".into(), format!("`k{j}`: `{head}`")]),
-        None => rows.push(vec![
+    // The kernel, and its C. A nest launches one kernel, or two when a pack
+    // copies an operand first: the first by its text, as 0.12.0 named it.
+    let kernels: Vec<(usize, String)> = [Stage::Layout, Stage::Fusion]
+        .into_iter()
+        .map(|st| Id::new(st, nest.clone()))
+        .find(|id| t.has(id))
+        .map(|id| t.descendants(&id, Stage::Kernel))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|k| k.key.strip_prefix('k').and_then(|j| j.parse::<usize>().ok()))
+        .filter_map(|j| s.hosted.as_ref().ok().and_then(|h| h.listing.kernels.get(j)).map(|k| (j, k.to_string())))
+        .collect();
+    let kern = kernels.iter().min_by(|a, b| a.1.cmp(&b.1)).map(|(j, text)| (*j, text.lines().next().unwrap_or("").trim_end_matches(" {").to_string()));
+    // A nest a contraction's kernel computes as its epilogue is launched by
+    // the contraction's nest.
+    let by = kern.as_ref().and_then(|(j, _)| {
+        let suffix = format!(" k{j}");
+        t.elements(Stage::Launch).iter().filter_map(|l| l.key.strip_suffix(&suffix)).find(|n| *n != nest).filter(|_| !t.elements(Stage::Launch).iter().any(|l| l.key == format!("{nest}{suffix}"))).map(String::from)
+    });
+    match (&kern, &by) {
+        (Some((j, head)), Some(product)) => rows.push(vec!["Kernel (§9)".into(), format!("`k{j}`, as the epilogue of `{product}`'s kernel: `{head}`")]),
+        (Some((j, head)), None) => rows.push(vec!["Kernel (§9)".into(), format!("`k{j}`: `{head}`")]),
+        (None, _) => rows.push(vec![
             "Kernel (§9)".into(),
             match s.roles.0.get(site) {
                 Some(Role::Follows(of)) => format!("none of its own: read, and converted, by the kernels of {}", of.iter().map(|x| format!("`{x}`")).collect::<Vec<_>>().join(", ")),
@@ -1698,8 +1827,10 @@ fn trace(s: &State, site: &str) -> Option<Vec<Vec<String>>> {
     }
     if matches!(s.c, Some(Ok(_)))
         && let Some((j, _)) = &kern
+        && let Some(cf) = t.descendants(&Id::new(Stage::Kernel, format!("k{j}")), Stage::C).first()
     {
-        rows.push(vec!["C (§10)".into(), format!("`k{j}` in `kernels.c`, launched by `{}` in `model.c`, the launch commented `{nest}`", presk_export_c::host::c_ident(&format!("presk_{}", func.name)))]);
+        let n = cf.key.strip_prefix("kernels.c ").unwrap_or(&cf.key);
+        rows.push(vec!["C (§10)".into(), format!("`{n}` in `kernels.c`, launched by `{}` in `model.c`, the launch commented `{nest}`", presk_export_c::host::c_ident(&format!("presk_{}", func.name)))]);
     }
     if let Some(Ok(m)) = &s.measured
         && let (Ok(k), Some((_, head))) = (&m.kernels, &kern)
@@ -1745,8 +1876,8 @@ fn traces(s: &State) -> Section {
     // The index: every site of the functions the entry reaches, and the
     // sections it appears in.
     let entry = s.xcore.find(&s.core.func(s.entry).name).unwrap_or(s.entry);
-    let sites_k = kernel_sites(s);
-    let launched: BTreeSet<&String> = sites_k.values().flat_map(|(_, ss)| ss.iter()).collect();
+    // The nests a kernel launches, by the table's launches.
+    let launched: BTreeSet<String> = s.table.elements(Stage::Launch).iter().filter_map(|l| l.key.rsplit_once(' ').map(|(n, _)| n.to_string())).collect();
     let nests: BTreeSet<&String> = s.captured.as_ref().map(|c| c.launches.iter().map(|l| &l.nest).collect()).unwrap_or_default();
     let breakdown: BTreeSet<&str> = s.solved.as_ref().map(|sv| sv.breakdown.iter().map(|c| c.name.as_str()).collect()).unwrap_or_default();
     let mut index = String::from("site\tline\tsections\n");

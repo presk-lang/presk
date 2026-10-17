@@ -420,8 +420,16 @@ fn leaf_norms(v: &Value) -> BTreeMap<String, f64> {
 /// The parameters the solver offers: every real leaf of the entry's
 /// parameter tree, with its elements, its largest magnitude, its 1-norm
 /// cotangent (`sens`, a leaf the sweep gave none is not offered) and the
-/// field sites that read it (`solve::param_reads`).
+/// field sites that read it (`solve::param_reads`). An entry whose first
+/// argument is not a parameter tree has none: until D128 a tensor there was
+/// offered as the parameter of path ``, which no executor runs in a type
+/// of its own (`Realization::store_params` refuses it), so every
+/// measurement narrowing it failed, read as an infinite gap, and the
+/// solver widened the other sites back one by one until it came to it.
 fn param_sites(core: &presk_core::Program, entry: FuncId, theta: &Value, sens: &BTreeMap<String, f64>) -> Vec<solve::ParamSite> {
+    if !matches!(theta, Value::Record(_)) {
+        return Vec::new();
+    }
     let reads = solve::param_reads(core, entry);
     let mut fields: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (site, paths) in &reads {

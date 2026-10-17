@@ -41,7 +41,7 @@ The flags are the commands' own, with the same names and defaults.
 | `--profile P.json` | a calibrated profile: the solver prices time, and the layouts are planned as `presk plan` plans them |
 | `--threads N` | the workers a split is counted on, and the native executor's |
 | `--remat store\|recompute` | what a gradient does with its forward values (0.10.0 step 4) |
-| `--opt` | the e-graph optimizer; refused with a profile or a plan, since `presk plan` plans the program the optimizer has not rewritten |
+| `--opt` | the e-graph optimizer; refused with a profile or a plan, since `presk plan` plans the program the optimizer has not rewritten; refused with `--budget` and with a realization that types sites, whose sites name the program before it (since 0.13.0 step 1, D134) |
 | `--weights W` | trained weights in place of the initial ones |
 | `--seed S`, `--bits B` | the inputs' seed and the exact reference's precision (128 by default) |
 | `--envelope ENV` | an envelope given in place of measuring one |
@@ -49,6 +49,7 @@ The flags are the commands' own, with the same names and defaults.
 | `--target native,c,pytorch` | the targets, `native` by default |
 | `--measure` | also run it on this machine: §11 |
 | `--site S` | a site to trace through every stage (§12), the option repeated |
+| `--format md\|json\|html` | `json`: `explain.json` beside `explain.md`, the document's facts and the provenance table as values (below; since 0.13.0 step 2); `html`: `explain.html` too, the pipeline view (below; since step 3) |
 | `--out DIR` | where the document and its files go |
 
 `--budget`, `--realize` and `--plan` exclude one another. Without any of
@@ -170,14 +171,35 @@ The section is the document's only one that changes from run to run.
 average before and after, and says that its times are not a record.
 
 **The traces (§12)** follow a site through every stage: its PSK-Core line,
-its envelope, its sensitivity, its type with its role and reason, its
-fusion (a member of a group, a group's end or alone, and why), the nest
-that computes it and its layout beside the runner-up, its kernel, the C
-function that launches it and, with `--measure`, its time. `--site` names
-the sites; by default they are the three largest shares of the solver's
-estimate (the three largest bounds without a solve) and the three nests of
-the most predicted time a call. `listings/site-index.tsv` lists every site
-of the functions the entry reaches and the sections that name it.
+its envelope, its sensitivity, its type with its role and reason, under
+`--opt` the `let` the optimizer made of it, its fusion (a member of a
+group, a group's end or alone, and why), the nest that computes it and its
+layout beside the runner-up, its kernel (as the epilogue of a contraction's
+kernel, when it is one), the C function that launches it and, with
+`--measure`, its time. `--site` names the sites; by default they are the
+three largest shares of the solver's estimate (the three largest bounds
+without a solve) and the three nests of the most predicted time a call.
+`listings/site-index.tsv` lists every site of the functions the entry
+reaches and the sections that name it.
+
+Since 0.13.0 (step 1, D134) the traces are read off **the provenance
+table** of the compilation, `presk_provenance::Table`: every element of
+every stage (a span of the source; a function, an instance or a typed
+expression of the elaborated program; a `let` of PSK-Core, of the program
+after differentiation and of the program after the optimizer; a site the
+precision stages name; a nest; a layout; a kernel; a launch; a function of
+`kernels.c`), and for each element a stage made, the elements it was made
+from and how: the lowering's rule, the derivative rule of the operation an
+adjoint differentiates, `unchanged` or `rewritten` by the optimizer, the
+fusion group, the kernel the nests share. The IRs do not change: each
+stage returns its links beside its value, and `presk-driver` puts them
+together (`presk_driver::provenance`). An element with no child at the
+next stage says why (the optimizer removed it, the host computes it, a
+group the call never launches). Until 0.12.0 the traces followed a site by
+its number and a kernel by its printed text: under `--opt`, which numbers
+every `let` anew, they named no fusion and no kernel, and an `add` a
+contraction's kernel computes as its epilogue was said to be computed by
+the host (D133, D134).
 
 ## The PDF
 
@@ -227,6 +249,119 @@ among them, and every parameter. D106's realization, solved before 0.11.0
 step 2b, typed sites whose type changes no bit too: §6.3 gives each its
 role, a follower or a carried value, and says so.
 
+## The JSON (`--format json`)
+
+`--format json` writes `explain.json` beside `explain.md` (0.13.0 step 2,
+D135), for a program that reads a compilation rather than a person: the
+pipeline view's page reads it. It holds the document's facts as values and
+the provenance table of §12, and it is deterministic without `--measure`,
+as the Markdown is: no time, no absolute path. Its fields, in layout
+`format` 1:
+
+| Field | What it holds |
+|---|---|
+| `format` | `1`, the layout's version; a reader refuses one it does not know |
+| `compiler` | the compiler's version |
+| `program` | `file`, `entry`, `dims` (`[name, value]` pairs), `consts`, `realization` (its label), `opt`, `planned` (a profile planned the layouts), `differentiated` (the program has generated functions) |
+| `traced` | the sites §12 traces: `--site`'s, or the default ones |
+| `sources` | each file read: `id` (the file number the source stage's keys use), `path`, `text` |
+| `stages` | one per stage that has elements, in the compiler's order (source, elab, core, ad, precision, opt, fusion, layout, kernel, launch, c): `stage`, `title`, `section` (the document's section that shows it) and `elements` |
+| `stages[].elements[]` | `key` (the element's key in its stage: a span `file:start-end`, `fn NAME`, a site `f/%n`, a nest, `k<j>`, `kernels.c k<n>`, `native k<j>`), `label` (the line the document prints for it), `group` (the function it belongs to, which the page folds by), `facts`, and `ends`, why it has no child at the next stage |
+| `facts` | by stage: a `let`'s `span` and source `name`; a precision site's `magnitude`, `elements`, `condition`, `sensitivity`, `type`, `term`, `rounded_in`, `bound` (the conditioned bound's error at the site) and, for a decision, `why`; a layout's `shape`, `predicted_us`, `runner_up`, `runner_up_us` and, for a contraction nest, `order` (the realization's reduction order); a kernel's `text` and `dtype`; a C function's `text`; a kernel's machine code, under the native target (0.13.0 step 5, D138): `bytes` (its size), `hex` (its bytes), `ranges` (`[start, end, line]`, the bytes each line of the kernel's text compiles to, in the code's order, every byte in one range) and `given` (`[start, end]`, the bytes Cranelift gave no line, which `ranges` gives to the line before them), and `disasm`, Cranelift's text of the instructions. And `tex`, the element's formula in LaTeX (0.13.0 step 4, D137): a function's display and an expression's formula on the elaborated program, a `let`'s equation on PSK-Core and the stages after it, a site's term of the solver's estimate, a contraction nest's sum, with `order_tex`, the order its terms are added in |
+| `rules` | the rules the links name, in LaTeX: `adjoint`, the contributions of each primitive's derivative as the reference's table `core-adjoint` writes them, by the rule a link names; `rewrite`, the identity of each rewrite rule of the optimizer (tables `core-algebra`, `core-structure`) |
+| `precision` | under `--budget`: `estimate` (the solver's first-order estimate, the sum of the terms), `budget` (absolute), `measured` (the gap measured against the exact reference) and `bound` (the conditioned rule's, on the output), or `null` |
+| `links` | every link: `child` and `parents` as `stage:key`, `how` (the reason's name, from the `presk_provenance::How` list) and its fields: `rule`, `kind`, `mode`, `role`, `rules`, `members`, `stop`, `point`, `points`, `shared_by`, `count`, `lines` |
+| `document` | the document itself: `title`, `subtitle`, `header` and `sections` (`number`, `title`, `purpose`, `blocks`, `commands`, `sections`), each block one of `prose`, `table` (`head`, `rows`), `code` (`lang`, `text`, `name`), `note` (`title`, `text`), `attach` (`name`, `text`) |
+
+The document's strings are those the Markdown prints, and the Markdown is
+rendered again from them byte for byte (a test of `presk-explain`). On the
+Llama 2 decoder block at the 7B width (X5's parameters, `--no-exact`) it is
+1.1 MB.
+
+## The pipeline view (`--format html`)
+
+`--format html` also writes `explain.html` (0.13.0 step 3, D136): the
+stages of the compilation as columns, every element linked by an arrow to
+what it was made from, read off the JSON above, which the page carries
+inside it. It is one file, with no framework, no build step and nothing
+fetched; it opens offline in any browser.
+
+- **Columns**, in the order the compiler runs the stages: the source, the
+  elaborated program, PSK-Core, what differentiation made, the precision
+  sites, what the optimizer changed, the fusion nests, the layouts, the
+  kernels, the launches, the functions of `kernels.c`, the kernels'
+  machine code (below).
+- **A column is a decision taken.** Without `--opt` there is no optimized
+  column; without a `grad` there is no column for differentiation; without
+  a profile, no layout column. An element a stage left unchanged is not
+  drawn again: its arrow passes through the column, dashed.
+- **Arrows** are coloured by the reason (the lowering, differentiation,
+  the optimizer, fusion), and from the precision column on by the realized
+  type (`f64`, `f32`, `bf16`).
+- **Folding.** Each column shows one card per function, folded. The
+  functions of §12's traced sites are open, and their threads are lit. A
+  function opens and folds by its header in every column at once. The
+  precision column lists a function's decisions and folds the sites that
+  follow or are carried.
+- **Selecting** an element lights its origins and what it became, through
+  every stage, and dims the rest; shift adds to the selection, `Esc`
+  clears it.
+- **Hovering** shows the element's facts and the reason of each of its
+  links, in words, and its mathematics (below).
+- **The mathematics** (0.13.0 step 4c, D137), the printer of the
+  denotation's, in the notation of the language reference's chapter 3
+  (section 3.10): the elaborated program's cards are its functions'
+  displays and its expressions' formulas, PSK-Core's cards and those after
+  it each `let`'s equation, a contraction nest's card its sum. Hovering
+  adds, for the source, what the function it defines denotes; for a `let`
+  differentiation made, the rule of its primitive's derivative as the
+  reference's table `core-adjoint` writes it; for a `let` the optimizer
+  rewrote, the identity of each rule that applied in its function; for a
+  precision site, its term of the solver's estimate (its sensitivity, the
+  unit roundoff of its type, its magnitude) and the estimate against the
+  budget, the gap measured and the bound; for a contraction nest, the
+  order its terms are added in under the realization. "∑ math" turns the
+  cards back to text. KaTeX 0.19.0 typesets them, inlined in the page with
+  its fonts (`dependencies` chapter), and only a formula that is shown is
+  typeset, once.
+- **A lesson** is a sequence of selections with captions, held in the
+  page's address (`#lesson=…&step=…`): `←` and `→` step through it, and "add
+  step" appends the current selection. Without one, the lesson is §12's
+  traced sites.
+- **Measured quantities** are overlays on the cards: a layout's predicted
+  time, and a kernel's measured one under `--measure`.
+
+`#bench` in the address times a select of each element and a fold and an
+open of each function by the page's own clock, and prints the slowest
+(statement P3). In headless Firefox 158 on falicon, on the Llama 2 decoder
+block at the 7B width (1.8 MB with KaTeX and the machine code, 473
+elements, 237 arrows drawn, the formulas on), the first drawing took 19
+ms, a select at most 7.0 ms, a fold or an open at most 44.0 ms (0.13.0
+step 5); on the course GPT at `D = 64`, 31, 6.0 and 33.0 ms.
+
+## The native column
+
+Under `--format json` or `html` with the native target, each kernel of the
+listing is compiled as `presk run --backend native` compiles it, and its
+machine code is the last column (0.13.0 step 5, D138). Every byte lies in
+one range of one line of the kernel's printed text (statement P4): each
+statement's instructions carry the line as a Cranelift `SourceLoc`, the
+kernel's header holding the prologue and its closing brace the return. A
+byte Cranelift gives no line, a move the register allocator inserts or a
+branch at a block's edge, is given the line before it, and the page shows
+it in italics. The lines change no byte: a test compiles every kernel of
+the test set with them and without them and finds the same code.
+Hovering a kernel's machine code shows each range with its line of the
+kernel and its bytes, then Cranelift's text of the instructions, register
+allocated.
+
+On the test set's 1 164 kernels Cranelift gives a line to 88 % of the
+bytes; on the decoder block at the 7B width, to 65 %, its 4 × 16 tiles in
+lanes moving sixteen accumulators at each block's edge. A constant keeps
+the line of the instruction that made it: a kernel's zero is made once,
+for its header, so the zeroing of its accumulators shows on line 1.
+
 ## What is not there yet
 
-Cranelift's IR is not shown.
+Cranelift's IR (CLIF) is not shown: the machine code is, and Cranelift's
+text of it after register allocation.

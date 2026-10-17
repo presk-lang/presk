@@ -1,0 +1,20 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(\"tutorial/03_attention.psk\", Format::Unicode)"
+---
+-- presk dump --stage elab --format unicode: 03_attention.psk and its imports, as the equations
+-- of the language reference's chapter 3
+
+== 03_attention.psk
+  constants  D = 8,  H = 2,  HD = D / H = 4
+  dimensions  B,  T ≤ 1024
+  types  Q = ℝ[batch: B, heads: H, seq: T, hd: HD]
+  asserted  D mod H = 0
+
+scores, of q : Q,  k : Q
+    ⟦scores⟧(q, k)[batch, heads, seq, seq2] = (∑_{hd} q[batch, heads, seq, hd] k[batch, heads, seq2, hd]) / √HD
+
+attend, of q : Q,  k : Q,  v : Q
+    s = ⟦scores⟧(q, k)
+    a = softmax axis seq2 s, (causal_mask seq: T)
+    ⟦attend⟧(q, k, v)[batch, heads, seq, hd] = ∑_{seq2} a[batch, heads, seq, seq2] v[batch, heads, seq2, hd]

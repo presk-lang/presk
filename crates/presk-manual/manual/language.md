@@ -934,6 +934,56 @@ realization for a training step also runs forward entries; since 0.10.0
 step 4b). A plan made under one policy names nests the other does
 not have (`E7002`).
 
+## Reading a program as mathematics
+
+`presk dump --stage elab --format unicode` (or `latex`) prints what a
+program denotes, as the language reference's chapter 3 writes it (its
+section 3.10, "Programs as equations"; 0.13.0 step 4, D137): each function
+is the equations of its `let`s, then its value `⟦f⟧(x₁, …)`. Nothing is
+rounded and no order of summation is chosen: it is the mathematics the
+realizations are measured against. For `tutorial/03_attention.psk`:
+
+```text
+scores, of q : Q,  k : Q
+    ⟦scores⟧(q, k)[batch, heads, seq, seq2] = (∑_{hd} q[batch, heads, seq, hd] k[batch, heads, seq2, hd]) / √HD
+
+attend, of q : Q,  k : Q,  v : Q
+    s = ⟦scores⟧(q, k)
+    a = softmax axis seq2 s, (causal_mask seq: T)
+    ⟦attend⟧(q, k, v)[batch, heads, seq, hd] = ∑_{seq2} a[batch, heads, seq, seq2] v[batch, heads, seq2, hd]
+```
+
+An operation keeps its name (`softmax axis seq2`, `dot x, w`), and is never
+written as what it lowers to. An `ein` is written as its sum, at an index
+named by the axes of its result: the second operand's `seq` of the
+attention became `seq2` by the relabeling of the reference's definition
+2.39, and the sum shows it. A module's function is printed once, its
+parameters by their names (`w` for `θ.w`), a sub-module's call as
+`⟦proj.apply⟧(x)`, and a call through `stack{L}` as its recurrence, `y₀ =
+x`, `y_(ℓ+1) = ⟦Block.apply⟧(θ.blocks[ℓ], y_ℓ)` for `0 ≤ ℓ < L`. A `let`
+that rebinds a name is primed: `let x = x + …` is `x' = x + …`.
+
+`--stage core-after-ad` does the same for PSK-Core after
+differentiation, one equation per binding, and says what each binding of a
+generated function was made for, read off the provenance table (D134). The
+reverse sweep of `Linear.apply`, from `tutorial/04_grad.psk`:
+
+```text
+Linear.apply.bwd, of θ : params Linear{In, Out},  x : ℝ[…, In],  ct : ℝ[…, Out]
+    b = θ.b                               -- primal b, kept
+    %8 = sum_to ct, b                     -- adjoint of %5 (add)
+    %9 = zeros_like θ                     -- adjoint of b (field)
+    %10 = set_field b %9, %8              -- adjoint of b (field)
+    %12 = dot_vjp_r x, ct                 -- adjoint of %3 (dot)
+    …
+```
+
+`--format latex` writes the same as a fragment in the reference's macros,
+which `--standalone` makes a document; `make math-check` compiles those of
+the tutorial, the examples and the course GPT. The pipeline view of
+`presk explain --format html` shows the same formulas on its cards
+(`explain` chapter).
+
 ## Running programs: the reference interpreter
 
 `presk run` evaluates PSK-Core after automatic differentiation on an

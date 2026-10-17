@@ -387,7 +387,12 @@ of the menu at a time.
   So typing a parameter `f32` where only `f32` nests read it adds nothing
   to the estimate and saves its bytes. With `--quant` the integer menu
   still runs on top, priced by the whole cotangent, and a parameter it
-  quantises leaves `params`.
+  quantises leaves `params`. One menu for both kinds of type is a design
+  for later (D126, `docs/precision-menu-roadmap.md`): the two are priced
+  in different units. An entry whose first argument is not a parameter
+  tree has no parameters to offer; until D128 a tensor there was offered
+  as the parameter of path ``, which no executor runs in a type of its
+  own, and every measurement narrowing it failed.
 - **An entry whose result is a tensor** (logits): the budget bounds the
   largest elementwise gap, relative to the output's largest magnitude
   (`--budget`) or absolute (`--budget-abs`). One reverse sweep seeded with
@@ -405,6 +410,28 @@ the candidate and measuring its distance to the exact reference is a stronger
 check — the error actually committed rather than an envelope around it — and
 it is a check only this compiler can make, because only this compiler keeps
 an exact denotation to measure against.
+
+**Where the measurement decides** (D128, `make widening`). The estimate
+charges each stored value one rounding at its magnitude, to first order.
+Three small programs show what that misses, each beside a form it judges
+right (`docs/widening-2026-10-16.md`):
+- an unshifted softmax of logits near 84, whose row sum of `exp` passes
+  `f32`'s range: the estimate admits `f32` at 6.3·10⁻⁶ against a budget of
+  3.7·10⁻⁴, the measurement finds 0.372, and four rounds widen it to
+  all-`f64` (the `softmax` primitive, which subtracts the row's maximum,
+  is accepted at 2.00×);
+- the two-pass standard deviation of rows offset to 1 000, stationary in
+  the mean, whose cotangent is therefore zero: the mean goes to `bf16`,
+  the gap is 4.3·10⁻² against 1.2·10⁻³, and five rounds end at 1.00×;
+- a sum of 4 096 equal terms, whose roundings share their sign: 1.6·10⁻²
+  against 4.1·10⁻³, and one round puts the sum in `f64`.
+
+On the first the bounds of `presk check` are below the gap too: they are
+first-order, and nothing compares a value's magnitude with its type's
+range. The widening goes by the estimate's terms, so the value it
+misjudged is the last it widens, and it narrows nothing again: the first
+two end at 1.00× where widening the culprit alone holds the budget at
+1.33× and 2.00×.
 
 The objective is traffic rather than time, and deliberately: `bf16` is
 *slower* than `f32` on a compute-bound kernel (the `native` chapter has the
@@ -475,6 +502,17 @@ the only thing that differs between two rows is the realization:
 | 1e-5 | 1.58× less | 1.64e-6 | yes | 2.77361 | +1.3e-6 |
 | 1e-6 | 1.35× less | 4.54e-9 | yes | 2.77361 | 0 |
 | 1e-7 | 1.08× less | 3.73e-9 | yes | 2.77361 | 0 |
+
+**On the trained model's envelope** (D132, `experiments/curve_trained.sh`,
+`docs/envelope-state-2026-10-16.md`). `curve.sh` calibrates its envelope on
+the initialization and random tokens, and a solve runs on its envelope's
+inputs. Calibrated on the trained weights and two held-out windows
+instead, the solver narrows more at most budgets (3.17× at 10⁻¹, 2.12× at
+10⁻³, 1.15× at 10⁻⁷), every point still inside its budget and none
+widening. Its realization at 10⁻³ lands 7.8·10⁻³ from the exact logits and
+flips 30 decisions, where this table's lands 2.5·10⁻⁴ and flips none: a
+budget on the loss, a mean, does not bound the logits. The budget on the
+logits does (V6), and statement S holds under both envelopes.
 
 **Every point is inside its budget**, by measurement against the exact
 reference, and the traffic falls monotonically as the budget loosens. The

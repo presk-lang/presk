@@ -32,7 +32,25 @@ pub fn lower(elab: &ElabProgram, typed: &TypedProgram) -> (Program, Vec<Diagnost
 }
 
 pub fn lower_with(elab: &ElabProgram, typed: &TypedProgram, opts: &Options) -> (Program, Vec<Diagnostic>) {
-    let mut l = Lowerer { elab, typed, opts: opts.clone(), funcs: vec![], diags: vec![], fn_ids: HashMap::new(), init_ids: HashMap::new() };
+    let (prog, diags, _) = lower_traced(elab, typed, opts);
+    (prog, diags)
+}
+
+/// What the lowering made each `let` of a source function or a lambda from
+/// (plan 0.13.0 step 1, D134): the rule, the kind of the typed expression it
+/// lowered (`call`, `ein`, `index`, a builtin's name, …), whose span the
+/// `let` carries. The `init` functions and the optimizers' functions have
+/// none: their `let`s come from their module's parameters and their
+/// training run as a whole.
+#[derive(Clone, Debug, Default)]
+pub struct Trace {
+    pub rules: HashMap<FuncId, HashMap<VarId, String>>,
+}
+
+/// [`lower_with`], and the [`Trace`] of what it made: the program is the
+/// same.
+pub fn lower_traced(elab: &ElabProgram, typed: &TypedProgram, opts: &Options) -> (Program, Vec<Diagnostic>, Trace) {
+    let mut l = Lowerer { elab, typed, opts: opts.clone(), funcs: vec![], diags: vec![], fn_ids: HashMap::new(), init_ids: HashMap::new(), rules: HashMap::new() };
     // Allocate ids first so calls can refer to functions lowered later.
     for (i, f) in elab.fns.iter().enumerate() {
         let id = FuncId(l.funcs.len() as u32);
@@ -51,7 +69,8 @@ pub fn lower_with(elab: &ElabProgram, typed: &TypedProgram, opts: &Options) -> (
         l.lower_init(ModuleId(i as u32));
     }
     l.lower_optimizers();
-    (Program { funcs: l.funcs }, l.diags)
+    let trace = Trace { rules: std::mem::take(&mut l.rules) };
+    (Program { funcs: l.funcs }, l.diags, trace)
 }
 
 fn placeholder(name: String, origin: Origin, span: Span) -> Func {
@@ -74,6 +93,8 @@ pub(crate) struct Lowerer<'p> {
     pub(crate) diags: Vec<Diagnostic>,
     pub(crate) fn_ids: HashMap<FnId, FuncId>,
     pub(crate) init_ids: HashMap<ModuleId, FuncId>,
+    /// [`Trace::rules`], filled as each function is finished.
+    pub(crate) rules: HashMap<FuncId, HashMap<VarId, String>>,
 }
 
 /// The body under construction.
@@ -89,6 +110,10 @@ pub(crate) struct Builder {
     /// The Core function id being built (for lambda naming).
     pub(crate) self_id: FuncId,
     pub(crate) lambdas: u32,
+    /// The kind of the expression being lowered, which every `let` emitted
+    /// meanwhile is recorded with ([`Trace`]).
+    pub(crate) rule: String,
+    pub(crate) rules: HashMap<VarId, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,7 +125,7 @@ pub(crate) enum Bound {
 
 impl Builder {
     pub(crate) fn new(self_id: FuncId) -> Self {
-        Builder { lets: vec![], next: 0, scope: vec![], theta: None, owner: None, fn_id: None, self_id, lambdas: 0 }
+        Builder { lets: vec![], next: 0, scope: vec![], theta: None, owner: None, fn_id: None, self_id, lambdas: 0, rule: String::new(), rules: HashMap::new() }
     }
 
     pub(crate) fn fresh(&mut self) -> VarId {
@@ -112,6 +137,9 @@ impl Builder {
     pub(crate) fn emit(&mut self, name: Option<String>, ty: Ty, rhs: Rhs, span: Span) -> VarId {
         let var = self.fresh();
         self.lets.push(Let { var, name, ty, rhs, span });
+        if !self.rule.is_empty() {
+            self.rules.insert(var, self.rule.clone());
+        }
         var
     }
 
@@ -188,6 +216,7 @@ impl<'p> Lowerer<'p> {
         func.ret = ret;
         func.effects = f.effects.clone();
         func.body = Block { lets: b.lets, result };
+        self.rules.insert(core_id, b.rules);
     }
 
     /// Instantiation of a callee's dimensions for a call site.

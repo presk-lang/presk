@@ -33,6 +33,8 @@ use presk_syntax::{Diagnostic, Span};
 use presk_types::dim::DimExpr;
 use presk_types::ty::Ty;
 
+use presk_provenance::{How, Id, Link, Stage};
+
 use crate::ir::{stack_ty, unstack_ty, Block, Func, FuncId, Let, Lit, Origin, Param, PrimOp, Program, Rhs, VarId};
 
 /// What a gradient does with the values its forward pass computed (plan
@@ -109,20 +111,34 @@ pub fn transform(prog: &mut Program) -> Vec<Diagnostic> {
 
 /// [`transform`] under a policy, and with or without the fusion groups.
 pub fn transform_as(prog: &mut Program, opts: impl Into<Options>) -> Vec<Diagnostic> {
-    transform_opts(prog, true, opts.into())
+    transform_opts(prog, true, opts.into()).0
+}
+
+/// [`transform_as`], and the links of what it made (plan 0.13.0 step 1,
+/// D134): every function and `let` of the program after differentiation,
+/// from the functions and `let`s of the program before it, which the links
+/// name as stage [`Stage::Core`] and the program after it as [`Stage::Ad`].
+/// The program is the one [`transform_as`] makes.
+pub fn transform_traced(prog: &mut Program, opts: impl Into<Options>) -> (Vec<Diagnostic>, Vec<Link>) {
+    let before = prog.funcs.len();
+    let (diags, ad, grads) = transform_opts(prog, true, opts.into());
+    let links = ad.links(prog, before, &grads);
+    (diags, links)
 }
 
 /// [`transform`], recomputing, with the dead code of the generated functions
 /// left in place when `remove_dead` is false: what every version before
 /// 0.10.0 step 3 ran, kept to check that removing it changes no value.
 pub fn transform_with(prog: &mut Program, remove_dead: bool) -> Vec<Diagnostic> {
-    transform_opts(prog, remove_dead, Remat::Recompute.into())
+    transform_opts(prog, remove_dead, Remat::Recompute.into()).0
 }
 
 /// Storing needs the dead code removed first: a residual is what the sweep
 /// that survives reads.
-fn transform_opts(prog: &mut Program, remove_dead: bool, opts: Options) -> Vec<Diagnostic> {
+fn transform_opts(prog: &mut Program, remove_dead: bool, opts: Options) -> (Vec<Diagnostic>, Ad, Vec<(FuncId, VarId)>) {
     let mut ad = Ad::new(opts.groups);
+    // The `let`s of the program's own functions a `grad` was rewritten at.
+    let mut grads_at: Vec<(FuncId, VarId)> = Vec::new();
     // Rewrite `grad` nodes until none is left (generated functions may contain some).
     loop {
         let mut target = None;
@@ -151,6 +167,7 @@ fn transform_opts(prog: &mut Program, remove_dead: bool, opts: Options) -> Vec<D
             _ => None,
         });
         let span = prog.func(fid).body.lets[li].span;
+        grads_at.push((fid, prog.func(fid).body.lets[li].var));
         match closure {
             Some((f, captured)) => {
                 let n = captured.len();
@@ -166,7 +183,8 @@ fn transform_opts(prog: &mut Program, remove_dead: bool, opts: Options) -> Vec<D
             }
         }
     }
-    ad.diags
+    let diags = std::mem::take(&mut ad.diags);
+    (diags, ad, grads_at)
 }
 
 /// `f.vjp` for a named function (the gradient of a training objective, which
@@ -264,6 +282,8 @@ struct Ad {
     built: HashMap<FuncId, Built>,
     /// [`Options::groups`].
     groups: bool,
+    /// What each `let` of a generated function was made from ([`Tag`]).
+    tags: HashMap<(FuncId, VarId), Tag>,
 }
 
 /// How a `.vjp` was built from its function, for [`store`]: which of its
@@ -297,15 +317,58 @@ pub(crate) struct BuiltFold {
     pub bwd: FuncId,
 }
 
+/// What differentiation made a `let` of a generated function from (plan
+/// 0.13.0 step 1, D134): how, and the `let`s or the functions of the
+/// program before it.
+#[derive(Clone, Debug)]
+pub(crate) struct Tag {
+    pub how: How,
+    pub of: Vec<Of>,
+}
+
+impl Tag {
+    fn new(how: How, of: Of) -> Tag {
+        Tag { how, of: vec![of] }
+    }
+}
+
+/// An element of the program before differentiation a [`Tag`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Of {
+    Let(FuncId, VarId),
+    Func(FuncId),
+}
+
+/// The rule a reverse sweep differentiates a `let` by: its operation.
+fn adjoint_rule(rhs: &Rhs) -> String {
+    match rhs {
+        Rhs::Prim { op, .. } => op.name().split([' ', '[']).next().unwrap_or("").to_string(),
+        Rhs::Call { .. } => "call".into(),
+        Rhs::Fold { .. } => "fold".into(),
+        Rhs::Tuple(_) => "tuple".into(),
+        Rhs::Proj(..) => "projection".into(),
+        Rhs::Record(_) => "record".into(),
+        Rhs::Field(..) => "field".into(),
+        Rhs::Apply { .. } => "apply".into(),
+        Rhs::Lit(_) | Rhs::Closure { .. } | Rhs::Grad(_) => "none".into(),
+    }
+}
+
 /// Emits lets with fresh variables.
 pub(crate) struct Emit {
     pub(crate) lets: Vec<Let>,
     pub(crate) next: u32,
+    /// What the `let`s emitted now are made from, recorded with each one.
+    pub(crate) tag: Option<Tag>,
+    pub(crate) tagged: Vec<(VarId, Tag)>,
 }
 
 impl Emit {
     fn new() -> Self {
-        Emit { lets: vec![], next: 0 }
+        Emit { lets: vec![], next: 0, tag: None, tagged: vec![] }
+    }
+    fn tag(&mut self, how: How, of: Of) {
+        self.tag = Some(Tag::new(how, of));
     }
     fn fresh(&mut self) -> VarId {
         let v = VarId(self.next);
@@ -315,6 +378,9 @@ impl Emit {
     pub(crate) fn emit(&mut self, ty: Ty, rhs: Rhs, span: Span) -> VarId {
         let var = self.fresh();
         self.lets.push(Let { var, name: None, ty, rhs, span });
+        if let Some(t) = &self.tag {
+            self.tagged.push((var, t.clone()));
+        }
         var
     }
     pub(crate) fn prim(&mut self, ty: Ty, op: PrimOp, args: Vec<VarId>, span: Span) -> VarId {
@@ -340,8 +406,9 @@ impl Ad {
     /// the dead code of what that made; `fixed` as for [`prune::prune`].
     fn store(&mut self, prog: &mut Program, fixed: &[FuncId]) -> store::Stored {
         let built = std::mem::take(&mut self.built);
-        let out = store::split(prog, &built, &mut self.generated, self.groups);
+        let (out, splits) = store::split_with(prog, &built, &mut self.generated, self.groups);
         self.built = built;
+        self.retag(prog, &splits);
         prune::prune(prog, &self.generated, fixed, self.groups);
         out
     }
@@ -352,9 +419,13 @@ impl Ad {
         let built = std::mem::take(&mut self.built);
         let splits = store::split_all(prog, &built, &mut self.generated, self.groups);
         self.built = built;
+        self.retag(prog, &splits);
         let done = match splits.get(&vjp) {
             Some(s) => {
                 store::value_wrapper(prog, f, vjp, value_vjp, s);
+                // Its body is new, numbered anew: what it computes is
+                // `f.fwd`'s and `f.bwd`'s.
+                self.tags.retain(|(g, _), _| *g != value_vjp);
                 true
             }
             None => false,
@@ -363,8 +434,89 @@ impl Ad {
         done
     }
 
+    /// The tags of the functions the split made, from the `.vjp`s they were
+    /// split from ([`store`]): `g.bwd`'s bindings are the `.vjp`'s, numbered
+    /// as in it, and keep their tags; `g.fwd`'s are `g`'s, its forward pass
+    /// stored for the sweep. What the split made anew, and the `.vjp`
+    /// itself, now a call of the two, have none: they compute nothing, and
+    /// [`Ad::links`] calls them plumbing.
+    fn retag(&mut self, prog: &Program, splits: &HashMap<FuncId, store::Split>) {
+        let mut vjps: Vec<&FuncId> = splits.keys().collect();
+        vjps.sort();
+        for v in vjps {
+            let s = &splits[v];
+            let old: HashMap<VarId, Tag> = self.tags.iter().filter(|((g, _), _)| g == v).map(|((_, x), t)| (*x, t.clone())).collect();
+            self.tags.retain(|(g, _), _| g != v);
+            for l in &prog.func(s.bwd).body.lets {
+                if let Some(t) = old.get(&l.var) {
+                    self.tags.insert((s.bwd, l.var), t.clone());
+                }
+            }
+            if let (Some(fwd), Some(b)) = (s.fwd, self.built.get(v)) {
+                let src = prog.func(b.src);
+                for l in &prog.func(fwd).body.lets {
+                    if src.body.lets.iter().any(|m| m.var == l.var) {
+                        self.tags.insert((fwd, l.var), Tag::new(How::Primal { mode: "stored".into() }, Of::Let(b.src, l.var)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Records what an emitter tagged, as `let`s of `id`.
+    fn flush(&mut self, id: FuncId, e: &mut Emit) {
+        for (v, t) in e.tagged.drain(..) {
+            self.tags.insert((id, v), t);
+        }
+    }
+
+    /// The links of [`transform_traced`]: the program's `before` first
+    /// functions are the program's own, which differentiation leaves as they
+    /// were but for the `let`s `grads` names; every later one it generated.
+    fn links(&self, prog: &Program, before: usize, grads: &[(FuncId, VarId)]) -> Vec<Link> {
+        // The program's own function a generated one was made from.
+        let root = |mut f: FuncId| {
+            while f.0 as usize >= before {
+                match prog.func(f).origin {
+                    Origin::Lambda { parent } => f = parent,
+                    _ => break,
+                }
+            }
+            f
+        };
+        let core_fn = |f: FuncId| Id::new(Stage::Core, prog.func(root(f)).name.clone());
+        let core = |o: &Of| match *o {
+            Of::Let(f, v) if (f.0 as usize) < before && prog.func(f).body.lets.iter().any(|l| l.var == v) => Id::new(Stage::Core, format!("{}/%{}", prog.func(f).name, v.0)),
+            Of::Let(f, _) | Of::Func(f) => core_fn(f),
+        };
+        let mut out = Vec::new();
+        for (i, func) in prog.funcs.iter().enumerate() {
+            let fid = FuncId(i as u32);
+            let at = |v: VarId| Id::new(Stage::Ad, format!("{}/%{}", func.name, v.0));
+            if i < before {
+                out.push(Link { child: Id::new(Stage::Ad, func.name.clone()), parents: vec![Id::new(Stage::Core, func.name.clone())], how: How::Unchanged });
+                for l in &func.body.lets {
+                    let how = if grads.contains(&(fid, l.var)) { How::Gradient } else { How::Unchanged };
+                    out.push(Link { child: at(l.var), parents: vec![Id::new(Stage::Core, format!("{}/%{}", func.name, l.var.0))], how });
+                }
+                continue;
+            }
+            let src = root(fid);
+            let kind = func.name.strip_prefix(&format!("{}.", prog.func(src).name)).unwrap_or(&func.name).to_string();
+            out.push(Link { child: Id::new(Stage::Ad, func.name.clone()), parents: vec![core_fn(src)], how: How::Generated { kind } });
+            for l in &func.body.lets {
+                let (how, parents) = match self.tags.get(&(fid, l.var)) {
+                    Some(t) => (t.how.clone(), t.of.iter().map(core).collect()),
+                    None => (How::Plumbing, vec![core_fn(src)]),
+                };
+                out.push(Link { child: at(l.var), parents, how });
+            }
+        }
+        out
+    }
+
     fn new(groups: bool) -> Ad {
-        Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![], adjoints: AdjointMap::new(), generated: vec![], built: HashMap::new(), groups }
+        Ad { vjps: HashMap::new(), grads: HashMap::new(), diags: vec![], adjoints: AdjointMap::new(), generated: vec![], built: HashMap::new(), groups, tags: HashMap::new() }
     }
 
     /// Adds `f.<suffix>`, empty, to the program, to be filled once its id is
@@ -384,11 +536,13 @@ impl Ad {
     /// flows to the previous iteration, the stacked inputs' cotangents are
     /// written into slice `i`, the extras' are summed.
     #[allow(clippy::too_many_arguments)]
-    fn fold_bwd(&mut self, prog: &mut Program, body: FuncId, dim_args: &BTreeMap<presk_types::dim::DimVar, DimExpr>, src: &Func, acc_ty: &Ty, s_tys: &[Ty], ex_tys: &[Ty], ex_d: &[usize], span: Span) -> FuncId {
+    fn fold_bwd(&mut self, prog: &mut Program, body: FuncId, dim_args: &BTreeMap<presk_types::dim::DimVar, DimExpr>, src: &Func, acc_ty: &Ty, s_tys: &[Ty], ex_tys: &[Ty], ex_d: &[usize], span: Span, tag: Option<Tag>) -> FuncId {
         let vjp = self.vjp_of(prog, body);
         let bsrc = prog.func(body).clone();
         let id = FuncId(prog.funcs.len() as u32);
         let mut e = Emit::new();
+        // Every `let` of a backward fold's body is the fold's adjoint.
+        e.tag = tag;
         let i = e.fresh();
         let thetas: Vec<VarId> = s_tys.iter().map(|_| e.fresh()).collect();
         let acc_i = e.fresh();
@@ -427,6 +581,7 @@ impl Ad {
             outs.push(e.prim(ex_tys[*jj].clone(), PrimOp::Add, vec![ct_e[j], c], span));
         }
         let result = e.emit(acc_tuple.clone(), Rhs::Tuple(outs), span);
+        self.flush(id, &mut e);
         prog.funcs.push(Func { name: format!("{}.fold_bwd", src.name), origin: Origin::Lambda { parent: body }, dims: src.dims.clone(), params, ret: acc_tuple, effects: vec![], body: Block { lets: e.lets, result }, span });
         self.generated.push(id);
         id
@@ -442,8 +597,10 @@ impl Ad {
         let src = prog.func(f).clone();
         let mut e = Emit::new();
         let params: Vec<Param> = src.params.iter().map(|p| Param { var: e.fresh(), name: p.name.clone(), ty: p.ty.clone() }).collect();
+        e.tag(How::Seed, Of::Func(f));
         let one_n = e.emit(Ty::Nat, Rhs::Lit(Lit::Nat(1)), span);
         let one = e.prim(Ty::scalar_real(), PrimOp::Real, vec![one_n], span);
+        e.tag(How::Plumbing, Of::Func(f));
         let ret_tuple = Ty::Tuple(src.params.iter().map(|p| p.ty.clone()).collect());
         let mut args: Vec<VarId> = params.iter().map(|p| p.var).collect();
         args.push(one);
@@ -457,6 +614,7 @@ impl Ad {
             (e.emit(ty.clone(), Rhs::Tuple(vs), span), ty)
         };
         let g = FuncId(prog.funcs.len() as u32);
+        self.flush(g, &mut e);
         prog.funcs.push(Func {
             name: format!("{}.grad", src.name),
             origin: Origin::Lambda { parent: f },
@@ -510,6 +668,7 @@ impl Ad {
         let mut fold_pre: HashMap<VarId, VarId> = HashMap::new();
         let mut fold_pair: HashMap<VarId, VarId> = HashMap::new();
         for l in &src.body.lets {
+            e.tag(How::Primal { mode: "kept".into() }, Of::Let(f, l.var));
             let rhs = match &l.rhs {
                 Rhs::Lit(x) => Rhs::Lit(x.clone()),
                 Rhs::Prim { op, args } => Rhs::Prim { op: op.clone(), args: args.iter().map(|a| rn(&rename, a)).collect() },
@@ -559,6 +718,7 @@ impl Ad {
             let y = rn(&rename, &l.var);
             let Some(ct) = adj.get(&y).copied() else { continue };
             let span = l.span;
+            e.tag(How::Adjoint { rule: adjoint_rule(&l.rhs) }, Of::Let(f, l.var));
             let contributions: Vec<(VarId, VarId)> = match &l.rhs {
                 Rhs::Lit(_) | Rhs::Closure { .. } | Rhs::Grad(_) => vec![],
                 Rhs::Fold { body, dim_args, n, stacked, init, extra, index, reverse, .. } => {
@@ -574,7 +734,7 @@ impl Ad {
                     let s_tys: Vec<Ty> = st.iter().map(|v| types[v].clone()).collect();
                     let ex_tys: Vec<Ty> = ex.iter().map(|v| types[v].clone()).collect();
                     let ex_d: Vec<usize> = (0..ex.len()).filter(|j| differentiable(&ex_tys[*j])).collect();
-                    let bwd = self.fold_bwd(prog, *body, dim_args, &src, &acc_ty, &s_tys, &ex_tys, &ex_d, span);
+                    let bwd = self.fold_bwd(prog, *body, dim_args, &src, &acc_ty, &s_tys, &ex_tys, &ex_d, span, e.tag.clone());
                     // The backward accumulator: (ct of the accumulator, ct of every stacked
                     // input, ct of every differentiable extra), from (ct, zeros…).
                     let mut acc_tys = vec![acc_ty.clone()];
@@ -660,13 +820,22 @@ impl Ad {
                     continue;
                 }
                 let acc = match adj.get(&var) {
-                    Some(prev) => e.prim(types[&var].clone(), PrimOp::Add, vec![*prev, c], span),
+                    Some(prev) => {
+                        // The primal whose adjoint sums: `var`'s `let` in
+                        // `f`, or `f` for one of its parameters.
+                        let of = src.body.lets.iter().find(|m| rename.get(&m.var) == Some(&var)).map_or(Of::Func(f), |m| Of::Let(f, m.var));
+                        let saved = e.tag.replace(Tag::new(How::Accumulate, of));
+                        let a = e.prim(types[&var].clone(), PrimOp::Add, vec![*prev, c], span);
+                        e.tag = saved;
+                        a
+                    }
                     None => c,
                 };
                 adj.insert(var, acc);
             }
         }
         // Result: the adjoint of every parameter (zeros when nothing flowed).
+        e.tag(How::Zero, Of::Func(f));
         let mut outs = Vec::new();
         for p in &params[..params.len() - 1] {
             let a = match adj.get(&p.var) {
@@ -679,12 +848,14 @@ impl Ad {
         let mut again = vec![];
         if value {
             let v;
-            (v, again) = Self::value_of(&mut e, &src, &rename);
+            (v, again) = Self::value_of(&mut e, f, &src, &rename);
             outs.insert(0, v);
             tys.insert(0, src.ret.clone());
         }
         let ret = Ty::Tuple(tys);
+        e.tag(How::Plumbing, Of::Func(f));
         let result = e.emit(ret.clone(), Rhs::Tuple(outs), src.span);
+        self.flush(id, &mut e);
         if !value {
             // Keep the correspondence before it is lost: which variable of
             // this vjp holds `∂output/∂v` for each `v` of the forward body.
@@ -718,13 +889,14 @@ impl Ad {
     /// types. The calls and folds, whose kernels are their callees', and the
     /// projections, which compute nothing, are the forward copy's. Returns
     /// the value and what was computed again, `f`'s `let` and its copy's.
-    fn value_of(e: &mut Emit, src: &Func, rename: &HashMap<VarId, VarId>) -> (VarId, Vec<(VarId, VarId)>) {
+    fn value_of(e: &mut Emit, f: FuncId, src: &Func, rename: &HashMap<VarId, VarId>) -> (VarId, Vec<(VarId, VarId)>) {
         let mut again: Vec<(VarId, VarId)> = vec![];
         let mut map: HashMap<VarId, VarId> = HashMap::new();
         for l in &src.body.lets {
             if !matches!(l.rhs, Rhs::Prim { .. }) && !l.rhs.vars().iter().any(|v| map.contains_key(v)) {
                 continue;
             }
+            e.tag(How::Primal { mode: "recomputed".into() }, Of::Let(f, l.var));
             let rhs = l.rhs.map_vars(|v| map.get(&v).or_else(|| rename.get(&v)).copied().unwrap_or(v));
             let nv = e.emit(l.ty.clone(), rhs, l.span);
             e.lets.last_mut().unwrap().name = l.name.clone();

@@ -226,7 +226,10 @@ gradient plus `adamw.step`. Each runs under the default layout and under the
 plans the frozen profile gives. The runs use the ten X925 cores, pinned,
 with ten threads on every side, since the plans divide among ten workers.
 Each figure is the median of seven calls or steps; the native backend's
-first call, which compiles, is left out, and PyTorch's first too. The two
+first call, which compiles, is left out, and PyTorch's first too. Since
+D126 a timing of record also runs each row in several processes, at least
+three, and reports the median across them and the fastest, since a
+process may run its kernels in a slower mode for its whole life (D124). The two
 runs, in ms, and the factor over PyTorch:
 
 | side | forward pass | one training step |
@@ -1236,7 +1239,13 @@ several processes). Its forward pass at batch 1, in ms:
   one scalar nest. All-`f32` ran at 3.7–3.9 s in 7 of its 8 processes
   (D107's 3 744 ms) and at 2 439 ms in one; the solved realization at
   2.4–2.9 s in all 8. The cause of all-`f32`'s slow processes is not
-  found.
+  found (`docs/kernels-roadmap.md`, "A launch inside a call slower than
+  alone").
+- *So every timing of record runs each row in several processes* since
+  D126, at least three, and reports the median across them and the
+  fastest. D107's 13.6× above is one process, in the slow mode. Against
+  V5's eight all-`f32` processes, the median gives 13.9× and the fastest
+  8.9×, PyTorch's side not timed again.
 
 **What T2 says.** A training step of the course GPT in C is level with
 PyTorch's on these cores, where 0.9.0 left it 12× behind. In order of what
@@ -1332,6 +1341,73 @@ drew nothing, and is now refused. Two are left: the entry's arguments are not si
 input's rounding is charged at `u · 1` whatever its range; and the bound
 for `ŷ₀` is every element's only to within 0.3 %, the sequential sum not
 being symmetric in them.
+
+## 12. Where the measurement decides: three programs the solver widens (D128)
+
+Every solve §4–§10 report was accepted as proposed. `make widening`
+(`experiments/widening.sh`, the report `docs/widening-2026-10-16.md`)
+solves six small entries of `experiments/widening.psk` at seven budgets,
+three pairs in which one form makes the first-order estimate wrong and the
+other does not:
+
+| program | budget | the estimate admits | measured | widening | beside it |
+|---|---|---|---|---|---|
+| an unshifted softmax of logits near 84 | 10⁻³ | `f32` (6.3·10⁻⁶ against 3.7·10⁻⁴) | 0.372: the row's sum of `exp` past `f32`'s range | 4 rounds, all-`f64` | the `softmax` primitive: none, 2.00× |
+| the two-pass standard deviation, rows at 1 000 | 10⁻³ | `bf16` for the mean, whose cotangent is zero | 4.3·10⁻²: (δμ)²/2σ | 5 rounds, the mean last, 1.00× | the one-pass formula: none |
+| a sum of 4 096 equal terms | 10⁻⁵ | `f32` for the sum | 1.6·10⁻²: correlated roundings | 1 round, 2.00× | noisy terms: none |
+
+Under one type everywhere, the unshifted softmax in `f32` puts every rule
+of `presk check`, the bounds included, below the gap, by 4·10⁴ to 10⁵ (no
+rule compares a value's magnitude with its type's range); on the equal
+terms `rss` is 10× below it and `cond` 6.4× above. The widening goes by
+the estimate's terms, so the misjudged value is widened last and nothing
+is narrowed again: widening it alone would hold the budget at 1.33× and
+2.00× where the solver ends at 1.00×. The run first found and fixed a
+defect: a tensor first argument was offered to the solver as a parameter,
+which no executor runs, and every measurement narrowing it read ∞.
+
+## 13. PyTorch's own gap to the exact model (D130)
+
+`make pytorch-gap` (`experiments/pytorch_gap.sh`, the report
+`docs/pytorch-gap-2026-10-16.md`) runs `make margins`' model, the course
+GPT at D = 64 on its trained weights, exported to PyTorch and run by
+PyTorch 2.14 eager in eval mode, on the 461 held-out windows, and sets its
+logits against the exact ones `make margins` took at 128 bits. PyTorch's
+`float32` run is 2.95·10⁻⁶ from them at worst over 118 016 positions,
+flips no decision and lies 158 times inside ε\*(10⁻³) = 4.67·10⁻⁴; on one
+thread or ten, bit for bit the same. The compiler's all-`f32` is 3.12·10⁻⁶.
+PyTorch's `float64` run is 5.9·10⁻¹⁵ from the exact logits, as the native
+`f64` is: PyTorch could approximate its `float32` gap by its own `float64`
+run, but only the exact reference says how close that `float64` is.
+
+## 14. The course GPT trained at course scale, through the margins (D129)
+
+The course GPT at D = 384, H = 6, L = 6 (10.8 M parameters), trained 600
+steps natively in `f64` on 90 % of the Code civil (4 h), then taken
+through §4's curve and the margins (`experiments/curve_course.sh`,
+`experiments/margins_course.sh`; the report
+`docs/margins-course-2026-10-16.md`). On the 461 held-out windows the
+exact model's validation loss is 2.3307 and its accuracy 0.3037. The
+exact logits at 128 bits took 2 h 28 min on twelve cores. ε\*(10⁻³) is
+4.96·10⁻⁴. The curve's realization at 10⁻³ (1.98× less traffic, eight
+parameters in `bf16`) is 2.8·10⁻⁴ from the exact logits and the one solved
+on the logits at ε\* (1.97×) 2.1·10⁻⁴; neither flips any of the 118 016
+decisions, and every certified realization's validation loss is the exact
+model's to 2·10⁻⁵. PyTorch's `float32` run of the same model is 6.4·10⁻⁶
+from the exact logits, the native all-`f32` 1.8·10⁻⁵.
+
+## 15. A contraction's bound proved (D131)
+
+`make gappa-dot` (`experiments/gappa_dot.sh`, the report
+`docs/gappa-dot-2026-10-16.md`, the files under `docs/gappa-dot/`) does
+for `dot` what §11 did for the layer norm: one output element of
+`[8, K]·[K, 8]` in `f32`, the products rounded and summed in the kernel's
+order, sequential or `interleaved(n)`, proved in Gappa from the
+envelope's magnitudes of the operands, at K = 8 to 128. Under the
+sequential order the proof is 2.6 to 3.1 times `cond` at every width,
+flat over a sixteenfold length; under `interleaved(n)` 3.3 to 6.0 times.
+Both bounds grow as K², the measured gap much more slowly: at K = 128 the
+proof is 514 times the gap and `cond` 164 times.
 
 ## What these experiments do not show
 

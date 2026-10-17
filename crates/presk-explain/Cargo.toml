@@ -11,6 +11,7 @@ repository.workspace = true
 presk-syntax.workspace = true
 presk-types.workspace = true
 presk-core.workspace = true
+presk-provenance.workspace = true
 presk-interp.workspace = true
 presk-rt.workspace = true
 presk-kernel.workspace = true
@@ -20,6 +21,10 @@ presk-precision.workspace = true
 presk-export-c.workspace = true
 presk-export-pytorch.workspace = true
 presk-driver.workspace = true
+presk-cranelift.workspace = true
+presk-print-math.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,78 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(\"corpus/nlp/05_gpt.psk\", Format::Unicode)"
+---
+-- presk dump --stage elab --format unicode: 05_gpt.psk and its imports, as the equations
+-- of the language reference's chapter 3
+
+== 05_gpt.psk
+  constants  V = 92,  D = 384,  H = 6,  HD = D / H = 64,  L = 6
+  dimensions  B,  T ≤ 1024
+  types  Tokens = idx[V][batch: B, seq: T],  Acts = ℝ[batch: B, seq: T, model: D],  Mask = bool[seq: T, seq2: T],  Acc = (Acts, key)
+  asserted  D mod H = 0
+
+module Linear{In, Out}
+  parameters  w : ℝ[In, Out],  b : ℝ[Out]
+
+  Linear.apply, of x : ℝ[…, In]
+      ⟦Linear.apply⟧(θ, x) = (dot x, w) + b
+
+module LayerNorm{Dm}
+  parameters  γ : ℝ[Dm],  β : ℝ[Dm]
+
+  LayerNorm.apply, of x : ℝ[…, model: Dm]
+      μ = mean axis model x
+      σ2 = mean axis model (x − μ)²
+      ⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β
+
+module SelfAttention
+  parameters  wq : Linear{D, D},  wk : Linear{D, D},  wv : Linear{D, D},  wo : Linear{D, D}
+
+  SelfAttention.apply, of x : Acts,  mask : Mask,  kd : key, uses Rand
+      q = split_heads HxHD ⟦wq.apply⟧(x)
+      k = split_heads HxHD ⟦wk.apply⟧(x)
+      v = split_heads HxHD ⟦wv.apply⟧(x)
+      s[batch, heads, seq, seq2] = (∑_{hd} q[batch, heads, seq, hd] k[batch, heads, seq2, hd]) / √HD
+      a = dropout 0.2, kd, (softmax axis seq2 s, mask)
+      u[batch, heads, seq, hd] = ∑_{seq2} a[batch, heads, seq, seq2] v[batch, heads, seq2, hd]
+      ⟦SelfAttention.apply⟧(θ, x, mask, kd) = ⟦wo.apply⟧(merge_heads HxHD u)
+
+module FeedForward
+  parameters  up : Linear{D, 4 · D},  down : Linear{4 · D, D}
+
+  FeedForward.apply, of x : Acts
+      ⟦FeedForward.apply⟧(θ, x) = ⟦down.apply⟧(gelu ⟦up.apply⟧(x))
+
+module Block
+  parameters  attn : SelfAttention,  ff : FeedForward,  ln1 : LayerNorm{D},  ln2 : LayerNorm{D}
+
+  Block.apply, of s : Acc,  mask : Mask, uses Rand
+      (x, k) = s
+      (katt, k1) = split_key 2 k
+      (kres, k2) = split_key 2 k1
+      (kff, k3) = split_key 2 k2
+      h = x + (dropout 0.2, kres, ⟦attn.apply⟧(⟦ln1.apply⟧(x), mask, katt))
+      ⟦Block.apply⟧(θ, s, mask) = (h + (dropout 0.2, kff, ⟦ff.apply⟧(⟦ln2.apply⟧(h))), k3)
+
+module GPT
+  parameters  tok : ℝ[vocab: V, model: D],  pos : ℝ[T, D],  blocks : stack{L}(Block),  lnf : LayerNorm{D},  head : ℝ[D, V]
+
+  GPT.apply, of ids : Tokens,  k : key, uses Rand
+      mask = causal_mask seq: T
+      h0 = (embed tok, ids) + (embed pos, (positions seq: T))
+      (ke, kb) = split_key 2 k
+      y₀ = ((dropout 0.2, ke, h0), kb)
+      y_(ℓ + 1) = ⟦Block.apply⟧(θ.blocks[ℓ], y_ℓ, mask)    (0 ≤ ℓ < L)
+      (hL, _) = y_L
+      ⟦GPT.apply⟧(θ, ids, k) = dot ⟦lnf.apply⟧(hL), head
+
+loss, of θ : params GPT,  k : key,  batch : (Tokens, Tokens), uses Rand
+    (x, y) = batch
+    ⟦loss⟧(θ, k, batch) = mean (cross_entropy ⟦GPT.apply⟧(θ, x, k), y)
+
+hits, of p : ℝ[batch: B, seq: T, vocab: V],  q : ℝ[batch: B, seq: T, vocab: V]
+    ⟦hits⟧(p, q) = sum axis vocab (p × q)
+
+accuracy, of θ : params GPT,  k : key,  batch : (Tokens, Tokens), uses Rand
+    (x, y) = batch
+    ⟦accuracy⟧(θ, k, batch) = mean ⟦hits⟧((one_hot (argmax ⟦GPT.apply⟧(θ, x, k))), (one_hot y))

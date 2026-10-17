@@ -368,6 +368,15 @@ launches compiled. Compilation happens in process; there is no object file,
 no bundle and no cross-compilation yet (spec question 36): an entry that
 must run elsewhere leaves as a C program (below).
 
+Each kernel's machine code can be read with the line of the kernel each
+byte compiles (0.13.0 step 5, D138): `presk_cranelift::machine_code`
+compiles a listing as a run does, each statement's instructions carrying
+its line of the kernel's printed text as a Cranelift `SourceLoc`, and keeps
+the bytes, the ranges and Cranelift's text of the instructions. A run sets
+no `SourceLoc` and asks for no text, and a test finds the same bytes with
+and without them. `presk explain --format json|html` writes it and the
+pipeline view shows it (`explain` chapter, "The native column").
+
 The native backend passes the same conformance suite as the kernel
 interpreter with the same measured gaps, up to the last digits of `libm`'s
 functions against the standard library's (`loss_grad` through a stacked

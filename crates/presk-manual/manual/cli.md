@@ -112,6 +112,24 @@ until 0.11.0 step 7); `kernel` and `sensitivity` take `--entry`, `--dim`,
 `--plan`, `sensitivity` also `--weights` and `--sites`, and `core-opt`
 takes `--profile`.
 
+`--format latex|unicode` (0.13.0 step 4, D137) reads `--stage elab` or
+`--stage core-after-ad` as mathematics, in the notation of the language
+reference's chapter 3 (its section 3.10, "Programs as equations"; the
+`language` chapter, "Reading a program as mathematics"); `text`, the
+default, is the listing above. `elab` prints each function of the file and
+its imports as the equations of its `let`s and its value, a module's once:
+an operation by its name, `ein` as its sum at an index named by its axes, a
+call through a stack as its recurrence. `core-after-ad` prints every
+function of PSK-Core after differentiation, one equation per binding, the
+bindings of a generated function with what they were made for (an adjoint
+by the rule of its primitive, a primal's copy). `latex` is a fragment that
+compiles with the reference's preamble (its macros `\code` and `\den`),
+`--standalone` a document that compiles alone; `unicode` is the same for a
+terminal. `--module M` and `--function F` select. A form the printer does
+not write is printed as its source text and named on standard error; no
+program of the repository has one. Unlike the other stages' listings, this
+output is a product: its form is snapshot-tested (`presk-print-math`).
+
 Diagnostics (if any) are reported on standard error; the exit code is 1 when
 there are errors, 0 otherwise.
 
@@ -146,7 +164,7 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
 | `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it), and since 0.12.0 step 1 a `params` map giving a parameter its own type at rest, `f32` or `bf16` (`precision` chapter; run by every executor and the C export since step 2). The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
 | `--plan @FILE` | a realization plan (`realize` chapter, "The realization plan"; 0.7.0 step 1): a realization and a layout per nest. `--realize R` is the plan with realization `R` and the default layout, so the two flags are exclusive. The plan is checked against the program before anything runs, and each nest's layout against its shapes and its kernel when it is launched; an ill-formed layout is refused (`E7002`), never ignored. Every decision of the reference is lowered since 0.7.0 step 3. The reference interpreter ignores the layout. Also on `presk train`, `presk bench` and `presk dump`. |
-| `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). |
+| `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). The optimizer writes each function it optimizes back with new numbers, even where no rule changed it, so a realization that types sites (`storage`, `accum`) or a plan's layouts name the program before it: under `--opt` they are refused, `E7002`, each site named with what the optimizer made of it (since 0.13.0 step 1, D134; until then they applied to nothing they named, D133). A uniform realization runs. |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
 | `--threads N` | workers a parallel kernel may use on the native backend (`native` chapter); the default is the machine's cores, `1` keeps every kernel on one thread. Also on `presk train` and `presk bench`. |
 | `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`, from sample `--from I` (default 0). The other arguments are synthesized from `--seed` as usual. |
@@ -1091,7 +1109,7 @@ presk explain FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …]
     [--budget ε | --realize R | --plan @P.json] [--profile P.json] [--threads N]
     [--remat store|recompute] [--opt] [--weights W] [--seed S] [--bits B]
     [--envelope ENV.json] [--no-exact] [--target native,c,pytorch] [--measure]
-    [--site SITE …] --out DIR
+    [--site SITE …] [--format md|json|html] --out DIR
 ```
 
 Compiles the entry under one compilation's parameters and writes
@@ -1108,7 +1126,13 @@ measures on this machine (the native output against the exact reference,
 a call, each kernel beside its prediction, the host by phase); `--site`
 names the sites traced through every stage (0.11.0 step 5). Without
 `--measure` the document is deterministic, and every line the commands it
-quotes print is in it verbatim (X3). See the `explain` chapter.
+quotes print is in it verbatim (X3). `--format json` also writes
+`DIR/explain.json`, the document's facts and the provenance table as values
+(0.13.0 step 2, D135), and `--format html` also `DIR/explain.html`, the
+pipeline view (step 3, D136), with the formulas of the printer of the
+denotation (step 4, D137). `--opt` is refused with `--budget`, and with a
+realization that types sites (`E7002`, 0.13.0 step 1). See the `explain`
+chapter.
 
 ## `presk autotune FILE.psk --entry ENTRY --out DIR …`
 

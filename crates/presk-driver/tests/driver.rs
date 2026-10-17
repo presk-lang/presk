@@ -70,6 +70,29 @@ fn breakdown_sums_to_the_estimate() {
     assert!(solved.solution.realization.storage.keys().all(|k| decisions.iter().any(|d| &d.name == k)));
 }
 
+/// D128: an entry whose first argument is a tensor, not a parameter tree,
+/// has no parameter to offer. Until D128 the solver offered the tensor as
+/// the parameter of path ``, which no executor runs in a type of its own:
+/// every measurement narrowing it failed, read as an infinite gap, and the
+/// solver widened every other site back before it came to that one. On the
+/// attention row of experiments/widening.psk, by the softmax primitive, the
+/// proposal is accepted as it stands.
+#[test]
+fn a_tensor_first_argument_is_no_parameter() {
+    let file = root().join("experiments/widening.psk");
+    let (_, prog, mut core) = program(&file, &[]);
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None };
+    let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the attention row solves") };
+    assert!(solved.breakdown.iter().all(|s| !s.param), "a parameter offered");
+    assert!(solved.solution.realization.params.is_empty());
+    assert_eq!(solved.solution.rounds, 0);
+    let gap = solved.solution.measured.unwrap();
+    assert!(gap.is_finite() && gap <= solved.solution.budget_abs, "{gap} against {}", solved.solution.budget_abs);
+    assert!(!solved.solution.realization.storage.is_empty(), "nothing narrowed");
+}
+
 /// Step 2b: the roles of the tutorial's sites, as the reference's chapter 4
 /// gives a type a meaning — where a value is stored.
 #[test]

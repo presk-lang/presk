@@ -1,0 +1,27 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "typed_listing(file, Format::Latex)"
+---
+% presk dump --stage elab --format latex: layernorm.psk and its imports, as the equations
+% of the language reference's chapter 3. A fragment: it compiles with the reference's
+% preamble, whose macros \code and \den it uses (--standalone: a document).
+
+\subsection*{\texttt{layernorm.psk}}
+
+\paragraph{Module $\code{LayerNorm}\{D\}$.} Its parameters and modules: $\gamma : \mathbb{R}[D]$, $\beta : \mathbb{R}[D]$.
+
+\noindent $\code{LayerNorm.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$, $\mathit{eps} : \code{f64} = 10^{-5}$:
+\begin{alignat*}{2}
+\mu &= \code{mean axis}\ \code{model}\ x \\
+\sigma_{2} &= \code{mean axis}\ \code{model}\ (x - \mu)^{2} \\
+\hat{x} &= \frac{x - \mu}{\sqrt{\sigma_{2} + \mathit{eps}}} \\
+\den{\code{LayerNorm.apply}}(\theta, x, \mathit{eps}) &= \hat{x} \times \gamma + \beta
+\end{alignat*}
+
+\paragraph{Module $\code{RMSNorm}\{D\}$.} Its parameters and modules: $\gamma : \mathbb{R}[D]$.
+
+\noindent $\code{RMSNorm.apply}$, of $x : \mathbb{R}[\ldots, \code{model}{:}\,D]$, $\mathit{eps} : \code{f64} = 10^{-6}$:
+\begin{alignat*}{2}
+\mathit{ms} &= \code{mean axis}\ \code{model}\ x^{2} \\
+\den{\code{RMSNorm.apply}}(\theta, x, \mathit{eps}) &= \frac{x}{\sqrt{\mathit{ms} + \mathit{eps}}} \times \gamma
+\end{alignat*}

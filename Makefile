@@ -34,7 +34,10 @@
 #   make c-conformance    the C export: every entry of the plan-check set and the course GPT exported, built, run, bit for bit, under the default layout and under plans, on GCC, Clang and for x86-64; presk serve's tokens from the exported generation loop; integer weights on the trained checkpoints; every nest in the SCoP mode against Polly (0.9.0 steps 3–8)
 #   make c-speed          statement C4: the exported course GPT's forward at B = 16 against the native backend's, one thread and every thread (0.9.0 step 5; a quiet machine)
 #   make pytorch-baseline the course GPT's forward pass and training step on three sides, native, C and PyTorch, into out/pytorch-baseline/report.md (D87; a quiet machine, about forty minutes)
+#   make widening         where the measurement changes the solver's decision: three pairs of small programs (an unshifted softmax, the two-pass variance, a sum of equal terms, each beside the form the estimate judges right), the four rules' bounds and every solve's widening rounds at seven budgets, into out/widening/summary.md (D128; minutes, nothing timed)
+#   make pytorch-gap      PyTorch's own gap to the exact model and its flips: the course GPT at D = 64 exported and run by PyTorch eager in float32 and float64 on the 461 held-out windows, against make margins' exact logits, beside the compiler's realizations, into out/pytorch-gap/margins.md (D130; needs make margins; seconds, nothing timed)
 #   make gappa            one nest's bound proved in Gappa beside the compiler's bound and the measured gap: the layer norm in f32 at D = 8…64 on eight rows, into out/gappa/summary.md (D108; needs `gappa`, apt's; minutes, nothing timed)
+#   make gappa-dot        a contraction's bound proved in Gappa beside the compiler's bound and the measured gap: `dot` of [8, K]·[K, 8] in f32 at K = 8…128 under the sequential order and interleaved(4, 8, 16), into out/gappa-dot/summary.md (D131; needs `gappa`; minutes, nothing timed)
 #   make pytorch-decoder  the Llama 2 decoder block at the 7B width, its forward pass natively and in PyTorch eager, ten X925 cores pinned, into out/pytorch-decoder/report.md (D107; alone, about three and a half hours)
 #   make host-profile     the native host's time by phase on the course GPT's forward pass, gradient and training step, into out/host-profile/report.md (0.10.0 step 5, D95; a quiet machine)
 #   make zig              zig from PyPI in .venv-zig: the Clang and the x86-64 cross-compiler of statement C3 (0.9.0 step 5)
@@ -69,6 +72,7 @@
 #   make explain          presk explain on the tutorial's loss (a budget of 1e-3, the frozen profile, every target) into out/explain/loss (0.11.0)
 #   make explain-pdf      the PDF of a presk explain document, EXPLAIN=DIR (out/explain/loss by default): pandoc and lualatex (TeX Live 2026), DejaVu fonts
 #   make explain-manual   the tutorial's document regenerated into the manual's chapter explain_loss, which a test holds current
+#   make math-check       the printer of the denotation's standalone LaTeX of the tutorial, the examples and the course GPT, each compiled by LuaLaTeX into out/math/ (0.13.0 step 4)
 #   make clean
 
 PRESK_SPECS_DIR ?= ../presk-specs
@@ -94,7 +98,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: margins explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: math-check margins widening pytorch-gap gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -976,6 +980,26 @@ pytorch-decoder:
 	$(CARGO) build --release -p presk
 	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) experiments/pytorch_decoder.sh $(DECODER_OUT)
 
+# Where the measurement changes the solver's decision (D128): the six entries
+# of experiments/widening.psk, calibrated at 128 bits, checked under f64,
+# f32 and bf16 (the four rules and the measured gap), solved at seven
+# budgets with every move `presk explain` records, and the proposal with
+# only the misjudged value widened measured beside each widening solve;
+# into out/widening/summary.md. Nothing timed, any machine, a few minutes.
+widening:
+	$(CARGO) build --release -p presk
+	./experiments/widening.sh
+
+# PyTorch's own gap to the exact model (D130): make margins' model exported
+# to PyTorch and run in eval mode on the same windows, float32 on ten X925
+# cores and on one, float64 on ten, each row's largest gap, flips and bound
+# counted by experiments/margins.py report beside the compiler's rows. Needs
+# make margins' output (EXTRA as experiments/pytorch_gap.sh says, for the
+# solved rows) and the .venv's torch.
+pytorch-gap:
+	$(CARGO) build --release -p presk
+	./experiments/pytorch_gap.sh
+
 # One nest's bound proved in Gappa, beside the compiler's bound and the
 # measured gap (D108): `LayerNorm{D}.apply` in f32 at D = 8, 16, 32 and 64
 # on eight rows, each width's envelope, the four rules' bounds and the gap
@@ -993,6 +1017,18 @@ BATCH ?= 8
 HYPS ?= sites input
 REALIZE ?= f32
 GAPPA_OUT ?= out/gappa
+
+# A contraction's bound proved in Gappa (D131): experiments/gappa_dot.sh, a
+# copy of gappa.sh for `dot` of experiments/gappa_dot.psk, one output
+# element of [8, K] · [K, 8] in f32 at K = 8, 16, 32, 64, 128 under the
+# sequential order and interleaved(n), the hypotheses the operands' and the
+# output's magnitudes from the envelope; into out/gappa-dot/summary.md.
+# Needs `gappa` on the PATH, or GAPPA= (a source build: the manual's
+# dependencies). About fifteen minutes, K = 128 the most.
+gappa-dot:
+	$(CARGO) build --release -p presk
+	GAPPA="$(GAPPA)" ./experiments/gappa_dot.sh
+GAPPA ?= gappa
 
 # The native host measured (plan 0.10.0 step 5, D95): `presk bench
 # --host-profile` and `presk train --host-profile` on the course GPT under
@@ -1036,6 +1072,23 @@ explain-pdf:
 	  -H $(CURDIR)/crates/presk-explain/pandoc/header.tex -V mainfont="DejaVu Serif" -V sansfont="DejaVu Sans" \
 	  -V monofont="DejaVu Sans Mono" -V geometry:margin=2cm -V fontsize=10pt -V colorlinks=true --toc --toc-depth=2
 	@echo "wrote $(EXPLAIN)/explain.pdf"
+
+# The printer of the denotation (plan 0.13.0 step 4, D137): the typed program
+# and PSK-Core after differentiation of the tutorial, the examples and the
+# course GPT, as LaTeX documents that compile alone, each compiled by LuaLaTeX
+# into out/math/. Nothing timed, any machine with TeX Live.
+MATH_FILES = tutorial/07_train.psk tutorial/03_attention.psk tutorial/04_grad.psk \
+             tests/examples/mlp/mlp.psk tests/examples/layernorm/layernorm.psk tests/examples/minigpt/minigpt.psk \
+             corpus/nlp/05_gpt.psk
+math-check: build
+	@mkdir -p out/math
+	@for f in $(MATH_FILES); do n=$$(basename $$f .psk); \
+	  $(PRESK) dump $$f --stage elab --format latex --standalone > out/math/$$n.tex 2> /dev/null || exit 1; \
+	  $(PRESK) dump $$f --stage core-after-ad --format latex --standalone > out/math/$$n-core.tex 2> /dev/null || exit 1; \
+	done
+	@cd out/math && for t in *.tex; do PATH="$(TEXLIVE):$$PATH" lualatex -interaction=nonstopmode -halt-on-error $$t > /dev/null \
+	  || { echo "math-check: $$t does not compile (out/math/$${t%.tex}.log)"; exit 1; }; done
+	@echo "math-check: $$(ls out/math/*.pdf | wc -l) documents compile, in out/math/"
 
 explain-manual:
 	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk --test explain the_manual_holds_the_tutorial_s_document

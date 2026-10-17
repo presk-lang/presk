@@ -14,6 +14,12 @@ pub fn differentiate(core: &mut presk_core::Program, remat: Remat, groups: bool)
     presk_core::ad::transform_as(core, options(remat, groups))
 }
 
+/// [`differentiate`], and the links of what it made (plan 0.13.0 step 1,
+/// D134).
+pub fn differentiate_traced(core: &mut presk_core::Program, remat: Remat, groups: bool) -> (Vec<Diagnostic>, Vec<presk_provenance::Link>) {
+    presk_core::ad::transform_traced(core, options(remat, groups))
+}
+
 /// The options [`differentiate`] passes.
 pub fn options(remat: Remat, groups: bool) -> Options {
     Options { remat, groups }

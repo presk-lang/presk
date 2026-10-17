@@ -106,6 +106,10 @@ crates/presk-serve           the generation loop over a Backend, presk serve    
 crates/presk-opt             e-graph rewriting of PSK-Core, cost models, profiles, the layout model's fit    (0.3.0 steps 6–7, 0.7.0, 0.8.0)
 crates/presk-realize         PSK-Realize v0: fusion groups over PSK-Core bodies     (0.4.0 step 4)
 crates/presk-precision       envelope, error bounds, sensitivity, the solver         (0.5.0 steps 2–6, 0.6.0)
+crates/presk-provenance      the provenance table: every element of every stage and what it was made from   (0.13.0 step 1)
+crates/presk-driver          the pipeline as values, which the commands and presk explain share   (0.11.0 step 1)
+crates/presk-explain         presk explain: one compilation as a document, its JSON and its pipeline view   (0.11.0 steps 3–6, 0.13.0)
+crates/presk-print-math      the printer of the denotation: a program as the equations of the reference's chapter 3   (0.13.0 step 4)
 crates/presk-cli             the `presk` binary
 crates/presk-manual          this manual
 tests/examples               the example programs of presk-specs (do not edit here)

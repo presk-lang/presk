@@ -12978,3 +12978,1060 @@ closed (presk-specs !80, draft v0.17).
 - the two departures of step 4 (D123);
 - V5's change of protocol, each row timed in several processes (D119,
   D124).
+
+## D126 — After 0.12.0, the user's three decisions: a parameter's sensitivity is its leaf's exact 1-norm; `--quant` stays a pass on top, one menu a design for later; every timing of record runs each row in several processes (2026-10-15)
+
+After the tag `v0.12.0`, the user decided the three points D123 and D124
+left, each as recommended.
+
+**1. A parameter's sensitivity is the exact 1-norm of its leaf of the
+cotangent** (D123's first departure, kept).
+- *What plan 0.12.0 decided* (its question 3): the 1-norm of each read's
+  partial, summed during the sweep, without keeping the cotangent whole.
+  That is an upper bound.
+- *What runs:* the sweep returns the parameters' cotangent whole anyway,
+  as the `.vjp`'s result, so each leaf's exact 1-norm is read as it
+  returns, then dropped. It costs no memory: the decoder's solve peaked at
+  71.7 GB, as at 0.11.0. It ranks better than the bound, most for a
+  parameter read in several places (a stacked layer's, a norm's γ).
+- *When to revisit:* if a sweep stops holding the cotangent whole, by
+  streaming it, the summed partials are the fallback.
+
+**2. `--quant` stays a pass on top of the float assignment** (D123's
+second departure, kept).
+- *What plan 0.12.0 asked:* the integer types in the same menu as `f32` and
+  `bf16`.
+- *Why not:* the float rungs are priced by a bound per element times a
+  1-norm, the integer rungs by the root-sum-square of known moves (D49).
+  In one knapsack the order would follow the units, not the moves.
+- *For later:* the design of one menu, both kinds of rung as a
+  root-sum-square of first-order moves, is `docs/precision-menu-roadmap.md`.
+
+**3. Every timing of record runs each row in several processes** (D119's
+and D124's finding, adopted as the protocol).
+- *The finding:* a call of the same plan runs in one of two modes, chosen
+  per process and kept for its life. All-`f32` on the decoder block took
+  3.7–3.9 s in 7 of 8 processes and 2.44 s in one; 0.11.0's solved
+  realization 7.4 s in one process and 9.3 s in another (D119).
+- *The protocol from now on:* D100's (the ten X925 cores pinned, the
+  median of seven calls after a warmup, under the plan), with each row
+  timed in several processes, at least three. The report gives the median
+  across the processes' medians and the fastest, as V5 did (D124). A
+  comparison between rows reads the medians; the fastest says what the
+  code can do.
+- *What it moves:* D107's 13.6× against PyTorch at batch 1 (3 744 ms
+  against 275 ms) is one all-`f32` process, in the slow mode. Against V5's
+  eight all-`f32` processes, with 0.12.0's binary, the median (3 809 ms)
+  gives 13.9× and the fastest (2 439 ms) 8.9×. PyTorch's side was not timed
+  again. The paper's session is told which figure is which; D107's row is
+  not re-measured here.
+- *The cause:* not found. A per-launch timer inside a call would name it;
+  that is a diagnostic for later, in `docs/kernels-roadmap.md` ("A launch
+  inside a call slower than alone").
+
+No code changes. The experiment scripts time one process per row;
+`pytorch_decoder.sh`'s output directory per run lets a timing of record
+repeat rows in rounds, as V5's did (`out/v5-0.12.0/b1-round1` … `3`).
+
+## D127 — The course GPT's timings across five processes, by D126's protocol: T2 0.98×, T4 1.52× and 1.60×, J′ 1.75×, each the median of five within 0.01 of its one-process figure; no process in a slow mode on any row a statement reads (2026-10-15/16)
+
+The paper quotes three timings on the course GPT that came from one
+process each: T2 and T4 from D100's baseline, J′ from D103's `make j-step`.
+D126 made several processes per row the protocol of record. The paper's
+session asked for the three figures again under it
+(presk-project `docs/prompt-retime-processes-2026-10-15.md`). The record
+is `docs/retime-2026-10-15.md`; Table 4's panel, in the baseline report's
+format, is `docs/retime-2026-10-15-table4.md`.
+
+**How.**
+- *The binary:* the release binary of `main` at `335aa1e`, whose code is
+  the tag `v0.12.0`'s (since `2fb6a90`, only the manual changed, and
+  `presk-cli` does not depend on it).
+- *The machine:* falicon, nothing else on it, from 2026-10-15 21:24 to
+  2026-10-16 00:18.
+- *The rounds:* five of `experiments/pytorch_baseline.sh` (21 minutes
+  each), then five of `experiments/j_step.sh` (11 minutes each), each
+  into its own output under `out/retime-0.12.0/`. The driver waited
+  before each round until the one-minute load fell under 1.5.
+- *The scripts:* unchanged. A new script,
+  `experiments/retime_processes.py`, combines the rounds: a row's median
+  is the median of its five processes' medians, its fastest the smallest,
+  and a ratio reads the medians. Run on D100's run alone, it gives D100's
+  table to every digit, and the paper's `pytorch.py` reads its table file
+  unchanged.
+- *The outputs:* every one is unchanged in every round. C1 holds on the
+  15 C programs; every layout gives the same logits and gradient; the
+  distances to the `f64` logits are D100's and J′'s gaps D103's, to every
+  digit.
+
+**The verdicts stand.**
+
+| statement | median of five | fastest | one process (D100, D103) | verdict |
+|---|---|---|---|---|
+| T2: the C step ÷ PyTorch's, at most 2× | 0.98× (1 003.5 ms against 1 026.9) | 0.98× | 0.99× | holds |
+| T4: the native forward pass ÷ the C program's, at most 1.3× | 1.52× (343.4 against 226.0) | 1.51× | 1.52× | fails |
+| T4: the native step ÷ the C program's, like for like | 1.60× (1 354.3 against 846.9) | 1.61× | 1.60× | fails |
+| J′: the solved step ÷ all-`f64`'s, at least 1.3×, inside 10⁻³ | 1.75× (13.91 s against 24.35), gap 6.759·10⁻⁵ | 1.74× | 1.75× | holds |
+
+What moved:
+- *presk's rows:* every one a statement reads is about 1 % slower than
+  D100's.
+- *PyTorch's step:* 1.8 % slower (1 008.6 → 1 026.9 ms).
+- *Beside the statements:* all-`f32` is at 1.76× (D103 1.75×) and the
+  recipe at 1.53× (D103 1.47×). D103's one four-step process of the
+  recipe, 67.81 s, is slower than any of the five here (64.33–65.41 s).
+  Whether a version since 0.10.0 or that one process accounts for it is
+  not measured.
+
+**No slow mode on a statement's row.**
+- *The test:* no row of the 44 the baseline times has a round more than
+  1.5× another.
+- *The statements' rows:* the widest spread is 3.0 %, all-`f64`'s per-step
+  time. J′'s one-step and four-step processes spread by at most 2.5 %, so
+  no per-step difference pairs a fast process with a slow one.
+- *The one trace of the two modes (D119, D124):* one `presk bench
+  --calibrate` process timing the [384, 1536] product's kernel alone, in
+  round 4, at 19.37 ms against 13.34–13.50 in the other four (1.45×).
+  No statement reads that row, and the same round's other rows were
+  normal.
+
+The course GPT does not show the two modes the decoder block showed
+(D124: all-`f32` at batch 1 slow in 7 of 8 processes).
+
+**For the paper:**
+- *Table 4's panel:* from `docs/retime-2026-10-15-table4.md`.
+- *The figures to quote:* T2 0.98×, T4 1.52× and 1.60×, J′ 1.75×, each as
+  "the median of five processes", with the fastest beside it.
+- *The threats paragraph:* the spreads replace "one process". Round by
+  round, T2 ran from 0.96× to 0.99×; T4 from 1.51× to 1.52× on the forward
+  pass and from 1.58× to 1.61× on the step; J′ from 1.72× to 1.77×.
+
+**The record:**
+- `out/retime-0.12.0/` is archived as presk-project
+  `data/retime-0.12.0.tar.xz`. It leaves out the C binaries, the `.psk.d`
+  files, the checkpoints and PyTorch's logits, which the scripts write
+  again bit for bit; their checksums are in `EXCLUDED.sha256`.
+- The decoder's rows (D107) were not timed again, as D126 says.
+
+## D128 — Where the measurement changes the solver's decision: an unshifted softmax, the two-pass standard deviation and a sum of equal terms make it widen, each beside a form that does not; the widening reaches the misjudged value last; a tensor first argument no longer offered as a parameter (2026-10-16)
+
+Every solve of record was accepted as proposed (D124: zero rounds, the
+gap 700 times inside its budget). The paper's session asked for one
+program on which the measurement refuses the proposal and widening lands
+the realization (presk-project `docs/prompt-paper-results-2026-10-16.md`,
+run 1). The record is `docs/widening-2026-10-16.md`; the tables are
+`experiments/widening.sh`'s (`make widening`), on the six entries of
+`experiments/widening.psk`, at seven budgets from 10⁻¹ to 10⁻⁶.
+
+**First, a defect, fixed.** Since 0.12.0 the solver offered an entry's
+first argument as the parameter of path `` when it was a tensor and not a
+parameter tree. No executor runs such an argument in its own type
+(`Realization::store_params` refuses it), so every proposal narrowing it
+measured ∞, and the solver widened everything else back first: on the
+one-pass standard deviation at 8 rows and 10⁻¹, six rounds and all-`f64`,
+against no round and 1.99× with the fix. `param_sites` now offers nothing
+when the first argument is not a record (test
+`a_tensor_first_argument_is_no_parameter`). Every solve of record takes
+its parameters first and is untouched.
+
+**Three cases, each a thing a first-order estimate cannot see.** The
+solver's estimate charges each stored value one rounding at its envelope
+magnitude, weighted by its cotangent's 1-norm.
+
+| program | estimate proposes | measured | widening | the form beside it |
+|---|---|---|---|---|
+| `attn_raw`, an unshifted softmax of logits near 84 (8 rows), 10⁻³ | `f32` for four values, 6.3·10⁻⁶ against 3.7·10⁻⁴ | 0.372, the row's sum of `exp` (3.78·10³⁸) past `f32`'s range | 4 rounds, all-`f64`, 1.4·10⁻¹⁵ | the `softmax` primitive: no round, 2.00×, 4.6·10⁻⁷ |
+| `std_two_pass`, rows offset to 1 000 (64 rows), 10⁻³ | `bf16` for the mean μ, whose cotangent is 4·10⁻⁴⁰ (Σ(z − μ) = 0), 4.8·10⁻⁵ against 1.2·10⁻³ | 4.3·10⁻², (δμ)²/2σ, of second order | 5 rounds, μ last, 1.00×, 4.3·10⁻⁸ | the one-pass E[z²] − μ²: no round below 10⁻¹ (its cancellation is charged at E[z²]'s magnitude) |
+| `clock`, a sum of 4 096 equal terms (4 rows), 10⁻⁵ | `f32` for the sum, 7.3·10⁻⁵ against 4.1·10⁻³ | 1.6·10⁻², 650 single roundings: correlated | 1 round, the sum in `f64`, 2.00×, 6.1·10⁻⁶ | the terms with noise: no round |
+
+**The bounds.** Under one type everywhere:
+- *Overflow:* on `attn_raw` in `f32` every rule, the three bounds
+  included, is below the measured gap, by 4·10⁴ to 10⁵. They are
+  first-order and nothing in them compares a magnitude with the type's
+  range.
+- *Correlated roundings:* on `clock` in `f32`, `rss` is 10× below the gap
+  and `cond` 6.4× above it; with noise in the terms, `rss` is 3.4× above.
+- *The variance:* `rss` held on both forms in `f32` (2.3× and 6.8× above
+  the gap) and fell to 0.68× on the two-pass form in `bf16`.
+
+So `rss`'s independence fails where the roundings are correlated, as the
+prompt expected, but not on the one-pass variance it proposed for it. On
+the proposals the measurement refused, `cond` is above the measured gap and
+the budget for the two-pass deviation (1.15 against 4.3·10⁻²) and the equal
+terms (0.100 against 1.6·10⁻²): there the first-order estimate misjudged,
+not the bound, which the solver does not verify by since it is vacuous on
+a transformer (D39). Under the overflow the bound fails too.
+
+**The widening reaches the culprit last.** It widens the value with the
+largest term of the estimate, and a value the estimate misjudged has a
+small one. So every innocent value goes back to `f64` first, and none is
+narrowed again: `attn_raw` ends at 1.00× where the sum and its reader alone
+in `f64` hold the budget at 1.33×, and `std_two_pass` at 1.00× where μ
+alone in `f32` holds it at 2.00× (6.1·10⁻⁶). On `clock` the culprit is the
+largest term, and the one round keeps 2.00×.
+
+**Found and left:**
+- the range is unchecked: a type that cannot hold a value's envelope
+  magnitude could be refused before measuring, or the bound printed as ∞;
+- the widening order is the estimate's: widening by the measured effect,
+  or narrowing again after a widening holds, would find the culprit;
+- a measured ∞ is either a refused run or outputs that are not finite
+  (`gap::leaf_gap`), which the solver's log does not tell apart.
+
+The outputs are archived as presk-project `data/widening-0.12.0.tar.xz`.
+
+## D130 — PyTorch's own gap to the exact model: its float32 run of the course GPT at D = 64 is 2.95·10⁻⁶ from the exact logits on the 461 held-out windows, flips no decision and lies 158 times inside ε*(10⁻³); as close as the compiler's all-f32 (3.12·10⁻⁶); a number PyTorch can approximate by its float64 run but not certify (2026-10-16)
+
+The paper's session asked for the competitor's run measured against the
+exact reference (presk-project `docs/prompt-paper-results-2026-10-16.md`,
+run 3). The record is `docs/pytorch-gap-2026-10-16.md`; the tables are
+`experiments/pytorch_gap.sh`'s (`make pytorch-gap`).
+
+**How.** `make margins` taken again (its D = 64 outputs had been removed)
+with D124's curve realization at 10⁻³ and V6's added: its figures are
+D125's and V6's to every digit. The course GPT at D = 64 exported to
+PyTorch (`--mode readable --train`) and run by PyTorch 2.14.0 eager in
+eval mode on presk's checkpoint and the same 461 windows; each position's
+largest gap, argmax (the reference's) and sum written as `make margins`
+writes a realization's, so that `experiments/margins.py report` counts
+PyTorch's flips and bound beside the compiler's rows.
+
+| run | largest gap | flips | bound #{m < 2ε} | inside ε*(10⁻³) = 4.67·10⁻⁴ |
+|---|---|---|---|---|
+| PyTorch `float32`, ten X925 threads | 2.948·10⁻⁶ (5.7·10⁻⁷ relative) | 0 | 0 | 158× |
+| PyTorch `float32`, one thread | the same, bit for bit | 0 | 0 | 158× |
+| PyTorch `float64`, ten threads | 5.878·10⁻¹⁵ | 0 | 0 | — |
+| presk all-`f32` | 3.115·10⁻⁶ | 0 | 0 | 150× |
+| presk solved on the logits (V6) | 7.525·10⁻⁵ | 0 | 18 | 6.2× |
+
+**What it says.** PyTorch's `float32` run of this model is as close to its
+function as the compiler's own all-`f32` and decides as the exact model
+does at every position. Its `float64` run is as close to the exact logits
+as presk's native `f64` (5.9·10⁻¹⁵), so the export computes the function
+the source denotes. PyTorch could approximate its `float32` gap by its own
+`float64` run, to 6·10⁻¹⁵; what it cannot do without an exact reference is
+know that its `float64` is that close. The products go through OpenBLAS and
+the rest through ATen's kernels in their libraries' orders, against the
+compiler's declared order; the 6 % between the two `f32` gaps is attributed
+to none of them.
+
+Run 2's trained model at the course constants gets the same rows from the
+same script (`CONSTS=`, `W=`, `MARGINS=`) with its exact logits (D129).
+The outputs are archived as presk-project `data/pytorch-gap-0.12.0.tar.xz`.
+
+## D129 — The course GPT trained at its course constants and taken through the margins: validation loss 2.3307, accuracy 0.3037, ε*(10⁻³) = 4.96·10⁻⁴; the curve's realization at 10⁻³ (1.98×, eight parameters in bf16) and the one solved on the logits (1.97×) flip none of 118 016 decisions; statement S holds at course scale; PyTorch float32 6.4·10⁻⁶ from the exact logits, the compiler's all-f32 1.8·10⁻⁵ (2026-10-16)
+
+The paper's largest limitation was two models at their initialization and
+no accuracy; at course scale nothing was trained (D93's probes are one
+and a few steps). The paper's session asked for the course GPT trained
+there and taken through the margins (presk-project
+`docs/prompt-paper-results-2026-10-16.md`, run 2). The record is
+`docs/margins-course-2026-10-16.md`.
+
+**How.**
+- *The training:* 600 steps natively in `f64` at D = 384, H = 6, L = 6
+  (10.8 M parameters), on 90 % of the Code civil, B = 16, T = 256, as
+  `curve.sh` trains the D = 64 model; 4 h 03 min, 24.45 s a step.
+- *The curve:* `experiments/curve_course.sh`, a copy of `curve.sh`'s
+  solver columns at the course constants on the trained weights, the
+  envelope in 25 min and seven solves of 43 to 69 min side by side.
+- *The exact logits:* `experiments/margins_course.sh`, a copy of
+  `margins.sh`, at 128 bits on the 461 held-out windows in 116 chunks of
+  4, twelve at a time, 2 h 28 min (180 s a window); every chunk's JSON
+  kept without the parameter tree `presk run --json` prints with it (623
+  MB a chunk); regrouped by 32 windows for the native rows
+  (`experiments/margins_rechunk.py`), byte for byte.
+- *The budget on the logits:* V6's protocol, the envelope on 4 windows
+  (51 min), `presk solve --budget-abs 4.96e-4` (1 h 36 min, 3.1 GB).
+- *The validation losses:* natively on every window
+  (`experiments/val_loss.sh`), the exact model's from the exact logits
+  (`experiments/margins_loss.py`).
+
+**The model.** Exact validation loss 2.330740 on the 461 windows (native
+`f64` within 3·10⁻¹²); accuracy 0.303722, against D = 64's 0.242442.
+
+**The margins.** ε\*(10⁻²) = 5.04·10⁻³, **ε\*(10⁻³) = 4.96·10⁻⁴**,
+ε\*(10⁻⁴) = 3.10·10⁻⁵ (Clopper–Pearson, α = 0.05; D = 64's ε\*(10⁻³) is
+4.67·10⁻⁴); each half of the windows certifies the other.
+
+| realization | gap on the logits | flips | bound | certified at 10⁻³ | validation loss − exact |
+|---|---|---|---|---|---|
+| all-`f32` | 1.76·10⁻⁵ | 0 | 2 | yes | −1.2·10⁻⁵ |
+| the curve at 10⁻³ (1.98×; 8 parameters and LayerNorm's ε in `bf16`) | 2.82·10⁻⁴ | 0 | 52 | yes | −1.2·10⁻⁵ |
+| solved at ε\* on the logits (1.97×) | 2.09·10⁻⁴ | 0 | 37 | yes | −1.8·10⁻⁷ |
+| the curve at 10⁻² | 6.08·10⁻³ | 3 | 1 364 | no | −1.8·10⁻⁵ |
+| all-`bf16` | 0.210 | 662 | 58 508 | no | −2.6·10⁻³ |
+| PyTorch `float32` | 6.42·10⁻⁶ | 0 | 0 | yes | — |
+
+**Statement S holds at course scale.**
+- Every curve realization certified at 10⁻³ (10⁻³ to 10⁻⁷) flips none
+  of the 118 016 decisions; every row's flips stay under its bound.
+- ε\*(10⁻³) licenses a realization narrower than `f32`: the curve's at
+  10⁻³, eight of its 21 parameters (the biases and the norms' β) and
+  LayerNorm's ε in `bf16`.
+- The realization solved on the logits measured 4.34·10⁻⁵ on its four
+  envelope windows and 2.09·10⁻⁴ on all 461 (4.8 times, D = 64's ratio
+  2.3), still 2.4 times inside ε\*.
+- No solve widened, at any budget.
+- The validation losses of the certified realizations are the exact
+  model's to within 2·10⁻⁵, the reduction of the loss itself in the
+  realization's type dominating that difference.
+
+**PyTorch at course scale.** D130's script at the course constants:
+PyTorch's `float32` run is 6.42·10⁻⁶ from the exact logits, 2.7 times
+closer than the compiler's all-`f32` (1.755·10⁻⁵; at D = 64 the two were
+within 6 %), no flip, the same on one thread and ten; its `float64`
+1.6·10⁻¹⁴. The factor is attributed to no one difference: PyTorch's
+libraries' orders against the compiler's declared sequential sums, the
+longest of 1 536 terms here.
+
+The outputs are archived as presk-project `data/margins-course-0.12.0.tar.xz`.
+
+## D131 — A contraction's bound proved in Gappa: dot of [8, K]·[K, 8] in f32 at K = 8 to 128; under the sequential order Gappa's proof stays 2.6 to 3.1 times the compiler's cond, flat over a sixteenfold length; 3.3 to 6.0 times under interleaved(n); every proof checks, proved and cond above the measured gap everywhere (2026-10-16)
+
+D108 proved the layer norm's bound, elementwise operations and one sum;
+the paper's session asked for the shape that dominates a network, a sum
+of products under the realization's declared order (presk-project
+`docs/prompt-paper-results-2026-10-16.md`, run 4). The record is
+`docs/gappa-dot-2026-10-16.md`; every file is under `docs/gappa-dot/`.
+
+**How.**
+- `experiments/gappa_dot.psk`: `dot` with its operands through an exact
+  `+ 0` site each, so that the envelope records their magnitudes; its
+  kernel is the bare product's (checked at every width and order).
+- `experiments/gappa_dot.py`: a second generator, one output element with
+  one rounding per operation in the kernel's order (sequential, or n
+  partial accumulators over k ≡ t (mod n) added left to right); the
+  hypotheses the operands' magnitudes, and with `sites` the output's.
+- `experiments/gappa_dot.sh` (`make gappa-dot`): `gappa.sh`'s procedure,
+  the query then the proof; K = 8, 16, 32, 64, 128 under the sequential
+  order and interleaved(4, 8, 16).
+- Gappa 1.6.0, D108's version, built from its source release on falicon
+  (no package installed; D108 ran on x86-64) with Boost 1.83's headers and
+  `gmp-mpfr-sys`'s GMP and MPFR; it gives D108's largest bound on D108's
+  files to the bit.
+
+| K | proved ÷ `cond`, sequential | interleaved(4, 8, 16) | `cond` ÷ measured, sequential | proved, sequential |
+|---|---|---|---|---|
+| 8 | 2.59× | 3.28× | 13× | 1.80·10⁻⁵ |
+| 16 | 2.94× | 4.42×, 3.70× | 14× | 5.78·10⁻⁵ |
+| 32 | 2.90× | 4.88×, 4.37×, 3.47× | 35× | 1.88·10⁻⁴ |
+| 64 | 2.85× | 5.18×, 4.78×, 4.03× | 45× | 6.62·10⁻⁴ |
+| 128 | 3.14× | 5.97×, 5.70×, 5.02× | 164× | 2.59·10⁻³ |
+
+**What it says.**
+- Gappa's bound does not open up with the sum's length: it stays within
+  about three times `cond` under the sequential order (D108's layer norm:
+  2.5–4.8×).
+- Both bounds grow as K² (×3.2–3.9 a doubling), the measured gap far
+  slower, so both lose to the measurement as K grows: `cond` 164× and
+  the proof 514× the gap at K = 128.
+- Interleaving lowers `cond` by its count of roundings, k/n + n against
+  k − 1 (5.1× at K = 128 under interleaved(8)); Gappa's proof drops
+  2.8×, so its ratio to `cond` rises to about 5. Which of the two is
+  slack is not examined.
+
+**Found and left:** the envelope records no partial sum, so Gappa's
+hypotheses are boxes on the operands, where `cond` reads the measured
+Σ|xᵢwᵢ|; Gappa's time grows about sevenfold a doubling (423 s at
+K = 128), so K = 384 would take hours and was not run; the generator
+mirrors the kernel by hand, there being no Gappa export (D108).
+
+## D132 — The curve's envelope and the envelope-stability figure on the trained weights: the curve moves (D = 64 3.17× → 1.15× against D124's 2.78× → 1.08×; course scale 2.68× → 1.03× against D129's 2.19× → 1.02×), no widening anywhere; the 10⁻³ realization is no longer certified on the logits (30 and 29 flips); statement S holds under both envelopes; the trained model's stability factor 1.25× and 1.10× (2026-10-16)
+
+After `make explain-pdf` the user observed that an envelope measured at
+initialization says nothing of the trained model. The curve's solves
+(`curve.sh`, D124; `curve_course.sh`, D129) and `make precision`'s three
+stability envelopes (D35) were calibrated with no `--weights`, on random
+tokens; a solve runs on its envelope's inputs, so the curve's sensitivities
+and measurements were on random tokens too. The paper's session asked for
+both again on the trained weights (presk-project
+`docs/prompt-envelope-state-2026-10-16.md`). The record is
+`docs/envelope-state-2026-10-16.md`.
+
+**How.** `experiments/curve_trained.sh` and `curve_course_trained.sh`,
+copies of `curve.sh` (QUALITY=0) and `curve_course.sh` whose calibration
+takes `--weights` and windows 0 and 1 of `out/civil_val_T256.psk.d`;
+realizations under `out/curve-trained_<b>.json` and
+`out/curve-course-trained_<b>.json`; their margins rows by `make margins`
+and `margins_course.sh` with `EXTRA`, from the exact logits that exist,
+beside D124's and D129's; D35's three stability calibrations again at
+D = 32 on the initialization, and at D = 64 on the initialization and on
+`gpt_trained`.
+
+**The envelopes differ.** The loss is 4.522 at initialization (ln 92, the
+zero head) against 2.788 (D = 64) and 2.248 (course) trained, so every
+absolute budget is 1.6 and 2.0 times smaller; magnitudes move by up to
+4.6 and 11.4 times; five sites, the logits among them, are zero at
+initialization and so were never narrowed by D124 and D129.
+
+| budget | D = 64: D124 → D132 | course: D129 → D132 | D = 64 logits, D132 (flips) | course logits, D132 (flips) |
+|---|---|---|---|---|
+| 10⁻¹ | 2.78× → 3.17× | 2.19× → 2.68× | 4.1·10⁻² (518) | 5.0·10⁻² (35) |
+| 10⁻² | 2.29× → 2.44× | 2.04× → 2.05× | 1.7·10⁻² (65) | 3.2·10⁻² (10) |
+| **10⁻³** | 2.00× → **2.12×** | 1.98× → **1.98×** | **7.8·10⁻³ (30)**, D124's 2.5·10⁻⁴ (0) | **6.5·10⁻³ (29)**, D129's 2.8·10⁻⁴ (0) |
+| 10⁻⁴ | 1.97× → 1.97× | 1.94× → 1.96× | 2.7·10⁻⁴ (0) | 2.0·10⁻⁴ (0) |
+| 10⁻⁵ | 1.58× → 1.92× | 1.51× → 1.81× | 7.5·10⁻⁵ (0) | 2.1·10⁻⁴ (0) |
+| 10⁻⁶ | 1.35× → 1.52× | 1.08× → 1.27× | 1.1·10⁻⁶ (0) | 1.9·10⁻⁷ (0) |
+| 10⁻⁷ | 1.08× → 1.15× | 1.02× → 1.03× | 7.5·10⁻⁷ (0) | 7.6·10⁻⁸ (0) |
+
+Every solve is inside its budget on the loss and none widened, under either
+envelope. At 10⁻³ the trained envelope's realizations put two attention
+values and three norm parameters in `bf16`; on the logits they are
+outside ε\*(10⁻³) (4.67·10⁻⁴ and 4.96·10⁻⁴), while D124's and D129's were
+inside it and flipped nothing. A budget on the loss, a mean over
+positions, does not bound the logits; the budget on the logits does (V6,
+D129's logits solve, both on the trained model's envelope already).
+Statement S holds under both envelopes and at both scales: every
+realization certified at 10⁻³ flips nothing (D132's from 10⁻⁴ down).
+
+**Stability.** D35's figure comes back at 0.12.0 (1.241×, 1.128×, D = 32,
+initialization); at D = 64 the initialization gives 1.191× and 1.286×
+and the trained weights **1.251× and 1.102×** over 81 sites (19 zero in
+both, five fewer than at initialization).
+
+**Addendum, the quality axis** (the paper's Figure 4 has one): each
+trained-envelope realization trains the D = 64 model from scratch, 600
+steps, as `curve.sh`'s quality axis does (`QUALITY=1
+experiments/curve_trained.sh`, into `out/curve-trained_train_<b>`, all-`f64`
+being `make curve`'s `out/curve_train_f64`). Every one is within
+1.3·10⁻⁴ of all-`f64`'s validation loss (2.7736101): +1.28·10⁻⁴ at 10⁻¹,
+−6.8·10⁻⁶ and −6.5·10⁻⁶ at 10⁻² and 10⁻³, +1.3·10⁻⁶ at 10⁻⁴ and 10⁻⁵,
+0 at the two tightest; the seeds spread 0.092. The quality axis is flat
+under the trained envelope too. The table in the paper's fixture format
+is `curve-D132.md`.
+
+The rows `make margins` names "solved at 10⁻ᵏ" are `out/curve_<b>.json`'s,
+the realizations `make curve` wrote at the tag `v0.10.0` (D102, 65 stored
+sites, no `params`); they are of no record here (the record, §3).
+
+The outputs are archived as presk-project `data/envelope-state-0.12.0.tar.xz`,
+the addendum's as `data/envelope-state-quality-0.12.0.tar.xz`.
+
+## D133 — Version 0.13.0 opened: the pipeline view, a provenance table every stage appends to, `presk explain --format json`, the page, the math printer and the native column; two defects under `--opt` found, one to be refused (2026-10-17)
+
+The plan is `presk-specs/implementation/presk-plan-0.13.0.md` (presk-specs
+!84, open). The user asked for it on 2026-10-17: an HTML and JavaScript
+view of every stage of one compilation, down to the native code. The
+stages are columns, each element linked by arrows to the elements of the
+previous stage it came from, to teach how Presk works and its
+mathematics. The user's own remark was that the pieces of IR need "a kind
+of DWARF" to be linked. The design note is presk-project
+`docs/presk-pipeline-view-2026-10-17.md`, the prompt
+`docs/prompt-pipeline-view-2026-10-17.md`.
+
+The version makes five things:
+1. **A provenance table.** Every stage appends `(child, [parents], how)`
+   for each element it makes, `how` a closed list per stage boundary; the
+   IRs do not change. `presk explain` §12 becomes a query over it.
+2. **`presk explain --format json`.** The document's facts as values,
+   with the table, as `explain.json`.
+3. **The page,** `explain.html`, a template of `presk-explain`: the stages
+   as columns, the table's links as arrows.
+4. **The math printer,** the denotation in the reference's chapter 3
+   notation, from the typed program and from PSK-Core after
+   differentiation, then the page's math layer.
+5. **The native column,** each range of a kernel's machine code mapped to
+   the kernel's line it came from.
+
+Nothing in the version is timed, and nothing in it is owed to the paper.
+
+**The user's decisions.**
+- *2026-10-17, on the design note's §8*, as recommended: the provenance
+  table first; the page fed by a static JSON that `presk explain` writes;
+  the page a template in `presk-explain`; the math printer before the
+  page's math layer; the native column in, last; the view opens at the
+  module level, with `explain`'s default trace opened and lit; a column is
+  a decision taken, so without `--opt` there is no optimized column and an
+  unchanged `let` is a pass-through arrow.
+- *2026-10-17, the version number:* 0.13.0.
+- *2026-10-17, on presk-specs !84,* the plan's nine questions: question 1,
+  "Yes, refuse"; questions 2 to 9, "OK", as recommended.
+  - *1:* `--opt` with a realization whose `storage` or `accum` names a site
+    of a function the optimizer visits, or with a plan's layouts, is
+    refused, `E7002`, each site named with its new name from the table;
+    in `presk explain`, `--opt` with `--budget` or with such a
+    realization too.
+  - *2:* the page's columns follow the compiler's order: precision before
+    the optimizer.
+  - *3:* the table is a crate `presk-provenance` below `presk-core`; each
+    stage returns its links beside its value from a traced form of its
+    function, the existing signatures unchanged.
+  - *4:* egg's explanations are on when the table is asked, if they change no
+    extraction; else a rewritten `let` names the rules that applied in
+    its function.
+  - *5 to 8:* the printer: the typed-program entry first, PSK-Core after
+    differentiation second; chapter 3's notation, the chapter amended
+    first when it lacks a form; `presk dump --stage
+    elab|core-after-ad --format latex|unicode` over a library crate
+    `presk-print-math`.
+  - *9:* the native column shows Cranelift's own text of the emitted
+    instructions and the bytes, with no new dependency.
+
+**Statements, fixed before the work** (the plan's §3).
+- *P0:* nothing else moves. Byte for byte against `08d0cf3`: X1's
+  harness, the test set on the three executors in three types, the
+  goldens, `check-examples`, `coverage`, `plan-check`, `c-conformance`,
+  `quant-table`, `step-table`, `make tutorial` but for its times, and the
+  five snapshot documents' Markdown. The exceptions: `presk explain`'s new
+  files, finding 2's rows, and finding 1's refusal.
+- *P1:* every row of §12 that 0.12.0 printed on the five snapshot
+  documents is a path in the table, and §12 over the table prints the
+  same bytes; a sixth snapshot under `--opt` follows the optimizer's links.
+- *P2:* on the test set's programs, the entries of `make run-examples` and
+  `plan-check`, the coverage models at tiny constants and the course GPT's
+  `loss` at D = 64, every element of every stage but the source has a
+  parent, every link a `how`, and every element a link names exists.
+- *P3:* the page draws the Llama 2 decoder block at the 7B width
+  (`--no-exact`) at the module level, a select or a collapse under 200 ms
+  by its own counter, no framework.
+- *P4:* every byte of every kernel's machine code lies in one range mapped
+  to one line of the kernel, no two overlapping.
+- *P5:* the printer prints chapter 3's equations on the tutorial and the
+  course GPT, checked by the user on a listing, and the adjoints of
+  `grad` as chapter 3's derivative rules write them.
+
+**Facts checked** on `08d0cf3` (the plan's §2), with the release build.
+- *The extraction does not keep `VarId`s.* `presk-opt` writes each
+  visited function back as fresh A-normal form from one above its largest
+  number, rewritten or not: the tutorial's `Linear.apply`, which no rule
+  changes, has `%3 = dot x, w` before and `%7 = dot x, w` after (D116 saw
+  it). The link from an old `let` to its new one is still exact, read off
+  the e-graph's classes; the rule that made a node is not recorded, since
+  the runner's explanations are off.
+- *AD* records no "adjoint of which site, by which rule": every `let` of a
+  `.vjp`'s sweep has the primal's span and no name, and `AdjointMap` keeps
+  only each forward value's accumulated adjoint. Pruning keeps the
+  numbers; the split into `.fwd` and `.bwd` keeps `g`'s in `g.fwd` and the
+  `.vjp`'s in `g.bwd`, and adds `let`s of its own.
+- *The kernels:* `KernelBackend::launch` knows the nest and the kernel's
+  index at every launch; `presk-explain` matches kernels by their printed
+  text instead.
+- *The native code:* no `SourceLoc` is set and no code range kept.
+  Cranelift 0.131.3 gives both after `define_function`
+  (`compiled_code()`'s `buffer.data()` and `get_srclocs_sorted()`), and the
+  emitted instructions as text under `set_disasm(true)`.
+
+**Finding 1: under `--opt`, a realization that types sites types nothing
+it names.** The realization is keyed by site name; the precision stages
+name the program before the optimizer, and the kernels run the renumbered
+one.
+- `presk run tutorial/07_train.psk --entry loss --dim B=4 --backend native
+  --realize @tests/plan/tutorial-typed.json` gives 2.1040672910446494;
+  with `--opt`, 2.1040672545736441, the bits of the same realization
+  without its one site (`Linear.apply/%3: f32`), with or without `--opt`.
+  No diagnostic.
+- `presk explain --budget 1e-3 --opt` on the same entry solves 11 sites
+  (ten `f32`, one `bf16`) and four parameters, and every kernel of its §9
+  is `f64`.
+- A plan's layouts have the same exposure: a renumbered nest that happens
+  to name another `let` is laid out, or refused, as that `let`.
+- Nothing of record runs it: every `--opt` of the Makefile (`make
+  opt-examples`) is under a uniform realization.
+- Refused in step 1, as the user decided (question 1).
+
+**Finding 2: §12 under `--opt` says false things.** On the same document,
+the three decided sites have no fusion row and a kernel row "none: the
+host computes it", though a kernel computes each. `trace` finds the site
+in the program before the optimizer and looks for its number in the
+rewritten one. Step 1 rebuilds §12 over the table.
+
+**P0's baseline.** X1's harness (`out/x1/x1.sh`) on `08d0cf3`'s release
+build, kept as `out/bin/presk-08d0cf3`, into `out/x1/base-0.13.0`: 863
+outputs in 14 s. `make quant-table`, `make step-table` and `make
+tutorial`'s outputs beside it (`out/x1/base-0.13.0-*`).
+
+**Step 0.** Version `0.13.0-dev`. The only outputs that move are the
+version line of the five snapshot documents and of the manual's
+`explain_loss` chapter.
+
+## D134 — The provenance table (plan 0.13.0 step 1): every element of every stage linked to what it was made from, the IRs unchanged; `presk explain` §12 read off it; `--opt` with a realization that types sites refused; three more false rows of 0.12.0's §12 found and gone (2026-10-17)
+
+The plan's step 1, with the user's answers of 2026-10-17 on presk-specs !84
+(questions 1 to 4).
+
+**The table** (`crates/presk-provenance`, no dependency, below
+`presk-core`, question 3).
+- An element is `(stage, key)`. The twelve stages are in the order the
+  compiler runs them, precision before the optimizer (question 2): source,
+  elab, core, ad, precision, opt, fusion, layout, kernel, launch, c,
+  native.
+- A link is `(child, [parents], how)`, `how` one of 26 reasons grouped by
+  boundary: `defined`, `instantiated`, `typed`; `lowered_fn`,
+  `lowered(rule)`; `unchanged`, `gradient`, `generated(kind)`,
+  `primal(kept|stored|recomputed)`, `adjoint(rule)`, `accumulate`, `zero`,
+  `seed`, `plumbing`; `site(role)`, `parameter`; `rewritten(rules)`,
+  `introduced`; `fused(members, stop)`, `alone(stop)`; `laid_out(point,
+  points)`; `kernel(shared_by)`, `launched(count)`, `epilogue`;
+  `function(lines)`; `code`.
+- An element with no child at the next stage carries an end saying why:
+  the optimizer removed it, the host computes it, a call's callee computes
+  it, a group the call never launches.
+
+**Each stage returns its links beside its value**, from a traced form of its
+function. The existing functions keep their signatures and their outputs.
+- *The lowering:* `presk_core::lower::lower_traced`. Each `let` of a source
+  function or a lambda is recorded with the kind of the typed expression it
+  lowered: `call`, `ein`, `index`, `+`, a builtin's name, `stack`. Its
+  parent is the typed expression at its span: the typed program is keyed
+  by span.
+- *Differentiation:* `presk_core::ad::transform_traced`.
+  - The emitter tags each `let` it makes: the forward copy as
+    `primal(kept)` of the primal; the sweep's `let`s as `adjoint(rule)`
+    of the primal they differentiate, `rule` its operation (`dot`,
+    `softmax`, `call`, `fold`, …); the sums of two contributions as
+    `accumulate`; the zeros of a parameter nothing flowed to; a `.grad`'s
+    seed.
+  - Pruning keeps the numbers. After the split into `.fwd` and `.bwd`,
+    `g.bwd` keeps the `.vjp`'s tags by number and `g.fwd`'s `let`s are
+    `primal(stored)` of `g`'s. What the split makes anew computes nothing:
+    `plumbing`, of the function it serves.
+- *The optimizer:* `presk_opt::optimize_traced`.
+  - Each `let` written stands for its e-class, and its parents are the
+    `let`s of that class.
+  - `unchanged` when the class held one `let` and the term written is that
+    `let` with its operands mapped; `rewritten` otherwise.
+  - `introduced` for a class no `let` had, whose parents are those of the
+    rewritten `let`s that read it.
+  - `removed` for a `let` whose class the result does not reach.
+- *Fusion:* `presk_core::fusion::plan` and `stops` on the program the
+  kernels run. A nest is a group, or a primitive alone, that the call
+  launches.
+- *The kernels:* `KernelBackend::launch_log` (opt-in). At each launch it
+  logs the kernel's place in the listing, the nest, and the `add` a
+  contraction's kernel computes as its epilogue. `presk_driver::layout::
+  Hosted::launched` returns it. This replaces `presk-explain`'s match of a
+  kernel's printed text, which §11 keeps for `presk bench`'s kernels, those
+  of another run.
+- *The C:* `Exported::kernel_of` and `kernel_lines`: which `k<n>` of
+  `kernels.c` each kernel of the listing is (the export deduplicates them
+  by their C text), and its lines.
+
+`presk_driver::provenance::table` puts them together for the functions the
+entry reaches. `presk explain` builds it in its `run`, and
+`presk_explain::provenance` returns it alone.
+
+**Question 4: egg's explanations change an extraction, so they stay off.**
+With them on, `adamw.lr` of `train_minigpt.psk` at its tiny constants is
+written back as the same 21 `let`s in another order. As decided, a
+rewritten `let` names the rules that applied in its function, from the
+runner's iterations.
+
+**Finding 1, refused** (question 1). `presk_driver::opt::check_sites` and
+`Opt::apply_for` refuse, `E7002`, a realization whose `storage` or `accum`
+names a site of a function the optimizer wrote back, or a plan that lays
+one out. This holds in `run`, `train`, `serve` and `bench`, and in `presk
+explain`, which also refuses `--opt` with `--budget`. The message names
+each site and what the optimizer made of it: "it types `Linear.apply/%3`,
+now `Linear.apply/%7`". A uniform realization runs. A function the
+optimizer leaves as it was keeps its numbers, and its sites are not
+refused. The C export refused `--opt` already.
+
+**P1 holds, every difference named.**
+- On the five snapshot documents, §12 over the table prints 0.12.0's rows
+  byte for byte, but for one row in each of two documents: the MLP's
+  `Linear.apply/%5` and MiniGPT's.
+- That row was false in 0.12.0 (finding 3). The site is the `add` the
+  contraction `Linear.apply/%3` takes as its epilogue, and 0.12.0 said "none:
+  the host computes it", because the launch is the product's. Now: "`k2`,
+  as the epilogue of `Linear.apply/%3`'s kernel: `kernel dot+add …`".
+- A sixth document, the tutorial's `loss` under `--opt` in `f32`
+  (`tutorial-opt`), has an "Optimizer (§5)" row per site ("`loss/%6` under a
+  new number, no rule changed it": `%12`). It names the fusion and the kernel
+  0.12.0 left out or denied (finding 2), and the C launch by its new site.
+
+**Finding 4: the C name of a kernel is not always its place in the
+listing.** On MiniGPT's gradient (`tests/plan/minigpt_grad.psk`, `loss_grad`),
+kernels `k36` and `k60` of the listing print the same C and are one function,
+`k36`. Every later kernel `k<j>` is `k<j−1>` in `kernels.c`. 0.12.0's §12
+named the C function by the listing's place, so it would have been wrong
+there; the table names it from the export. No snapshot has such a program.
+
+**P2 holds** (`presk-explain/tests/provenance.rs`): no orphan, no dangling
+element, no link backwards. Forwards, every `let` of the kernels' program
+is in a nest or ends with a reason, every nest launches a kernel, and every
+kernel is a C function. The cases:
+- the eleven entries of `make plan-check`, the coverage models at `make
+  coverage`'s tiny constants, and the course GPT's `loss` at D = 64, under
+  the frozen profile's plan and under `--opt`: 28 tables;
+- the five programs of the test set from each of their functions through
+  the stages that need no entry, with and without the optimizer;
+- four documents with the exact envelope and a solve.
+
+The tables are not small: MiniGPT's gradient has 463 `let`s after
+differentiation, 319 after the optimizer, 100 nests, 93 kernels and 132
+launches. The course GPT's `loss` has 107 `let`s, 29 nests and 27 kernels.
+
+The checks found two things the table had to say:
+- *A residual only the precision program has.* The precision stages read
+  a differentiation that keeps every fusion group, and the kernels' program
+  keeps them only for a realization that can see them (D94). Under `f32`,
+  `mse.fwd/%11`, a residual computed apart to keep a group, is in the first
+  and not in the second. Its precision element links, through the precision
+  program's own links, to the `let` of PSK-Core it copies.
+- *Groups the call never launches.* These are in the lambda a `grad` was
+  taken of, which the entry reaches only through a closure it never
+  applies. They are not nests: their `let`s end, "a group the call never
+  launches".
+
+**P0 holds on X1's harness.** Against `out/x1/base-0.13.0`, 19 files
+differ, every line the C programs' version line or their commit.
+`cargo test --release --workspace` passes: 95 test binaries.
+
+## D135 — `presk explain --format json` (plan 0.13.0 step 2): the document's facts and the provenance table as values, `explain.json` beside `explain.md` (2026-10-17)
+
+`--format json` writes `explain.json` beside the document
+(`presk-explain/src/build/json.rs`). The layout is `format` 1, and its
+schema is in the manual's `explain` chapter. It holds three things.
+- **The document as values.** The header and the sections are written
+  block by block (prose, tables, code, notes, attachments), the same
+  strings the Markdown prints. A test (`the_json_holds_the_document_and_the_table`)
+  renders the Markdown again from the JSON and finds `explain.md` byte for
+  byte. So every figure of the document is in the JSON, as X3 wanted every
+  figure of a command in the document.
+- **The provenance table** (D134). Each stage that has elements, in the
+  compiler's order, with each element's label, the function it belongs to
+  (what the page folds by), the facts a reader is shown on it, and the end
+  that says why it has no child. The links come with their reason's fields.
+  The facts by stage:
+  - a `let`'s span and source name;
+  - a precision site's magnitude, elements, condition number,
+    sensitivity, type, term of the estimate and, for a decision, the
+    solver's reason;
+  - a layout's shape, predicted time and runner-up;
+  - a kernel's text;
+  - a C function's text in `kernels.c`.
+- **The sources**, each file's text, which the source stage's spans index.
+
+It is deterministic without `--measure`: two runs into two directories
+write the same bytes, which the same test checks. The document's paths are
+already relative to `$DOC`.
+
+**Sizes.** 189 KB on the tutorial's `loss` under a budget, with the native
+and C targets. On the Llama 2 decoder block at the 7B width, by X5's
+parameters (0.12.0's envelope and solved realization of the decoder given,
+`--no-exact`, the frozen profile, ten threads, native), it is **1.1 MB**:
+- 73 spans, 78 `let`s in each program, 83 precision sites, 26 nests,
+  25 kernels, 27 launches and 414 links;
+- 40.6 s and 13.0 GB under a 40 GB scope. X5 took 39.9 s and 10.9 GB at
+  0.11.0; 0.12.0 stores the parameters in their own types since. This is
+  not a timing of record.
+
+The same run with `--target native,c` passed its 40 GB scope (41.9 GB at
+its end). The C export writes the 7B parameters, and X5 never asked for the
+C. Not investigated: P3 draws the native target, as X5 ran it.
+
+P0 holds: no output other than `explain.json` moves (X1's harness as at
+step 1; the six snapshot documents unchanged).
+
+## D136 — The pipeline view, v1 (plan 0.13.0 step 3): `presk explain --format html`, the stages as columns, every element linked to what it was made from (2026-10-17)
+
+`--format html` writes `explain.html`, which is
+`presk-explain/templates/explain.html` with the document's JSON (D135)
+inlined (`presk_explain::page`). It is one file with no framework, no build
+step and nothing fetched, so it opens offline. The user's decisions of
+2026-10-17 on the design note's §8 are applied as follows.
+
+- **Columns in the compiler's order** (question 2 of the plan): source,
+  elaborated, PSK-Core, what differentiation made, precision, what the
+  optimizer changed, fusion, layout, kernels, launches, the C.
+- **A column is a decision taken.** There is no column for differentiation
+  when nothing was differentiated, none for the optimizer without `--opt`,
+  and none for layouts without a profile. Inside the columns that are
+  drawn, an element whose link is `unchanged` is not a card: the arrow from
+  its origin to its descendant passes through the column, dashed.
+- **The arrows** come from the table, bundled where a fold puts several
+  elements in one card. They are coloured by reason (the lowering,
+  differentiation, the optimizer, fusion and the sites, a pass-through),
+  then by the realized type from the precision column on. Facts the JSON
+  gained for this: the type of each nest, layout and launch, and a kernel's
+  measured time under `--measure`.
+- **Folding at the function level**, with §12's traced sites' functions
+  open and their threads lit, as the first screen. A function opens or
+  folds in every column at once. The precision column lists a function's
+  decisions and folds its followers and carried values.
+- **Selecting** lights an element's ancestors and descendants through every
+  stage and dims the rest.
+- **Hovering** shows the element's facts and the reasons of its links in
+  words. A dashed box marks where the mathematics goes (step 4).
+- **The lesson** is captioned selections in the address (`#lesson=` JSON,
+  `&step=`), with `←` and `→`; by default it is §12's sites.
+- **Measured quantities** are overlays on the cards.
+
+**P3 holds.** `#bench` makes the page time, by its own clock
+(`performance.now()`), a select of each shown element (up to 200) and a
+fold and an open of each function. The pages are written by this step's
+build, and the bench runs in headless Firefox 158 on falicon. This is a
+bound checked, not a timing of record.
+
+| Page | Size | Elements | Arrows | First draw | Select, at most | Fold or open, at most |
+|---|---|---|---|---|---|---|
+| The Llama 2 decoder block at the 7B width (X5's parameters, `--no-exact`) | 1.05 MB | 487 | 289 | 34 ms | 2.0 ms | 15.0 ms |
+| The course GPT's `loss` at D = 64 under a budget | 409 KB | 617 | 238 | 28 ms | 2.0 ms | 13.0 ms |
+| The tutorial's `loss` under a budget | 163 KB | 213 | 140 | 29 ms | 2.0 ms | 9.0 ms |
+
+`docs/pipeline-view-gpt-2026-10-17.png` is the course GPT's page, taken 3 500
+pixels wide and reduced to 2 400 (128 colours, 327 KB): the thread of `loss/%6` from its precision site through its
+nest, its layout, the `cross_entropy` kernel and its launch to `k24` of
+`kernels.c`.
+
+**A test** (`the_json_holds_the_document_and_the_table`) checks that the
+page carries the JSON whole. A `</` is written `<\/` and a `<!--`
+`<!--`, so the JSON cannot end the data element or open a comment.
+
+**Departure from the plan.** KaTeX is not vendored in this step. The page
+draws no formula yet, and a dependency comes in with its first use: step
+4c, the math layer, with its row in the manual's `dependencies.md` and its
+section in `presk-tooling.md`.
+
+P0 holds: no output moves but `explain.html` and the JSON's new facts,
+written only under `--format`.
+
+## D137 — The printer of the denotation and the page's mathematics (plan 0.13.0 step 4): a program as the equations of the reference's chapter 3 (2026-10-17)
+
+**The notation first.** The printer needed forms the reference did not
+state: an index named by its axes, a call through a sub-module, a stack as
+its recurrence, a `let` that rebinds a name. Question 6 of the plan says
+the chapter is amended first. Chapter 3 gains section 3.10, "Programs as
+equations" (definitions 3.37–3.39, presk-specs !85, reference draft v0.18).
+It is appended at the end of the chapter, so that no section or definition
+before it is renumbered. The amendment also writes `×`, as definition
+den-arith does, in two equations that wrote the elementwise product `·`
+(the derivative of `softmax`, `dropout`); `·` would have read as `dot`.
+
+**The crate `presk-print-math`** (question 8) has one tree of formulas
+(`m`), rendered in LaTeX (the reference's macros `\code` and `\den`) or in
+Unicode, and two entries (question 5).
+
+- *The typed program* (`typed`) walks the syntax tree with the type
+  checker's tables, as the PyTorch export does. Each function becomes its
+  `let`s' equations and then `⟦f⟧(x₁, …) = e`.
+  - A module's parameters are written by their names, `θ.w` understood.
+    A module-typed parameter is no argument.
+  - An operation is written by its name (`dot x, w`, `softmax axis seq2
+    s, m`), never as its lowering. The functions of analysis are written as
+    analysis writes them, and an injection is not written.
+  - A number is written as the source writes it (`1e-5` is `10^{-5}`).
+  - A call is written `⟦path⟧(…)`. A call through a stack becomes its
+    recurrence with a fresh `y`, `y₀ = x`, `y_{ℓ+1} = ⟦m.f⟧(θ.u[ℓ], y_ℓ)`.
+  - An `ein` is written as its sum, at an index named by its result's axes,
+    each operand at its relabeled axes. An `ein` that a non-elementwise
+    operation reads becomes an equation of its own.
+  - A rebound name is primed, `x' = x + …`. A λ binder may reuse a name.
+- *PSK-Core after differentiation* (`core`) writes one equation per
+  binding, named as `presk dump --stage core` names it. A primitive is
+  written as above, an adjoint primitive by its name, a closure as `v ↦
+  ⟦f⟧(z, v)`, a `fold` as its recurrence (`5 − ℓ` reversed). Each binding
+  of a generated function carries what AD's links of the provenance table
+  (D134) say: `primal b, kept`, `adjoint of %5 (add)`, `accumulates the
+  adjoint of …`, `the cotangent 1`.
+
+**The command** (question 7): `presk dump --stage elab|core-after-ad
+--format latex|unicode`, with `--module`, `--function` and `--standalone`
+(a document with the reference's macros). A form the printer does not
+write is printed as its source text and named on standard error.
+
+**Checks.**
+- Snapshots of the tutorial, the attention, the three examples and the
+  course GPT (LaTeX and Unicode), and of the adjoints of `tutorial/04_grad`
+  and of `mse_grad`.
+- A test prints all 56 programs of the repository that type at both
+  entries: none has a gap.
+- `make math-check` compiles the 14 standalone documents with LuaLaTeX.
+- P5's listing, for the reference's author to check:
+  `docs/printer-p5-2026-10-17/listing.pdf` (6 pages), with the tutorial, the
+  attention, the course GPT and the adjoints of the tutorial's `grad`.
+  **P5 holds**: the user checked it on 2026-10-17 ("this is chapter's
+  mathematics").
+
+**The page's mathematics (4c).** `explain.json` gains a `tex` fact:
+- a function's display and each typed expression's formula on the
+  elaborated program;
+- each `let`'s equation on PSK-Core and the stages after it;
+- a solved site's term, `e_v = ‖∂L/∂v‖₁ · u_τ · max|v|` with its numbers,
+  beside the conditioned bound's error there (`bound`);
+- a contraction nest's sum, `∑_{k=0}^{K−1}`, with the realization's
+  reduction order and the order its terms are added in (`order`,
+  `order_tex`).
+
+At the top level, `rules` holds the contributions of each derivative the
+links name (table core-adjoint) and the identity of each rewrite rule
+(tables core-algebra and core-structure, all 51 of `presk-opt`). Under a
+budget, `precision` holds the estimate, the budget, the measured gap and
+the bound.
+
+The page typesets these with KaTeX 0.19.0, vendored under
+`presk-explain/templates/katex/` (the npm package's integrity checked, MIT)
+and inlined with its fonts as `data:` URLs, so the page stays one file
+that fetches nothing (0.6 MB more). The cards of the elaborated program
+and after are formulas, typeset when they first scroll into view and
+kept; "∑ math" turns them back to text. The inspector adds, for each
+element, the rule or identity of the link that made it and, on a
+precision site, the estimate against ε, the gap and the bound. A test
+(`the_page_writes_the_mathematics`) checks the facts on the tutorial and
+on `mse_grad` and that the page fetches no font.
+
+**P3 holds with the formulas on** (headless Firefox 158, the page's own
+clock; a bound checked, not a timing of record):
+
+| Page | Size | Elements | Arrows | First draw | Select, at most | Fold or open, at most |
+|---|---|---|---|---|---|---|
+| The Llama 2 decoder block at the 7B width (X5's parameters, `--no-exact`) | 1.7 MB | 448 | 216 | 19 ms | 7.0 ms | 45.0 ms |
+| The course GPT's `loss` at D = 64 under a budget | 1.08 MB | 617 | 238 | 30 ms | 6.0 ms | 34.0 ms |
+| The tutorial's `loss` under a budget | 819 KB | 213 | 140 | 25 ms | 3.0 ms | 9.0 ms |
+
+D136 counted 487 elements and 289 arrows on the decoder's page. D136's own
+build (`3884156`), run again on the command above, gives 448 elements and
+375 links, the same as this step's. That page was therefore made by
+another command; the table did not change in this step.
+`docs/pipeline-view-math-gpt-2026-10-17.png` is the course GPT's page with
+`SelfAttention.apply` selected: its display in the inspector, with the two
+sums of the attention.
+
+**What the reference lacks, and is not invented here.** A nest's loop
+order, tiles and k-blocks have no written form in the reference
+(definition contraction-nest says only that a k-block keeps each element's
+terms in increasing `k`). So the page writes a contraction nest's sum and
+its order of summation, which the reduction order alone decides, and its
+layout's decisions in words. It does not write a nested sum of its own
+notation. A written form of a nest's loops would be an amendment of
+chapter 6 first.
+
+P0 holds on X1's harness: against `08d0cf3`, 19 files differ, in their
+version and commit lines only; against step 3, the commit line of four
+READMEs. Nothing else moves: the new command is `presk dump --format`, the
+JSON's facts are new keys, and the page is written only under `--format
+html`.
+
+## D138 — The native column (plan 0.13.0 step 5): each kernel's machine code, every byte with the line of the kernel it compiles (2026-10-17)
+
+**The lines.** `presk-cranelift` keeps a counter that walks the kernel's
+statements in the order its printed text writes them:
+- line 1, the header, holds the prologue: the buffer loads and the
+  variables' first values;
+- each statement's instructions carry its own line;
+- a `for` holds its test and the jump into its body, and its closing brace
+  holds the step and the jump back;
+- an `if` holds its test, and its closing brace the jump past it;
+- the kernel's last line, its closing brace, holds the return.
+
+Each line is set with `FunctionBuilder::set_srcloc`. After
+`define_function`, the compiled code gives Cranelift's ranges
+(`get_srclocs_sorted`) and, by question 9, its text of the instructions
+after register allocation (`Context::set_disasm`). No capstone. The bytes
+are read from the JIT's finalized code, relocations applied.
+
+**The bytes Cranelift gives no line** are listed (`given`) and taken by
+the line before them; before the first range, that is the header. They
+are:
+- the function's prologue, saving registers, which the plan gives to the
+  function itself;
+- the moves the register allocator inserts;
+- the branches at a block's edge.
+
+The page shows them in italics. A constant keeps the line of the
+instruction that made it. A kernel's zero is made once, at its header, so
+its accumulators' zeroing shows on line 1. That is Cranelift's account,
+kept as it is.
+
+**Nothing a run compiles changes.** The lines are set and the text is
+asked for only in `presk_cranelift::machine_code`, which `presk explain`
+calls under `--format json|html` with the native target; a run calls
+`compile` with neither. `plain_code` compiles as a run does, and the test
+finds the same bytes for every kernel.
+
+**P4 holds** (`presk-driver/tests/native.rs`). Every kernel of the entries
+`make plan-check` runs was compiled: in `f64`, `f32` and `bf16`, under
+`tests/plan/default.json`, and for `SelfAttention.apply` under
+`tests/plan/attention.json` (tiled, in lanes, k-blocked, split, packed, a
+two-pass softmax) at `D = 64`, `T = 16`. That is 1 164 kernels and
+197 252 bytes. For each one:
+- the ranges run in order from 0 to the code's end, none empty and none
+  overlapping;
+- each range's line is a line of the kernel's text;
+- the bytes are those a run compiles.
+
+Cranelift gave no line to 23 720 of those bytes (12 %): 2 816 of
+prologues, 20 680 inside the code, 224 at its end.
+
+| Page | Kernels | Bytes | Given the line before them |
+|---|---|---|---|
+| The tutorial's `loss` | 9 | 984 | 104 (11 %) |
+| The course GPT's `loss` at `D = 64` | 26 | 9 380 | 1 132 (12 %) |
+| The Llama 2 decoder block at the 7B width | 25 | 8 596 | 3 000 (35 %) |
+
+The decoder's share comes from its 4 × 16 tiles in lanes. Sixteen vector
+accumulators are zero or loaded, so every block edge copies the sixteen
+registers.
+
+**The table and the page.**
+- **The table.** `presk_driver::provenance::Stages` gains `native`. Each
+  listed kernel's code is an element `native k<j>` of the native stage,
+  linked to `k<j>` by `code`.
+- **The JSON.** It writes `bytes`, `hex`, `ranges`, `given` and `disasm`
+  (the manual's `explain` chapter).
+- **The page.** Its last column, §9 "Native code", folds under the
+  kernel's function. Hovering shows each range with its line of the kernel
+  and its bytes, the given ones in italics, then Cranelift's text.
+- **Tests.** `the_json_holds_the_machine_code` checks the JSON with the
+  native target and without it.
+- **The document.** `explain.md` does not print the native column, so
+  the five snapshot documents do not move.
+
+**P3 holds with the column** (headless Firefox 158, the page's own clock):
+
+| Page | Elements | Arrows | First draw | Select, at most | Fold or open, at most |
+|---|---|---|---|---|---|
+| The decoder block at the 7B width, `--no-exact` (1.8 MB) | 473 | 237 | 19 ms | 7.0 ms | 44.0 ms |
+| The course GPT's `loss` at D = 64 (1.17 MB) | 643 | 252 | 31 ms | 6.0 ms | 33.0 ms |
+| The tutorial's `loss` (832 KB) | 222 | 149 | 25 ms | 3.0 ms | 11.0 ms |
+
+`docs/pipeline-view-native-gpt-2026-10-17.png` is the course GPT's page
+with the machine code of `k10`, a `dot` with its `add` as epilogue in
+`bf16`, in the inspector.
+
+P0 holds on X1's harness: against step 4, only the commit line of four
+READMEs differs.
+
+## D139 — Version 0.13.0: the checks of record pass on the version's tree, and the documents are brought to it (plan 0.13.0 step 6) (2026-10-17)
+
+**The checks of record**, on the version's tree, run one after another on
+falicon:
+- `make test`, `check-examples`, `coverage`, `plan-check` and
+  `c-conformance` (with the ignored tests) pass;
+- `cargo doc -p presk-manual` gives no warning.
+
+**P0 holds** on the tree, against `08d0cf3`, the baseline of D133:
+- X1's harness: 863 outputs, of which 19 files differ, in their version
+  and commit lines alone. Against step 5, only the version line differs.
+- `make quant-table` and `make step-table` are byte-identical.
+- `make tutorial` differs only in what it measures: the times, the
+  autotuned layouts' measured winners (`attend/%6` `order IJ` against
+  `JI`), RA4's `u` and its percentages. Cargo's version line differs too.
+- `presk --help`, which the tutorial prints, is unchanged but for the
+  version. Step 4 had made `presk dump`'s whole doc comment its help line;
+  step 6 keeps the old line and moves the rest to `presk dump --help`.
+
+**The documents**, checked against what 0.13.0 did (the user,
+2026-09-30):
+- in presk:
+  - the manual: `index` (version 0.13.0, the `explain` and `language`
+    entries), `tutorial` (the version, the pipeline view and the printer
+    after the `explain` step, in prose: `make tutorial`'s commands
+    unchanged), `status` (each step, each statement's verdict, what 0.13.0
+    has and does not), and the chapters of steps 1 to 5;
+  - the CHANGELOG's 0.13.0 section and `CLAUDE.md`;
+- in presk-specs:
+  - the plan, marked done (!84);
+  - the reference at draft v0.18 (!85, then !86): chapter 3's section
+    3.10, its Status at 0.13.0 (the provenance table, the refusal under
+    `--opt`, the printer, the machine code's lines), and the two "Status
+    in 0.13.0" sections;
+  - the report: the foreword, chapter 8's section "The compiler as built:
+    the pipeline view", the roadmap and the history from 15 to 17 October;
+  - the slides, the summary, and a status note,
+    `docs/status-2026-10-17.md`;
+- in presk-project, the poster at 0.13.0.
+
+Version `0.13.0`. The user tags `v0.13.0` after the merges.
+

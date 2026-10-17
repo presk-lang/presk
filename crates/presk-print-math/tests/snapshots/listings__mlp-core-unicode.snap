@@ -1,0 +1,167 @@
+---
+source: crates/presk-print-math/tests/listings.rs
+expression: "core_listing(\"tests/examples/mlp/mlp.psk\", Format::Unicode)"
+---
+-- presk dump --stage core-after-ad --format unicode: mlp.psk, PSK-Core after differentiation,
+-- one equation per binding, in the notation of the language reference's chapter 3
+
+Linear.apply, of θ : params Linear{In, Out},  x : ℝ[…, In]; dimensions In,  Out
+    w = θ.w
+    %3 = dot x, w
+    b = θ.b
+    %5 = %3 + b
+    ⟦Linear.apply⟧(θ, x) = %5
+
+MLP.apply, of θ : params MLP{D, hidden},  x : ℝ[…, D]; dimensions D,  hidden
+    l1 = θ.l1
+    %3 = ⟦Linear.apply{In = D, Out = hidden}⟧(l1, x)
+    %4 = gelu %3
+    l2 = θ.l2
+    %6 = ⟦Linear.apply{In = hidden, Out = D}⟧(l2, %4)
+    ⟦MLP.apply⟧(θ, x) = %6
+
+mse, of θ : params MLP{D, 4*D},  x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D]; dimensions D,  B
+    ŷ = ⟦MLP.apply{D = D, hidden = 4 · D}⟧(θ, x)
+    %4 = ŷ − y
+    %5 = %4²
+    %6 = mean %5
+    ⟦mse⟧(θ, x, y) = %6
+
+mse_grad, of θ : params MLP{D, 4*D},  x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D]; dimensions D,  B
+    %3 = v ↦ ⟦mse_grad.lambda0⟧(x, y, v)
+    %4 = v ↦ ⟦mse_grad.lambda0.grad⟧(x, y, v)
+    %5 = %4(θ)
+    ⟦mse_grad⟧(θ, x, y) = %5
+
+Linear.init, of key : key; dimensions In,  Out, uses Rand
+    %1 = split_key 2 key
+    %2 = %1.0
+    %3 = %1.1
+    w = xavier_uniform %2
+    b = zeros
+    %6 = {w = w, b = b}
+    ⟦Linear.init⟧(key) = %6
+
+MLP.init, of key : key; dimensions D,  hidden, uses Rand
+    %1 = split_key 2 key
+    %2 = %1.0
+    %3 = %1.1
+    %4 = ⟦Linear.init{In = D, Out = hidden}⟧(%2)
+    %5 = ⟦Linear.init{In = hidden, Out = D}⟧(%3)
+    %6 = {l1 = %4, l2 = %5}
+    ⟦MLP.init⟧(key) = %6
+
+mse_grad.lambda0, of x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  θ : params MLP{D, 4*D}; dimensions D,  B
+    %3 = ⟦mse{D = D, B = B}⟧(θ, x, y)
+    ⟦mse_grad.lambda0⟧(x, y, θ) = %3
+
+mse_grad.lambda0.vjp, of x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  θ : params MLP{D, 4*D},  ct : ℝ[]; dimensions D,  B  -- generated (vjp) from mse_grad.lambda0
+    %4 = ⟦mse_grad.lambda0.fwd{D = D, B = B}⟧(x, y, θ)
+    %5 = %4.0
+    %6 = ⟦mse_grad.lambda0.bwd{D = D, B = B}⟧(x, y, θ, %5, ct)
+    ⟦mse_grad.lambda0.vjp⟧(x, y, θ, ct) = %6
+
+mse.vjp, of θ : params MLP{D, 4*D},  x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  ct : ℝ[]; dimensions D,  B  -- generated (vjp) from mse
+    %4 = ⟦mse.fwd{D = D, B = B}⟧(θ, x, y)
+    %5 = %4.0
+    %6 = ⟦mse.bwd{D = D, B = B}⟧(θ, x, y, %5, ct)
+    ⟦mse.vjp⟧(θ, x, y, ct) = %6
+
+MLP.apply.vjp, of θ : params MLP{D, hidden},  x : ℝ[…, D],  ct : ℝ[…, D]; dimensions D,  hidden  -- generated (vjp) from MLP.apply
+    %3 = ⟦MLP.apply.fwd{D = D, hidden = hidden}⟧(θ, x)
+    %4 = %3.1
+    %5 = ⟦MLP.apply.bwd{D = D, hidden = hidden}⟧(θ, x, %4, ct)
+    ⟦MLP.apply.vjp⟧(θ, x, ct) = %5
+
+Linear.apply.vjp, of θ : params Linear{In, Out},  x : ℝ[…, In],  ct : ℝ[…, Out]; dimensions In,  Out  -- generated (vjp) from Linear.apply
+    %3 = ⟦Linear.apply.bwd{In = In, Out = Out}⟧(θ, x, ct)
+    ⟦Linear.apply.vjp⟧(θ, x, ct) = %3
+
+mse_grad.lambda0.grad, of x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  θ : params MLP{D, 4*D}; dimensions D,  B  -- generated (grad) from mse_grad.lambda0
+    %3 = 1                                                    -- the cotangent 1
+    %4 = %3                                                   -- the cotangent 1
+    %5 = ⟦mse_grad.lambda0.vjp{D = D, B = B}⟧(x, y, θ, %4)
+    %6 = %5.0
+    ⟦mse_grad.lambda0.grad⟧(x, y, θ) = %6
+
+Linear.apply.bwd, of θ : params Linear{In, Out},  x : ℝ[…, In],  ct : ℝ[…, Out]; dimensions In,  Out  -- generated (bwd) from Linear.apply
+    w = θ.w                               -- primal w, kept
+    b = θ.b                               -- primal b, kept
+    %8 = sum_to ct, b                     -- adjoint of %5 (add)
+    %9 = zeros_like θ                     -- adjoint of b (field)
+    %10 = set_field b %9, %8              -- adjoint of b (field)
+    %11 = dot_vjp_l ct, w                 -- adjoint of %3 (dot)
+    %12 = dot_vjp_r x, ct                 -- adjoint of %3 (dot)
+    %13 = zeros_like θ                    -- adjoint of w (field)
+    %14 = set_field w %13, %12            -- adjoint of w (field)
+    %15 = %10 + %14                       -- accumulates the adjoint of a parameter of Linear.apply
+    %16 = (%15, %11)
+    ⟦Linear.apply.bwd⟧(θ, x, ct) = %16
+
+MLP.apply.bwd, of θ : params MLP{D, hidden},  x : ℝ[…, D],  residuals : (ℝ[…, hidden], ℝ[…, hidden]),  ct : ℝ[…, D]; dimensions D,  hidden  -- generated (bwd) from MLP.apply
+    %4 = residuals.0                                              -- primal %3, kept
+    %5 = residuals.1                                              -- primal %4, kept
+    l1 = θ.l1                                                     -- primal l1, kept
+    l2 = θ.l2                                                     -- primal l2, kept
+    %8 = ⟦Linear.apply.bwd{In = hidden, Out = D}⟧(l2, %5, ct)     -- adjoint of %6 (call)
+    %9 = %8.0                                                     -- adjoint of %6 (call)
+    %10 = %8.1                                                    -- adjoint of %6 (call)
+    %11 = zeros_like θ                                            -- adjoint of l2 (field)
+    %12 = set_field l2 %11, %9                                    -- adjoint of l2 (field)
+    %13 = gelu' %4                                                -- adjoint of %4 (gelu)
+    %14 = %10 × %13                                               -- adjoint of %4 (gelu)
+    %15 = ⟦Linear.apply.bwd{In = D, Out = hidden}⟧(l1, x, %14)    -- adjoint of %3 (call)
+    %16 = %15.0                                                   -- adjoint of %3 (call)
+    %18 = zeros_like θ                                            -- adjoint of l1 (field)
+    %19 = set_field l1 %18, %16                                   -- adjoint of l1 (field)
+    %20 = %12 + %19                                               -- accumulates the adjoint of a parameter of MLP.apply
+    %21 = (%20)
+    ⟦MLP.apply.bwd⟧(θ, x, residuals, ct) = %21
+
+MLP.apply.fwd, of θ : params MLP{D, hidden},  x : ℝ[…, D]; dimensions D,  hidden  -- generated (fwd) from MLP.apply
+    l1 = θ.l1                                            -- primal l1, stored
+    %3 = ⟦Linear.apply{In = D, Out = hidden}⟧(l1, x)     -- primal %3, stored
+    %4 = gelu %3                                         -- primal %4, stored
+    l2 = θ.l2                                            -- primal l2, stored
+    %6 = ⟦Linear.apply{In = hidden, Out = D}⟧(l2, %4)    -- primal %6, stored
+    %7 = (%3, %4)
+    %8 = (%6, %7)
+    ⟦MLP.apply.fwd⟧(θ, x) = %8
+
+mse.bwd, of θ : params MLP{D, 4*D},  x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  residuals : (ℝ[batch: B, D], (ℝ[batch: B, 4 · D], ℝ[batch: B, 4 · D])),  ct : ℝ[]; dimensions D,  B  -- generated (bwd) from mse
+    %4 = residuals.0                                                -- primal ŷ, kept
+    %21 = residuals.1
+    %5 = %4 − y                                                     -- primal %4, kept
+    %8 = mean_vjp ct, x                                             -- adjoint of %6 (mean)
+    %9 = 2                                                          -- adjoint of %5 (pow)
+    %10 = %9                                                        -- adjoint of %5 (pow)
+    %11 = %5¹                                                       -- adjoint of %5 (pow)
+    %12 = %10 × %11                                                 -- adjoint of %5 (pow)
+    %13 = %8 × %12                                                  -- adjoint of %5 (pow)
+    %15 = sum_to %13, %4                                            -- adjoint of %4 (sub)
+    %17 = ⟦MLP.apply.bwd{D = D, hidden = 4 · D}⟧(θ, x, %21, %15)    -- adjoint of ŷ (call)
+    %18 = %17.0                                                     -- adjoint of ŷ (call)
+    %20 = (%18)
+    ⟦mse.bwd⟧(θ, x, y, residuals, ct) = %20
+
+mse.fwd, of θ : params MLP{D, 4*D},  x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D]; dimensions D,  B  -- generated (fwd) from mse
+    %7 = ⟦MLP.apply.fwd{D = D, hidden = 4 · D}⟧(θ, x)
+    ŷ = %7.0                                             -- primal ŷ, stored
+    %8 = %7.1
+    %9 = (ŷ, %8)
+    %10 = (%9)
+    ⟦mse.fwd⟧(θ, x, y) = %10
+
+mse_grad.lambda0.bwd, of x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  θ : params MLP{D, 4*D},  residuals : ((ℝ[batch: B, D], (ℝ[batch: B, 4 · D], ℝ[batch: B, 4 · D]))),  ct : ℝ[]; dimensions D,  B  -- generated (bwd) from mse_grad.lambda0
+    %10 = residuals.0
+    %5 = ⟦mse.bwd{D = D, B = B}⟧(θ, x, y, %10, ct)         -- adjoint of %3 (call)
+    %6 = %5.0                                              -- adjoint of %3 (call)
+    %9 = (%6)
+    ⟦mse_grad.lambda0.bwd⟧(x, y, θ, residuals, ct) = %9
+
+mse_grad.lambda0.fwd, of x : ℝ[batch: B, model: D],  y : ℝ[batch: B, model: D],  θ : params MLP{D, 4*D}; dimensions D,  B  -- generated (fwd) from mse_grad.lambda0
+    %4 = ⟦mse.fwd{D = D, B = B}⟧(θ, x, y)
+    %5 = %4.0
+    %6 = (%5)
+    %7 = (%6)
+    ⟦mse_grad.lambda0.fwd⟧(x, y, θ) = %7

@@ -208,10 +208,29 @@ enum Command {
         remat: RematArg,
     },
     /// Dump an intermediate representation (development aid).
+    ///
+    /// With `--format latex|unicode`, the typed program (`--stage elab`) or
+    /// PSK-Core after differentiation (`--stage core-after-ad`) read as the
+    /// equations of the language reference's chapter 3.
     Dump {
         file: PathBuf,
         #[arg(long, value_enum)]
         stage: DumpStage,
+        /// `text`, the stage's own listing; `latex` or `unicode`, its
+        /// functions as equations (plan 0.13.0 step 4).
+        #[arg(long, value_enum, default_value_t = DumpFormat::Text)]
+        format: DumpFormat,
+        /// With `--format latex|unicode`: only this module.
+        #[arg(long)]
+        module: Option<String>,
+        /// With `--format latex|unicode`: only this function (`apply`,
+        /// `Linear.apply`, `loss.bwd`).
+        #[arg(long)]
+        function: Option<String>,
+        /// With `--format latex`: a document that compiles alone, the
+        /// reference's macros in its preamble.
+        #[arg(long)]
+        standalone: bool,
         /// Unroll `stack{L}` into L calls instead of a fold (debugging aid).
         #[arg(long)]
         unroll_stack: bool,
@@ -436,6 +455,9 @@ enum Command {
         /// A site to trace through every stage (`<function>/%<let>`), the option repeated; by default the largest shares of the estimate and the slowest predicted nests.
         #[arg(long = "site", value_name = "SITE")]
         sites: Vec<String>,
+        /// What to write besides `explain.md`: `json`, the document's facts and the provenance table as values, `explain.json` (plan 0.13.0 step 2); `html`, the pipeline view `explain.html` too (step 3).
+        #[arg(long, value_name = "md|json|html")]
+        format: Option<String>,
         /// The directory the document, its listings and its artifacts are written to.
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
@@ -1022,6 +1044,14 @@ impl Opt {
     fn apply(&self, core: &mut presk_core::Program, prog: &elab::ElabProgram, verbose: bool, dims: &[(String, u64)]) -> Result<(), ExitCode> {
         presk_driver::opt::Opt { on: self.on, profile: self.profile.clone() }.apply(core, prog, verbose, dims, &mut stderr()).map(|_| ()).map_err(exit)
     }
+
+    /// [`Opt::apply`] for a command that runs `plan`: a realization or a
+    /// plan that names sites of a function the optimizer rewrote is refused
+    /// (`E7002`, plan 0.13.0 step 1, D134).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_for(&self, core: &mut presk_core::Program, prog: &elab::ElabProgram, verbose: bool, dims: &[(String, u64)], plan: &presk_rt::Plan, sm: &presk_syntax::SourceMap) -> Result<(), ExitCode> {
+        presk_driver::opt::Opt { on: self.on, profile: self.profile.clone() }.apply_for(core, prog, verbose, dims, plan, sm, &mut stderr()).map(|_| ()).map_err(exit)
+    }
 }
 
 /// `--realize f64|f32|bf16|@FILE` ([`presk_driver::plan::parse_realize`]);
@@ -1054,6 +1084,13 @@ fn check_plan(plan: &presk_rt::Plan, core: &presk_core::Program, sm: &SourceMap)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+enum DumpFormat {
+    Text,
+    Latex,
+    Unicode,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 enum DumpStage {
     Tokens,
     Ast,
@@ -1080,7 +1117,16 @@ fn main() -> ExitCode {
             Some(env) => check_precision(&file, &env, &parse_realize(&realize), sites, &model, measure),
             None => check(&file, &consts, summary, json),
         },
-        Command::Dump { file, stage, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => { set_remat(remat); dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, &parse_plan(plan.as_deref(), &realize), plan.is_some(), profile, weights, sites) }
+        Command::Dump { file, stage, format, module, function, standalone, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
+            set_remat(remat);
+            match format {
+                DumpFormat::Text => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, &parse_plan(plan.as_deref(), &realize), plan.is_some(), profile, weights, sites),
+                DumpFormat::Latex | DumpFormat::Unicode => {
+                    let f = if let DumpFormat::Latex = format { presk_print_math::Format::Latex } else { presk_print_math::Format::Unicode };
+                    dump_math(&file, stage, f, &presk_print_math::Select { module, function }, standalone, &consts, unroll_stack, plan.as_deref().map(|_| parse_plan(plan.as_deref(), &realize)).as_ref())
+                }
+            }
+        }
         Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads, remat } => { set_threads(threads); set_remat(remat); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
         Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, remat } => {
             set_remat(remat);
@@ -1217,9 +1263,18 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Command::Explain { file, entry, dims, consts, budget, realize, plan, profile, threads, remat, opt, weights, seed, bits, envelope, no_exact, target, measure, sites, out } => {
+        Command::Explain { file, entry, dims, consts, budget, realize, plan, profile, threads, remat, opt, weights, seed, bits, envelope, no_exact, target, measure, sites, format, out } => {
             set_threads(threads);
             set_remat(remat);
+            let (json, html) = match format.as_deref() {
+                None | Some("md") => (false, false),
+                Some("json") => (true, false),
+                Some("html") => (true, true),
+                Some(other) => {
+                    eprintln!("presk explain: --format {other}: `md` (the document alone, the default), `json` (and `explain.json` beside it) or `html` (and `explain.html`, the pipeline view, too)");
+                    return ExitCode::from(2);
+                }
+            };
             let targets = match presk_explain::Target::parse_list(&target) {
                 Ok(t) => t,
                 Err(m) => {
@@ -1227,7 +1282,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            let o = presk_explain::Options { file, entry, dims, consts, budget, realize, plan, profile, threads, remat: crate::remat(), opt, weights, seed, bits, envelope, no_exact, targets, measure, sites, out };
+            let o = presk_explain::Options { file, entry, dims, consts, budget, realize, plan, profile, threads, remat: crate::remat(), opt, weights, seed, bits, envelope, no_exact, targets, measure, sites, json, html, out };
             match presk_explain::explain(&o, &mut stderr()) {
                 Ok(e) => {
                     let listings = if e.listings == 0 { String::new() } else { format!(", {} listing{} under listings/", e.listings, if e.listings == 1 { "" } else { "s" }) };
@@ -1329,7 +1384,7 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
         }
     };
     let serve_dims: Vec<(String, u64)> = opts.dims.iter().map(|(n, v)| (n.clone(), *v)).collect();
-    if let Err(c) = opt.apply(&mut core, &prog, false, &serve_dims) {
+    if let Err(c) = opt.apply_for(&mut core, &prog, false, &serve_dims, &presk_rt::Plan::from_realization(opts.realize.clone()), &sm) {
         return c;
     }
     let on_token = |_step: u64, _tok: u64| {};
@@ -1787,7 +1842,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
-    if let Err(c) = opt.apply(&mut core, &prog, false, &dims) {
+    if let Err(c) = opt.apply_for(&mut core, &prog, false, &dims, plan, &sm) {
         return c;
     }
     if let Err(c) = check_plan(plan, &core, &sm) {
@@ -2384,7 +2439,7 @@ fn train(file: &Path, consts: &[String], mut opts: presk_train::TrainOptions, pl
     // layouts of the `.vjp` and of the objective hold for it (0.10.0 step 3).
     let plan = &presk_train::plan_for_loop(plan, &core, &fns);
     opts.realize = plan.realization.clone();
-    if let Err(c) = opt.apply(&mut core, &prog, false, &[]) {
+    if let Err(c) = opt.apply_for(&mut core, &prog, false, &[], plan, &sm) {
         return c;
     }
     if let Err(c) = check_plan(plan, &core, &sm) {
@@ -2845,6 +2900,49 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
     }
 }
 
+/// `presk dump --format latex|unicode` (plan 0.13.0 step 4): the typed
+/// program, or PSK-Core after differentiation, as the equations of the
+/// reference's chapter 3. A form the printer does not write is printed as
+/// its source text and named on standard error.
+#[allow(clippy::too_many_arguments)]
+fn dump_math(file: &Path, stage: DumpStage, f: presk_print_math::Format, sel: &presk_print_math::Select, standalone: bool, consts: &[String], unroll_stack: bool, plan: Option<&presk_rt::Plan>) -> ExitCode {
+    let main = file.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    match stage {
+        DumpStage::Elab => {
+            let (sm, prog, typed) = match typed_front(file, consts) {
+                Ok(x) => x,
+                Err(c) => return c,
+            };
+            let l = presk_print_math::typed_program(&sm, &prog, &typed);
+            print!("{}", presk_print_math::listing(&l, f, sel, main, standalone));
+            for (sp, text) in &l.gaps {
+                let (line, _) = sm.file(sp.file).line_col(sp.start);
+                eprintln!("presk dump: {}:{line}: `{text}` printed as its source text: the printer does not write this form", sm.file(sp.file).name);
+            }
+            ExitCode::SUCCESS
+        }
+        DumpStage::CoreAfterAd => {
+            let (sm, prog, mut core) = match core(file, consts, unroll_stack) {
+                Ok(x) => x,
+                Err(c) => return c,
+            };
+            let groups = plan.is_some_and(|p| p.realization.groups_visible());
+            let (diags, links) = presk_driver::ad::differentiate_traced(&mut core, remat(), groups);
+            eprint!("{}", render_all(&diags, &sm, color()));
+            if has_errors(&diags) {
+                return ExitCode::from(1);
+            }
+            let ds = presk_print_math::core::core_program(&core, &prog, &links);
+            print!("{}", presk_print_math::core::listing(&ds, f, sel, main, standalone));
+            ExitCode::SUCCESS
+        }
+        _ => {
+            eprintln!("presk dump: --format latex|unicode reads --stage elab or --stage core-after-ad");
+            ExitCode::from(2)
+        }
+    }
+}
+
 /// `NAME=N` pairs of `--dim`.
 fn parse_dims(dims: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
     presk_driver::front::parse_dims(dims, &mut stderr()).map_err(exit)
@@ -2883,7 +2981,7 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
         }
         return ExitCode::from(2);
     }
-    if let Err(c) = opt.apply(&mut core, &prog, verbose, &dims) {
+    if let Err(c) = opt.apply_for(&mut core, &prog, verbose, &dims, plan, &sm) {
         return c;
     }
     if let Err(c) = check_plan(plan, &core, &sm) {

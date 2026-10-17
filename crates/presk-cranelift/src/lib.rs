@@ -14,7 +14,7 @@ pub mod pool;
 pub use pool::Pool;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Type, Value as CV, types};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, SourceLoc, Type, Value as CV, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -76,6 +76,59 @@ pub struct NativeExec {
     /// The workers beside the calling thread, `threads − 1`, made at the
     /// first divided launch (plan 0.10.0 step 6).
     pool: Option<Pool>,
+    /// Whether each kernel's machine code is kept, with the line of the
+    /// kernel each byte compiles from (plan 0.13.0 step 5): only for
+    /// [`machine_code`], so that a run compiles as it always has.
+    keep: bool,
+    kept: Vec<Option<MachineCode>>,
+    /// The size of the last kernel compiled, in bytes.
+    last_size: usize,
+}
+
+/// The machine code of a compiled kernel (plan 0.13.0 step 5, D138): its
+/// bytes as the JIT holds them, the bytes each line of the kernel's text
+/// compiles to, and Cranelift's text of its instructions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineCode {
+    pub bytes: Vec<u8>,
+    /// `(start, end, line)`: the half-open range of bytes, and the line of
+    /// the kernel's printed text (from 1, its header) they compile from,
+    /// sorted, covering every byte once. The header's line holds the
+    /// prologue, the closing brace's the return.
+    pub ranges: Vec<(u32, u32, u32)>,
+    /// The ranges of bytes Cranelift attributed to no line, which `ranges`
+    /// gives to the line of the code before them (the function's prologue,
+    /// before any line, to its header).
+    pub given: Vec<(u32, u32)>,
+    /// Cranelift's text of the instructions it emitted, the register
+    /// allocator's result (`Context::set_disasm`).
+    pub disasm: String,
+}
+
+/// The machine code of each kernel, compiled as `presk run --backend
+/// native` compiles it, with each byte's line (plan 0.13.0 step 5). Nothing
+/// is run.
+pub fn machine_code(kernels: &[Kernel]) -> Result<Vec<MachineCode>> {
+    let mut x = NativeExec::new()?;
+    x.keep = true;
+    for (j, k) in kernels.iter().enumerate() {
+        x.compile(j, k)?;
+    }
+    Ok(x.kept.into_iter().map(|m| m.expect("every kernel compiled")).collect())
+}
+
+/// The machine code of each kernel compiled as a run compiles it, without
+/// the lines: the test that the lines change no byte.
+pub fn plain_code(kernels: &[Kernel]) -> Result<Vec<Vec<u8>>> {
+    let mut x = NativeExec::new()?;
+    let mut out = Vec::new();
+    for (j, k) in kernels.iter().enumerate() {
+        let f = x.compile(j, k)?;
+        let n = x.last_size;
+        // SAFETY: the JIT holds `n` bytes of finalized code at `f`.
+        out.push(unsafe { std::slice::from_raw_parts(f as *const u8, n) }.to_vec());
+    }
+    Ok(out)
 }
 
 impl NativeExec {
@@ -108,7 +161,7 @@ impl NativeExec {
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
             .unwrap_or(1)
             .max(1);
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None })
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), last_size: 0 })
     }
 
     /// The pool, of `threads − 1` workers: made, or made again when
@@ -169,8 +222,14 @@ impl NativeExec {
         sig.params.push(AbiParam::new(types::I64));
         let fid = self.module.declare_function(&format!("k{idx}"), Linkage::Local, &sig).map_err(|e| RtError { code: "E10001", message: e.to_string(), span: None })?;
         self.ctx.func.signature = sig;
+        let keep = self.keep;
+        self.ctx.set_disasm(keep);
         {
             let mut b = FunctionBuilder::new(&mut self.ctx.func, &mut self.fbc);
+            // The prologue is the kernel's header line's, line 1.
+            if keep {
+                b.set_srcloc(SourceLoc::new(1));
+            }
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
@@ -226,7 +285,7 @@ impl NativeExec {
             };
             let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
             let wide: Vec<Option<Dtype>> = k.inputs.iter().map(|s| if let BufKind::Wide(d) = s.kind { Some(d) } else { None }).collect();
-            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, vecs, libm: refs };
+            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, vecs, libm: refs, keep, line: 1 };
             // The loop a split divides — the outermost by default, the one at
             // the depth the plan states (0.7.0 step 3) — runs over the range
             // the caller gives; the loops enclosing it run in full. One
@@ -235,13 +294,26 @@ impl NativeExec {
                 Some((depth, _)) => g.range_at(&k.body, depth, lo, hi),
                 None => g.stmts(&k.body),
             }
+            // The return is the closing brace's, the text's last line.
+            g.next_line();
             g.b.ins().return_(&[]);
             g.b.finalize();
         }
         self.module.define_function(fid, &mut self.ctx).map_err(|e| RtError { code: "E10001", message: format!("cranelift: {e}"), span: None })?;
+        let code = self.ctx.compiled_code().map(|c| (c.code_buffer().len(), c.buffer.get_srclocs_sorted().iter().map(|l| (l.start, l.end, l.loc.bits())).collect::<Vec<_>>(), c.vcode.clone().unwrap_or_default()));
         self.module.clear_context(&mut self.ctx);
         self.module.finalize_definitions().map_err(|e| RtError { code: "E10001", message: e.to_string(), span: None })?;
         let ptr = self.module.get_finalized_function(fid);
+        self.last_size = code.as_ref().map_or(0, |c| c.0);
+        if keep && let Some((len, locs, disasm)) = code {
+            // SAFETY: the JIT holds `len` bytes of finalized code at `ptr`.
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            let (ranges, given) = cover(len as u32, &locs);
+            if self.kept.len() <= idx {
+                self.kept.resize(idx + 1, None);
+            }
+            self.kept[idx] = Some(MachineCode { bytes, ranges, given, disasm });
+        }
         self.compiled_count += 1;
         // SAFETY: the function was built with the signature `fn(*const *mut u8, i64, i64)`.
         Ok(unsafe { std::mem::transmute::<*const u8, KernelFn>(ptr) })
@@ -252,6 +324,43 @@ impl Default for NativeExec {
     fn default() -> Self {
         NativeExec::new().expect("cranelift for the host")
     }
+}
+
+/// `(start, end, line)` ranges, and `(start, end)` ones.
+type Covered = (Vec<(u32, u32, u32)>, Vec<(u32, u32)>);
+
+/// Every byte of `len` in one range with a line: Cranelift's ranges as it
+/// gives them, and each byte it attributed to no line given to the line of
+/// the range before it, or to the header's (1) before the first; adjacent
+/// ranges of one line merged. And the ranges so given.
+fn cover(len: u32, locs: &[(u32, u32, u32)]) -> Covered {
+    let mut out: Vec<(u32, u32, u32)> = Vec::new();
+    let mut gaps = Vec::new();
+    let mut at = 0;
+    let push = |out: &mut Vec<(u32, u32, u32)>, a: u32, b: u32, line: u32| {
+        if a >= b {
+            return;
+        }
+        match out.last_mut() {
+            Some(last) if last.1 == a && last.2 == line => last.1 = b,
+            _ => out.push((a, b, line)),
+        }
+    };
+    for &(s, e, line) in locs.iter().filter(|l| l.2 != u32::MAX) {
+        if s > at {
+            let prev = out.last().map_or(1, |l| l.2);
+            gaps.push((at, s));
+            push(&mut out, at, s, prev);
+        }
+        push(&mut out, s.max(at), e, line);
+        at = at.max(e);
+    }
+    if len > at {
+        let prev = out.last().map_or(1, |l| l.2);
+        gaps.push((at, len));
+        push(&mut out, at, len, prev);
+    }
+    (out, gaps)
 }
 
 fn collect_libm(stmts: &[Stmt], out: &mut Vec<&'static str>) {
@@ -332,9 +441,23 @@ struct Gen<'a> {
     reals: Vec<Variable>,
     ints: Vec<Variable>,
     libm: HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
+    /// Whether instructions carry the line of the kernel's text they
+    /// compile (plan 0.13.0 step 5), and the line reached, in the order the
+    /// text prints them.
+    keep: bool,
+    line: u32,
 }
 
 impl Gen<'_> {
+    /// The next line of the kernel's text: what the instructions emitted
+    /// from now on compile.
+    fn next_line(&mut self) {
+        self.line += 1;
+        if self.keep {
+            self.b.set_srcloc(SourceLoc::new(self.line));
+        }
+    }
+
     fn addr(&mut self, buf: usize, index: &[Expr]) -> CV {
         let mut off = self.b.ins().iconst(types::I64, 0);
         for (e, s) in index.iter().zip(self.strides[buf].clone()) {
@@ -716,6 +839,7 @@ impl Gen<'_> {
     /// every loop enclosing it runs in full (`Kernel::parallel_at`).
     fn range_at(&mut self, stmts: &[Stmt], depth: usize, lo: CV, hi: CV) {
         let [Stmt::For { var, bound, body }] = stmts else { return self.stmts(stmts) };
+        self.next_line();
         if depth == 0 {
             return self.for_range(*var, lo, hi, body);
         }
@@ -739,6 +863,8 @@ impl Gen<'_> {
         self.b.switch_to_block(body_b);
         self.b.seal_block(body_b);
         body(self);
+        // The step and the jump back are the closing brace's.
+        self.next_line();
         let i = self.b.use_var(v);
         let next = self.b.ins().iadd_imm(i, 1);
         self.b.def_var(v, next);
@@ -750,6 +876,7 @@ impl Gen<'_> {
 
     fn stmts(&mut self, stmts: &[Stmt]) {
         for s in stmts {
+            self.next_line();
             match s {
                 Stmt::For { var, bound, body } => {
                     let zero = self.b.ins().iconst(types::I64, 0);
@@ -804,6 +931,7 @@ impl Gen<'_> {
                     self.b.switch_to_block(then_b);
                     self.b.seal_block(then_b);
                     self.stmts(then);
+                    self.next_line();
                     self.b.ins().jump(merge, &[]);
                     self.b.switch_to_block(merge);
                     self.b.seal_block(merge);

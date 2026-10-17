@@ -164,6 +164,13 @@ pub struct Exported {
     pub max_workers: usize,
     /// Leaves of integer weights, quantized when they are read (step 7).
     pub quantized: usize,
+    /// The C function `k<n>` of `kernels.c` each launched kernel of the
+    /// listing is, `(its place in the listing, n)`: the kernels are
+    /// deduplicated by their C text (plan 0.13.0 step 1, D134).
+    pub kernel_of: Vec<(usize, usize)>,
+    /// The lines of `kernels.c` each `k<n>` takes, its PSK-Kernel text's
+    /// comment included, first and last, from 1.
+    pub kernel_lines: Vec<(usize, usize)>,
 }
 
 /// The indices in `rec.ops` of the launches the result depends on; the
@@ -906,10 +913,16 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         "/* kernels.c: the kernels of {} ({}), one C function each, deduplicated,\n * each under its PSK-Kernel text (presk dump --stage kernel). Included by\n * model.c. Printed by presk-export-c (plan 0.9.0 §3.2, presk D77). */\n\n{KERNEL_DECL}",
         names_list, meta.file
     );
+    let mut kernel_lines = Vec::with_capacity(t.text.len());
     for (n, text) in t.text.iter().enumerate() {
-        kernels_c.push_str(&text.replace("static void KERNEL(", &format!("PRESK_KERNEL void k{n}(")));
+        let first = kernels_c.matches('\n').count() + 1;
+        let text = text.replace("static void KERNEL(", &format!("PRESK_KERNEL void k{n}("));
+        kernel_lines.push((first, first + text.lines().count().max(1) - 1));
+        kernels_c.push_str(&text);
         kernels_c.push('\n');
     }
+    let mut kernel_of: Vec<(usize, usize)> = t.name_of.iter().map(|(k, n)| (*k, *n)).collect();
+    kernel_of.sort();
 
     // ----- the arguments and the result, the same for every entry -------
     let fields: Vec<Fields> = recs.iter().map(|r| fields_of(r, args, &meta.quant, &sampled)).collect::<Result<_>>()?;
@@ -1183,7 +1196,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         files.push((name.to_string(), text.to_string()));
     }
     let quantized = ins.iter().filter(|i| i.quant.is_some()).count();
-    Ok(Exported { files, inputs: inputs_file, weights: weights_file, outputs, arena, arena_flat: arena_in + flat_host, functions, loops, folds, launches, dead, kernels: t.text.len(), split, max_workers, quantized })
+    Ok(Exported { files, inputs: inputs_file, weights: weights_file, outputs, arena, arena_flat: arena_in + flat_host, functions, loops, folds, launches, dead, kernels: t.text.len(), split, max_workers, quantized, kernel_of, kernel_lines })
 }
 
 /// A string as a JSON string literal, as `serde_json` writes one: `"` and

@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Presk pipeline view</title>
+<!--
+  The pipeline view of one compilation (plan 0.13.0 step 3, D136): the
+  stages of `presk explain` as columns, every element linked by an arrow to
+  what it was made from, read off the provenance table that `explain.json`
+  holds and that `presk explain --format html` inlines below. One file, no
+  framework, no build step and nothing fetched: the page works offline.
+  Written by presk-explain from crates/presk-explain/templates/explain.html.
+  The formulas are the printer of the denotation's (plan 0.13.0 step 4,
+  D137), typeset by KaTeX 0.19.0 (MIT), inlined with its fonts.
+-->
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf7; --fg: #1d1d1b; --muted: #6b6a66; --line: #d9d6cf; --card: #ffffff;
+  --lit: #fff4c2; --sel: #ffd84d; --dim: 0.22; --panel: #f3f1ec;
+  --f64: #2f5d9e; --f32: #2b8a3e; --bf16: #d9730d; --int: #8e44ad; --none: #8a8780;
+  --how-lower: #5f6f8f; --how-ad: #a03d6f; --how-opt: #7a4fc4; --how-fuse: #1f7a7a; --how-pass: #b9b5ac;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1b1a; --fg: #ecebe6; --muted: #a09e97; --line: #3a3936; --card: #252523;
+    --lit: #4a4220; --sel: #8a6d00; --panel: #22221f;
+    --f64: #7aa7e8; --f32: #6fcf7f; --bf16: #f0a050; --int: #c08ae0; --none: #8a8780;
+    --how-lower: #9aa9c8; --how-ad: #e07aa8; --how-opt: #b495f0; --how-fuse: #5fc9c9; --how-pass: #5a5853;
+  }
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1b1b1a; --fg: #ecebe6; --muted: #a09e97; --line: #3a3936; --card: #252523;
+  --lit: #4a4220; --sel: #8a6d00; --panel: #22221f;
+  --f64: #7aa7e8; --f32: #6fcf7f; --bf16: #f0a050; --int: #c08ae0; --none: #8a8780;
+  --how-lower: #9aa9c8; --how-ad: #e07aa8; --how-opt: #b495f0; --how-fuse: #5fc9c9; --how-pass: #5a5853;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 10px 16px 6px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0 0 2px; font-weight: 600; }
+header .sub { color: var(--muted); font-size: 12px; }
+#bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; }
+#bar button { font: inherit; padding: 2px 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 4px; cursor: pointer; }
+#bar button:hover { border-color: var(--muted); }
+#caption { flex: 1 1 300px; color: var(--fg); min-height: 1.3em; }
+#caption b { font-weight: 600; }
+#legend { display: flex; gap: 10px; color: var(--muted); font-size: 11px; flex-wrap: wrap; }
+#legend span::before { content: ""; display: inline-block; width: 14px; height: 3px; margin-right: 4px; vertical-align: middle; background: var(--c); }
+#main { display: flex; align-items: flex-start; }
+#scroll { position: relative; overflow: auto; flex: 1 1 auto; height: calc(100vh - 92px); }
+#cols { position: relative; display: flex; gap: 46px; padding: 10px 16px 40px; width: max-content; }
+svg#arrows { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+svg#arrows path { fill: none; stroke-width: 1.3; opacity: 0.55; }
+svg#arrows path.pass { stroke-dasharray: 3 3; }
+svg#arrows path.lit { opacity: 0.95; stroke-width: 2.2; }
+svg#arrows path.dim { opacity: 0.07; }
+.col { width: 250px; flex: 0 0 auto; }
+.col h2 { font-size: 12px; margin: 0 0 6px; font-weight: 600; position: sticky; top: 0; background: var(--bg); padding: 2px 0; z-index: 2; }
+.col h2 .n { color: var(--muted); font-weight: 400; }
+.col .note { color: var(--muted); font-size: 11px; margin: -2px 0 6px; }
+.grp { border: 1px solid var(--line); border-radius: 5px; margin-bottom: 6px; background: var(--card); }
+.grp > .gh { padding: 3px 6px; cursor: pointer; display: flex; justify-content: space-between; gap: 6px; font-weight: 600; font-size: 12px; }
+.grp > .gh .c { color: var(--muted); font-weight: 400; }
+.grp.open > .gh { border-bottom: 1px solid var(--line); }
+.card { padding: 2px 6px; margin: 2px 3px; border-left: 3px solid var(--none); font: 11.5px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; cursor: pointer; border-radius: 2px; }
+.card:hover { background: var(--panel); }
+.card.lit, .grp.lit > .gh { background: var(--lit); }
+.card.sel { background: var(--sel); }
+.dimmed .card:not(.lit):not(.sel), .dimmed .grp:not(.lit) > .gh { opacity: var(--dim); }
+.card .fold { color: var(--muted); font-style: italic; }
+.card .ov { float: right; color: var(--muted); font-size: 10.5px; margin-left: 4px; }
+.t-f64 { border-left-color: var(--f64); } .t-f32 { border-left-color: var(--f32); } .t-bf16 { border-left-color: var(--bf16); }
+.t-int8, .t-int4 { border-left-color: var(--int); }
+#panel { width: clamp(340px, 30vw, 640px); flex: 0 0 clamp(340px, 30vw, 640px); height: calc(100vh - 92px); overflow: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px 12px; font-size: 12px; }
+#panel h3 { font-size: 13px; margin: 0 0 6px; word-break: break-all; }
+#panel .stage { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+#panel pre { font: 11px/1.3 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; background: var(--card); border: 1px solid var(--line); padding: 5px; margin: 4px 0; max-height: 280px; overflow: auto; }
+#panel table { border-collapse: collapse; width: 100%; margin: 4px 0; }
+#panel td { border-top: 1px solid var(--line); padding: 2px 4px; vertical-align: top; }
+#panel td:first-child { color: var(--muted); white-space: nowrap; }
+#panel .math { border: 1px solid var(--line); background: var(--card); padding: 4px 6px; margin: 6px 0; overflow-x: auto; }
+#panel .math .what { color: var(--muted); font-size: 11px; margin-top: 4px; }
+#panel .math .katex-display { margin: 0.3em 0; }
+#panel .math .katex { font-size: 0.9em; }
+.card.m { white-space: normal; overflow: hidden; font-family: inherit; }
+.card .katex { font-size: 0.92em; }
+#panel .made { margin: 3px 0; }
+#panel table.code td { font: 10.5px/1.3 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+#panel table.code td:first-child { text-align: right; }
+#panel table.code i { color: var(--muted); }
+#bench { position: fixed; right: 8px; bottom: 6px; background: var(--card); border: 1px solid var(--line); padding: 4px 8px; font-size: 11px; color: var(--muted); z-index: 9; }
+@media (max-width: 760px) { #panel { display: none; } #scroll { height: auto; } }
+</style>
+<style>/*KATEX_CSS*/</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Presk pipeline view</h1>
+  <div class="sub" id="sub"></div>
+</header>
+<div id="bar">
+  <button id="prev" title="previous step (←)">◀</button>
+  <button id="next" title="next step (→)">▶</button>
+  <span id="caption"></span>
+  <button id="add" title="add the current selection to the lesson in the address">add step</button>
+  <button id="fold" title="fold every function to one card">fold all</button>
+  <button id="unfold" title="open every function">open all</button>
+  <button id="math" title="the cards as formulas, or as text">∑ math</button>
+  <button id="theme" title="light or dark">◐</button>
+  <span id="legend"></span>
+</div>
+<div id="main">
+  <div id="scroll"><div id="cols"></div><svg id="arrows"></svg></div>
+  <aside id="panel"><p>Select an element: its origins and what it became light up through every stage. Hover for its facts. A function folds and opens by its header. <kbd>←</kbd> <kbd>→</kbd> step through the lesson in the address; <kbd>Esc</kbd> clears.</p></aside>
+</div>
+<div id="bench" hidden></div>
+<script>/*KATEX_JS*/</script>
+<script type="application/json" id="presk-data">/*PRESK_DATA*/null</script>
+<script>
+"use strict";
+const D = JSON.parse(document.getElementById("presk-data").textContent);
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ----- the model ------------------------------------------------------------
+// An element is "stage:key". Its parents and children come from the links;
+// its group is the function it belongs to, inherited from its children for
+// the source and the elaborated program, which have none of their own.
+const E = new Map();
+const order = [];
+for (const st of D.stages || []) {
+  for (const e of st.elements) {
+    const id = st.stage + ":" + e.key;
+    E.set(id, { id, stage: st.stage, key: e.key, label: e.label, group: e.group || null, facts: e.facts || {}, ends: e.ends || null, parents: [], children: [], made: [] });
+  }
+  order.push(st);
+}
+for (const l of D.links || []) {
+  const c = E.get(l.child);
+  if (!c) continue;
+  c.made.push(l);
+  for (const p of l.parents) {
+    const pe = E.get(p);
+    if (!pe) continue;
+    c.parents.push(p);
+    pe.children.push(l.child);
+  }
+}
+for (const st of [...order].reverse()) {
+  for (const e of st.elements) {
+    const x = E.get(st.stage + ":" + e.key);
+    if (!x.group) {
+      const c = x.children.map((k) => E.get(k)).find((y) => y && y.group);
+      x.group = c ? c.group : (st.stage === "source" ? "source" : "program");
+    }
+  }
+}
+const isFn = (x) => ["core", "ad", "opt"].includes(x.stage) && !x.key.includes("/%");
+const how = (x) => (x.made[0] ? x.made[0].how : null);
+
+// A column is a decision taken: no column for differentiation when nothing
+// was differentiated, none for the optimizer without --opt (the JSON has no
+// such stage); an unchanged element is a pass-through, drawn as one arrow
+// across its column, never as a card.
+const hidden = (x) => isFn(x) || ((x.stage === "ad" || x.stage === "opt") && how(x) === "unchanged") || (x.stage === "ad" && !D.program.differentiated);
+const columns = order.filter((st) => !(st.stage === "ad" && !D.program.differentiated));
+const colIndex = new Map(columns.map((st, i) => [st.stage, i]));
+
+// The shown elements an element's arrows start from: its parents, or theirs
+// through a pass-through.
+function shownParents(x, seen = new Set()) {
+  const out = [];
+  for (const p of x.parents) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    const pe = E.get(p);
+    if (!pe) continue;
+    if (hidden(pe)) {
+      // Dashed where it crosses a column that is drawn: a pass-through.
+      for (const q of shownParents(pe, seen)) out.push({ id: q.id, pass: q.pass || colIndex.has(pe.stage) });
+    } else out.push({ id: p, pass: false });
+  }
+  return out;
+}
+
+// ----- folding --------------------------------------------------------------
+// The view opens at the function level in every column, with the functions
+// of the traced sites open and their threads lit (the user's decision of
+// 2026-10-17); the precision column lists its decisions and folds the rest.
+const open = new Set();
+// A traced site's shown element: where differentiation or the optimizer
+// made it, else PSK-Core's, which every later stage passes through to.
+const tracedAny = (D.traced || []).map((s) => ["ad:" + s, "opt:" + s, "core:" + s].find((k) => E.has(k) && !hidden(E.get(k))) || ["core:" + s, "ad:" + s].find((k) => E.has(k))).filter(Boolean);
+for (const k of tracedAny) open.add(E.get(k).group);
+let selection = new Set(tracedAny);
+const followersOpen = new Set();
+
+// ----- the mathematics (plan 0.13.0 step 4c) --------------------------------------
+// Every formula is the printer of the denotation's, in the notation of the
+// reference's chapter 3 (section 3.10), typeset when it is first shown and
+// kept: a card's formula when it scrolls into view, the inspector's when an
+// element is inspected.
+const MACROS = { "\\code": "\\text{\\texttt{#1}}", "\\den": "\\llbracket #1 \\rrbracket" };
+const texCache = new Map();
+function tex(s, display) {
+  const k = (display ? "D" : "I") + s;
+  let h = texCache.get(k);
+  if (h === undefined) {
+    try { h = katex.renderToString(s, { displayMode: display, throwOnError: false, macros: MACROS, strict: "ignore" }); }
+    catch (e) { h = `<code>${esc(s)}</code>`; }
+    texCache.set(k, h);
+  }
+  return h;
+}
+function texNum(v) {
+  if (v === 0 || !isFinite(v)) return String(v);
+  const e = Math.floor(Math.log10(Math.abs(v)));
+  if (e >= -2 && e < 4) return String(+v.toPrecision(3));
+  const m = +(v / Math.pow(10, e)).toFixed(2);
+  return m === 1 ? `10^{${e}}` : `${m} \\cdot 10^{${e}}`;
+}
+let mathOn = typeof katex !== "undefined";
+// A card's formula: the elaborated program's, PSK-Core's and the stages
+// after it; a source card keeps its text, its formula in the inspector.
+const cardTex = (x) => (["elab", "core", "ad", "opt", "layout"].includes(x.stage) ? x.facts.tex || null : null);
+const ovOf = new WeakMap();
+let pendingDraw = 0;
+const io = typeof IntersectionObserver !== "undefined" ? new IntersectionObserver((entries) => {
+  let changed = false;
+  for (const en of entries) {
+    if (!en.isIntersecting) continue;
+    const c = en.target;
+    io.unobserve(c);
+    const x = E.get(c.dataset.id);
+    const t = x && mathOn ? cardTex(x) : null;
+    if (!t) continue;
+    c.innerHTML = (ovOf.get(c) || "") + tex(t, false);
+    changed = true;
+  }
+  // A formula changes a card's height: the arrows follow.
+  if (changed) { cancelAnimationFrame(pendingDraw); pendingDraw = requestAnimationFrame(() => { draw(); light(); }); }
+}, { root: document.getElementById("scroll"), rootMargin: "300px" }) : null;
+
+// ----- drawing ----------------------------------------------------------------
+const cols = $("#cols");
+const svg = $("#arrows");
+const typeOf = (x) => x.facts.type || x.facts.dtype || null;
+const HOW_COLOR = {
+  defined: "--how-lower", instantiated: "--how-lower", typed: "--how-lower", lowered_fn: "--how-lower", lowered: "--how-lower",
+  gradient: "--how-ad", generated: "--how-ad", primal: "--how-ad", adjoint: "--how-ad", accumulate: "--how-ad", zero: "--how-ad", seed: "--how-ad", plumbing: "--how-pass",
+  rewritten: "--how-opt", introduced: "--how-opt", unchanged: "--how-pass",
+  fused: "--how-fuse", alone: "--how-fuse", site: "--how-fuse", parameter: "--how-fuse",
+};
+const PRECISION_ON = colIndex.has("precision") ? colIndex.get("precision") : 99;
+function color(child) {
+  const i = colIndex.get(child.stage);
+  const t = typeOf(child);
+  if (i >= PRECISION_ON && t) return `var(--${t.startsWith("int") ? "int" : t})`;
+  return `var(${HOW_COLOR[how(child)] || "--none"})`;
+}
+
+let cardOf = new Map(); // shown element -> its card, or its group's header
+function render() {
+  const t0 = performance.now();
+  cols.textContent = "";
+  cardOf = new Map();
+  for (const st of columns) {
+    const col = document.createElement("div");
+    col.className = "col";
+    const shown = st.elements.map((e) => E.get(st.stage + ":" + e.key)).filter((x) => !hidden(x));
+    col.innerHTML = `<h2>${st.section ? "§" + esc(st.section) + " " : ""}${esc(st.title)} <span class="n">${shown.length}</span></h2>`;
+    if (st.stage === "opt") col.insertAdjacentHTML("beforeend", `<div class="note">only what the optimizer changed; an unchanged let passes through</div>`);
+    if (st.stage === "ad") col.insertAdjacentHTML("beforeend", `<div class="note">what differentiation made; the functions it left pass through</div>`);
+    const groups = new Map();
+    for (const x of shown) {
+      if (!groups.has(x.group)) groups.set(x.group, []);
+      groups.get(x.group).push(x);
+    }
+    for (const [g, xs] of groups) {
+      const box = document.createElement("div");
+      box.className = "grp" + (open.has(g) ? " open" : "");
+      box.dataset.group = g;
+      const gh = document.createElement("div");
+      gh.className = "gh";
+      gh.innerHTML = `<span>${esc(g)}</span><span class="c">${xs.length}</span>`;
+      gh.onclick = () => toggle(g);
+      box.appendChild(gh);
+      if (open.has(g)) {
+        let list = xs;
+        let folded = [];
+        if (st.stage === "precision" && !followersOpen.has(g)) {
+          list = xs.filter((x) => (x.made[0] && x.made[0].role) !== "follows" && (x.made[0] && x.made[0].role) !== "carried");
+          folded = xs.filter((x) => !list.includes(x));
+        }
+        for (const x of list) box.appendChild(card(x));
+        if (folded.length) {
+          const f = document.createElement("div");
+          f.className = "card";
+          f.innerHTML = `<span class="fold">+${folded.length} that follow or are carried</span>`;
+          f.onclick = () => { followersOpen.add(g); render(); };
+          box.appendChild(f);
+          for (const x of folded) cardOf.set(x.id, f);
+        }
+      } else for (const x of xs) cardOf.set(x.id, gh);
+      col.appendChild(box);
+    }
+    cols.appendChild(col);
+  }
+  draw();
+  light();
+  return performance.now() - t0;
+}
+
+function card(x) {
+  const c = document.createElement("div");
+  const t = typeOf(x);
+  c.className = "card" + (t ? " t-" + t : "");
+  c.dataset.id = x.id;
+  let text = x.label;
+  if (x.stage === "kernel") text = text.replace(/^kernel /, "");
+  const ov = x.facts.measured_us != null ? `<span class="ov">${x.facts.measured_us.toFixed(2)} µs</span>` : x.facts.predicted_us != null ? `<span class="ov">${x.facts.predicted_us.toFixed(3)} µs pred.</span>` : "";
+  c.innerHTML = ov + esc(text);
+  const formula = mathOn ? cardTex(x) : null;
+  if (formula) {
+    c.classList.add("m");
+    c.title = x.label;
+    ovOf.set(c, ov);
+    const done = texCache.get("I" + formula);
+    if (done !== undefined) c.innerHTML = ov + done;
+    else if (io) io.observe(c);
+    else c.innerHTML = ov + tex(formula, false);
+  }
+  c.onclick = (ev) => { select(x.id, ev.shiftKey); ev.stopPropagation(); };
+  c.onmouseenter = () => inspect(x);
+  cardOf.set(x.id, c);
+  return c;
+}
+
+// One SVG for every arrow, drawn between the cards the links name, bundled
+// where a fold puts several elements in one card.
+let paths = [];
+function draw() {
+  const host = $("#scroll");
+  const base = cols.getBoundingClientRect();
+  svg.setAttribute("width", cols.scrollWidth);
+  svg.setAttribute("height", cols.scrollHeight);
+  svg.textContent = "";
+  paths = [];
+  const seen = new Map();
+  for (const x of E.values()) {
+    if (hidden(x)) continue;
+    const to = cardOf.get(x.id);
+    if (!to) continue;
+    for (const p of shownParents(x)) {
+      const from = cardOf.get(p.id);
+      if (!from || from === to) continue;
+      const key = colIndex.get(E.get(p.id).stage) + "|" + colIndex.get(x.stage) + "|" + (from.dataset.id || from.parentNode.dataset.group) + "|" + (to.dataset.id || to.parentNode.dataset.group);
+      let a = seen.get(key);
+      if (!a) {
+        a = { from, to, pass: p.pass, ids: new Set(), color: color(x) };
+        seen.set(key, a);
+      }
+      a.ids.add(p.id);
+      a.ids.add(x.id);
+    }
+  }
+  for (const a of seen.values()) {
+    const f = a.from.getBoundingClientRect();
+    const t = a.to.getBoundingClientRect();
+    if (t.left < f.left) continue;
+    const x1 = f.right - base.left, y1 = f.top + f.height / 2 - base.top;
+    const x2 = t.left - base.left, y2 = t.top + t.height / 2 - base.top;
+    const dx = Math.max(24, (x2 - x1) / 2);
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`);
+    p.style.stroke = a.pass ? "var(--how-pass)" : a.color;
+    if (a.pass) p.classList.add("pass");
+    if (a.ids.size > 2) p.style.strokeWidth = String(1.3 + Math.log2(a.ids.size - 1));
+    svg.appendChild(p);
+    paths.push({ el: p, ids: a.ids });
+  }
+  void host;
+}
+
+// ----- selecting: the thread of the selected elements ----------------------------
+function thread(ids) {
+  const lit = new Set();
+  for (const dir of ["parents", "children"]) {
+    const seen = new Set();
+    const stack = [...ids];
+    while (stack.length) {
+      const k = stack.pop();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      lit.add(k);
+      const x = E.get(k);
+      if (x) for (const y of x[dir]) stack.push(y);
+    }
+  }
+  return lit;
+}
+function light() {
+  const lit = thread(selection);
+  const any = selection.size > 0;
+  cols.classList.toggle("dimmed", any);
+  for (const c of cols.querySelectorAll(".card")) {
+    c.classList.toggle("sel", selection.has(c.dataset.id));
+    c.classList.toggle("lit", lit.has(c.dataset.id));
+  }
+  for (const g of cols.querySelectorAll(".grp")) {
+    const gh = g.firstChild;
+    const on = [...cardOf.entries()].some(([k, v]) => v === gh && lit.has(k));
+    g.classList.toggle("lit", on);
+  }
+  for (const p of paths) {
+    const on = any && [...p.ids].filter((k) => lit.has(k)).length >= 2;
+    p.el.classList.toggle("lit", on);
+    p.el.classList.toggle("dim", any && !on);
+  }
+}
+function select(id, add) {
+  const t0 = performance.now();
+  if (!add) selection = new Set();
+  if (selection.has(id)) selection.delete(id); else selection.add(id);
+  light();
+  inspect(E.get(id));
+  return performance.now() - t0;
+}
+function toggle(g) {
+  if (open.has(g)) open.delete(g); else open.add(g);
+  return render();
+}
+
+// ----- inspecting: the facts and the reasons, in words ------------------------------
+const WORDS = {
+  defined: () => "defined at this span",
+  instantiated: () => "the module, instantiated with its dimensions",
+  typed: () => "the typed expression at this span",
+  lowered_fn: (l) => `lowered from the ${l.kind}`,
+  lowered: (l) => `lowered by the rule of \`${l.rule}\``,
+  unchanged: () => "the same let under the same number, or a new number only: a pass-through",
+  gradient: () => "`grad` rewritten to a closure of the generated `.grad`",
+  generated: (l) => `generated by differentiation: \`.${l.kind}\``,
+  primal: (l) => `the forward pass's copy of the primal, ${l.mode}`,
+  adjoint: (l) => `an adjoint of the primal, by the derivative of \`${l.rule}\``,
+  accumulate: () => "the sum of two contributions to the primal's adjoint",
+  zero: () => "the adjoint of a parameter nothing flowed to: zeros",
+  seed: () => "the cotangent 1 the sweep is seeded with",
+  plumbing: () => "computes nothing: a result tuple, a residual's projection, a call of .fwd or .bwd",
+  site: (l) => `a site of the precision analysis, the solver's role: ${l.role}`,
+  parameter: () => "a parameter the realization types by its path",
+  rewritten: (l) => `rewritten by the optimizer (rules that applied in the function: ${(l.rules || []).join(", ") || "none"})`,
+  introduced: () => "a let a rewrite introduced",
+  fused: (l) => `a fusion group of ${l.members}, one loop nest; it ends at its root: ${l.stop}`,
+  alone: (l) => `a nest alone: ${l.stop}`,
+  laid_out: (l) => `the layout ${l.point}, of ${l.points} points`,
+  kernel: (l) => `the kernel ${l.shared_by} nest${l.shared_by === 1 ? "" : "s"} launch`,
+  launched: (l) => `launched ${l.count} time${l.count === 1 ? "" : "s"} a call`,
+  epilogue: () => "an add a contraction's kernel computes as its epilogue",
+  function: (l) => `the kernel's C function, lines ${l.lines[0]}–${l.lines[1]} of kernels.c`,
+  code: () => "the machine code of the kernel's line",
+};
+// What the inspector writes in mathematics: the element's formula, the rule
+// of the link that made it (a derivative's contributions, a rewrite's
+// identity), a site's term against the estimate, a nest's order of
+// summation.
+function mathOf(x) {
+  const parts = [];
+  const add = (what, s, display = true) => parts.push(`<div class="what">${esc(what)}</div>` + tex(s, display));
+  const WHAT = { elab: "its denotation (the reference, section 3.10)", core: "its equation (section 3.10)", ad: "its equation (section 3.10)", opt: "its equation (section 3.10)", precision: "its term of the solver's estimate: its sensitivity, the unit roundoff of its type, its magnitude", layout: "the sum this contraction nest computes (definition den-contract)" };
+  if (x.facts.tex) add(WHAT[x.stage] || "its formula", x.facts.tex);
+  if (x.stage === "source") {
+    const c = x.children.map((k) => E.get(k)).find((y) => y && y.facts.tex);
+    if (c) add("what it denotes (the reference, section 3.10)", c.facts.tex);
+  }
+  if (x.facts.order_tex) add(`its terms t_k added in the order ${x.facts.order}`, x.facts.order_tex);
+  const R = D.rules || { adjoint: {}, rewrite: {} };
+  for (const l of x.made) {
+    if (l.how === "adjoint" && R.adjoint[l.rule]) add(`the rule of ${l.rule}: its contributions, y the binding and c its cotangent (the reference's table core-adjoint)`, R.adjoint[l.rule]);
+    if (l.how === "rewritten") for (const r of l.rules || []) if (R.rewrite[r]) add(`the identity of ${r} (tables core-algebra, core-structure)`, R.rewrite[r], false);
+  }
+  if (x.stage === "precision" && D.precision) {
+    const p = D.precision;
+    const n = (v) => (v == null ? "\\text{--}" : texNum(v));
+    add("the estimate against the budget, the gap measured and the bound, absolute", `\\textstyle\\sum_v e_v = ${n(p.estimate)},\\quad \\varepsilon = ${n(p.budget)},\\quad \\gamma = ${n(p.measured)},\\quad B = ${n(p.bound)}`);
+  }
+  return parts.length ? `<div class="math">${parts.join("")}</div>` : "";
+}
+// A kernel's machine code (plan 0.13.0 step 5): each range of bytes with
+// the kernel's line it compiles, in the order of the code; a byte Cranelift
+// gave no line (a register move, a branch at a block's edge) is in italics,
+// with the line before it. Then Cranelift's text of the instructions.
+function nativeOf(x) {
+  const f = x.facts;
+  if (!f.ranges) return "";
+  const k = x.parents.map((p) => E.get(p)).find((y) => y && y.stage === "kernel");
+  const lines = k && k.facts.text ? k.facts.text.split("\n") : [];
+  const given = new Uint8Array(f.bytes);
+  for (const [a, b] of f.given || []) given.fill(1, a, b);
+  const hex = (a, b) => {
+    let out = "";
+    for (let i = a; i < b; i++) {
+      const byte = f.hex.slice(2 * i, 2 * i + 2);
+      out += (given[i] ? `<i>${byte}</i>` : byte) + ((i - a) % 4 === 3 ? " " : "");
+    }
+    return out;
+  };
+  const nGiven = (f.given || []).reduce((n, [a, b]) => n + b - a, 0);
+  let h = `<div class="what">${f.bytes} bytes; every one with the line of the kernel it compiles. ${nGiven} had no line from Cranelift, in italics: they take the line before them.</div>`;
+  h += `<table class="code"><tr><td>line</td><td>of the kernel</td><td>bytes</td></tr>` + f.ranges.map(([a, b, l]) => `<tr><td>${l}</td><td>${esc((lines[l - 1] || "").trim())}<br>${hex(a, b)}</td><td>${a}–${b}</td></tr>`).join("") + "</table>";
+  h += `<div class="what">Cranelift's text of the instructions (register allocated)</div><pre>${esc(f.disasm)}</pre>`;
+  return h;
+}
+const FACT_NAMES = { span: "source", name: "name", magnitude: "|v| ≤", elements: "elements", condition: "condition number", sensitivity: "‖∂L/∂v‖₁", type: "type", term: "term of the estimate", rounded_in: "rounded in", why: "why", shape: "shape", predicted_us: "predicted (µs)", runner_up: "runner-up", runner_up_us: "runner-up (µs)", dtype: "type", measured_us: "measured (µs, a launch)", bound: "the bound's error here", order: "reduction order", bytes: "machine code (bytes)" };
+function inspect(x) {
+  if (!x) return;
+  const st = order.find((s) => s.stage === x.stage);
+  let h = `<div class="stage">${esc(st ? "§" + st.section + " " + st.title : x.stage)}</div><h3>${esc(x.key)}</h3>`;
+  if (x.stage === "kernel" || x.stage === "c") h += `<pre>${esc(x.facts.text || x.label)}</pre>`;
+  else h += `<pre>${esc(x.label)}</pre>`;
+  if (mathOn) h += mathOf(x);
+  if (x.stage === "native") h += nativeOf(x);
+  const rows = Object.entries(x.facts).filter(([k]) => !["text", "tex", "order_tex", "hex", "ranges", "given", "disasm"].includes(k));
+  if (rows.length) h += "<table>" + rows.map(([k, v]) => `<tr><td>${esc(FACT_NAMES[k] || k)}</td><td>${esc(typeof v === "number" ? (Math.abs(v) < 1e-3 || Math.abs(v) >= 1e5 ? v.toExponential(3) : +v.toPrecision(4)) : v)}</td></tr>`).join("") + "</table>";
+  for (const l of x.made) h += `<div class="made">◂ ${esc((WORDS[l.how] || (() => l.how))(l))}<br><span class="stage">from ${l.parents.map(esc).join(", ")}</span></div>`;
+  if (x.ends) h += `<div class="made">▸ ends here: ${esc(x.ends)}</div>`;
+  $("#panel").innerHTML = h;
+}
+
+// ----- the lesson: selections with captions, in the address -------------------------
+function readLesson() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  let lesson = null;
+  try { lesson = q.get("lesson") ? JSON.parse(q.get("lesson")) : null; } catch (e) { lesson = null; }
+  if (!lesson) lesson = tracedAny.map((k) => ({ sel: [k], caption: `§12 traces \`${E.get(k).key}\` through every stage` }));
+  return { lesson, step: Math.min(+q.get("step") || 0, Math.max(0, lesson.length - 1)), bench: q.has("bench") };
+}
+let L = readLesson();
+function go(i) {
+  if (!L.lesson.length) return;
+  L.step = (i + L.lesson.length) % L.lesson.length;
+  const s = L.lesson[L.step];
+  selection = new Set(s.sel.filter((k) => E.has(k)));
+  for (const k of selection) open.add(E.get(k).group);
+  if (s.open) for (const g of s.open) open.add(g);
+  render();
+  $("#caption").innerHTML = `<b>${L.step + 1}/${L.lesson.length}</b> ${esc(s.caption || "")}`;
+  const q = new URLSearchParams(location.hash.slice(1));
+  q.set("step", L.step);
+  history.replaceState(null, "", "#" + q.toString());
+  const first = [...selection][0];
+  if (first) inspect(E.get(first));
+}
+$("#prev").onclick = () => go(L.step - 1);
+$("#next").onclick = () => go(L.step + 1);
+$("#add").onclick = () => {
+  const caption = prompt("The step's caption:", "");
+  if (caption === null) return;
+  const q = new URLSearchParams(location.hash.slice(1));
+  const lesson = q.get("lesson") ? JSON.parse(q.get("lesson")) : [];
+  lesson.push({ sel: [...selection], open: [...open], caption });
+  q.set("lesson", JSON.stringify(lesson));
+  q.set("step", lesson.length - 1);
+  location.hash = q.toString();
+  L = readLesson();
+  go(L.step);
+};
+$("#fold").onclick = () => { open.clear(); render(); };
+$("#math").onclick = () => { if (typeof katex === "undefined") return; mathOn = !mathOn; render(); };
+$("#unfold").onclick = () => { for (const x of E.values()) open.add(x.group); render(); };
+$("#theme").onclick = () => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = dark ? "light" : "dark";
+};
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.tagName === "INPUT") return;
+  if (ev.key === "ArrowRight") go(L.step + 1);
+  else if (ev.key === "ArrowLeft") go(L.step - 1);
+  else if (ev.key === "Escape") { selection = new Set(); light(); }
+});
+cols.addEventListener("click", () => { selection = new Set(); light(); });
+let pending = 0;
+$("#scroll").addEventListener("scroll", () => {});
+window.addEventListener("resize", () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(() => { draw(); light(); }); });
+
+// ----- the header and the legend --------------------------------------------------
+const P = D.program || {};
+$("#title").textContent = (D.document && D.document.title ? D.document.title.replace(/`/g, "") : "Presk pipeline view");
+document.title = "Pipeline · " + (P.entry || "");
+$("#sub").textContent = `presk ${D.compiler} · ${P.file} · entry ${P.entry}` + (P.dims && P.dims.length ? " · " + P.dims.map((d) => d[0] + " = " + d[1]).join(", ") : "") + ` · ${P.realization}` + (P.opt ? " · --opt" : " · optimizer not requested") + (P.planned ? " · planned" : " · default layouts, no profile") + (P.differentiated ? "" : " · nothing differentiated");
+$("#legend").innerHTML = [["lowering", "--how-lower"], ["differentiation", "--how-ad"], ["optimizer", "--how-opt"], ["fusion and sites", "--how-fuse"], ["pass-through", "--how-pass"], ["f64", "--f64"], ["f32", "--f32"], ["bf16", "--bf16"]].map(([n, c]) => `<span style="--c: var(${c})">${n}</span>`).join("");
+
+// ----- start, and the bench of statement P3 -----------------------------------------
+if (D.format !== 1) {
+  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 1; this one is format ${esc(D.format)}.</p>`;
+} else {
+  const first = render();
+  if (L.lesson.length) go(L.step);
+  if (L.bench) {
+    // Statement P3: a select and a collapse redraw under 200 ms. Every
+    // traced site selected, every function folded and opened, by the page's
+    // own clock.
+    const times = { first };
+    const sel = [];
+    for (const k of E.keys()) if (!hidden(E.get(k)) && sel.length < 200) sel.push(select(k, false));
+    const groups = [...new Set([...E.values()].map((x) => x.group))];
+    const tog = [];
+    for (const g of groups) { tog.push(toggle(g)); tog.push(toggle(g)); }
+    const max = (a) => a.length ? Math.max(...a) : 0;
+    times.select = max(sel);
+    times.collapse = max(tog);
+    const el = $("#bench");
+    el.hidden = false;
+    el.textContent = `P3 bench: first draw ${times.first.toFixed(0)} ms; select ${sel.length}, at most ${times.select.toFixed(1)} ms; fold or open ${tog.length}, at most ${times.collapse.toFixed(1)} ms; ${E.size} elements, ${paths.length} arrows drawn`;
+    document.title = el.textContent;
+  }
+}
+</script>
+</body>
+</html>

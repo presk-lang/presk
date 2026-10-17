@@ -189,6 +189,24 @@ pub struct KernelBackend<'p> {
     epilogues: HashMap<FuncId, std::rc::Rc<HashMap<VarId, presk_core::fusion::Epilogue>>>,
     /// Whether the plan states an epilogue anywhere: else no `let` asks.
     epilogue_stated: bool,
+    /// When set, every launch is logged here: the kernel's place in
+    /// [`KernelBackend::kernels`] and the nest that launched it (plan 0.13.0
+    /// step 1, D134), what the provenance table links a kernel to its nests
+    /// by. It only observes.
+    pub launch_log: Option<Vec<Launched>>,
+    /// The `add` of the epilogue being launched, for the log.
+    epilogue_of: Option<String>,
+}
+
+/// One launch as [`KernelBackend::launch_log`] logs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launched {
+    /// The kernel's place in the backend's list.
+    pub kernel: usize,
+    /// The nest, `"<function>/%<let>"`.
+    pub nest: String,
+    /// The `add` the nest's kernel computes as its epilogue, when it does.
+    pub epilogue: Option<String>,
 }
 
 impl Backend for KernelBackend<'_> {
@@ -240,7 +258,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -492,6 +510,9 @@ impl<'p> KernelBackend<'p> {
                 i
             }
         };
+        if let Some(log) = self.launch_log.as_mut() {
+            log.push(Launched { kernel: idx, nest: self.site.clone(), epilogue: self.epilogue_of.clone() });
+        }
         let t = self.tick();
         let k = &self.kernels[idx];
         // A mixed realization can hand this kernel a buffer another site
@@ -832,7 +853,9 @@ impl<'p> KernelBackend<'p> {
         };
         let (tx, tw, to) = (tensor(x, "product's first operand")?, tensor(w, "product's second operand")?, tensor(o, "`add`'s other operand")?);
         let add_site = std::mem::replace(&mut self.site, prod_site);
+        self.epilogue_of = Some(add_site.clone());
         let r = self.epilogue_prim(op, prod_ty, [&tx, &tw, &to], e.first);
+        self.epilogue_of = None;
         self.site = add_site;
         r
     }
