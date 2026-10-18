@@ -14546,3 +14546,177 @@ each process. D135 had said the JSON was deterministic without
 - The code a run executes is unchanged: the same bytes, linked. X1's
   harness differs from the baseline in the same 19 files, by their version
   lines. `make test` passes, and the manual builds without a warning.
+
+## D146 — Version 0.14.1 opened: the exploded view, by a compositional layout of the network diagram (2026-10-17)
+
+The plan is `presk-specs/implementation/presk-plan-0.14.1.md` (presk-specs
+!94, open). On the Network tab the user asked, on 2026-10-17, via the
+paper session: "On devrait pouvoir déplier toutes les boîtes, pour
+arriver à une vue éclatée complète du graphe, pas juste une boîte à la
+fois." That is two asks:
+- a fully exploded view, every box open and every stack at one layer;
+- opening a box without folding its siblings. 0.14.0 step 1 departed
+  from its plan there (D141's second departure), because its positions
+  are precomputed per opening, one chain of boxes each, and an arbitrary
+  set of open boxes would need 2ⁿ of them.
+
+**The user's decision (2026-10-17, via the paper session): option C, a
+compositional layout.**
+- Each box's graph is laid out once, in its own frame, with its children
+  folded.
+- An opening composes the frames: an open box takes its composed size,
+  the items after it in its layer move right by its growth, the layers
+  below move down by their layer's growth, and nothing is reordered.
+- The page composes any set of open boxes, and all of them: "expand all",
+  "fold all", a header toggling its own box alone, and the lesson and the
+  address recording the open set.
+- The exporters compose by the same rule: `presk dump --stage network
+  --level all`.
+
+The alternatives the paper session set beside it were:
+- (A) one more precomputed opening, "exploded", the siblings still
+  folding;
+- (B) the layered layout ported to JavaScript, with the Rust layout as
+  its oracle.
+
+**The form: version 0.14.1, not a merge after the tag.** Positions of
+record move: the report's figure 9.1 (level 1), the manual's
+`explain_network` figure (level 2) and `network.svg`. `explain.json`'s
+format moves to 3, one frame per box replacing the views per opening.
+Nothing else moves: the graph, its numbers, the table, `explain.md`.
+
+**Facts checked** (a scratch test, not committed, on the course GPT's
+`loss` at D = 64 in `f64`):
+- *The layout is already compositional in its structure.*
+  `layout::graph(b, open)` lays out the graph of `b` with each open child
+  at its own graph's size. The layers and their order never depend on
+  which boxes are open, only the coordinates do, so only the
+  precomputation is per chain. A function laying out any set reproduces
+  the 14 precomputed views exactly, rectangles and routes.
+- *The exploded view* is 1 101 × 3 954 pt: 125 nodes, 13 boxes four
+  levels deep, 133 arrows. On an A4 text block it would print at scale
+  0.18, so it is for the page and the SVG.
+- *The shift rule against today's.* A prototype of C gives the same
+  overall sizes (level 1 647 × 899 pt, level 2 741 × 1 569, the exploded
+  1 101 × 3 954). Inside, it moves 5 of the 24 rectangles at level 1 (at
+  most 132 pt) and 21 of 38 at level 2 (at most 203 pt), mostly the nodes
+  after an open box and the arrows, which today's rule re-centres.
+  Side by side, the drawings are nearly the same.
+- *What does not move:* the entry alone and every box drawn alone,
+  figure 9.2 among them, since each is a single frame.
+- *The JSON:* the `network` object is 121 KB on the course GPT under a
+  budget, 36 KB of it for 14 views; 85 KB on the decoder block at the 7B
+  width, 19 KB of it for 12 views.
+
+**Statements, fixed before the work** (the plan's §3):
+- **E0:** nothing else moves, against `2702f96`. `explain.json` changes
+  only in its `format` and its positions.
+- **E1:** the openings compose. A box with no child open is drawn as its
+  frame, translated; the layers and their order are kept; no two
+  siblings overlap; every child lies inside its box; every arrow meets an
+  open box at its port. Checked in every chain opening, in the exploded
+  one and in 20 random open sets on each of the 36 diagrams.
+- **E2:** any open set in the page, and N1's clicks on the exploded view.
+- **E3:** one rule. The page's positions equal the compiler's for the
+  default and exploded openings, and the SVG and the TikZ draw the
+  compiler's.
+- **E4:** N1 to N4 still hold.
+- **E5:** with everything open, the decoder block's page answers under
+  P3's 200 ms.
+
+E0's baseline: X1's harness on `2702f96`'s release build
+(`out/bin/presk-2702f96`) into `out/x1/base-0.14.1`, with `make
+quant-table`, `step-table` and `tutorial` beside it. Version `0.14.1-dev`.
+
+**Done (2026-10-17).** Steps 0 to 3 on the branch `0.14.1`, one presk
+merge request with presk-specs !94. What the version did:
+- *Frames and composition* (step 1). `layout::Frame`, a box's graph laid
+  out by 0.14.0's layered layout with every child folded, each number
+  snapped to a tenth of a point; `layout::view(net, open)` composing any
+  set of open boxes; `level` an open set, `everything` the exploded one;
+  `explain.json` format 3 (`frames`, `default` an open set, and the
+  compiler's composition of the default and exploded openings in
+  `views`); `presk dump --stage network --level all`.
+- *The page* (step 2). The composition in JavaScript, the compiler's
+  arithmetic in its order; "expand all", "fold all", a header toggling its
+  own box; the open set in the address at each opening and in the
+  lesson; under `#bench`, E3's comparison and E5's timings.
+- *The documents and the version* (step 3): the manual (`explain`,
+  `cli`, `index`, `tutorial`, `status`, the chapter `explain_network`
+  regenerated), the CHANGELOG; in presk-specs the plan marked done, the
+  reference at draft v0.20, the report (chapter 8, its two figures, the
+  foreword, the roadmap, the history), the slides, the summary and a
+  status note. No poster: a patch gets none, as 0.10.1 did not.
+
+**Departures, each found on the way.**
+1. *A defect of 0.14.0's layout, fixed.* The layered layout keyed an
+   arrow's pass-through items by the edge alone, so that an arrow kept one
+   place for every layer it crossed, the last layer's, and could run
+   through a box: in the `Block` frame the residual arrow ran through
+   `attn`'s rectangle, and 0.14.0's level-2 figure shows it crossing
+   `attn`. On the 36 diagrams, 1 183 arrows ran through a node in the
+   openings E1 checks. A pass now has a place in each layer (`Item::Pass`
+   carries its layer), and an arrow leaves its source straight down to
+   its layer's bottom, crosses each layer straight down and bends only
+   between layers; E1 checks that no arrow runs through a node. The
+   frames move with it: the part of E0 that kept the entry alone and every
+   box alone at 0.14.0's positions does not hold, and the report's figure
+   9.2 (`Block` alone) moves, from 693 to 705 pt wide (on A4 at 0.68, its
+   labels still about 6 pt).
+2. *Seven arrow ends by a tenth of a point.* Before the fix above, the
+   only difference in figure 9.2 was where seven arrows landed on their
+   targets, by 0.1 pt: a landing is now computed from rectangles snapped
+   to the tenth.
+3. *A trailing comma.* A route with no pass printed `[id,at,]` in the
+   frames' JSON, which `presk-explain` parses back and, failing, dropped
+   the network silently (`.ok()`): the page drew nothing. The document
+   test now asserts the frames and the two views.
+4. *The page's "each of N runs"*, which the layout never measured, ran
+   past a narrow box's border: it is narrowed into the box, as the 12 px
+   titles are.
+
+**Verdicts.**
+- **E0, holds but in one part:** X1's harness on the version's tree against `2702f96` (939 files)
+  differs in 19 files, by their version and commit lines alone; `make
+  quant-table` and `step-table` byte for byte; `make tutorial` but for its
+  measurements (the bench tables, the profiles, the tests' times) and
+  `presk --help`'s version; `make test`, `check-examples`, `coverage`,
+  `plan-check` and `c-conformance` pass. `explain.json` on the tutorial,
+  the course GPT and the decoder block is `2702f96`'s but for `format` (3)
+  and the network's positions, its nodes, its edges and every other field
+  byte-identical; `explain.md` differs by its version line alone. The part
+  that does not hold: the entry alone and every box alone, which were to
+  keep 0.14.0's positions, move by departure 1's fix.
+- **E1 holds:** on the 36 diagrams of 0.14.0's network test, in each box's
+  opening with the boxes it is inside, the levels 0 to 5, the exploded
+  opening and 20 random sets (a fixed seed), every box with no child open
+  is drawn as its frame translated, the frame's layers and order are kept,
+  no two siblings overlap, every child lies inside its box, every arrow
+  meets an open box at its port, and no arrow runs through a node; N2's
+  sums hold in each of those openings.
+- **E2 holds:** in headless Firefox, any set of boxes opens (two siblings,
+  `attn` and `ff`, open at once in the write-up's screenshot), and a click
+  on each box of the default and the exploded openings lights its
+  elements in the columns: 8, 16 and 14 boxes on the tutorial, the course
+  GPT and the decoder block.
+- **E3 holds:** the page's composition of the default and the exploded
+  openings equals the compiler's, every rectangle and every route to the
+  tenth of a point, on the tutorial, the course GPT and the decoder block,
+  three runs each; the SVG and the TikZ draw the compiler's composition
+  of the default, level 2, the exploded opening and `Block` alone (N4's
+  test).
+- **E4 holds:** N1 to N4 on the 36 diagrams; the report's figures, level 1
+  at 647 × 899 pt (0.74 of A4, unchanged) and `Block` alone at 705 × 808
+  pt (0.68).
+- **E5 holds:** three runs each in headless Firefox on falicon. On the
+  decoder block at the 7B width, 13 openings drawn in at most 21.0 ms,
+  the exploded one in at most 3.0 ms, 22 toggles in the exploded opening
+  in at most 11.0 ms, 93 selects in at most 2.0 ms; on the course GPT,
+  15 openings in at most 22.0 ms, the exploded one in 4.0 ms, 26 toggles
+  in at most 9.0 ms; on the tutorial, 7, 2.0, 10 and 3.0 ms. The columns'
+  fold reached 47.0 ms in one run on the decoder (45.0 at 0.14.0), its
+  code unchanged. The `network` object weighs 101 KB on the course GPT
+  under a budget (121 KB at 0.14.0) and 77 KB on the decoder block (85
+  KB): the frames hold each rectangle once (7 and 5 KB), the two views
+  the page checks against 9 and 6 KB.
+- The exploded course GPT at `D = 64` in `f64` is 1 062 × 3 954 pt.

@@ -1,6 +1,6 @@
 # Presk compiler — user manual
 
-**Version 0.14.0** (plans 0.1.0 to 0.14.0 and the patch 0.10.1 done; [`status`]). This
+**Version 0.14.1** (plans 0.1.0 to 0.14.0 and the patches 0.10.1 and 0.14.1 done; [`status`]). This
 manual describes the `presk` tool as it is implemented, no more: every
 chapter was updated at each step of each plan, and features that exist only
 in the language specification are marked *not implemented*. The reference for the language itself is the
@@ -29,7 +29,7 @@ it may be differentiated; randomness is an explicit effect.
 - [`export_c`] — `presk export --target c`: an entry as a C program that computes the native backend's bits, under a plan, on threads, sampling, with integer weights; why its bits are the native backend's, what is checked; the SCoP mode for polyhedral tools.
 - [`realize`] — PSK-Realize: fusion groups, what shares a loop nest, and the launches and traffic it removes; the realization plan (`--plan`), a layout per nest, its decisions and how a plan is chosen.
 - [`optimization`] — `--opt`: e-graph rewriting of PSK-Core, exact over ℝ, checked against the interpreter; the cost model calibrated per machine type; the layout cost model, its load term and its fresh test.
-- [`explain`] — `presk explain`: one compilation as a document, every stage's representation and its decisions, each figure the commands' own (0.11.0); its JSON, and the pipeline view: the stages as columns, every element linked to what it was made from, its equations and each kernel's machine code (0.13.0); the network diagram, the program as boxes and arrows in the view's second tab, `presk dump --stage network` (0.14.0).
+- [`explain`] — `presk explain`: one compilation as a document, every stage's representation and its decisions, each figure the commands' own (0.11.0); its JSON, and the pipeline view: the stages as columns, every element linked to what it was made from, its equations and each kernel's machine code (0.13.0); the network diagram, the program as boxes and arrows in the view's second tab, `presk dump --stage network` (0.14.0); any set of its boxes opened, and the exploded view (0.14.1).
 - [`explain_loss`] — the document `presk explain` writes for the tutorial's `loss`, generated.
 - [`explain_network`] — the course GPT's network diagram at level 2, generated.
 - [`corpus`] — models from an NLP course, transcribed as a forcing function.

@@ -2,31 +2,31 @@
 source: crates/presk-explain/tests/network.rs
 expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
-network of `loss`, read off the stage `ad`: 125 nodes, 133 arrows, 14 openings
+network of `loss`, read off the stage `ad`: 125 nodes, 133 arrows, 13 boxes
 parameters: 112896 (903168 bytes, f64)
 work W = 7362769, bytes Q = 3309664, over every launch of the entry
 default opening: [3], 647 × 899 pt
 [0] root loss  ad:loss @ 0,0 647×899
     θ 113 k f64 · W 7.36 M · Q 3.31 MB
-  [1] input k #1  ad:loss (key) @ 303,38 40×22
-  [2] input batch #2  ad:loss @ 454,38 57×22
+  [1] input k #1  ad:loss (key) @ 215,38 40×22
+  [2] input batch #2  ad:loss @ 322,38 57×22
   [3] call GPT.apply · GPT  ad:loss/%5 fn ad:GPT.apply @ 12,84 623×657
       θ 113 k f64 · W 7.33 M · Q 3.29 MB
-    [7] input ids #1  ad:loss/%3 @ 210,122 44×22
-    [8] input k #2  ad:loss (key) @ 123,122 40×22
-    [9] op causal_mask seq  fusion:GPT.apply/%3 @ 175,328 123×26
+    [7] input ids #1  ad:loss/%3 @ 216,122 44×22
+    [8] input k #2  ad:loss (key) @ 130,122 40×22
+    [9] op causal_mask seq  fusion:GPT.apply/%3 @ 169,328 123×26
         W 512 · Q 2.05 kB
-    [10] op embed  fusion:GPT.apply/%5 @ 299,182 57×26
+    [10] op embed  fusion:GPT.apply/%5 @ 305,182 57×26
         Q 63.7 kB
-    [11] op positions seq  fusion:GPT.apply/%7 @ 381,122 110×26
+    [11] op positions seq  fusion:GPT.apply/%7 @ 388,122 110×26
         Q 128B
-    [12] op embed  fusion:GPT.apply/%8 @ 368,182 57×26
+    [12] op embed  fusion:GPT.apply/%8 @ 374,182 57×26
         Q 16.5 kB
-    [13] op add  fusion:GPT.apply/%9 @ 299,232 44×26
+    [13] op add  fusion:GPT.apply/%9 @ 305,232 44×26
         W 2.05 k · Q 41.0 kB
-    [14] host split_key 2  ad:GPT.apply/%10 (key) @ 190,182 97×22
+    [14] host split_key 2  ad:GPT.apply/%10 (key) @ 196,182 97×22
     [15] host dropout_mask  ad:GPT.apply/%14 @ 242,282 103×22
-    [16] op mul  fusion:GPT.apply/%15 @ 310,328 44×26
+    [16] op mul  fusion:GPT.apply/%15 @ 304,328 44×26
         W 2.05 k · Q 49.2 kB
     [17] stack blocks ×2 · Block  ad:GPT.apply/%18 fn ad:Block.apply @ 24,378 560×138
         θ 100 k f64 · W 6.93 M · Q 2.92 MB
@@ -317,9 +317,9 @@ default opening: [3], 647 × 899 pt
       121 → 124: ad:LayerNorm.apply/%15  ℝ[batch: B, seq: T, model: 64] = ℝ[batch: 2, seq: 16, model: 64], f64, 2048 elements, 16384 B
     [19] op dot  fusion:GPT.apply/%24 @ 416,657 44×26
         W 377 k · Q 87.0 kB
-    [20] param θ.tok  ad:GPT.apply/%4 @ 266,122 103×36
+    [20] param θ.tok  ad:GPT.apply/%4 @ 272,122 103×36
         θ 5.89 k f64
-    [21] param θ.pos  ad:GPT.apply/%6 @ 503,122 103×36
+    [21] param θ.pos  ad:GPT.apply/%6 @ 509,122 103×36
         θ 1.02 k f64
     [22] param θ.head  ad:GPT.apply/%23 @ 519,540 103×36
         θ 5.89 k f64
@@ -342,11 +342,11 @@ default opening: [3], 647 × 899 pt
     18 → 19: ad:GPT.apply/%22  ℝ[batch: B, seq: T, model: 64] = ℝ[batch: 2, seq: 16, model: 64], f64, 2048 elements, 16384 B
     22 → 19: ad:GPT.apply/%23  ℝ[64, 92] = ℝ[64, 92], f64, 5888 elements, 47104 B
     19 → 23: ad:GPT.apply/%24  ℝ[batch: B, seq: T, 92] = ℝ[batch: 2, seq: 16, 92], f64, 2944 elements, 23552 B
-  [4] op cross_entropy  fusion:loss/%6 @ 428,765 110×26
+  [4] op cross_entropy  fusion:loss/%6 @ 295,765 110×26
       W 32.7 k · Q 24.1 kB
-  [5] op mean  fusion:loss/%7 @ 457,815 50×26
+  [5] op mean  fusion:loss/%7 @ 325,815 50×26
       W 33 · Q 264B
-  [6] result  ad:loss/%7 @ 451,865 64×22
+  [6] result  ad:loss/%7 @ 318,865 64×22
   2 → 3 #1: ad:loss/%3  idx[92][batch: B, seq: T] = idx[92][batch: 2, seq: 16], idx, 0 elements, 256 B
   1 → 3 #2: ad:loss  key = key, key, 0 elements, 0 B (key)
   3 → 4: ad:loss/%5  ℝ[batch: B, seq: T, vocab: 92] = ℝ[batch: 2, seq: 16, vocab: 92], f64, 2944 elements, 23552 B

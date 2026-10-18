@@ -1656,7 +1656,9 @@ and the output projection's tiling.
 
 Done 2026-10-17: plan `presk-specs/implementation/presk-plan-0.14.0.md`
 (D140–D145), its steps for review as presk !99 to !104 and presk-specs !88
-to !90. The network diagram in the pipeline view: the program drawn as
+to !90, merged (with presk !105 and presk-specs !91, which brought into
+`main` the steps merged into their stacked branches) and tagged `v0.14.0`
+the same day (presk `8574a15`, presk-specs `2a7dd82`). The network diagram in the pipeline view: the program drawn as
 boxes and arrows in a second tab of the page, Network, beside Pipeline,
 and as `network.svg`, `presk dump --stage network` and a TikZ figure. The
 printer's formulas are on the boxes, the shapes and bytes on the arrows
@@ -1708,3 +1710,51 @@ it is alive, which the diagram's data would give; and what 0.13.0
 did not have: a nest's loops as nested sums, the optimizer's rule per
 binding, Cranelift's IR, the precision stages on the optimized program,
 the Explorer in the browser, the GPU.
+
+## Since 0.14.0
+
+- **The Network tab's lighting and contrast** (presk !108): a selection
+  inside a folded box lights that box, the diagram is dimmed only around
+  something lit, and its labels, arrows and borders are drawn darker in
+  both themes. The page alone changed.
+
+## Version 0.14.1
+
+Done 2026-10-17, for review: plan
+`presk-specs/implementation/presk-plan-0.14.1.md` (D146, presk-specs !94).
+The exploded view of the network diagram, by a
+compositional layout (the user's choice, 2026-10-17): each box's graph
+laid out once in its own frame, an opening composing the frames, the page
+opening any set of boxes and all of them, the exporters composing by the
+same rule.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements E0–E5, the facts checked; version `0.14.1-dev`; E0's baseline | done (2026-10-17, D146): the layout's layers and their order never depend on the open set, only its coordinates; the exploded course GPT 1 101 × 3 954 pt; the shift rule moves 5 of 24 rectangles at level 1 and 21 of 38 at level 2; E0's baseline, X1's harness on `2702f96` and `make quant-table`, `step-table` and `tutorial` |
+| 1 | Frames and composition in `presk-diagram`; JSON format 3; `--level all` | done (2026-10-17, D146): a frame per box (`layout::Frame`, its graph laid out with every child folded, snapped to a tenth of a point), `layout::view` composing any set of open boxes, `level` an open set, `everything` the exploded one; `explain.json` format 3 (`frames`, `default` an open set, the default and exploded openings composed for the page's check); `network.svg` the default opening composed; `presk dump --stage network --level all`; E1 holds on 36 diagrams in every chain opening, the levels, the exploded one and 20 random sets, and N2's sums in each; the outline snapshots differ by positions alone |
+| 2 | The page: any open set, "expand all", "fold all" | done (2026-10-17, D146): the page composes any set of open boxes from the frames, by the compiler's arithmetic in its order; "expand all" and "fold all" beside "default", a header opening or folding its box alone, the open set in the address (`net=`) at each toggle and in the lesson; E3 holds on the tutorial, the course GPT and the decoder block (the default and exploded openings, to the tenth); E5 holds, three runs each, the exploded opening drawn in at most 4.0 ms and a toggle in at most 11.0 ms on the decoder block; E2 and N1's clicks on the default and exploded openings, every box lit in the columns. Found and fixed: 0.14.0's layout gave a long arrow one place for all the layers it passed through, so that an arrow could run through a box (1 183 cases on 36 diagrams); an arrow now has a place in each layer, crosses each layer straight down and bends between layers, and E1 checks that no arrow runs through a node; the report's figure 9.2 moves with it. The page's "each of N runs" is narrowed into a narrow box |
+| 3 | The checks of record, the documents, version `0.14.1` | done (2026-10-17, D146): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` pass, `cargo doc -p presk-manual` has no warning; E0 against `2702f96`; `make network-figure` (the chapter `explain_network`, the report's two figures, the exploded SVG); the manual (index, tutorial, cli, explain, status), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.20, the report, the slides, the summary and a status note (presk-specs !94) |
+
+### What 0.14.1 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| E0 | Nothing else moves, against `2702f96`: X1, the tables, the tutorial but for its times; `explain.json` by its `format` and positions; the entry alone and every box alone at 0.14.0's positions | every byte | **holds but in one part**: X1 (939 files) against `2702f96` by 19 files' version and commit lines alone; `make quant-table` and `step-table` byte for byte; `make tutorial` but for its measurements and `presk --help`'s version; `explain.json` on the tutorial, the course GPT and the decoder block `2702f96`'s but for `format` and the network's positions; but the entry alone and a box alone move, by the fix of 0.14.0's routing defect (step 2) |
+| E1 | The openings compose: a box with no child open drawn as its frame, translated; the layers and their order kept; no two siblings overlapping; every child inside its box; every arrow meeting an open box at its port | holds | **holds**, on 36 diagrams in every chain opening, the levels, the exploded one and 20 random sets; and no arrow runs through a node |
+| E2 | Any set of boxes opens in the page, "expand all" and "fold all", the open set in the address and the lesson; a click on each box of the exploded opening lights the columns | holds | **holds**, in headless Firefox |
+| E3 | The page's composition is the compiler's, to the tenth, for the default and the exploded openings; the SVG and the TikZ draw it | holds | **holds**, on the tutorial, the course GPT and the decoder block |
+| E4 | N1 to N4 still hold; the report's two figures fit A4 | holds | **holds**: level 1 at 0.74, `Block` alone at 0.68 (705 pt wide, 693 at 0.14.0) |
+| E5 | With every box open, the decoder block's page answers under 200 ms | holds | **holds**: the exploded opening in at most 3.0 ms, a toggle in at most 11.0 ms, an opening in at most 21.0 ms |
+
+## What 0.14.1 has, and what it does not
+
+**Has.** The network diagram laid out once per box, in its own frame, and
+composed for any set of open boxes: the page opens a box without folding
+its siblings, and every box at once, the exploded view; `presk dump
+--stage network --level all`; `explain.json` format 3. An arrow crosses
+each layer straight down, never through a node, where 0.14.0's could run
+through a box.
+
+**Does not have.** A layout the reader moves by hand; the exploded view as
+a figure on paper (the course GPT exploded is 1 062 × 3 954 pt); the
+memory a value holds while it is alive; and what 0.14.0 did not have.

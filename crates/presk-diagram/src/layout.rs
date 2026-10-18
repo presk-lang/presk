@@ -1,19 +1,38 @@
-//! The layered layout, top to bottom: a box's graph in layers by longest
-//! path, its nodes ordered in each layer by the barycenters of their
-//! neighbours over a few sweeps, then placed; a box opened is its graph
-//! laid out first, inside it.
+//! The layered layout, top to bottom, and its composition (plan 0.14.1,
+//! D146).
 //!
-//! Opening a box makes it larger and moves what is around it, so the layout
-//! is computed once per opening a reader can reach: the entry alone, then
-//! each box opened with the boxes it is inside, the others folded (a box
-//! opened folds its siblings). The page, the SVG and the TikZ redraw these
-//! positions; none lays anything out.
+//! **A frame per box.** Each box's graph is laid out once, with every
+//! child folded: in layers by longest path, its nodes ordered in each layer
+//! by the barycenters of their neighbours over a few sweeps, then placed.
+//! The frame keeps each child's layer and rectangle, relative to the box's
+//! corner, and each arrow's route. Its numbers are snapped to a tenth of a
+//! point, so that the page, which reads them from the JSON, composes from
+//! the same numbers.
+//!
+//! **An opening composes the frames** ([`view`]), for any set of boxes
+//! open:
+//! - an open box takes its composed size;
+//! - a layer grows by its tallest open box's growth, and the layers below
+//!   it move down by that much;
+//! - in a layer, each item moves right by the growth of the open boxes
+//!   before it;
+//! - nothing is reordered.
+//!
+//! An arrow leaves its source straight down to the bottom of the source's
+//! layer, crosses each layer it passes through straight down, and bends
+//! only between layers, so that it runs through no node. An arrow into or
+//! out of an open box meets it at its port: the input it is, the result.
+//!
+//! A box with no child open is drawn exactly as its frame, translated. The
+//! page, the SVG and the TikZ draw this composition; the page computes it
+//! by the same arithmetic, in the same order, and checks itself against
+//! the compiler's under `#bench`.
 //!
 //! No text is measured: a node's size comes from its strings' lengths in
 //! characters (the Unicode printer's, for a formula). The page scales a
 //! formula into its box.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{Edge, Kind, Network, Node};
 
@@ -29,7 +48,8 @@ pub struct Rect {
 /// One opening, laid out.
 #[derive(Clone, Debug)]
 pub struct View {
-    /// The boxes opened, outermost first; the entry's frame always is.
+    /// The boxes drawn open, outermost first (by depth, then id); the
+    /// entry's frame always is, and is not listed. A box drawn alone is.
     pub open: Vec<usize>,
     pub width: f64,
     pub height: f64,
@@ -37,6 +57,22 @@ pub struct View {
     pub rects: BTreeMap<usize, Rect>,
     /// Every edge drawn, and its route from its source to its target.
     pub routes: BTreeMap<usize, Vec<(f64, f64)>>,
+}
+
+/// A box's graph laid out with every child folded, in the box's own
+/// coordinates: what an opening composes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frame {
+    pub w: f64,
+    pub h: f64,
+    /// Each layer's top and its height, the tallest of its items.
+    pub layers: Vec<(f64, f64)>,
+    /// Each child's layer and rectangle.
+    pub rects: BTreeMap<usize, (usize, Rect)>,
+    /// Each arrow's places in the layers it passes through, after the
+    /// source's, one each at the layer's top; and where it lands along its
+    /// target's top, a fraction of its width.
+    pub routes: BTreeMap<usize, (Vec<(f64, f64)>, f64)>,
 }
 
 /// The width of a character, the height of a line of text, in points.
@@ -136,42 +172,28 @@ fn folded(n: &Node) -> (f64, f64) {
     }
 }
 
-/// Lays out every opening of `net`, and picks the default one.
+/// Lays out the frame of every box of `net`, and picks the default
+/// opening: the entry and its first box opened, every stack folded.
 pub fn lay_out(net: &mut Network) {
-    let boxes: Vec<usize> = net.nodes.iter().filter(|n| matches!(n.kind, Kind::Call | Kind::Stack)).map(|n| n.id).collect();
-    let mut opens: Vec<Vec<usize>> = vec![Vec::new()];
-    for b in &boxes {
-        let mut chain = vec![*b];
-        let mut p = net.nodes[*b].parent;
-        while let Some(x) = p {
-            if net.nodes[x].kind == Kind::Root {
-                break;
-            }
-            chain.push(x);
-            p = net.nodes[x].parent;
-        }
-        chain.reverse();
-        opens.push(chain);
-    }
     let by_parent: HashMap<usize, Vec<&Edge>> = net.edges.iter().fold(HashMap::new(), |mut m, e| {
         m.entry(e.parent).or_default().push(e);
         m
     });
-    net.views = opens.into_iter().map(|open| view(net, &by_parent, 0, open)).collect();
-    // The entry and its first box opened, every stack folded.
+    let boxes: Vec<usize> = net.nodes.iter().filter(|n| n.kind.is_box()).map(|n| n.id).collect();
+    let frames = boxes.into_iter().map(|b| (b, frame(net, &by_parent, b))).collect();
+    net.frames = frames;
     let first = net.nodes[0].children.iter().copied().find(|c| net.nodes[*c].kind == Kind::Call).or_else(|| net.nodes[0].children.iter().copied().find(|c| net.nodes[*c].kind == Kind::Stack));
-    net.default = first.and_then(|b| net.views.iter().position(|v| v.open == [b])).unwrap_or(0);
+    net.default = first.map(|b| vec![b]).unwrap_or_default();
 }
 
 /// The opening of level `k`: the entry alone at 0, the default opening at
 /// 1, then, in the box opened last, its first stack, else its first box, at
 /// each level, as far as boxes go (`presk dump --stage network --level`).
-pub fn level(net: &Network, k: usize) -> usize {
-    let find = |open: &[usize]| net.views.iter().position(|v| v.open == open);
+pub fn level(net: &Network, k: usize) -> Vec<usize> {
     if k == 0 {
-        return find(&[]).unwrap_or(net.default);
+        return Vec::new();
     }
-    let mut path = net.views[net.default].open.clone();
+    let mut path = net.default.clone();
     while path.len() < k {
         let Some(last) = path.last().copied() else { break };
         let kids = &net.nodes[last].children;
@@ -181,27 +203,22 @@ pub fn level(net: &Network, k: usize) -> usize {
             None => break,
         }
     }
-    find(&path).unwrap_or(net.default)
+    path
 }
 
-/// A graph laid out inside its box: each child's rectangle relative to the
-/// box's corner, each edge's route, and the box's size.
-struct Laid {
-    rects: BTreeMap<usize, Rect>,
-    routes: BTreeMap<usize, Vec<(f64, f64)>>,
-    w: f64,
-    h: f64,
+/// The exploded opening: every box (`--level all`).
+pub fn everything(net: &Network) -> Vec<usize> {
+    net.nodes.iter().filter(|n| matches!(n.kind, Kind::Call | Kind::Stack)).map(|n| n.id).collect()
 }
 
-/// The box `b` opened by itself, its graph laid out without what is around
-/// it: a figure of one layer of a stack (`presk dump --stage network
-/// --box NAME`). Not one of the openings the page draws.
+/// The box `b` drawn by itself, its frame: a figure of one layer of a
+/// stack (`presk dump --stage network --box NAME`).
 pub fn alone(net: &Network, b: usize) -> View {
-    let by_parent: HashMap<usize, Vec<&Edge>> = net.edges.iter().fold(HashMap::new(), |mut m, e| {
-        m.entry(e.parent).or_default().push(e);
-        m
-    });
-    view(net, &by_parent, b, vec![b])
+    let f = &net.frames[&b];
+    let mut v = View { open: vec![b], width: f.w, height: f.h, rects: BTreeMap::new(), routes: BTreeMap::new() };
+    v.rects.insert(b, Rect { x: 0.0, y: 0.0, w: f.w, h: f.h });
+    place(net, b, &BTreeSet::new(), &mut HashMap::new(), (0.0, 0.0), &mut v);
+    v
 }
 
 /// The first box, outermost first, called `name` (its field: `blocks`,
@@ -212,78 +229,159 @@ pub fn find_box(net: &Network, name: &str) -> Option<usize> {
     boxes.first().map(|n| n.id)
 }
 
-/// The opening `open` laid out from the box `root`, the entry's frame or a
-/// box drawn alone.
-fn view(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, root: usize, open: Vec<usize>) -> View {
-    let mut v = View { open: open.clone(), width: 0.0, height: 0.0, rects: BTreeMap::new(), routes: BTreeMap::new() };
-    let laid = graph(net, by_parent, root, &open);
-    let frame = Rect { x: 0.0, y: 0.0, w: laid.w, h: laid.h };
-    v.width = frame.w;
-    v.height = frame.h;
-    v.rects.insert(root, frame);
-    place(net, by_parent, root, &open, laid, (0.0, 0.0), &mut v);
-    // An arrow into an opened box ends at the box's own input, one out of
-    // it starts at its result.
-    for (id, pts) in v.routes.iter_mut() {
-        let e = &net.edges[*id];
-        if v.open.contains(&e.to)
-            && let Some(k) = e.arg
-            && let Some(i) = net.nodes[e.to].children.iter().find(|c| net.nodes[**c].kind == Kind::Input && net.nodes[**c].index == Some(k))
-            && let (Some(r), Some(last)) = (v.rects.get(i), pts.last_mut())
-        {
-            *last = (r.x + r.w / 2.0, r.y);
-        }
-        if v.open.contains(&e.from)
-            && let Some(o) = net.nodes[e.from].children.iter().find(|c| net.nodes[**c].kind == Kind::Output)
-            && let (Some(r), Some(first)) = (v.rects.get(o), pts.first_mut())
-        {
-            *first = (r.x + r.w / 2.0, r.y + r.h);
-        }
-    }
+/// The opening where the boxes of `open` are open, those inside a folded
+/// box aside, composed from the frames.
+pub fn view(net: &Network, open: &[usize]) -> View {
+    let open: BTreeSet<usize> = open.iter().copied().filter(|b| matches!(net.nodes[*b].kind, Kind::Call | Kind::Stack)).collect();
+    let mut sizes = HashMap::new();
+    let (w, h) = size(net, 0, &open, &mut sizes);
+    let mut v = View { open: Vec::new(), width: w, height: h, rects: BTreeMap::new(), routes: BTreeMap::new() };
+    v.rects.insert(0, Rect { x: 0.0, y: 0.0, w, h });
+    place(net, 0, &open, &mut sizes, (0.0, 0.0), &mut v);
+    v.open.sort_by_key(|b| (net.nodes[*b].depth, *b));
     v
 }
 
-/// Puts the graph of `b`, laid out as `laid`, at `origin`, and the graphs of
-/// the boxes opened inside it.
-fn place(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: &[usize], laid: Laid, origin: (f64, f64), v: &mut View) {
-    for (id, r) in &laid.rects {
-        let a = Rect { x: r.x + origin.0, y: r.y + origin.1, ..*r };
-        v.rects.insert(*id, a);
-    }
-    for (id, pts) in laid.routes {
-        v.routes.insert(id, pts.into_iter().map(|(x, y)| (x + origin.0, y + origin.1)).collect());
-    }
-    for c in &net.nodes[b].children {
+/// How a box's frame grows when the boxes of `open` inside it are: each
+/// layer's growth and how far it moves down, and each open child's size.
+struct Growth {
+    dh: Vec<f64>,
+    down: Vec<f64>,
+    open: Vec<(usize, (f64, f64))>,
+}
+
+fn growth(net: &Network, b: usize, open: &BTreeSet<usize>, sizes: &mut HashMap<usize, (f64, f64)>) -> Growth {
+    let f = &net.frames[&b];
+    let mut kids: Vec<(usize, (f64, f64))> = Vec::new();
+    for c in f.rects.keys() {
         if open.contains(c) {
-            let r = v.rects[c];
-            let inner = graph(net, by_parent, *c, open);
-            place(net, by_parent, *c, open, inner, (r.x, r.y), v);
+            kids.push((*c, size(net, *c, open, sizes)));
         }
+    }
+    // A layer as tall as its tallest item, an open box at its size.
+    let mut dh = Vec::with_capacity(f.layers.len());
+    for (l, (_, hl)) in f.layers.iter().enumerate() {
+        let mut nh = *hl;
+        for (c, (_, h)) in &kids {
+            if f.rects[c].0 == l {
+                nh = nh.max(*h);
+            }
+        }
+        dh.push(nh - hl);
+    }
+    let mut down = Vec::with_capacity(dh.len() + 1);
+    let mut d = 0.0;
+    for g in &dh {
+        down.push(d);
+        d += g;
+    }
+    down.push(d);
+    Growth { dh, down, open: kids }
+}
+
+/// How far an item at `x` in layer `l` moves right: the growth in width of
+/// the open boxes before it in the layer, from left to right.
+fn shift(f: &Frame, g: &Growth, l: usize, x: f64) -> f64 {
+    let mut before: Vec<(f64, f64)> = g.open.iter().filter(|(c, _)| f.rects[c].0 == l && f.rects[c].1.x < x).map(|(c, (w, _))| (f.rects[c].1.x, w - f.rects[c].1.w)).collect();
+    before.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut s = 0.0;
+    for (_, dw) in before {
+        s += dw;
+    }
+    s
+}
+
+/// The size of box `b` composed with the boxes of `open` inside it.
+fn size(net: &Network, b: usize, open: &BTreeSet<usize>, sizes: &mut HashMap<usize, (f64, f64)>) -> (f64, f64) {
+    if let Some(s) = sizes.get(&b) {
+        return *s;
+    }
+    let g = growth(net, b, open, sizes);
+    let f = &net.frames[&b];
+    let mut right = f64::NEG_INFINITY;
+    for (c, (l, r)) in &f.rects {
+        let w = g.open.iter().find(|(k, _)| k == c).map_or(r.w, |(_, (w, _))| *w);
+        right = right.max(r.x + shift(f, &g, *l, r.x) + w);
+    }
+    let w = if right.is_finite() { f.w.max(right + PAD) } else { f.w };
+    let s = (w, f.h + g.down[g.dh.len()]);
+    sizes.insert(b, s);
+    s
+}
+
+/// Puts the frame of `b`, composed, at `origin`, and the boxes open inside
+/// it; then its arrows, which meet an open box at its port.
+fn place(net: &Network, b: usize, open: &BTreeSet<usize>, sizes: &mut HashMap<usize, (f64, f64)>, origin: (f64, f64), v: &mut View) {
+    let g = growth(net, b, open, sizes);
+    let f = &net.frames[&b];
+    for (c, (l, r)) in &f.rects {
+        let (w, h) = g.open.iter().find(|(k, _)| k == c).map_or((r.w, r.h), |(_, s)| *s);
+        let a = Rect { x: origin.0 + (r.x + shift(f, &g, *l, r.x)), y: origin.1 + (r.y + g.down[*l]), w, h };
+        v.rects.insert(*c, a);
+    }
+    for (c, _) in &g.open {
+        v.open.push(*c);
+        let r = v.rects[c];
+        place(net, *c, open, sizes, (r.x, r.y), v);
+    }
+    // A layer's bottom, composed.
+    let bottom = |l: usize| origin.1 + (f.layers[l].0 + g.down[l]) + (f.layers[l].1 + g.dh[l]);
+    let is_open = |c: usize| g.open.iter().any(|(k, _)| *k == c);
+    for (id, (pts, at)) in &f.routes {
+        let e = &net.edges[*id];
+        let from = f.rects[&e.from].0;
+        let output = || net.nodes[e.from].children.iter().find(|c| net.nodes[**c].kind == Kind::Output).and_then(|o| v.rects.get(o));
+        let input = || e.arg.and_then(|k| net.nodes[e.to].children.iter().find(|c| net.nodes[**c].kind == Kind::Input && net.nodes[**c].index == Some(k))).and_then(|i| v.rects.get(i));
+        let s = match (is_open(e.from), output()) {
+            (true, Some(o)) => (o.x + o.w / 2.0, o.y + o.h),
+            _ => {
+                let s = v.rects[&e.from];
+                (s.x + s.w / 2.0, s.y + s.h)
+            }
+        };
+        let mut q = vec![s];
+        if s.1 < bottom(from) {
+            q.push((s.0, bottom(from)));
+        }
+        for (k, (x, y)) in pts.iter().enumerate() {
+            let l = (from + k + 1).min(f.layers.len() - 1);
+            let (x, y) = (origin.0 + (x + shift(f, &g, l, *x)), origin.1 + (y + g.down[l]));
+            q.push((x, y));
+            if bottom(l) > y {
+                q.push((x, bottom(l)));
+            }
+        }
+        let t = match (is_open(e.to), input()) {
+            (true, Some(i)) => (i.x + i.w / 2.0, i.y),
+            _ => {
+                let t = v.rects[&e.to];
+                (t.x + t.w * at, t.y)
+            }
+        };
+        q.push(t);
+        v.routes.insert(*id, q);
     }
 }
 
-/// An item of a layer: a node, or an edge passing through.
+/// A number snapped to a tenth of a point.
+fn tenth(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+/// An item of a layer: a node, or an edge passing through the layer (its
+/// id and the layer's: an edge passes through several, at a place in each).
 #[derive(Clone, Copy, PartialEq)]
 enum Item {
     Node(usize),
-    Pass(usize),
+    Pass(usize, usize),
 }
 
-fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: &[usize]) -> Laid {
+/// The frame of box `b`: its graph laid out with every child folded.
+fn frame(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize) -> Frame {
     let kids: Vec<usize> = net.nodes[b].children.clone();
     let none = Vec::new();
     let edges: Vec<&Edge> = by_parent.get(&b).unwrap_or(&none).iter().copied().filter(|e| kids.contains(&e.from) && kids.contains(&e.to) && e.from != e.to).collect();
-    // Sizes: an opened child is its graph.
-    let mut size: HashMap<usize, (f64, f64)> = HashMap::new();
-    for k in &kids {
-        let s = if open.contains(k) {
-            let g = graph(net, by_parent, *k, open);
-            (g.w, g.h)
-        } else {
-            folded(&net.nodes[*k])
-        };
-        size.insert(*k, s);
-    }
+    let size: HashMap<usize, (f64, f64)> = kids.iter().map(|k| (*k, folded(&net.nodes[*k]))).collect();
 
     // Layers, by longest path; a source but an input sits just before its
     // first reader, the result after everything.
@@ -334,19 +432,19 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
     for e in &edges {
         let (a, z) = (layer[&e.from], layer[&e.to]);
         let mut c = vec![Item::Node(e.from)];
-        for items in layers.iter_mut().take(z).skip(a + 1) {
-            items.push(Item::Pass(e.id));
-            c.push(Item::Pass(e.id));
+        for (l, items) in layers.iter_mut().enumerate().take(z).skip(a + 1) {
+            items.push(Item::Pass(e.id, l));
+            c.push(Item::Pass(e.id, l));
         }
         c.push(Item::Node(e.to));
         chain.insert(e.id, c);
     }
     // The neighbours of each item in the layer before and after.
-    let mut up: HashMap<(usize, bool), Vec<Item>> = HashMap::new();
-    let mut down: HashMap<(usize, bool), Vec<Item>> = HashMap::new();
+    let mut up: HashMap<(usize, usize), Vec<Item>> = HashMap::new();
+    let mut down: HashMap<(usize, usize), Vec<Item>> = HashMap::new();
     let key = |i: Item| match i {
-        Item::Node(n) => (n, true),
-        Item::Pass(e) => (e, false),
+        Item::Node(n) => (n, usize::MAX),
+        Item::Pass(e, l) => (e, l),
     };
     for e in &edges {
         for w in chain[&e.id].windows(2) {
@@ -354,8 +452,8 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
             up.entry(key(w[1])).or_default().push(w[0]);
         }
     }
-    let mut pos: HashMap<(usize, bool), f64> = HashMap::new();
-    let index = |layers: &Vec<Vec<Item>>, pos: &mut HashMap<(usize, bool), f64>| {
+    let mut pos: HashMap<(usize, usize), f64> = HashMap::new();
+    let index = |layers: &Vec<Vec<Item>>, pos: &mut HashMap<(usize, usize), f64>| {
         for l in layers {
             for (k, i) in l.iter().enumerate() {
                 pos.insert(key(*i), k as f64);
@@ -395,7 +493,7 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
     let dims = |i: Item| -> (f64, f64) {
         match i {
             Item::Node(n) => size[&n],
-            Item::Pass(_) => (2.0, 0.0),
+            Item::Pass(..) => (2.0, 0.0),
         }
     };
     let header = HEADER;
@@ -406,7 +504,7 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
         let h = items.iter().map(|i| dims(*i).1).fold(0.0, f64::max);
         y += h + LAYER_GAP;
     }
-    let mut xs: HashMap<(usize, bool), f64> = HashMap::new();
+    let mut xs: HashMap<(usize, usize), f64> = HashMap::new();
     for items in &layers {
         let mut x = 0.0;
         for i in items {
@@ -414,7 +512,7 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
             x += dims(*i).0 + NODE_GAP;
         }
     }
-    let centre = |i: Item, xs: &HashMap<(usize, bool), f64>| xs[&key(i)] + dims(i).0 / 2.0;
+    let centre = |i: Item, xs: &HashMap<(usize, usize), f64>| xs[&key(i)] + dims(i).0 / 2.0;
     for pass in 0..6 {
         let downward = pass % 2 == 0;
         let range: Vec<usize> = if downward { (1..nl).collect() } else { (0..nl.saturating_sub(1)).rev().collect() };
@@ -432,7 +530,7 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
             let mut got = Vec::with_capacity(want.len());
             let mut right = f64::NEG_INFINITY;
             for (i, w) in layers[l].iter().zip(&want) {
-                let gap = if matches!(i, Item::Pass(_)) { 6.0 } else { NODE_GAP };
+                let gap = if matches!(i, Item::Pass(..)) { 6.0 } else { NODE_GAP };
                 let x = w.max(right + gap);
                 got.push(x);
                 right = x + dims(*i).0;
@@ -445,6 +543,8 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
     }
     let left = layers.iter().flatten().map(|i| xs[&key(*i)]).fold(f64::INFINITY, f64::min);
     let left = if left.is_finite() { left } else { 0.0 };
+    // Every number snapped to a tenth: the frame is what the JSON carries.
+    let tops: Vec<(f64, f64)> = layers.iter().enumerate().map(|(l, items)| (tenth(ys[l]), tenth(items.iter().map(|i| dims(*i).1).fold(0.0, f64::max)))).collect();
     let mut rects = BTreeMap::new();
     let mut bottom: f64 = header;
     let mut right: f64 = 0.0;
@@ -452,15 +552,16 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
         for i in items {
             if let Item::Node(n) = i {
                 let (w, h) = size[n];
-                let r = Rect { x: xs[&key(*i)] - left + PAD, y: ys[l], w, h };
+                let r = Rect { x: tenth(xs[&key(*i)] - left + PAD), y: tops[l].0, w: tenth(w), h: tenth(h) };
                 bottom = bottom.max(r.y + r.h);
                 right = right.max(r.x + r.w);
                 rects.insert(*n, r);
             }
         }
     }
-    // Routes: from a source's bottom to a target's top, through the layers
-    // between; the arrows into a node spread along its top.
+    // Routes: each arrow's place in the layers between its source and its
+    // target; the arrows into a node spread along its top, in the order of
+    // their sources.
     let mut routes = BTreeMap::new();
     let mut ins: HashMap<usize, Vec<&Edge>> = HashMap::new();
     for e in &edges {
@@ -474,19 +575,17 @@ fn graph(net: &Network, by_parent: &HashMap<usize, Vec<&Edge>>, b: usize, open: 
         });
     }
     for e in &edges {
-        let s = rects[&e.from];
-        let t = rects[&e.to];
         let list = &ins[&e.to];
         let k = list.iter().position(|x| x.id == e.id).unwrap_or(0);
-        let tx = t.x + t.w * (k as f64 + 1.0) / (list.len() as f64 + 1.0);
-        let mut pts = vec![(s.x + s.w / 2.0, s.y + s.h)];
+        let at = (k as f64 + 1.0) / (list.len() as f64 + 1.0);
+        let mut pts = Vec::new();
         for i in &chain[&e.id][1..chain[&e.id].len() - 1] {
-            let l = layer[&e.from] + pts.len();
-            pts.push((xs[&key(*i)] - left + PAD + 1.0, ys[l.min(nl - 1)]));
+            let l = layer[&e.from] + 1 + pts.len();
+            pts.push((tenth(xs[&key(*i)] - left + PAD + 1.0), tops[l.min(nl - 1)].0));
         }
-        pts.push((tx, t.y));
-        routes.insert(e.id, pts);
+        routes.insert(e.id, (pts, at));
     }
-    let w = (right + PAD).max(folded(&net.nodes[b]).0.min(MAX_W));
-    Laid { rects, routes, w, h: bottom + PAD }
+    let w = tenth((right + PAD).max(folded(&net.nodes[b]).0.min(MAX_W)));
+    let rects = rects.into_iter().map(|(n, r)| (n, (layer[&n], r))).collect();
+    Frame { w, h: tenth(bottom + PAD), layers: tops, rects, routes }
 }

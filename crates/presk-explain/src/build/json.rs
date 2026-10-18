@@ -28,8 +28,9 @@ use super::State;
 use crate::doc::{Block, Document, Section};
 
 /// The layout's version, `format` in the file: 2 since plan 0.14.0 step 1
-/// (D141), which added `network`.
-pub const FORMAT: u64 = 2;
+/// (D141), which added `network`; 3 since plan 0.14.1 (D146), its frames
+/// in place of its views.
+pub const FORMAT: u64 = 3;
 
 /// A number in LaTeX, three significant digits: `3.12 \cdot 10^{-2}`.
 fn tex_num(x: f64) -> String {

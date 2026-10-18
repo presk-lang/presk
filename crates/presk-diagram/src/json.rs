@@ -1,10 +1,13 @@
-//! The diagram as JSON: the `network` object of `explain.json`'s format 2,
+//! The diagram as JSON: the `network` object of `explain.json`'s format 3,
 //! which `presk dump --stage network --format json` prints too. Written by
-//! hand, the crate having no dependency; deterministic, every number of a
-//! position rounded to a tenth of a point.
+//! hand, the crate having no dependency; deterministic. The frames' numbers
+//! are printed as they are, snapped to a tenth already, so that the page
+//! composes from the compiler's own numbers; the views', the compiler's
+//! composition of the default and the exploded openings, which the page
+//! checks itself against, rounded to a tenth.
 //!
 //! ```text
-//! { "entry", "stage", "default", "params": {count, bytes, types} | null,
+//! { "entry", "stage", "default": [ids], "params": {count, bytes, types} | null,
 //!   "work", "bytes",
 //!   "nodes": [{ "id", "kind", "parent", "element", "function", "callee",
 //!               "label", "title", "numbers", "instance", "stack", "runs",
@@ -13,13 +16,15 @@
 //!               "children", "depth", "key" }],
 //!   "edges": [{ "id", "from", "to", "parent", "arg", "site", "ty", "at",
 //!               "dtype", "elems", "bytes", "key" }],
-//!   "views": [{ "open": [ids], "width", "height",
+//!   "frames": [{ "box", "w", "h", "layers": [[top, height]],
+//!                "rects": [[id, layer, x, y, w, h]], "routes": [[id, at, x1, y1, …]] }],
+//!   "views": [{ "name": "default" | "all", "open": [ids], "width", "height",
 //!               "rects": [[id, x, y, w, h]], "routes": [[id, x0, y0, x1, y1, …]] }] }
 //! ```
 
 use std::fmt::Write;
 
-use crate::layout::{numbers, title};
+use crate::layout::{View, everything, numbers, title, view};
 use crate::{Network, Params};
 
 /// A JSON string.
@@ -78,7 +83,7 @@ fn params(p: &Option<Params>) -> String {
 /// The diagram as one JSON object.
 pub fn network(n: &Network) -> String {
     let mut s = String::new();
-    let _ = write!(s, "{{\"entry\":{},\"stage\":{},\"default\":{},\"params\":{},\"work\":{},\"bytes\":{},\"nodes\":[", string(&n.entry), string(n.stage.name()), n.default, params(&n.params), opt_num(n.work), opt_num(n.bytes));
+    let _ = write!(s, "{{\"entry\":{},\"stage\":{},\"default\":{},\"params\":{},\"work\":{},\"bytes\":{},\"nodes\":[", string(&n.entry), string(n.stage.name()), ids(&n.default), params(&n.params), opt_num(n.work), opt_num(n.bytes));
     for (k, x) in n.nodes.iter().enumerate() {
         if k > 0 {
             s.push(',');
@@ -140,15 +145,35 @@ pub fn network(n: &Network) -> String {
             e.key,
         );
     }
-    s.push_str("],\"views\":[");
-    for (k, v) in n.views.iter().enumerate() {
+    s.push_str("],\"frames\":[");
+    for (k, (b, f)) in n.frames.iter().enumerate() {
         if k > 0 {
             s.push(',');
         }
-        let rects: Vec<String> = v.rects.iter().map(|(id, r)| format!("[{id},{},{},{},{}]", coord(r.x), coord(r.y), coord(r.w), coord(r.h))).collect();
-        let routes: Vec<String> = v.routes.iter().map(|(id, pts)| format!("[{id},{}]", pts.iter().map(|(x, y)| format!("{},{}", coord(*x), coord(*y))).collect::<Vec<_>>().join(","))).collect();
-        let _ = write!(s, "{{\"open\":[{}],\"width\":{},\"height\":{},\"rects\":[{}],\"routes\":[{}]}}", v.open.iter().map(|o| o.to_string()).collect::<Vec<_>>().join(","), coord(v.width), coord(v.height), rects.join(","), routes.join(","));
+        let layers: Vec<String> = f.layers.iter().map(|(t, h)| format!("[{},{}]", number(*t), number(*h))).collect();
+        let rects: Vec<String> = f.rects.iter().map(|(id, (l, r))| format!("[{id},{l},{},{},{},{}]", number(r.x), number(r.y), number(r.w), number(r.h))).collect();
+        let routes: Vec<String> = f.routes.iter().map(|(id, (pts, at))| format!("[{}]", [id.to_string(), number(*at)].into_iter().chain(pts.iter().map(|(x, y)| format!("{},{}", number(*x), number(*y)))).collect::<Vec<_>>().join(","))).collect();
+        let _ = write!(s, "{{\"box\":{b},\"w\":{},\"h\":{},\"layers\":[{}],\"rects\":[{}],\"routes\":[{}]}}", number(f.w), number(f.h), layers.join(","), rects.join(","), routes.join(","));
+    }
+    s.push_str("],\"views\":[");
+    let all = everything(n);
+    for (k, (name, v)) in [("default", view(n, &n.default)), ("all", view(n, &all))].iter().enumerate() {
+        if k > 0 {
+            s.push(',');
+        }
+        let _ = write!(s, "{{\"name\":{},{}", string(name), &composed(v)[1..]);
     }
     s.push_str("]}");
     s
+}
+
+fn ids(v: &[usize]) -> String {
+    format!("[{}]", v.iter().map(|o| o.to_string()).collect::<Vec<_>>().join(","))
+}
+
+/// A composed view, every number to a tenth.
+fn composed(v: &View) -> String {
+    let rects: Vec<String> = v.rects.iter().map(|(id, r)| format!("[{id},{},{},{},{}]", coord(r.x), coord(r.y), coord(r.w), coord(r.h))).collect();
+    let routes: Vec<String> = v.routes.iter().map(|(id, pts)| format!("[{id},{}]", pts.iter().map(|(x, y)| format!("{},{}", coord(*x), coord(*y))).collect::<Vec<_>>().join(","))).collect();
+    format!("{{\"open\":{},\"width\":{},\"height\":{},\"rects\":[{}],\"routes\":[{}]}}", ids(&v.open), coord(v.width), coord(v.height), rects.join(","), routes.join(","))
 }

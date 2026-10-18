@@ -2,7 +2,7 @@
 source: crates/presk-explain/tests/network.rs
 expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
-network of `mse`, read off the stage `ad`: 24 nodes, 19 arrows, 4 openings
+network of `mse`, read off the stage `ad`: 24 nodes, 19 arrows, 3 boxes
 parameters: 148 (552 bytes, f32, bf16)
 work W = 969, bytes Q = 1260, over every launch of the entry
 default opening: [3], 405 × 584 pt

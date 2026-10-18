@@ -196,7 +196,7 @@ pub fn explain(o: &Options, report: &mut dyn Report) -> presk_driver::Result<Exp
     }
     // The network diagram's default opening (plan 0.14.0, D141).
     match json.as_ref().and_then(|(_, n)| n.as_ref()) {
-        Some(n) => write(&svg_path, presk_diagram::svg::svg(n, &n.views[n.default], false).as_bytes(), report)?,
+        Some(n) => write(&svg_path, presk_diagram::svg::svg(n, &presk_diagram::layout::view(n, &n.default), false).as_bytes(), report)?,
         None => {
             let _ = std::fs::remove_file(&svg_path);
         }

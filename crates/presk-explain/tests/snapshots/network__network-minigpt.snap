@@ -2,31 +2,31 @@
 source: crates/presk-explain/tests/network.rs
 expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
-network of `MiniGPT.apply`, read off the stage `ad`: 116 nodes, 114 arrows, 14 openings
+network of `MiniGPT.apply`, read off the stage `ad`: 116 nodes, 114 arrows, 13 boxes
 parameters: 8768 (35072 bytes, f32)
 work W = 301056, bytes Q = 185580, over every launch of the entry
-default opening: [3], 574 × 658 pt
-[0] root MiniGPT.apply  ad:MiniGPT.apply @ 0,0 574×658
+default opening: [3], 614 × 658 pt
+[0] root MiniGPT.apply  ad:MiniGPT.apply @ 0,0 614×658
     θ 8.77 k f32 · W 301 k · Q 186 kB
-  [1] input ids #1  ad:MiniGPT.apply @ 340,38 44×22
-  [2] op causal_mask seq  fusion:MiniGPT.apply/%2 @ 27,84 123×26
+  [1] input ids #1  ad:MiniGPT.apply @ 301,38 44×22
+  [2] op causal_mask seq  fusion:MiniGPT.apply/%2 @ 67,84 123×26
       W 128 · Q 512B
-  [3] call emb · Embedding  ad:MiniGPT.apply/%4 fn ad:Embedding.apply @ 162,84 400×232
+  [3] call emb · Embedding  ad:MiniGPT.apply/%4 fn ad:Embedding.apply @ 202,84 400×232
       θ 1.15 k f32 · W 256 · Q 8.96 kB
-    [9] input ids #1  ad:MiniGPT.apply @ 174,122 44×22
-    [10] op embed  fusion:Embedding.apply/%3 @ 283,182 57×26
+    [9] input ids #1  ad:MiniGPT.apply @ 214,122 44×22
+    [10] op embed  fusion:Embedding.apply/%3 @ 323,182 57×26
         Q 5.25 kB
-    [11] op positions seq  fusion:Embedding.apply/%5 @ 345,122 110×26
+    [11] op positions seq  fusion:Embedding.apply/%5 @ 385,122 110×26
         Q 64B
-    [12] op embed  fusion:Embedding.apply/%6 @ 352,182 57×26
+    [12] op embed  fusion:Embedding.apply/%6 @ 392,182 57×26
         Q 1.09 kB
-    [13] op add  fusion:Embedding.apply/%7 @ 324,232 44×26
+    [13] op add  fusion:Embedding.apply/%7 @ 364,232 44×26
         W 256 · Q 2.56 kB
-    [14] param θ.tok  ad:Embedding.apply/%2 @ 230,122 103×36
+    [14] param θ.tok  ad:Embedding.apply/%2 @ 269,122 103×36
         θ 1.02 k f32
-    [15] param θ.pos  ad:Embedding.apply/%4 @ 467,122 83×36
+    [15] param θ.pos  ad:Embedding.apply/%4 @ 506,122 83×36
         θ 128 f32
-    [16] result  ad:Embedding.apply/%7 @ 315,282 64×22
+    [16] result  ad:Embedding.apply/%7 @ 354,282 64×22
     14 → 10: ad:Embedding.apply/%2  ℝ[64, 16] = ℝ[64, 16], f32, 1024 elements, 4096 B
     9 → 10: ad:MiniGPT.apply  idx[64][batch: B, seq: T] = idx[64][batch: 2, seq: 8], idx, 0 elements, 128 B
     15 → 12: ad:Embedding.apply/%4  ℝ[T, 16] = ℝ[8, 16], f32, 128 elements, 512 B

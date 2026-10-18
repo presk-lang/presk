@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.14.1 — 2026-10-17
+
+The exploded view of the network diagram, by a compositional layout
+(`presk-specs/implementation/presk-plan-0.14.1.md`, D146; the user's
+choice of 2026-10-17). Each box's graph is laid out once, in its own
+frame, with its children folded, and an opening composes the frames, so
+that any set of boxes may be open: an open box takes its composed size,
+the items after it in its layer move right and the layers below move
+down, nothing being reordered. The page opens and folds a box without
+touching its siblings, "expand all" opens every box, and `presk dump
+--stage network --level all` draws the exploded view. The graph, its
+numbers and the provenance table do not change. Judged on six statements
+fixed before the work:
+- nothing else moves (E0, holds but in one part: X1, the tables and the
+  tutorial, by their version lines and measurements; `explain.json` by
+  its `format` and its positions; but the entry alone and a box alone,
+  which were to keep 0.14.0's positions, move by the fix of a defect
+  below);
+- the openings compose: a box with no child open is drawn as its frame,
+  translated, in every opening, the layers and their order kept, no two
+  siblings overlapping, every child inside its box, every arrow meeting an
+  open box at its port (E1, holds, on 36 diagrams in every chain opening,
+  the levels, the exploded one and 20 random sets);
+- any set of boxes opens in the page, and a click on any box of the
+  exploded view lights the columns (E2, holds);
+- one rule: the page's composition is the compiler's to the tenth of a
+  point, and the SVG and the TikZ draw it (E3, holds);
+- 0.14.0's N1 to N4 still hold, the report's two figures on A4 at 0.74
+  and 0.68 (E4, holds);
+- with every box open, the page answers within P3's 200 ms on the decoder
+  block at the 7B width: the exploded opening drawn in at most 4.0 ms
+  (E5, holds).
+
+- `explain.json` format 3: the `network` object's `frames` (one per box,
+  each child's layer and rectangle, each arrow's places in the layers it
+  crosses), `default` an open set, and `views` the compiler's composition
+  of the default and the exploded openings, which the page checks itself
+  against. The page refuses formats 1 and 2.
+- A defect of 0.14.0's layout, fixed: an arrow that crossed several layers
+  kept one place for all of them, and could run through a box (1 183
+  cases on the 36 diagrams). An arrow now has a place in each layer,
+  leaves its source straight down to its layer's bottom, crosses each
+  layer straight down and bends between layers. The report's figure 9.2
+  (`Block` alone) moves with it, from 693 to 705 pt wide.
+- The page writes the open set into the address (`net=`) at each opening.
+- The Network tab lights the box that holds a selection. A selection
+  inside a folded box, as the lesson's traced sites at the default
+  opening, lit nothing drawn and left the whole diagram dimmed; it now
+  lights that box's header, and the diagram is dimmed only around
+  something lit. The diagram's contrast is raised in both themes: its
+  labels darker, the arrows at 0.95 and at least 1.6 wide, a box's title
+  at 12 px bold (narrowed when its box is too narrow), a box without
+  parameters bordered in the muted ink, the dimmed at 0.35. The page
+  alone changes: the JSON, `network.svg` and the TikZ are as at 0.14.0.
+
 ## 0.14.0 — 2026-10-17
 
 The network diagram: the program drawn as boxes and arrows in a second

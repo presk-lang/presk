@@ -14,21 +14,22 @@
   The formulas are the printer of the denotation's (plan 0.13.0 step 4,
   D137), typeset by KaTeX 0.19.0 (MIT), inlined with its fonts. The second
   tab, Network (plan 0.14.0 step 2, D142), draws the program as boxes and
-  arrows at the positions `presk-diagram` computed, every box and arrow an
-  element of the same table.
+  arrows, every box and arrow an element of the same table, composing for
+  any set of open boxes the frames `presk-diagram` laid out (plan 0.14.1,
+  D146).
 -->
 <style>
 :root {
   color-scheme: light dark;
   --bg: #fbfaf7; --fg: #1d1d1b; --muted: #6b6a66; --line: #d9d6cf; --card: #ffffff;
-  --lit: #fff4c2; --sel: #ffd84d; --dim: 0.22; --panel: #f3f1ec;
+  --lit: #fff4c2; --sel: #ffd84d; --dim: 0.22; --panel: #f3f1ec; --ink2: #45443f;
   --f64: #2f5d9e; --f32: #2b8a3e; --bf16: #d9730d; --int: #8e44ad; --none: #8a8780;
   --how-lower: #5f6f8f; --how-ad: #a03d6f; --how-opt: #7a4fc4; --how-fuse: #1f7a7a; --how-pass: #b9b5ac;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #1b1b1a; --fg: #ecebe6; --muted: #a09e97; --line: #3a3936; --card: #252523;
-    --lit: #4a4220; --sel: #8a6d00; --panel: #22221f;
+    --lit: #4a4220; --sel: #8a6d00; --panel: #22221f; --ink2: #cfcdc6;
     --f64: #7aa7e8; --f32: #6fcf7f; --bf16: #f0a050; --int: #c08ae0; --none: #8a8780;
     --how-lower: #9aa9c8; --how-ad: #e07aa8; --how-opt: #b495f0; --how-fuse: #5fc9c9; --how-pass: #5a5853;
   }
@@ -37,7 +38,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #1b1b1a; --fg: #ecebe6; --muted: #a09e97; --line: #3a3936; --card: #252523;
-  --lit: #4a4220; --sel: #8a6d00; --panel: #22221f;
+  --lit: #4a4220; --sel: #8a6d00; --panel: #22221f; --ink2: #cfcdc6;
   --f64: #7aa7e8; --f32: #6fcf7f; --bf16: #f0a050; --int: #c08ae0; --none: #8a8780;
   --how-lower: #9aa9c8; --how-ad: #e07aa8; --how-opt: #b495f0; --how-fuse: #5fc9c9; --how-pass: #5a5853;
 }
@@ -107,27 +108,28 @@ body.network .pipeonly { display: none; }
 #net svg { display: block; }
 #net .frame { fill: var(--card); stroke: var(--line); stroke-width: 1.2; }
 #net .frame.root { fill: none; stroke: none; }
-#net .box > rect.b { fill: var(--panel); stroke-width: 1.4; }
+#net .box > rect.b { fill: var(--panel); stroke-width: 1.6; }
 #net .box.open > rect.b { fill: var(--card); }
 #net .box .hd { cursor: pointer; }
 #net .box .hd:hover > rect { fill: var(--lit); }
 #net .box .hd > rect { fill: transparent; }
+#net .box.lit > .hd > rect { fill: var(--lit); }
 #net text { fill: var(--fg); font: 11px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-#net text.t { font-weight: 600; }
-#net text.n { fill: var(--muted); font-size: 10px; }
-#net .op > rect { fill: var(--card); stroke: #9a7b4f; }
+#net text.t { font-weight: 700; font-size: 12px; }
+#net text.n { fill: var(--ink2); font-size: 10px; }
+#net .op > rect { fill: var(--card); stroke: #9a7b4f; stroke-width: 1.2; }
 #net .op.group > rect { fill: color-mix(in srgb, #f0b860 22%, var(--card)); }
 #net .op.host > rect { stroke-dasharray: 2 2; fill: var(--panel); }
 #net .param > rect { fill: color-mix(in srgb, var(--int) 10%, var(--card)); stroke: var(--int); }
-#net .io > rect { fill: var(--card); stroke: var(--muted); }
+#net .io > rect { fill: var(--card); stroke: var(--ink2); }
 #net .node { cursor: pointer; }
 #net .nf { overflow: hidden; color: var(--fg); transform-origin: 0 0; white-space: nowrap; }
 #net .nf .katex-display { margin: 0; text-align: left; }
 #net .nf .katex { font-size: 0.9em; }
-#net path.e { fill: none; opacity: 0.8; }
+#net path.e { fill: none; opacity: 0.95; }
 #net path.e.key { stroke-dasharray: 3 3; }
-#net text.el { fill: var(--muted); font-size: 9.5px; }
-#net.dimmed .node:not(.lit), #net.dimmed path.e:not(.lit) { opacity: 0.25; }
+#net text.el { fill: var(--ink2); font-size: 9.5px; }
+#net.dimmed .node:not(.lit), #net.dimmed path.e:not(.lit) { opacity: 0.35; }
 #net .node.lit > rect { stroke-width: 2.6; }
 #net path.e.lit { opacity: 1; }
 @media (max-width: 760px) { #panel { display: none; } #scroll, #net { height: auto; } }
@@ -151,6 +153,8 @@ body.network .pipeonly { display: none; }
   <button id="keys" class="netonly" title="the random keys and their split_keys">keys</button>
   <button id="backward" class="netonly" title="the backward pass: the functions differentiation generated for it" hidden>backward</button>
   <button id="netreset" class="netonly" title="the default opening">default</button>
+  <button id="netall" class="netonly" title="every box opened: the exploded view">expand all</button>
+  <button id="netnone" class="netonly" title="every box folded">fold all</button>
   <button id="math" title="the cards as formulas, or as text">∑ math</button>
   <button id="theme" title="light or dark">◐</button>
   <span id="legend"></span>
@@ -600,7 +604,7 @@ function go(i) {
   for (const k of selection) open.add(E.get(k).group);
   if (s.open) for (const g of s.open) open.add(g);
   // A step of the lesson may be on the network, with its boxes opened.
-  if (N && s.net) netPath = s.net.filter((i) => i < N.nodes.length);
+  if (N && s.net) netOpen = new Set(s.net.filter((i) => i < N.nodes.length));
   showTab(s.tab === "network" && N ? "network" : "pipeline");
   $("#caption").innerHTML = `<b>${L.step + 1}/${L.lesson.length}</b> ${esc(s.caption || "")}`;
   const q = new URLSearchParams(location.hash.slice(1));
@@ -616,7 +620,7 @@ $("#add").onclick = () => {
   if (caption === null) return;
   const q = new URLSearchParams(location.hash.slice(1));
   const lesson = q.get("lesson") ? JSON.parse(q.get("lesson")) : [];
-  lesson.push({ sel: [...selection], open: [...open], caption, tab, net: netPath.slice() });
+  lesson.push({ sel: [...selection], open: [...open], caption, tab, net: [...netOpen] });
   q.set("lesson", JSON.stringify(lesson));
   q.set("step", lesson.length - 1);
   location.hash = q.toString();
@@ -643,25 +647,121 @@ $("#scroll").addEventListener("scroll", () => {});
 window.addEventListener("resize", () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(() => { draw(); light(); }); });
 
 
-// ----- the network (plan 0.14.0 step 2, D142) -----------------------------------------
-// The program as boxes and arrows, at the positions presk-diagram computed
-// for each opening (the page lays nothing out). Every box, node and arrow is
-// an element of the table above: a click selects it in the columns; with
-// Shift it is lit here. A box opens and folds by its header, in place.
+// ----- the network (plan 0.14.0 step 2, D142; plan 0.14.1, D146) -----------------
+// The program as boxes and arrows. Every box, node and arrow is an element
+// of the table above: a click selects it in the columns; with Shift it is
+// lit here. A box opens and folds by its header, in place, its siblings
+// keeping theirs; "expand all" opens every box. The positions are composed
+// here from the frames presk-diagram laid out, by its rule and its
+// arithmetic in the same order, so that they are the compiler's (checked
+// under #bench against the openings the JSON carries).
 const N = D.network || null;
 const net = $("#net");
 const nsvg = $("#netsvg");
 const SVGNS = "http://www.w3.org/2000/svg";
 let tab = "pipeline";
-let netPath = N ? N.views[N.default].open.slice() : [];
+let netOpen = new Set(N ? N.default : []);
 let labelsOn = false, keysOn = false, backwardOn = false;
-const viewOf = new Map(N ? N.views.map((v, i) => [v.open.join(","), i]) : []);
 const nodeOf = (i) => N.nodes[i];
-// A box's chain of boxes from the entry's frame, itself last.
-function chainOf(i) {
-  const c = [];
-  for (let n = nodeOf(i); n && n.kind !== "root"; n = n.parent == null ? null : nodeOf(n.parent)) c.unshift(n.id);
-  return c;
+const isBoxKind = (n) => n.kind === "call" || n.kind === "stack";
+const allBoxes = N ? N.nodes.filter(isBoxKind).map((n) => n.id) : [];
+// The frames: each box's graph laid out with its children folded.
+const FR = new Map(N ? N.frames.map((f) => [f.box, { w: f.w, h: f.h, layers: f.layers, rects: new Map(f.rects.map(([id, l, x, y, w, h]) => [id, { l, x, y, w, h }])), routes: f.routes.map(([id, at, ...pts]) => ({ id, at, pts })) }]) : []);
+const PAD = 12; // presk-diagram's layout::PAD
+// The opening where the boxes of `open` are open, composed: an open box
+// takes its composed size; a layer grows by its tallest open box's growth
+// and the layers below move down by it; an item moves right by the growth
+// of the open boxes before it in its layer; an arrow runs straight down
+// through the layers and bends between them. Returned as the JSON's views
+// are: open, width, height, rects [id, x, y, w, h], routes [id, x0, y0, …].
+function composeView(open) {
+  const isOpen = (c) => open.has(c) && isBoxKind(nodeOf(c));
+  const sizes = new Map();
+  function growth(b) {
+    const f = FR.get(b);
+    const kids = [];
+    for (const c of f.rects.keys()) if (isOpen(c)) kids.push([c, size(c)]);
+    const dh = [];
+    f.layers.forEach(([, hl], l) => {
+      let nh = hl;
+      for (const [c, [, h]] of kids) if (f.rects.get(c).l === l) nh = Math.max(nh, h);
+      dh.push(nh - hl);
+    });
+    const down = [];
+    let d = 0;
+    for (const g of dh) { down.push(d); d += g; }
+    down.push(d);
+    return { dh, down, kids };
+  }
+  function shift(f, g, l, x) {
+    const before = g.kids.filter(([c]) => f.rects.get(c).l === l && f.rects.get(c).x < x).map(([c, [w]]) => [f.rects.get(c).x, w - f.rects.get(c).w]);
+    before.sort((a, b) => a[0] - b[0]);
+    let s = 0;
+    for (const [, dw] of before) s += dw;
+    return s;
+  }
+  function size(b) {
+    if (sizes.has(b)) return sizes.get(b);
+    const g = growth(b), f = FR.get(b);
+    let right = -Infinity;
+    for (const [c, r] of f.rects) {
+      const k = g.kids.find(([x]) => x === c);
+      right = Math.max(right, r.x + shift(f, g, r.l, r.x) + (k ? k[1][0] : r.w));
+    }
+    const s = [Number.isFinite(right) ? Math.max(f.w, right + PAD) : f.w, f.h + g.down[g.dh.length]];
+    sizes.set(b, s);
+    return s;
+  }
+  const rects = new Map(), routes = new Map(), opened = [];
+  // The frame of `b` at (ox, oy), the boxes open inside it, then its arrows,
+  // which meet an open box at its port, leave their source straight down to
+  // its layer's bottom, cross each layer straight down, and bend between
+  // layers.
+  function place(b, ox, oy) {
+    const g = growth(b), f = FR.get(b);
+    for (const [c, r] of f.rects) {
+      const k = g.kids.find(([x]) => x === c);
+      const [w, h] = k ? k[1] : [r.w, r.h];
+      rects.set(c, { x: ox + (r.x + shift(f, g, r.l, r.x)), y: oy + (r.y + g.down[r.l]), w, h });
+    }
+    for (const [c] of g.kids) {
+      opened.push(c);
+      const r = rects.get(c);
+      place(c, r.x, r.y);
+    }
+    const bottom = (l) => oy + (f.layers[l][0] + g.down[l]) + (f.layers[l][1] + g.dh[l]);
+    const isOpen = (c) => g.kids.some(([k]) => k === c);
+    for (const { id, at, pts } of f.routes) {
+      const e = N.edges[id], from = f.rects.get(e.from).l;
+      const oi = nodeOf(e.from).children.find((c) => nodeOf(c).kind === "output");
+      const o = oi == null ? null : rects.get(oi);
+      const ii = e.arg == null ? null : nodeOf(e.to).children.find((c) => nodeOf(c).kind === "input" && nodeOf(c).index === e.arg);
+      const it = ii == null ? null : rects.get(ii);
+      let sx, sy;
+      if (isOpen(e.from) && o) { sx = o.x + o.w / 2; sy = o.y + o.h; } else { const r = rects.get(e.from); sx = r.x + r.w / 2; sy = r.y + r.h; }
+      const q = [sx, sy];
+      if (sy < bottom(from)) q.push(sx, bottom(from));
+      for (let k = 0; k < pts.length; k += 2) {
+        const l = Math.min(from + k / 2 + 1, f.layers.length - 1);
+        const x = ox + (pts[k] + shift(f, g, l, pts[k])), y = oy + (pts[k + 1] + g.down[l]);
+        q.push(x, y);
+        if (bottom(l) > y) q.push(x, bottom(l));
+      }
+      if (isOpen(e.to) && it) q.push(it.x + it.w / 2, it.y); else { const t = rects.get(e.to); q.push(t.x + t.w * at, t.y); }
+      routes.set(id, q);
+    }
+  }
+  const [w, h] = size(0);
+  rects.set(0, { x: 0, y: 0, w, h });
+  place(0, 0, 0);
+  opened.sort((a, b) => nodeOf(a).depth - nodeOf(b).depth || a - b);
+  return { open: opened, width: w, height: h, rects: [...rects].map(([id, r]) => [id, r.x, r.y, r.w, r.h]), routes: [...routes].map(([id, q]) => [id, ...q]) };
+}
+// The open set into the address, so that a reload or a link keeps it.
+function netToAddress() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  q.set("net", [...netOpen].sort((a, b) => a - b).join(","));
+  history.replaceState(null, "", "#" + q.toString());
 }
 // The backward pass: a `.bwd` box differentiation generated, and what is
 // drawn inside it. Folded away until asked for.
@@ -673,7 +773,7 @@ const hasBackward = N ? N.nodes.some((n) => n.generated && n.generated.kind === 
 const shownNode = (n) => (keysOn || !n.key) && (backwardOn || !inBackward(n));
 const DTYPE = { f64: "--f64", f32: "--f32", bf16: "--bf16", int8: "--int", int4: "--int" };
 const ecolor = (d) => `var(${DTYPE[d] || "--none"})`;
-const ewidth = (b) => (b > 0 ? Math.min(4, Math.max(0.9, 0.8 + Math.log10(b) * 0.35)) : 0.9);
+const ewidth = (b) => (b > 0 ? Math.min(4, Math.max(1.6, 0.8 + Math.log10(b) * 0.35)) : 1.6);
 // A route: each segment a curve leaving and arriving vertically.
 function routePath(pts) {
   let d = `M${pts[0]},${pts[1]}`;
@@ -695,7 +795,7 @@ function text(parent, x, y, s, cls) {
   t.textContent = s;
   return t;
 }
-let netNodes = new Map(), netEdges = [];
+let netNodes = new Map(), netEdges = [], netOpened = new Set(), netEdgeIds = new Set();
 // The formulas of the folded boxes drawn, typeset once each and scaled into
 // their box.
 function fitFormulas() {
@@ -712,9 +812,7 @@ function fitFormulas() {
 function drawNet() {
   const t0 = performance.now();
   if (!N) return 0;
-  const vi = viewOf.get(netPath.join(","));
-  const v = N.views[vi === undefined ? N.default : vi];
-  if (vi === undefined) netPath = v.open.slice();
+  const v = composeView(netOpen);
   nsvg.textContent = "";
   nsvg.setAttribute("width", v.width + 8);
   nsvg.setAttribute("height", v.height + 8);
@@ -726,6 +824,8 @@ function drawNet() {
   const opened = new Set([0, ...v.open]);
   netNodes = new Map();
   netEdges = [];
+  netOpened = opened;
+  netEdgeIds = new Set();
   const ids = [...rect.keys()].filter((i) => shownNode(nodeOf(i))).sort((a, b) => nodeOf(a).depth - nodeOf(b).depth || a - b);
   const frames = el("g", {}, nsvg), edges = el("g", {}, nsvg), nodes = el("g", {}, nsvg);
   for (const i of ids) {
@@ -735,15 +835,20 @@ function drawNet() {
     g.dataset.id = i;
     netNodes.set(i, g);
     if (isBox) {
-      const stroke = n.params && n.params.types.length ? ecolor(n.params.types[0]) : "var(--line)";
+      const stroke = n.params && n.params.types.length ? ecolor(n.params.types[0]) : "var(--muted)";
       if (n.kind === "stack" && !opened.has(i)) el("rect", { x: r.x + 4, y: r.y + 4, width: r.w, height: r.h, rx: 6, class: "b", stroke }, g);
       if (n.kind !== "root") el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 6, class: "b", stroke }, g);
       const hd = el("g", { class: "hd" }, g);
-      el("rect", { x: r.x, y: r.y, width: r.w, height: 34 }, hd);
+      el("rect", { x: r.x + 1, y: r.y + 1, width: Math.max(1, r.w - 2), height: 33, rx: 5 }, hd);
       const open = opened.has(i);
       const mark = n.kind === "root" ? "" : open ? "▾ " : "▸ ";
-      text(hd, r.x + 8, r.y + 15, mark + n.title + (open && n.kind === "stack" ? " — one layer, ℓ" : ""), "t");
-      text(hd, r.x + 8 + (mark ? 13 : 0), r.y + 29, n.numbers + (n.runs > 1 && n.numbers ? ` · each of ${n.runs} runs` : ""), "n");
+      const tt = text(hd, r.x + 8, r.y + 15, mark + n.title + (open && n.kind === "stack" ? " — one layer, ℓ" : ""), "t");
+      // The title is set at 12 px, wider than the 11 px the layout measured
+      // the box by: a title that would overflow is narrowed into it.
+      if ([...tt.textContent].length * 7.3 > r.w - 16) { tt.setAttribute("textLength", Math.max(10, r.w - 16)); tt.setAttribute("lengthAdjust", "spacingAndGlyphs"); }
+      const nt = text(hd, r.x + 8 + (mark ? 13 : 0), r.y + 29, n.numbers + (n.runs > 1 && n.numbers ? ` · each of ${n.runs} runs` : ""), "n");
+      // The layout measured the numbers without "each of … runs".
+      if ([...nt.textContent].length * 6.05 > r.w - 16 - (mark ? 13 : 0)) { nt.setAttribute("textLength", Math.max(10, r.w - 16 - (mark ? 13 : 0))); nt.setAttribute("lengthAdjust", "spacingAndGlyphs"); }
       if (n.kind !== "root") hd.onclick = (ev) => { ev.stopPropagation(); openBox(i); };
       if (!open && n.tex && mathOn) {
         const fo = el("foreignObject", { x: r.x + 8, y: r.y + 36, width: Math.max(10, r.w - 16), height: Math.max(10, r.h - 40), class: "fo" }, g);
@@ -776,6 +881,7 @@ function drawNet() {
     t.textContent = `${e.site}\n${e.at}, ${e.dtype}, ${e.bytes} B`;
     p.addEventListener("mouseenter", () => inspectEdge(e));
     netEdges.push({ el: p, e });
+    netEdgeIds.add(e.id);
     if (labelsOn) {
       const k = Math.floor(pts.length / 4) * 2;
       const lx = (pts[k] + pts[k + 2 < pts.length ? k + 2 : k]) / 2 + 4, ly = (pts[k + 1] + pts[k + 2 < pts.length ? k + 3 : k + 1]) / 2;
@@ -786,23 +892,44 @@ function drawNet() {
   lightNet();
   return performance.now() - t0;
 }
-// Opens a folded box in place, or folds an open one: the opening laid out
-// for it, its siblings folded.
+// Opens a folded box in place, or folds an open one; its siblings keep
+// theirs, and the boxes inside it theirs for when it opens again.
 function openBox(i) {
-  const c = chainOf(i);
-  netPath = netPath.join(",") === c.join(",") || netPath.includes(i) ? c.slice(0, -1) : c;
+  if (netOpen.has(i)) netOpen.delete(i); else netOpen.add(i);
+  netToAddress();
   return drawNet();
 }
+// The selection's thread on the diagram. What the opening does not draw,
+// inside a folded box, lights that box; the diagram is dimmed only around
+// something lit.
 function lightNet() {
   if (!N) return;
-  const lit = thread(selection);
-  const any = selection.size > 0;
-  net.classList.toggle("dimmed", any);
-  for (const [i, g] of netNodes) {
-    const n = nodeOf(i);
-    g.classList.toggle("lit", any && (lit.has(n.element) || (n.function && lit.has(n.function))));
+  const sel = selection.size > 0;
+  const lit = sel ? thread(selection) : new Set();
+  const on = (n) => lit.has(n.element) || (n.function && lit.has(n.function));
+  // The folded box drawn that holds the box `p`, or `p` itself; none when
+  // the nearest drawn is open (what is inside it is hidden, not folded).
+  const holder = (p) => {
+    for (let x = p == null ? null : nodeOf(p); x; x = x.parent == null ? null : nodeOf(x.parent)) if (netNodes.has(x.id)) return netOpened.has(x.id) ? null : x.id;
+    return null;
+  };
+  const holds = new Set();
+  if (sel) {
+    for (const n of N.nodes) if (!netNodes.has(n.id) && on(n)) { const h = holder(n.parent); if (h != null) holds.add(h); }
+    for (const e of N.edges) if (!netEdgeIds.has(e.id) && lit.has(e.site)) { const h = holder(e.parent); if (h != null) holds.add(h); }
   }
-  for (const { el: p, e } of netEdges) p.classList.toggle("lit", any && lit.has(e.site));
+  let any = false;
+  for (const [i, g] of netNodes) {
+    const x = sel && (on(nodeOf(i)) || holds.has(i));
+    g.classList.toggle("lit", x);
+    if (x) any = true;
+  }
+  for (const { el: p, e } of netEdges) {
+    const x = sel && lit.has(e.site);
+    p.classList.toggle("lit", x);
+    if (x) any = true;
+  }
+  net.classList.toggle("dimmed", any);
 }
 // A node's elements: its own, and a box's callee's function.
 const elementsOf = (n) => [n.element, ...(n.function && n.function !== n.element ? [n.function] : [])].filter((k) => E.has(k));
@@ -872,7 +999,9 @@ const toggleBtn = (id, f) => { $(id).onclick = () => { f(); $(id).classList.togg
 toggleBtn("#labels", () => { labelsOn = !labelsOn; });
 toggleBtn("#keys", () => { keysOn = !keysOn; });
 toggleBtn("#backward", () => { backwardOn = !backwardOn; });
-$("#netreset").onclick = () => { netPath = N.views[N.default].open.slice(); drawNet(); };
+$("#netreset").onclick = () => { netOpen = new Set(N.default); netToAddress(); drawNet(); };
+$("#netall").onclick = () => { netOpen = new Set(allBoxes); netToAddress(); drawNet(); };
+$("#netnone").onclick = () => { netOpen = new Set(); netToAddress(); drawNet(); };
 if (hasBackward) $("#backward").hidden = false;
 if (!N) $("#tab-network").disabled = true;
 net.addEventListener("click", () => { selection = new Set(); lightNet(); });
@@ -885,8 +1014,8 @@ $("#sub").textContent = `presk ${D.compiler} · ${P.file} · entry ${P.entry}` +
 $("#legend").innerHTML = [["lowering", "--how-lower"], ["differentiation", "--how-ad"], ["optimizer", "--how-opt"], ["fusion and sites", "--how-fuse"], ["pass-through", "--how-pass"], ["f64", "--f64"], ["f32", "--f32"], ["bf16", "--bf16"]].map(([n, c]) => `<span style="--c: var(${c})">${n}</span>`).join("");
 
 // ----- start, and the bench of statement P3 -----------------------------------------
-if (D.format !== 2) {
-  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 2; this one is format ${esc(D.format)}.</p>`;
+if (D.format !== 3) {
+  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 3; this one is format ${esc(D.format)}.</p>`;
 } else {
   const first = render();
   if (L.lesson.length) go(L.step);
@@ -894,7 +1023,7 @@ if (D.format !== 2) {
   // ids, outermost first), and `labels`, `keys`, `backward` as their
   // buttons set them.
   const q0 = new URLSearchParams(location.hash.slice(1));
-  if (N && q0.get("net")) netPath = q0.get("net").split(",").map(Number).filter((i) => i < N.nodes.length);
+  if (N && q0.has("net")) netOpen = new Set(q0.get("net").split(",").filter((x) => x !== "").map(Number).filter((i) => i < N.nodes.length));
   for (const [k, set] of [["labels", () => { labelsOn = true; }], ["keys", () => { keysOn = true; }], ["backward", () => { backwardOn = true; }]]) if (q0.has(k)) { set(); $("#" + k).classList.add("on"); }
   // `theme=light|dark`; `plain`: nothing selected.
   if (["light", "dark"].includes(q0.get("theme"))) document.documentElement.dataset.theme = q0.get("theme");
@@ -918,29 +1047,59 @@ if (D.format !== 2) {
     el.hidden = false;
     el.textContent = `P3 bench: first draw ${times.first.toFixed(0)} ms; select ${sel.length}, at most ${times.select.toFixed(1)} ms; fold or open ${tog.length}, at most ${times.collapse.toFixed(1)} ms; ${E.size} elements, ${paths.length} arrows drawn`;
     if (N) {
-      // Statement N5: the diagram's open, fold and select under P3's bound;
-      // and N1's second half: a click on a box of the default opening
-      // selects its elements in the columns, which light.
+      // Statements N5 and E5: the diagram's openings, "expand all" and
+      // "fold all", each box's toggle and a select, under P3's bound. E3:
+      // the page's composition is the compiler's, to the tenth of a point,
+      // for the openings the JSON carries. N1's second half and E2: a click
+      // on each box of the default and the exploded openings selects its
+      // elements in the columns, which light.
       showTab("network");
-      const opens = [], picks = [];
-      for (const v of N.views) { netPath = v.open.slice(); opens.push(drawNet()); }
-      netPath = N.views[N.default].open.slice();
+      const chainOf = (i) => {
+        const c = [];
+        for (let n = nodeOf(i); n && n.kind !== "root"; n = n.parent == null ? null : nodeOf(n.parent)) c.unshift(n.id);
+        return c;
+      };
+      const opens = [], picks = [], toggles = [];
+      for (const b of allBoxes) { netOpen = new Set(chainOf(b)); opens.push(drawNet()); }
+      netOpen = new Set(allBoxes);
+      const exploded = drawNet();
+      opens.push(exploded);
+      netOpen = new Set();
       opens.push(drawNet());
+      netOpen = new Set(allBoxes);
+      drawNet();
+      for (const b of allBoxes) { toggles.push(openBox(b)); toggles.push(openBox(b)); }
       for (const i of netNodes.keys()) picks.push(pickNode(nodeOf(i), true));
-      const boxes = N.views[N.default].rects.map((r) => nodeOf(r[0])).filter((n) => ["call", "stack"].includes(n.kind));
+      const r10 = (x) => Math.round(x * 10) / 10;
+      const same = (a, b) => a.length === b.length && a.every((x, k) => (k === 0 ? x === b[k] : r10(x) === b[k]));
+      const differ = [];
+      for (const w of N.views) {
+        const v = composeView(new Set(w.open));
+        const rs = new Map(v.rects.map((r) => [r[0], r])), qs = new Map(v.routes.map((r) => [r[0], r]));
+        if (r10(v.width) !== w.width || r10(v.height) !== w.height || v.rects.length !== w.rects.length || v.routes.length !== w.routes.length) differ.push(`${w.name}: its size or its counts`);
+        for (const r of w.rects) if (!rs.has(r[0]) || !same(rs.get(r[0]), r)) differ.push(`${w.name}: node ${r[0]}`);
+        for (const r of w.routes) if (!qs.has(r[0]) || !same(qs.get(r[0]), r)) differ.push(`${w.name}: arrow ${r[0]}`);
+      }
       const bad = [];
-      for (const n of boxes) {
-        showTab("network");
-        pickNode(n, false);
-        for (const k of elementsOf(n)) {
-          const x = E.get(k);
-          const shown = hidden(x) ? shownParents(x).map((p) => p.id) : [k];
-          const ok = shown.some((id) => { const c = cardOf.get(id); return c && (c.classList.contains("lit") || c.classList.contains("sel") || (c.parentNode && c.parentNode.classList.contains("lit"))); });
-          if (!ok) bad.push(`${n.title}: ${k}`);
+      let clicked = 0;
+      for (const set of [N.default, allBoxes]) {
+        const boxes = composeView(new Set(set)).rects.map((r) => nodeOf(r[0])).filter(isBoxKind);
+        for (const n of boxes) {
+          clicked++;
+          netOpen = new Set(set);
+          showTab("network");
+          pickNode(n, false);
+          for (const k of elementsOf(n)) {
+            const x = E.get(k);
+            const shown = hidden(x) ? shownParents(x).map((p) => p.id) : [k];
+            const ok = shown.some((id) => { const c = cardOf.get(id); return c && (c.classList.contains("lit") || c.classList.contains("sel") || (c.parentNode && c.parentNode.classList.contains("lit"))); });
+            if (!ok) bad.push(`${n.title}: ${k}`);
+          }
         }
       }
+      netOpen = new Set(N.default);
       showTab("pipeline");
-      el.textContent += ` · N5: ${opens.length} openings drawn, at most ${max(opens).toFixed(1)} ms; ${picks.length} selects, at most ${max(picks).toFixed(1)} ms · N1: ${boxes.length} boxes clicked, ${bad.length ? "NOT LIT: " + bad.join("; ") : "every one lit in the columns"}`;
+      el.textContent += ` · N5, E5: ${opens.length} openings drawn, at most ${max(opens).toFixed(1)} ms, the exploded one ${exploded.toFixed(1)} ms; ${toggles.length} toggles in the exploded one, at most ${max(toggles).toFixed(1)} ms; ${picks.length} selects, at most ${max(picks).toFixed(1)} ms · E3: ${N.views.length} openings composed, ${differ.length ? "DIFFER: " + differ.slice(0, 8).join("; ") : "the compiler's to the tenth"} · N1, E2: ${clicked} boxes clicked, ${bad.length ? "NOT LIT: " + bad.join("; ") : "every one lit in the columns"}`;
     }
     document.title = el.textContent;
   }

@@ -73,7 +73,7 @@
 #   make explain-pdf      the PDF of a presk explain document, EXPLAIN=DIR (out/explain/loss by default): pandoc and lualatex (TeX Live 2026), DejaVu fonts
 #   make explain-manual   the tutorial's document regenerated into the manual's chapter explain_loss, which a test holds current
 #   make math-check       the printer of the denotation's standalone LaTeX of the tutorial, the examples and the course GPT, each compiled by LuaLaTeX into out/math/ (0.13.0 step 4)
-#   make network-figure   the course GPT's network diagram: level 2 into the manual's chapter explain_network (SVG); level 1 and Block alone into out/network/ (SVG, TikZ, standalone documents) and the report's two figures, $(PRESK_SPECS_DIR)/report/figures/network-gpt{,-block}.tex (0.14.0 step 3)
+#   make network-figure   the course GPT's network diagram: level 2 into the manual's chapter explain_network (SVG); level 1 and Block alone into out/network/ (SVG, TikZ, standalone documents) and the report's two figures, $(PRESK_SPECS_DIR)/report/figures/network-gpt{,-block}.tex (0.14.0 step 3); and the exploded view, every box opened, into out/network/gpt-exploded.svg (0.14.1)
 #   make clean
 
 PRESK_SPECS_DIR ?= ../presk-specs
@@ -1106,6 +1106,7 @@ network-figure: build
 	$(PRESK) dump $(NETWORK_GPT) --level 2 --format svg > out/network/gpt-level2.svg
 	$(PRESK) dump $(NETWORK_GPT) --level 1 --format svg > out/network/gpt-level1.svg
 	$(PRESK) dump $(NETWORK_GPT) --box blocks --format svg > out/network/gpt-block.svg
+	$(PRESK) dump $(NETWORK_GPT) --level all --format svg > out/network/gpt-exploded.svg
 	$(PRESK) dump $(NETWORK_GPT) --level 1 --format tikz > out/network/gpt-level1.tex
 	$(PRESK) dump $(NETWORK_GPT) --box blocks --format tikz > out/network/gpt-block.tex
 	$(PRESK) dump $(NETWORK_GPT) --level 1 --format tikz --standalone > out/network/gpt-level1-standalone.tex

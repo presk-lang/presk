@@ -256,8 +256,8 @@ D135), for a program that reads a compilation rather than a person: the
 pipeline view's page reads it. It holds the document's facts as values and
 the provenance table of §12, and it is deterministic without `--measure`,
 as the Markdown is: no time, no absolute path. Its fields, in layout
-`format` 2 (0.14.0 step 1, D141, which added `network`; format 1 is
-0.13.0's):
+`format` 3 (0.14.1, D146, the network's frames in place of its views;
+format 2 is 0.14.0's, which added `network`, D141; format 1 0.13.0's):
 
 | Field | What it holds |
 |---|---|
@@ -280,7 +280,7 @@ rendered again from them byte for byte (a test of `presk-explain`). On the
 Llama 2 decoder block at the 7B width (X5's parameters, `--no-exact`) it is
 1.1 MB.
 
-## The network diagram (format 2's `network`)
+## The network diagram (`network`)
 
 Since 0.14.0 step 1 (D141), `explain.json` holds the program drawn as
 boxes and arrows, and `presk explain` writes its default opening as
@@ -337,36 +337,56 @@ over the instances, which is what the envelope keeps), and that in every
 opening the work and the bytes of the nodes drawn sum to the entry's
 launches' (N2).
 
-The layout is layered, top to bottom, computed in Rust once for every
-opening a reader can reach: the entry alone, then each box opened with the
-boxes it is inside, a box opened folding its siblings. The default opening
-is the entry and its first box. Sizes come from the strings' lengths, no
-text being measured. The `network` object:
+The layout is layered, top to bottom, and compositional (0.14.1, D146).
+Each box's graph is laid out once, in its own frame, with every child
+folded: in layers by longest path, the nodes of a layer ordered by their
+neighbours, each number snapped to a tenth of a point. An opening, any set
+of boxes open, composes the frames:
+- an open box takes its composed size;
+- a layer grows by its tallest open box's growth, and the layers below
+  move down by it;
+- in a layer, an item moves right by the growth of the open boxes before
+  it, and nothing is reordered;
+- an arrow leaves its source straight down to its layer's bottom, crosses
+  each layer straight down, bends between layers, and meets an open box at
+  its port, the input it is or the result.
+
+A box with no child open is drawn as its frame, translated, in every
+opening, and no arrow runs through a node. The default opening is the
+entry and its first box; the exploded one, every box opened (`--level
+all`), is 1 062 × 3 954 pt on the course GPT at `D = 64`. Sizes come from
+the strings' lengths, no text being measured. A test checks the
+composition (statement E1) on the 36 diagrams above, in each box's
+opening with the boxes it is inside, the levels, the exploded opening and
+20 sets of boxes drawn at random. The `network` object:
 
 | Field | What it holds |
 |---|---|
 | `entry`, `stage` | the entry, and the table's stage the graph is read from |
-| `default` | the view the page opens on |
+| `default` | the boxes open in the opening the page starts from |
 | `params`, `work`, `bytes` | the entry's: `{count, bytes, types}`, and W and Q over its launches (`null` when the kernels were not listed) |
 | `nodes[]` | `id`, `kind` (`root`, `call`, `stack`, `group`, `op`, `host`, `param`, `input`, `output`), `parent` (the box it is drawn in), `element` and `function` (`stage:key`), `callee`, `label`, `title` and `numbers` (the lines the drawing writes), `instance`, `stack` (L), `runs`, `path` (in the entry's parameters), `tex` and `text` (the formula in LaTeX and in Unicode), `sum` and `order` (a contraction's, in LaTeX), `params`, `work`, `bytes`, `generated` (`{kind, of}`), `members` (a group's sites), `index` (an input's place), `children`, `depth`, `key` (it carries keys only) |
 | `edges[]` | `id`, `from`, `to`, `parent`, `arg` (its place among `to`'s arguments), `site`, `ty` (in the entry's dimension names), `at` (at their values), `dtype`, `elems`, `bytes`, `key` |
-| `views[]` | `open` (the boxes opened, outermost first), `width`, `height`, `rects` (`[id, x, y, w, h]`, in points) and `routes` (`[id, x0, y0, x1, y1, …]`) of every node and arrow drawn |
+| `frames[]` | one per box, the entry's (`box` 0) among them: `box`, `w`, `h`, `layers` (`[top, height]` of each), `rects` (`[id, layer, x, y, w, h]`, in points, from the box's corner) and `routes` (`[id, at, x1, y1, …]`: where the arrow lands along its target's top, a fraction of its width, and its place in each layer it passes through, at the layer's top); the numbers as the compiler holds them, so that the page composes from the same ones |
+| `views[]` | the compiler's composition of the default (`name` `default`) and the exploded (`all`) openings, which the page checks itself against: `open` (the boxes drawn open, outermost first), `width`, `height`, `rects` (`[id, x, y, w, h]`) and `routes` (`[id, x0, y0, x1, y1, …]`), each number to a tenth |
 
 `presk dump FILE --stage network --entry E` (0.14.0 step 3, D143; `cli`
 chapter) prints the same diagram without writing a document: its outline,
-its JSON, or one opening as SVG or TikZ (`--level N`), or one box opened by
-itself, without what is around it (`--box NAME`). Every format draws
-the positions of the one layout (statement N4, a test of `presk-explain`):
-the page, `network.svg`, the SVG and the TikZ. The TikZ's boxes carry the
+its JSON, or one opening as SVG or TikZ (`--level N`, `--level all` the
+exploded one), or one box opened by itself, without what is around it
+(`--box NAME`). Every format draws the one composition (statements N4 and
+E3, a test of `presk-explain` and the page's bench): the page, `network.svg`,
+the SVG and the TikZ. The TikZ's boxes carry the
 printer's LaTeX, each formula shrunk to its box when it is wider, with the
 reference's macros provided where the document has none. `make
 network-figure` writes the course GPT at level 2 into the chapter
-`explain_network` of this manual (741 × 1 569 pt, to be read on a screen),
+`explain_network` of this manual (753 × 1 569 pt, to be read on a screen)
+and the exploded view into `out/network/gpt-exploded.svg`,
 and the report's two figures as TikZ (presk-specs `report/figures/`), each
 readable on paper, as the user decided on 2026-10-17: level 1, the GPT
 with its stack of blocks folded (`network-gpt.tex`, 647 × 899 pt, on an A4
 page at 0.74 of its size), and `Block` opened by itself
-(`network-gpt-block.tex`, `--box blocks`, 693 × 808 pt, at 0.69), their
+(`network-gpt-block.tex`, `--box blocks`, 705 × 808 pt, at 0.68), their
 9 pt labels printing at about 6 pt.
 
 ## The pipeline view (`--format html`)
@@ -434,17 +454,20 @@ step 5); on the course GPT at `D = 64`, 31, 6.0 and 33.0 ms.
 
 Since 0.14.0 step 2 (D142), the page has two tabs. **Pipeline** is the
 columns above; **Network** draws the program as boxes and arrows from the
-JSON's `network` (above), at the positions `presk-diagram` computed: the
-page lays nothing out. It opens on the default opening, the entry and its
-first box opened.
+JSON's `network` (above), composing its frames for the boxes open by the
+compiler's rule and arithmetic (0.14.1, D146). It opens on the default
+opening, the entry and its first box opened.
 
 - **A box** is a call: its name and instance, its parameters with their
   stored type, the cost model's W and Q (a box inside a stack shows one
   run's, "each of L runs"), and folded, its function's display typeset in
   it, scaled to fit. A stack is one box ×L, its border doubled.
 - **Opening.** A box's header opens it in place, to its callee's graph at
-  that call, and folds it again; a stack opens to one layer, ℓ. Opening a
-  box folds its siblings. "default" goes back to the default opening.
+  that call, and folds it again; a stack opens to one layer, ℓ. Any set of
+  boxes may be open at once, a box's siblings keeping theirs. "expand all"
+  opens every box, the exploded view; "fold all" folds them; "default"
+  goes back to the default opening. The open set is written into the
+  address (`net=`) at each opening.
 - **Operation nodes** are the fusion groups (`add · mul`) and the
   primitives alone; dashed, a primitive the host computes. Parameter nodes
   are the leaves an operation reads (`θ.w`).
@@ -462,23 +485,32 @@ first box opened.
   its callee's function, and switches to the Pipeline tab with their
   threads lit. With shift it stays on the diagram, where the nodes and
   arrows of the thread light. A selection made in the columns lights the
-  diagram too.
+  diagram too; what the opening does not draw, inside a folded box, lights
+  that box. The rest is dimmed only around something lit, and `Esc`
+  clears.
 - **The lesson** records the tab and the opened boxes with each step.
 
-The address takes `tab=network`, `net=` (the opened boxes' ids, outermost
-first), `labels`, `keys`, `backward`, `theme=light|dark` and `plain`
-(nothing selected).
+The address takes `tab=network`, `net=` (the open boxes' ids), `labels`,
+`keys`, `backward`, `theme=light|dark` and `plain` (nothing selected).
 
-Under `#bench`, after P3's timings, the page draws every opening and
-selects every node of the default one by its own clock (statement N5), and
-clicks each box of the default opening, checking that its elements light
-in the columns (N1). In headless Firefox on falicon, three runs each: on
-the course GPT at `D = 64`, 15 openings drawn in at most 20.0 ms and 21
-selects in at most 1.0 ms, the columns' select at most 7.0 ms and fold at
-most 34.0 ms; on the Llama 2 decoder block at the 7B width (1.9 MB), 13 openings in at
-most 20.0 ms and 19 selects in at most 2.0 ms, the columns' select at
-most 7.0 ms and fold at most 45.0 ms, as at 0.13.0 (7.0 and 44.0). Every
-box clicked lit its elements.
+Under `#bench`, after P3's timings, the page draws each box opened with
+the boxes it is inside, the exploded opening and the folded one, folds and
+opens each box of the exploded opening, and selects every node it draws,
+by its own clock (statements N5 and E5); composes the default and the
+exploded openings and compares them with the compiler's, to the tenth of
+a point (E3); and clicks each box of the default and the exploded
+openings, checking that its elements light in the columns (N1, E2). In
+headless Firefox on falicon, three runs each (0.14.1):
+
+| Page | Openings drawn | The exploded one | Toggles | Selects | The columns' select, fold |
+|---|---|---|---|---|---|
+| the tutorial | 7, at most 6.0 ms | at most 2.0 ms | 10, at most 3.0 ms | 40, at most 1.0 ms | 3.0, 12.0 ms |
+| the course GPT at `D = 64` | 15, at most 22.0 ms | at most 4.0 ms | 26, at most 9.0 ms | 118, at most 1.0 ms | 9.0, 36.0 ms |
+| the Llama 2 decoder block at the 7B width | 13, at most 21.0 ms | at most 3.0 ms | 22, at most 11.0 ms | 93, at most 2.0 ms | 8.0, 47.0 ms |
+
+Every opening composed was the compiler's, and every box clicked lit its
+elements. An opening's time is mostly KaTeX's, typesetting the folded
+boxes' formulas.
 
 ## The native column
 

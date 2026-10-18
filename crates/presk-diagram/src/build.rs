@@ -65,7 +65,7 @@ pub fn network(i: &Inputs) -> Option<Network> {
     b.nodes[root].work = work;
     b.nodes[root].bytes = bytes;
     let params = b.nodes[root].params.clone();
-    let mut n = Network { entry: i.entry.to_string(), stage: i.stage, nodes: b.nodes, edges: b.edges, views: Vec::new(), default: 0, params, work, bytes };
+    let mut n = Network { entry: i.entry.to_string(), stage: i.stage, nodes: b.nodes, edges: b.edges, frames: Default::default(), default: Vec::new(), params, work, bytes };
     crate::layout::lay_out(&mut n);
     Some(n)
 }

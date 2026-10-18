@@ -30,9 +30,10 @@
 //! - a box's work W and bytes Q are the cost model's over the launches
 //!   inside its call ([`presk_kernel::Launched::calls`]).
 //!
-//! The layout ([`layout`]) is layered, left to right, computed once per
-//! opening a reader can reach: every path of opened boxes from the entry.
-//! The page, the SVG and the TikZ draw the same positions.
+//! The layout ([`layout`]) is layered, top to bottom: each box's graph laid
+//! out once in its own frame, and any set of boxes opened by composing the
+//! frames (plan 0.14.1, D146). The page, the SVG and the TikZ draw the same
+//! composition.
 //!
 //! The crate has no external dependency.
 
@@ -193,11 +194,12 @@ pub struct Network {
     pub stage: presk_provenance::Stage,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
-    /// The openings a reader can reach, each laid out.
-    pub views: Vec<layout::View>,
-    /// The view the page opens on: the entry and its first module box
-    /// opened, every stack folded.
-    pub default: usize,
+    /// Each box's graph laid out with its children folded, the entry's
+    /// (`0`) among them: what every opening composes ([`layout::view`]).
+    pub frames: std::collections::BTreeMap<usize, layout::Frame>,
+    /// The boxes open in the opening the page starts from: the entry's
+    /// first module box, every stack folded.
+    pub default: Vec<usize>,
     /// The parameter count over the entry's parameters.
     pub params: Option<Params>,
     /// The work and bytes over every launch of the entry.

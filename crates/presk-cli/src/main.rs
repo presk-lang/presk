@@ -223,9 +223,10 @@ enum Command {
         format: DumpFormat,
         /// For `--stage network --format svg|tikz`: the opening drawn, 0 the
         /// entry alone, 1 its first box opened (the default), then a stack,
-        /// else the first box, opened at each level.
-        #[arg(long)]
-        level: Option<usize>,
+        /// else the first box, opened at each level; `all`, every box
+        /// opened, the exploded view (plan 0.14.1).
+        #[arg(long, value_parser = parse_level)]
+        level: Option<Level>,
         /// For `--stage network --format svg|tikz`: the box called NAME
         /// (`blocks`) opened by itself, without what is around it.
         #[arg(long = "box", value_name = "NAME", conflicts_with = "level")]
@@ -2924,12 +2925,26 @@ fn dump(file: &Path, stage: DumpStage, unroll_stack: bool, entry: Option<&str>, 
     }
 }
 
+/// `--level` of `presk dump --stage network`: a depth, or `all`.
+#[derive(Clone, Copy, Debug)]
+enum Level {
+    Depth(usize),
+    All,
+}
+
+fn parse_level(s: &str) -> Result<Level, String> {
+    if s == "all" {
+        return Ok(Level::All);
+    }
+    s.parse().map(Level::Depth).map_err(|_| format!("`{s}`: a level is a number or `all`"))
+}
+
 /// `presk dump --stage network` (plan 0.14.0 step 3, D143): the network
 /// diagram of an entry, as `presk explain` draws it. Every stage runs as for
 /// the document, on the native target and without the exact reference; the
 /// directory its artifacts would go to is removed afterwards.
 #[allow(clippy::too_many_arguments)]
-fn dump_network(file: &Path, format: DumpFormat, (level, boxed): (Option<usize>, Option<&str>), standalone: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, profile: Option<PathBuf>, weights: Option<PathBuf>) -> ExitCode {
+fn dump_network(file: &Path, format: DumpFormat, (level, boxed): (Option<Level>, Option<&str>), standalone: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, profile: Option<PathBuf>, weights: Option<PathBuf>) -> ExitCode {
     let Some(entry) = entry else {
         eprintln!("presk dump --stage network: --entry is required (the diagram is an entry's, its arrows at the entry's shapes)");
         return ExitCode::from(2);
@@ -2973,20 +2988,20 @@ fn dump_network(file: &Path, format: DumpFormat, (level, boxed): (Option<usize>,
         eprintln!("presk dump --stage network: `{entry}` has no diagram");
         return ExitCode::from(1);
     };
-    let alone;
     let v = match boxed {
         Some(name) => match presk_diagram::layout::find_box(&n, name) {
-            Some(b) => {
-                alone = presk_diagram::layout::alone(&n, b);
-                &alone
-            }
+            Some(b) => presk_diagram::layout::alone(&n, b),
             None => {
                 eprintln!("presk dump --stage network: no box called `{name}`");
                 return ExitCode::from(1);
             }
         },
-        None => &n.views[presk_diagram::layout::level(&n, level.unwrap_or(1))],
+        None => match level.unwrap_or(Level::Depth(1)) {
+            Level::Depth(k) => presk_diagram::layout::view(&n, &presk_diagram::layout::level(&n, k)),
+            Level::All => presk_diagram::layout::view(&n, &presk_diagram::layout::everything(&n)),
+        },
     };
+    let v = &v;
     let command = std::iter::once("presk".to_string()).chain(std::env::args().skip(1)).collect::<Vec<_>>().join(" ");
     match format {
         DumpFormat::Json => println!("{}", presk_diagram::json::network(&n)),

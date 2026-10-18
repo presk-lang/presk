@@ -2,14 +2,14 @@
 source: crates/presk-explain/tests/network.rs
 expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
-network of `mse_grad`, read off the stage `ad`: 96 nodes, 98 arrows, 13 openings
+network of `mse_grad`, read off the stage `ad`: 96 nodes, 98 arrows, 12 boxes
 parameters: 148 (592 bytes, f32)
 work W = 3168, bytes Q = 7384, over every launch of the entry
 default opening: [3], 328 × 326 pt
 [0] root mse_grad  ad:mse_grad @ 0,0 328×326
     θ 148 f32 · W 3.17 k · Q 7.38 kB
-  [1] input x #1  ad:mse_grad @ 102,38 40×22
-  [2] input y #2  ad:mse_grad @ 154,38 40×22
+  [1] input x #1  ad:mse_grad @ 94,38 40×22
+  [2] input y #2  ad:mse_grad @ 146,38 40×22
   [3] call mse_grad.lambda0.grad · MLP{D, 4*D}  ad:mse_grad/%5 fn ad:mse_grad.lambda0.grad @ 12,84 272×184
       θ 148 f32 · W 3.17 k · Q 7.38 kB
       generated: grad of core:mse_grad.lambda0
@@ -245,7 +245,7 @@ default opening: [3], 328 × 326 pt
     5 → 7 #0: ad:mse_grad  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f32, 8 elements, 32 B
     6 → 7 #1: ad:mse_grad  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f32, 8 elements, 32 B
     7 → 8: ad:mse_grad.lambda0.grad/%6  params MLP{D, 4*D} = params MLP{4, 16}, f32, 148 elements, 592 B
-  [4] result  ad:mse_grad/%5 @ 116,292 64×22
+  [4] result  ad:mse_grad/%5 @ 108,292 64×22
   1 → 3 #0: ad:mse_grad  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f32, 8 elements, 32 B
   2 → 3 #1: ad:mse_grad  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f32, 8 elements, 32 B
   3 → 4: ad:mse_grad/%5  params MLP{D, 4*D} = params MLP{4, 16}, f32, 148 elements, 592 B

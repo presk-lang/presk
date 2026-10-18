@@ -2,13 +2,13 @@
 source: crates/presk-explain/tests/network.rs
 expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
-network of `loss`, read off the stage `ad`: 40 nodes, 37 arrows, 6 openings
+network of `loss`, read off the stage `ad`: 40 nodes, 37 arrows, 5 boxes
 parameters: 76 (280 bytes, f32, bf16)
 work W = 1537, bytes Q = 3428, over every launch of the entry
 default opening: [2], 468 × 549 pt
 [0] root loss  ad:loss @ 0,0 468×549
     θ 76 f32/bf16 · W 1.54 k · Q 3.43 kB
-  [1] input batch #1  ad:loss @ 320,38 57×22
+  [1] input batch #1  ad:loss @ 292,38 57×22
   [2] call Tower.apply · Tower  ad:loss/%4 fn ad:Tower.apply @ 12,84 444×307
       θ 76 f32/bf16 · W 1.47 k · Q 3.17 kB
     [6] input x #1  ad:loss/%2 @ 214,122 40×22
@@ -100,12 +100,12 @@ default opening: [2], 468 × 549 pt
     6 → 7 #1: ad:loss/%2  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
     7 → 8 #1: ad:Tower.apply/%3  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
     8 → 9: ad:Tower.apply/%6  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
-  [3] group pow 2 · sub  fusion:loss/%6 @ 300,415 97×26
+  [3] group pow 2 · sub  fusion:loss/%6 @ 272,415 97×26
       W 48 · Q 192B
       members loss/%6, loss/%5
-  [4] op mean  fusion:loss/%7 @ 323,465 50×26
+  [4] op mean  fusion:loss/%7 @ 295,465 50×26
       W 17 · Q 68B
-  [5] result  ad:loss/%7 @ 317,515 64×22
+  [5] result  ad:loss/%7 @ 289,515 64×22
   1 → 2 #1: ad:loss/%2  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
   2 → 3: ad:loss/%4  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
   1 → 3: ad:loss/%3  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
