@@ -22,6 +22,7 @@ pub mod export_c;
 pub mod front;
 pub mod gap;
 pub mod layout;
+pub mod memory;
 pub mod opt;
 pub mod plan;
 pub mod precision;

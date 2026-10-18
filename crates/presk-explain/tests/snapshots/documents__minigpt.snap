@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.14.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.15.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -46,6 +46,7 @@ Compiler: presk 0.14.1. Each section ends with the commands that print what it s
 | Fusion | 106 launches without it, 69 with it: 37 saved | decision | §7 |
 | Layout plan | 23 nests, 2211 points costed, 4 tiled, 0 split; predicted 13.348 µs a call over the nests it prices | decision, estimate | §8 |
 | Kernels | 24 distinct, 69 launches a call | fact | §9 |
+| Memory | 44928 bytes a call: the inputs, 35200 bytes, and the peak of live bytes, 9728 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
 
@@ -1101,6 +1102,51 @@ By default, the three largest shares of the solver's estimate (the three largest
 
 *Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (70 lines).*
 
+## 13 Memory
+
+What one call of the entry needs in memory, counted from the program at its dimensions and its realization's types, never a process's resident size. The host is recorded as the C export records it (§9); each buffer the call makes is live from its first write to its last read, and the inputs, which its caller holds, are counted apart. The calls are the network diagram's boxes, the iterations of a fold taken together: a call's share is what it made that is live at the peak, its own peak the most what it made weighs while it runs.
+
+```text
+presk memory: `MiniGPT.apply` at B = 2, T = 8 in f32: 76 operations, 69 launches
+  parameters  35072 bytes: 8768 elements, 8768 in f32
+  inputs      35200 bytes, the parameters among them
+  peak        9728 bytes live, at operation 35 of 76, `MLP.apply/%4` in blocks.mlp, iteration 0
+  outputs     4096 bytes
+  needs       44928 bytes: the inputs and the peak
+  C arena     57344 bytes, 22144 beside the inputs, 2.28 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (103360 released nothing)
+  placed      9728 bytes beside the inputs: every buffer at an offset by its life, rounded to 64 (`--straight-line --placed`)
+presk memory: 13 calls, their shares of the peak and their own peaks
+  call                           share      own peak
+  `MiniGPT.apply` itself           512
+  emb                                0          2560
+  blocks ×2                        9216          9216
+    blocks.ln1 ×2                     0          1152
+    blocks.attn ×2                    0          4096
+    blocks.ln2 ×2                     0          1152
+    blocks.mlp ×2                  8192          8192
+  lnf                                0          1152
+```
+
+The C program's arena holds each function's buffers until it returns (D80), so it is 2.28 times the peak beside the inputs. A straight-line host with every buffer at an offset by its life takes 9728 bytes beside them; that it computes the native backend's bits, which `make c-conformance` checks, is what shows the lifetimes sound.
+
+The same as polynomials in the entry's dimensions (plan 0.15.0 step 3), the `const`s as their numbers. Every axis of a buffer is a linear form in the dimensions, so a buffer's bytes are a polynomial; each is interpolated from recordings of the call on a grid of three values per dimension, the operations the same at every point, and checked at a point off the grid. The peak is the largest of the operations' live bytes that no other's dominates for dimensions of at least 1.
+
+```text
+presk memory --symbolic: `MiniGPT.apply` in f32, in B and T: each buffer's bytes interpolated on B ∈ {2, 4, 6}, T ∈ {8, 16, 24}, checked at B = 8, T = 32
+  inputs      8 · B · T + 64 · T + 34560
+  outputs     256 · B · T
+  peak        the largest of 3, none of which dominates another:
+                8 · B · T² + 256 · B · T + 8 · T², at operation 19 (`SelfAttention.apply/%12`)
+                16 · B · T² + 128 · B · T + 8 · T² + 4, at operation 22 (`SelfAttention.apply/%16 (s)`)
+                576 · B · T + 8 · T², at operation 35 (`MLP.apply/%4`)
+  at B = 2, T = 8: the peak 9728, the inputs 35200, as counted
+```
+
+*Commands:*
+
+- `presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json --symbolic`
+
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
@@ -1115,4 +1161,6 @@ presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/minigp
 presk dump ../../tests/examples/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
 PRESK_THREADS=10 presk plan ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
 presk dump ../../tests/examples/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json --symbolic
 ```

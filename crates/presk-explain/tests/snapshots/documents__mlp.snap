@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.14.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.15.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -50,6 +50,7 @@ Compiler: presk 0.14.1. Each section ends with the commands that print what it s
 | Fusion | 8 launches without it, 5 with it: 3 saved | decision | §7 |
 | Layout plan | 5 nests, 143 points costed, 1 tiled, 0 split; predicted 0.091 µs a call over the nests it prices | decision, estimate | §8 |
 | Kernels | 5 distinct, 5 launches a call | fact | §9 |
+| Memory | 936 bytes a call: the inputs, 680 bytes, and the peak of live bytes, 256 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
 
@@ -714,6 +715,44 @@ By default, the three largest shares of the solver's estimate (the three largest
 
 *Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (14 lines).*
 
+## 13 Memory
+
+What one call of the entry needs in memory, counted from the program at its dimensions and its realization's types, never a process's resident size. The host is recorded as the C export records it (§9); each buffer the call makes is live from its first write to its last read, and the inputs, which its caller holds, are counted apart. The calls are the network diagram's boxes, the iterations of a fold taken together: a call's share is what it made that is live at the peak, its own peak the most what it made weighs while it runs.
+
+```text
+presk memory: `mse` at D = 4, B = 2 in f64+sequential+5sites+4params: 7 operations, 5 launches
+  parameters  552 bytes: 148 elements, 128 in f32, 20 in bf16
+  inputs      680 bytes, the parameters among them
+  peak        256 bytes live, at operation 3 of 7, `MLP.apply/%4` in `MLP.apply`
+  outputs     4 bytes
+  needs       936 bytes: the inputs and the peak
+  C arena     1152 bytes, 384 beside the inputs, 1.50 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (1344 released nothing)
+  placed      256 bytes beside the inputs: every buffer at an offset by its life, rounded to 64 (`--straight-line --placed`)
+presk memory: 3 calls, their shares of the peak and their own peaks
+  call                 share      own peak
+  `mse` itself             0
+  `MLP.apply`            256           256
+    l1                   128           160
+    l2                     0            32
+```
+
+The C program's arena holds each function's buffers until it returns (D80), so it is 1.50 times the peak beside the inputs. A straight-line host with every buffer at an offset by its life takes 256 bytes beside them; that it computes the native backend's bits, which `make c-conformance` checks, is what shows the lifetimes sound.
+
+The same as polynomials in the entry's dimensions (plan 0.15.0 step 3), the `const`s as their numbers. Every axis of a buffer is a linear form in the dimensions, so a buffer's bytes are a polynomial; each is interpolated from recordings of the call on a grid of three values per dimension, the operations the same at every point, and checked at a point off the grid. The peak is the largest of the operations' live bytes that no other's dominates for dimensions of at least 1.
+
+```text
+presk memory --symbolic: `mse` in f64+sequential+5sites+4params, in D and B: each buffer's bytes interpolated on D ∈ {4, 8, 12}, B ∈ {2, 4, 6}, checked at D = 16, B = 8
+  inputs      32 · D² + 16 · D · B + 10 · D
+  outputs     4
+  peak        32 · D · B, at operation 3 (`MLP.apply/%4`)
+  at D = 4, B = 2: the peak 256, the inputs 680, as counted
+```
+
+*Commands:*
+
+- `presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json --symbolic`
+
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
@@ -730,4 +769,6 @@ presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/mlp/ml
 presk dump ../../tests/examples/mlp/mlp.psk --stage realize --plan @$DOC/artifacts/plan.json
 PRESK_THREADS=10 presk plan ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --realize @$DOC/artifacts/realization.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
 presk dump ../../tests/examples/mlp/mlp.psk --stage kernel --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json --symbolic
 ```

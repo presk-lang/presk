@@ -485,3 +485,31 @@ fn the_manual_holds_the_course_gpt_s_network() {
     let got = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(got == want, "the manual's explain_network chapter is stale: make network-figure");
 }
+
+/// The memory overlay's shares (plan 0.15.0 step 4, D151): every box's in
+/// [0, 1], an open box's at least the sum of its boxes', the box holding the
+/// peak's operation at most 1; `--memory` draws them into the SVG and the
+/// TikZ, each box's on its header, and leaves the plain drawing as it was.
+#[test]
+fn the_memory_overlay_colours_the_boxes_by_their_share() {
+    let mut d = diagram("gpt-memory", "corpus/nlp/05_gpt.psk", "loss", "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16", false, (None, Some("f64")), true);
+    let n = d.network.as_mut().unwrap();
+    assert!(!d.memory.is_empty(), "no shares");
+    for (id, f) in &d.memory {
+        assert!((0.0..=1.0).contains(f), "box {id}: a share of {f}");
+        let kids: f64 = n.nodes[*id].children.iter().filter_map(|c| d.memory.get(c)).sum();
+        assert!(kids <= f + 1e-9, "box {id}: its boxes' shares {kids} above its own {f}");
+    }
+    // The feed-forward of the course GPT's blocks holds the peak at T = 16.
+    let ff = n.nodes.iter().find(|x| x.kind.is_box() && x.label == "ff").map(|x| x.id).expect("a box ff");
+    assert!(d.memory[&ff] > 0.8, "ff's share {}", d.memory[&ff]);
+    let v = presk_diagram::layout::view(n, &presk_diagram::layout::everything(n));
+    let plain = presk_diagram::svg::svg(n, &v, false);
+    assert!(!plain.contains(" %</text>"), "the plain drawing has shares");
+    n.memory = d.memory.clone();
+    let svg = presk_diagram::svg::svg(n, &v, false);
+    let shown = svg.matches(" %</text>").count();
+    assert_eq!(shown, d.memory.keys().filter(|i| v.rects.contains_key(i) && n.nodes[**i].kind != presk_diagram::Kind::Root).count(), "a share on every drawn box's header");
+    let tikz = presk_diagram::tikz::tikz(n, &v, false, "test");
+    assert!(tikz.contains("\\definecolor{pkmem}") && tikz.contains("pkmem!"), "the TikZ has the memory's colour");
+}

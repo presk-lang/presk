@@ -147,6 +147,8 @@ pub struct Exported {
     pub arena: usize,
     /// Bytes the straight-line host's arena takes, for comparison.
     pub arena_flat: usize,
+    /// The inputs' part of both (plan 0.15.0 step 1).
+    pub arena_inputs: usize,
     /// C functions of the structured host besides the entry's (0 for the
     /// straight-line one), loops, and how each fold was emitted.
     pub functions: usize,
@@ -517,18 +519,37 @@ pub fn structure_all(kernels: &[Kernel], recs: &[&Recording], threads: usize) ->
 /// argument is read from one.
 pub fn export(meta: &Meta, kernels: &[Kernel], rec: &Recording, args: &[Arg], weights_type: Option<&str>) -> Result<Exported> {
     let s = structure(kernels, rec, meta.threads)?;
-    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, Some(&s), None)
+    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, Some(&s), None, None)
 }
 
 /// The same program with `s` as its host (a structure a test changed).
 pub fn export_structured(meta: &Meta, kernels: &[Kernel], rec: &Recording, args: &[Arg], weights_type: Option<&str>, s: &Structured) -> Result<Exported> {
-    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, Some(s), None)
+    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, Some(s), None, None)
 }
 
 /// The same program with step 3's straight-line host, the structured one's
 /// oracle.
 pub fn export_flat(meta: &Meta, kernels: &[Kernel], rec: &Recording, args: &[Arg], weights_type: Option<&str>) -> Result<Exported> {
-    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, None, None)
+    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, None, None, None)
+}
+
+/// Where the placed straight-line host puts each buffer (plan 0.15.0 step
+/// 1, D148): an offset per buffer the call makes, by its life
+/// ([`presk_kernel::memory::Lifetimes::place`]), and the bytes they take.
+#[derive(Clone, Debug)]
+pub struct Placement {
+    pub at: Vec<Option<usize>>,
+    pub size: usize,
+}
+
+/// The straight-line host with every buffer the call makes at an offset of
+/// one allocation, two buffers live at once never overlapping, where the
+/// straight-line host bump-allocates each: the check that `presk memory`'s
+/// lifetimes are sound, since a buffer reused while it is still read would
+/// change the bits the program computes.
+pub fn export_placed(meta: &Meta, kernels: &[Kernel], rec: &Recording, args: &[Arg], weights_type: Option<&str>) -> Result<Exported> {
+    let (at, size) = presk_kernel::memory::Lifetimes::of(rec).place(ALIGN);
+    export_with(meta, kernels, &[(&meta.entry, rec)], args, weights_type, None, None, Some(&Placement { at, size }))
 }
 
 /// The generation loop of `presk serve` as a C program (`presk export
@@ -565,10 +586,10 @@ pub struct Serve {
 pub fn export_serve(meta: &Meta, kernels: &[Kernel], rec: &Recording, greedy: &Recording, serve: &Serve, args: &[Arg], weights_type: Option<&str>, straight_line: bool) -> Result<Exported> {
     let entries = [(meta.entry.as_str(), rec), (serve.greedy.as_str(), greedy)];
     if straight_line {
-        export_with(meta, kernels, &entries, args, weights_type, None, Some(serve))
+        export_with(meta, kernels, &entries, args, weights_type, None, Some(serve), None)
     } else {
         let s = structure_all(kernels, &[rec, greedy], meta.threads)?;
-        export_with(meta, kernels, &entries, args, weights_type, Some(&s), Some(serve))
+        export_with(meta, kernels, &entries, args, weights_type, Some(&s), Some(serve), None)
     }
 }
 
@@ -741,7 +762,7 @@ fn signature(func: &str, types: &str) -> String {
 
 /// Step 3's straight-line function of an entry: every operation of `rec`
 /// in order, every buffer bump-allocated.
-fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &KernelTable) -> String {
+fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &KernelTable, placed: Option<&Placement>) -> String {
     let bufnames: Vec<String> = (0..rec.bufs.len()).map(|b| format!("b{b}")).collect();
     // What is read: an input nothing reads is not declared, and a scalar
     // nothing reads is marked so, for -Wall.
@@ -791,11 +812,21 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
         made[i.buf] = true;
     }
     let mut last_site = String::new();
+    if let Some(p) = placed {
+        let _ = writeln!(body, "    /* Every buffer at an offset by its life (plan 0.15.0): {} bytes. */\n    char *placed = presk_alloc(arena, {});", p.size, p.size.max(1));
+    }
     let alloc = |b: usize, made: &mut Vec<bool>, body: &mut String| {
         if !made[b] {
             made[b] = true;
             let rb = &rec.bufs[b];
-            let _ = writeln!(body, "    {} *{} = presk_alloc(arena, {} * sizeof({}));", ctype(rb.store), bufnames[b], rb.len, ctype(rb.store));
+            match placed.and_then(|p| p.at[b]) {
+                Some(off) => {
+                    let _ = writeln!(body, "    {} *{} = ({} *)(placed + {off});", ctype(rb.store), bufnames[b], ctype(rb.store));
+                }
+                None => {
+                    let _ = writeln!(body, "    {} *{} = presk_alloc(arena, {} * sizeof({}));", ctype(rb.store), bufnames[b], rb.len, ctype(rb.store));
+                }
+            }
         }
     };
     for op in &rec.ops {
@@ -883,7 +914,8 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
     format!("{sig}\n{{\n{}{body}}}\n", if unread { "    (void)in;\n" } else { "" })
 }
 
-fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], args: &[Arg], weights_type: Option<&str>, host: Option<&Structured>, serve: Option<&Serve>) -> Result<Exported> {
+#[allow(clippy::too_many_arguments)]
+fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], args: &[Arg], weights_type: Option<&str>, host: Option<&Structured>, serve: Option<&Serve>, placed: Option<&Placement>) -> Result<Exported> {
     let rec = entries[0].1;
     if args.len() != rec.args.len() {
         return Err(format!("{} argument names for {} arguments", args.len(), rec.args.len()));
@@ -938,9 +970,11 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     // ----- model.h ------------------------------------------------------
     let arena_in: usize = ins.iter().map(|i| input_bytes(rec, i)).sum();
     let flat_host: usize = recs.iter().map(|r| r.bufs.iter().filter(|b| !matches!(b.made, Made::Input { .. })).map(|b| aligned(b.len * b.store.bytes())).sum::<usize>()).max().unwrap_or(0);
-    let arena_host = match host {
-        Some(s) => s.arena(),
-        None => flat_host,
+    let arena_host = match (host, placed) {
+        (Some(s), _) => s.arena(),
+        // One allocation for every buffer, and the arena's rounding of it.
+        (None, Some(p)) => aligned(p.size.max(1)),
+        (None, None) => flat_host,
     };
     let arena = arena_in + arena_host;
     let (functions, loops, folds) = match host {
@@ -960,6 +994,9 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     match host {
         Some(_) => {
             let _ = writeln!(h, "/* The arena's size: the inputs, {arena_in} bytes, and {peak},\n * {arena_host} bytes: its outputs and the deepest chain of frames, each\n * allocation rounded to {ALIGN}. Every function releases what it allocated\n * when it returns (plan 0.9.0 step 4); released nothing, the same call\n * would take {flat_host} bytes. */");
+        }
+        None if placed.is_some() => {
+            let _ = writeln!(h, "/* The arena's size: the inputs, {arena_in} bytes, and every buffer the host\n * makes in one allocation of {arena_host} bytes, each at an offset by its\n * life, two buffers live at once never overlapping, each rounded to {ALIGN}\n * (plan 0.15.0, the check of presk memory's lifetimes). */");
         }
         None => {
             let _ = writeln!(h, "/* The arena's size: the inputs, {arena_in} bytes, and every buffer the host\n * makes, {arena_host} bytes, each rounded to {ALIGN}. Nothing is released\n * during a call (plan 0.9.0 step 3). */");
@@ -1009,7 +1046,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
                 if k > 0 {
                     model_c.push('\n');
                 }
-                model_c.push_str(&flat_fn(&signature(&funcs[k], &func), r, &fields[k], &outs[k], &t));
+                model_c.push_str(&flat_fn(&signature(&funcs[k], &func), r, &fields[k], &outs[k], &t, placed));
             }
         }
         Some(s) => {
@@ -1196,7 +1233,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         files.push((name.to_string(), text.to_string()));
     }
     let quantized = ins.iter().filter(|i| i.quant.is_some()).count();
-    Ok(Exported { files, inputs: inputs_file, weights: weights_file, outputs, arena, arena_flat: arena_in + flat_host, functions, loops, folds, launches, dead, kernels: t.text.len(), split, max_workers, quantized, kernel_of, kernel_lines })
+    Ok(Exported { files, inputs: inputs_file, weights: weights_file, outputs, arena, arena_flat: arena_in + flat_host, arena_inputs: arena_in, functions, loops, folds, launches, dead, kernels: t.text.len(), split, max_workers, quantized, kernel_of, kernel_lines })
 }
 
 /// A string as a JSON string literal, as `serde_json` writes one: `"` and

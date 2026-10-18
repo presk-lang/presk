@@ -156,6 +156,11 @@ pub struct Node {
     pub depth: usize,
     /// It carries keys only: a `split_key`, an input of type `key`.
     pub key: bool,
+    /// A box's call path, as [`presk_kernel::Launched::calls`] names it
+    /// without the folds' iterations: what its launches and the buffers
+    /// they make are found by (`presk memory`, plan 0.15.0 step 1). The
+    /// root's is empty.
+    pub calls: Vec<String>,
 }
 
 /// An arrow: a value that flows from one node to another, in the graph of
@@ -205,6 +210,10 @@ pub struct Network {
     /// The work and bytes over every launch of the entry.
     pub work: Option<f64>,
     pub bytes: Option<f64>,
+    /// A box's share of the peak of live bytes, from 0 to 1, when the
+    /// drawing colours the boxes by it (`presk dump --stage network
+    /// --memory`, plan 0.15.0 step 4); empty otherwise.
+    pub memory: std::collections::BTreeMap<usize, f64>,
 }
 
 impl Network {

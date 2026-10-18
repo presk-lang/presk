@@ -2,7 +2,7 @@
 
 This chapter teaches `presk` by doing, and doubles as the end-to-end test of
 the tool: every command below is run by `make tutorial`, and every output
-shown is what version 0.14.1 prints (timings vary from one run and one machine
+shown is what version 0.15.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
 `tutorial/` directory of the repository; the reference programs of the
@@ -49,7 +49,7 @@ presk --help
 ```
 
 ```text
-Presk compiler (0.14.1: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
+Presk compiler (0.15.0: front-end, reference interpreter, native backend, e-graph optimizer, training, serving, precision budgets, layout plans, PyTorch and C exports, a compilation as a document)
 
 Usage: presk <COMMAND>
 
@@ -62,6 +62,7 @@ Commands:
   serve      Generate tokens with the file's `inference serve`: its model, weights and generation function
   plan       Choose a realization plan statically: every nest's layout space costed by the profile's layout model
   explain    One compilation as a document: every stage's representation and the reasons for its decisions, in DIR/explain.md (plan 0.11.0)
+  memory     What one call of an entry needs in memory: its parameters, the peak of its live bytes, the C program's arena beside them (plan 0.15.0)
   autotune   Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits
   reprice    Price the points of a recorded day again under another profile, their times copied: nothing is measured
   rank       Rank accuracy of the layout cost model on two days of measurement, the statements of plan 0.7.0, and plan 0.8.0's Q
@@ -797,7 +798,13 @@ parameters and its work, opening in place, any set of boxes at once and
 "expand all" every one (0.14.1), every box and arrow an element of the
 columns; `presk explain` also writes it as `network.svg`, and
 `presk dump tutorial/07_train.psk --stage network --entry loss --dim B=4`
-prints its outline (the `explain` chapter, "The network diagram").
+prints its outline (the `explain` chapter, "The network diagram"). Since
+0.15.0, `presk memory tutorial/07_train.psk --entry loss --dim B=4` counts
+what one call needs in memory, from the program: the parameters, the peak
+of live bytes and each call's share, beside the C program's arena; `--step`
+the training step under both `--remat`s, `--symbolic` the same as
+polynomials in `B`. The Network tab's **memory** button colours each box
+by its share of the peak (the `memory` chapter).
 
 ## 8. Export to PyTorch and check the export
 

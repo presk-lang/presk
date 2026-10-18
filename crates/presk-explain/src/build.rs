@@ -120,6 +120,17 @@ struct State<'a> {
     captured: Option<Captured>,
     planned: Option<Planned>,
     hosted: Result<Hosted, String>,
+    /// What one call needs in memory (plan 0.15.0 step 1, D148), or why it
+    /// is not counted.
+    memory: Result<presk_driver::memory::Memory, String>,
+    /// When the entry is the objective of the file's training run, the step
+    /// `presk train` makes from it, under each `--remat` (plan 0.15.0 step
+    /// 2, D149), or why it is not counted.
+    step: Option<Result<Vec<presk_driver::memory::StepMemory>, String>>,
+    /// The memory as polynomials in the entry's dimensions (plan 0.15.0 step
+    /// 3, D150), counted as `presk memory --symbolic` counts it, with the
+    /// count it starts from; or why there are none.
+    symbolic: Result<(presk_driver::memory::Memory, presk_driver::memory::Symbolic), String>,
     host_c: Option<String>,
     c: Option<Result<CExport, String>>,
     pytorch: Option<Result<Vec<(String, String)>, String>>,
@@ -217,7 +228,7 @@ pub(crate) fn build(o: &Options, report: &mut dyn Report) -> presk_driver::Resul
         title: title(&s),
         subtitle: "What the Presk compiler does to one program: `presk explain`".into(),
         header: header(&s),
-        sections: vec![summary(&s), source(&s), elaboration(&s), core(&s), differentiation(&s), optimizer(&s), precision(&s), fusion(&s), machine(&s), kernels(&s), targets(&s), measured(&s), traces(&s), appendix_placeholder()],
+        sections: vec![summary(&s), source(&s), elaboration(&s), core(&s), differentiation(&s), optimizer(&s), precision(&s), fusion(&s), machine(&s), kernels(&s), targets(&s), measured(&s), traces(&s), memory(&s), appendix_placeholder()],
     };
     let doc = with_appendix(doc);
     let json = (o.json || o.html).then(|| {
@@ -239,7 +250,16 @@ pub(crate) fn network(o: &Options, report: &mut dyn Report) -> presk_driver::Res
     // read, which is the kernels' unless differentiation kept a fusion
     // group for them alone (D94).
     let elems = s.env.as_ref().filter(|_| s.before_opt.is_none() && format!("{:?}", s.pcore.funcs) == format!("{:?}", s.ad_program.funcs)).map(|(e, _)| e.elems.clone());
-    Ok(crate::Network { network, table: s.table, params, elems })
+    // Each box's share of the peak, by the call its node is.
+    let mut memory = std::collections::BTreeMap::new();
+    if let (Ok(m), Some(n)) = (&s.memory, &network) {
+        for x in n.nodes.iter().filter(|x| x.kind.is_box()) {
+            if let Some(c) = m.calls.iter().find(|c| c.path == x.calls) {
+                memory.insert(x.id, c.share as f64 / m.lifetimes.peak.max(1) as f64);
+            }
+        }
+    }
+    Ok(crate::Network { network, table: s.table, params, elems, memory })
 }
 
 /// The provenance table of the compilation, alone.
@@ -496,7 +516,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
         let dir = art("c");
         let _ = std::fs::remove_dir_all(&dir);
         let mut kept = Collect::default();
-        let opts = presk_driver::export_c::Options { file: &o.file, entry: Some(&o.entry), dims: &o.dims, consts: &o.consts, realize: &realize_spec, plan: plan_spec.as_deref(), weights: o.weights.clone(), seed: o.seed, no_exact: o.no_exact, straight_line: false, serve: false, out: &dir, remat: o.remat };
+        let opts = presk_driver::export_c::Options { file: &o.file, entry: Some(&o.entry), dims: &o.dims, consts: &o.consts, realize: &realize_spec, plan: plan_spec.as_deref(), weights: o.weights.clone(), seed: o.seed, no_exact: o.no_exact, straight_line: false, placed: false, serve: false, out: &dir, remat: o.remat };
         let real = o.out.join("artifacts").display().to_string();
         let said = |kept: &Collect| -> String {
             kept.items
@@ -584,7 +604,50 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
         },
         native: native.as_deref(),
     });
-    Ok(State { measured, o, file, sm, prog, typed, core, analysis, entry, dims, diags: Vec::new(), pcore, env, env_src, sens, sens_none, sweep, solved, roles, realization, real_src, bounded, xcore, opt_summary, opt_report, before_opt, plan, plan_src, profile, captured, planned, hosted, host_c, c, pytorch, artifacts, table, ad_program, native })
+    // The memory, of the call the host was recorded on, its dimensions named
+    // as `presk memory` names them.
+    let memory = match &hosted {
+        Ok(h) => match presk_driver::entry::entry_dims(&xcore, &prog, &o.entry, &dims) {
+            Ok((_, fdims)) => {
+                let named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (prog.dim_name(*v), *n)).collect();
+                presk_driver::memory::of(&o.entry, &named, h, &o.file, &plan.realization).ok_or_else(|| h.recording.as_ref().err().cloned().unwrap_or_default())
+            }
+            Err(e) => Err(e.message),
+        },
+        Err(m) => Err(m.clone()),
+    };
+    // The training step, when the entry is the training run's objective, its
+    // realization the one the C export takes.
+    let step = (presk_driver::memory::objective(&core, &typed).as_deref() == Some(o.entry.as_str())).then(|| {
+        let so = presk_driver::memory::StepOptions { file: &o.file, dims: &o.dims, consts: &o.consts, realize: &realize_spec, plan: plan_spec.as_deref(), seed: o.seed };
+        let mut quiet = Collect::default();
+        presk_driver::memory::step(&so, &mut quiet).map_err(|_| reported(&quiet))
+    });
+    // The polynomials, as the command counts them: its own recordings, the
+    // program before the optimizer.
+    let symbolic = {
+        let mo = presk_driver::memory::Options { file: &o.file, entry: &o.entry, dims: &o.dims, consts: &o.consts, realize: &realize_spec, plan: plan_spec.as_deref(), seed: o.seed, remat: o.remat };
+        let mut quiet = Collect::default();
+        presk_driver::memory::memory(&mo, &mut quiet).and_then(|m| presk_driver::memory::symbolic(&mo, &m, &mut quiet).map(|s| (m, s))).map_err(|_| reported(&quiet))
+    };
+    Ok(State { measured, o, file, sm, prog, typed, core, analysis, entry, dims, diags: Vec::new(), pcore, env, env_src, sens, sens_none, sweep, solved, roles, realization, real_src, bounded, xcore, opt_summary, opt_report, before_opt, plan, plan_src, profile, captured, planned, hosted, memory, step, symbolic, host_c, c, pytorch, artifacts, table, ad_program, native })
+}
+
+/// What a step reported, on one line: why a part of §13 is missing.
+fn reported(r: &Collect) -> String {
+    r.items
+        .iter()
+        .map(|i| match i {
+            presk_driver::report::Reported::Diagnostics(text, _) => text.trim().to_string(),
+            presk_driver::report::Reported::Line(t) | presk_driver::report::Reported::Text(t) => t.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A polynomial of §13 in the printer's Unicode form.
+pub(crate) fn poly_text(p: &presk_driver::memory::Poly, names: &[String]) -> String {
+    presk_print_math::core::poly(&p.terms(names)).render(presk_print_math::Format::Unicode)
 }
 
 /// The C host's functions, and the C names and lines of the kernels.
@@ -869,6 +932,9 @@ fn summary(s: &State) -> Section {
     if let Some(Ok(c)) = &s.c {
         let lines: usize = c.files.iter().map(|(_, n)| n).sum();
         rows.push(vec!["C program".into(), format!("{} files, {lines} lines with its runtime", c.files.len()), Kind::Fact.name().into(), "§10".into()]);
+    }
+    if let Ok(m) = &s.memory {
+        rows.push(vec!["Memory".into(), format!("{} bytes a call: the inputs, {} bytes, and the peak of live bytes, {}", m.needs(), m.lifetimes.inputs, m.lifetimes.peak), Kind::Fact.name().into(), "§13".into()]);
     }
     sec.table(&["What", "Outcome", "Kind", "Where"], rows);
     sec.prose("A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.");
@@ -1501,6 +1567,46 @@ fn targets(s: &State) -> Section {
     }
     if s.o.targets.is_empty() {
         sec.prose("No target asked.");
+    }
+    sec
+}
+
+/// §13 (plan 0.15.0 step 1, D148): what one call needs in memory, as `presk
+/// memory` prints it.
+fn memory(s: &State) -> Section {
+    let mut sec = Section::new("13", "Memory");
+    let m = match &s.memory {
+        Ok(m) => m,
+        Err(e) => {
+            sec.prose(format!("Not counted: the host could not be recorded ({e})."));
+            return sec;
+        }
+    };
+    sec.prose("What one call of the entry needs in memory, counted from the program at its dimensions and its realization's types, never a process's resident size. The host is recorded as the C export records it (§9); each buffer the call makes is live from its first write to its last read, and the inputs, which its caller holds, are counted apart. The calls are the network diagram's boxes, the iterations of a fold taken together: a call's share is what it made that is live at the peak, its own peak the most what it made weighs while it runs.");
+    sec.code("text", presk_driver::text::memory(m, 2).join("\n"));
+    if let Ok(a) = &m.arena {
+        sec.prose(format!("The C program's arena holds each function's buffers until it returns (D80), so it is {:.2} times the peak beside the inputs. A straight-line host with every buffer at an offset by its life takes {} bytes beside them; that it computes the native backend's bits, which `make c-conformance` checks, is what shows the lifetimes sound.", a.beside() as f64 / m.lifetimes.peak.max(1) as f64, m.placed));
+    }
+    if s.o.opt {
+        sec.prose("Counted on the program the optimizer rewrote, which `presk memory` does not run: the command below counts the program before it.");
+    }
+    sec.command(format!("presk memory {} {}{}{}", s.file, entry_args(s), plan_args(s), remat_args(s)));
+    match &s.symbolic {
+        Ok((m, sym)) => {
+            sec.prose("The same as polynomials in the entry's dimensions (plan 0.15.0 step 3), the `const`s as their numbers. Every axis of a buffer is a linear form in the dimensions, so a buffer's bytes are a polynomial; each is interpolated from recordings of the call on a grid of three values per dimension, the operations the same at every point, and checked at a point off the grid. The peak is the largest of the operations' live bytes that no other's dominates for dimensions of at least 1.");
+            sec.code("text", presk_driver::text::symbolic(m, sym, &|p| poly_text(p, &sym.names)).join("\n"));
+            sec.command(format!("presk memory {} {}{}{} --symbolic", s.file, entry_args(s), plan_args(s), remat_args(s)));
+        }
+        Err(e) => sec.prose(format!("No polynomial: {e}")),
+    }
+    match &s.step {
+        Some(Ok(steps)) => {
+            sec.prose("The entry is the objective of the file's training run, so the step `presk train` makes from it is counted too (plan 0.15.0 step 2), under both values of `--remat`: its calls, each as an entry is, the parameters and AdamW's two moments held by the loop across them. *Kept for the backward* is what the gradient's forward sweep made that is still live where its reverse sweep starts, the term `--remat` moves.");
+            sec.code("text", presk_driver::text::step(steps).join("\n"));
+            sec.command(format!("presk memory {} --step{}{}", s.file, s.o.dims.iter().map(|d| format!(" --dim {d}")).collect::<String>() + &consts_args(s), plan_args(s)));
+        }
+        Some(Err(e)) => sec.prose(format!("The entry is the objective of the file's training run; its step is not counted: {e}")),
+        None => {}
     }
     sec
 }

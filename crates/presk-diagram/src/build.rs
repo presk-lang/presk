@@ -65,7 +65,7 @@ pub fn network(i: &Inputs) -> Option<Network> {
     b.nodes[root].work = work;
     b.nodes[root].bytes = bytes;
     let params = b.nodes[root].params.clone();
-    let mut n = Network { entry: i.entry.to_string(), stage: i.stage, nodes: b.nodes, edges: b.edges, frames: Default::default(), default: Vec::new(), params, work, bytes };
+    let mut n = Network { entry: i.entry.to_string(), stage: i.stage, nodes: b.nodes, edges: b.edges, frames: Default::default(), default: Vec::new(), memory: Default::default(), params, work, bytes };
     crate::layout::lay_out(&mut n);
     Some(n)
 }
@@ -97,6 +97,7 @@ fn blank(element: Id) -> Node {
         children: Vec::new(),
         depth: 0,
         key: false,
+        calls: Vec::new(),
     }
 }
 
@@ -556,6 +557,7 @@ impl<'a> Builder<'a> {
     /// A box's instance, parameters, formula, origin and costs, at its call.
     fn box_numbers(&mut self, id: usize, c: &Ctx, callee: &Func, given: &[Arg], calls: &[String], runs: u64) {
         let i = self.i;
+        self.nodes[id].calls = calls.to_vec();
         let theta = callee.params.iter().zip(given).find(|(p, _)| matches!(p.ty, Ty::Params(_)));
         if let Some((p, a)) = theta {
             let t = c.ty(&p.ty);

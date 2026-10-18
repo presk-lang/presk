@@ -194,6 +194,12 @@ pub struct KernelBackend<'p> {
     /// step 1, D134), what the provenance table links a kernel to its nests
     /// by. It only observes.
     pub launch_log: Option<Vec<Launched>>,
+    /// Whether the host draws its random values: an initializer's, a
+    /// training dropout mask's. An executor that runs no kernel, whose values
+    /// nothing reads, sets it off, and an initializer then gives zeros and a
+    /// mask ones, of the same shapes (plan 0.15.0 step 4, D151): at the 7B
+    /// width the draws were most of a recording's time.
+    pub draws: bool,
     /// The `add` of the epilogue being launched, for the log.
     epilogue_of: Option<String>,
     /// While the launches are logged: the calls the backend is inside, the
@@ -268,7 +274,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -1304,7 +1310,7 @@ impl<'p> KernelBackend<'p> {
                 // Outside training every element is kept, `x · 1 = x`: the
                 // mask is the host's buffer of ones, drawn nowhere (plan
                 // 0.10.0 step 6).
-                let data = if self.training { self.dropout_mask(&key, n, rate) } else { self.filled(1.0, n) };
+                let data = if self.training && self.draws { self.dropout_mask(&key, n, rate) } else { self.filled(1.0, n) };
                 Ok(Value::Real(Tensor { axes, data }))
             }
             PrimOp::Normal { ty: t, std } => {
@@ -1313,6 +1319,9 @@ impl<'p> KernelBackend<'p> {
                 let std: f64 = std.parse().unwrap_or(1.0);
                 let mut rng = key.rng();
                 let n: usize = axes.iter().map(|x| x.len).product();
+                if !self.draws {
+                    return Ok(Value::Real(Tensor { axes, data: self.filled(0.0, n) }));
+                }
                 let data: Vec<f64> = (0..n).map(|_| normal(&mut rng) * std).collect();
                 Ok(Value::Real(Tensor { axes, data: self.buf(data) }))
             }
@@ -1327,6 +1336,9 @@ impl<'p> KernelBackend<'p> {
                 let bound = (6.0 / (fan_in + fan_out) as f64).sqrt();
                 let mut rng = key.rng();
                 let n: usize = axes.iter().map(|x| x.len).product();
+                if !self.draws {
+                    return Ok(Value::Real(Tensor { axes, data: self.filled(0.0, n) }));
+                }
                 let data: Vec<f64> = (0..n).map(|_| (2.0 * uniform01(&mut rng) - 1.0) * bound).collect();
                 Ok(Value::Real(Tensor { axes, data: self.buf(data) }))
             }

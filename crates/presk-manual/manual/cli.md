@@ -104,7 +104,7 @@ output format is not stable.
 | `sensitivity` | `‖∂L/∂v‖₁` at every site of a scalar entry and summed per module, from one reverse sweep: needs `--entry`, `--dim`/`--const`, and `--weights` to be worth reading, since a zero-initialized head makes every upstream gradient zero; `--sites N` lists more (`precision` chapter) | implemented (0.5.0 step 5) |
 | `realize` (`sched`) | the fusion groups of every function (`realize` chapter): one line per group with its steps, its inputs and the launches it removes; with `--plan @FILE`, then the plan: its realization, and each nest it gives a layout, with the nest's primitive and the decisions stated, after checking that every nest named exists (`E7002`) | implemented (0.4.0 step 4; `--plan` 0.7.0 step 1) |
 | `core-opt` | PSK-Core after AD and the e-graph optimizer (`optimization` chapter); the report (functions rewritten, `let`s and cost before and after, stop reason) goes to standard error; `--profile FILE.json` makes the roofline of that profile the extraction cost, `--dim` binds the dimensions it evaluates | implemented (0.3.0 steps 6–7) |
-| `network` | the network diagram of an entry, as `presk explain` draws it (`explain` chapter, "The network diagram"): needs `--entry` and `--dim`/`--const` as `presk run`, takes `--realize` or `--plan`, `--profile` and `--weights`. `text`, the default, is its outline: every box's graph, each node and arrow with the element of the provenance table it names and its numbers, and the default opening's positions; `--format json` the `network` object of `explain.json`; `--format svg` and `--format tikz` one opening, `--level N` (0 the entry alone, 1 its first box opened, the default, then at each level a stack, else the first box, opened), `--level all` (every box opened, the exploded view, 0.14.1) or `--box NAME` (the box called `NAME` opened by itself), the TikZ a `tikzpicture`, a document with `--standalone` (LuaLaTeX) | implemented (0.14.0 step 3; `--level all` 0.14.1) |
+| `network` | the network diagram of an entry, as `presk explain` draws it (`explain` chapter, "The network diagram"): needs `--entry` and `--dim`/`--const` as `presk run`, takes `--realize` or `--plan`, `--profile` and `--weights`. `text`, the default, is its outline: every box's graph, each node and arrow with the element of the provenance table it names and its numbers, and the default opening's positions; `--format json` the `network` object of `explain.json`; `--format svg` and `--format tikz` one opening, `--level N` (0 the entry alone, 1 its first box opened, the default, then at each level a stack, else the first box, opened), `--level all` (every box opened, the exploded view, 0.14.1) or `--box NAME` (the box called `NAME` opened by itself), the TikZ a `tikzpicture`, a document with `--standalone` (LuaLaTeX); `--memory` colours each box by its share of the peak of live bytes, as the page's memory overlay does (`presk memory`) | implemented (0.14.0 step 3; `--level all` 0.14.1; `--memory` 0.15.0 step 4) |
 
 `--unroll-stack` lowers `stack{L}` as `L` calls, as on `presk run`; every
 stage but `tokens` and `ast` binds `--const` (`elab` and `core` ignored it
@@ -1134,6 +1134,99 @@ pipeline view (step 3, D136), with the formulas of the printer of the
 denotation (step 4, D137). `--opt` is refused with `--budget`, and with a
 realization that types sites (`E7002`, 0.13.0 step 1). See the `explain`
 chapter.
+
+## `presk memory FILE.psk --entry ENTRY …`
+
+```text
+presk memory FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …]
+    [--realize R | --plan @P.json] [--remat store|recompute] [--depth K] [--seed S] [--symbolic]
+presk memory FILE.psk --step [--dim N=v …] [--const N=v …] [--realize R | --plan @P.json] [--seed S]
+```
+
+What one call of the entry needs in memory, counted from the program at
+its dimensions and its realization's types, never a process's resident
+size (plan 0.15.0 step 1, D148). The entry is recorded as `presk export
+--target c` records it, on an executor that runs no kernel, so it takes
+the time of its host; each buffer the call makes is live from its first
+write to its last read. It prints:
+- the **parameters**, the entry's first argument when it is a parameter
+  tree, each leaf at its stored type, integer weights with their `f32`
+  scales;
+- the **inputs**, every argument's buffers, which the caller holds;
+- the **peak** of the live bytes, the operation where it is first reached,
+  its site and its call;
+- the **outputs**, and what is **needed**, the inputs and the peak;
+- the **C arena**, the arena of the program `presk export --target c`
+  writes, as the export computes it: every function's buffers held until
+  it returns, so it is at least the peak (1.3 to 2.5 times it on the
+  course GPT);
+- the bytes the buffers take **placed** at offsets by their lives, two
+  live at once never overlapping, the largest first: the hidden `presk
+  export --target c --straight-line --placed` writes that program, and
+  `make c-conformance` checks that it computes the native backend's bits,
+  which is what shows the lifetimes sound (M1);
+- each **call**, as the network diagram's boxes are, the iterations of a
+  fold taken together (`blocks ×6`): its share of the peak, what it made
+  that is live there, and its own peak, the most what it made weighs while
+  it runs; `--depth K` shows the calls `K` levels deep (2 by default).
+
+`--realize`, `--plan` and `--remat` are `presk export`'s, so the arena
+beside the peak is the one the export prints. An entry whose result a C
+program cannot write (a key, a host scalar) is counted all the same, with
+no C arena. `presk explain` prints the same lines in its section 13.
+
+**`--symbolic`: the polynomials** (plan 0.15.0 step 3, D150). The
+inputs, the outputs and the peak as polynomials in the entry's
+dimensions, the `--dim` names, the `const`s as their numbers. Every axis
+of a buffer is a linear form in the dimensions (chapter 2), so a
+buffer's bytes are a polynomial:
+- each buffer's bytes are interpolated, exactly, in rationals, from
+  recordings of the call on a grid of three values per dimension
+  (multiples of the given value, or of its divisors, that the entry
+  records at), the others at the given ones;
+- the operations must be the same at every point of the grid. A
+  dimension that counts a fold's iterations is refused;
+- the polynomials are checked at one point off the grid, so a dimension
+  in more than two axes of a buffer is refused too;
+- the peak is the largest of the operations' live bytes that no other's
+  dominates for dimensions of at least 1, all of them printed when there
+  are several. On the course GPT's forward pass there are three: the
+  feed-forward's 4 608·B·T + 8·T², and two of the attention's, which
+  grow as B·T².
+
+The printer of the denotation writes them (`presk-print-math`), in
+Unicode here and in LaTeX in `explain.json`.
+
+**`--step`: a training step** (plan 0.15.0 step 2, D149). No entry is a
+training step. `presk train` makes one from three calls on one backend:
+- the objective's `.value_vjp` on the parameters, a key, the batch and
+  the seed;
+- `adamw.lr`;
+- `adamw.step` on the parameters, AdamW's two moments and the gradient.
+
+The loop holds the parameters and the moments across them. `--step`
+prepares the file's training run as `presk train` does, at `--dim`'s
+batch, and records the three calls, in training mode, under `--remat
+store` and `recompute`, side by side. It prints:
+- the parameters, the moments (twice the gradient), the gradient (the
+  parameters' shapes in the step's type), the batch, key and seed;
+- what is **kept for the backward**: what the gradient's forward sweep
+  made that is still live where its reverse sweep starts, at the first
+  operation that reads the seed cotangent. That is the term `--remat`
+  moves;
+- each call's peak, and with what the loop holds beside it (its phase);
+- the step's peak, the largest phase, and its terms, which sum to it.
+
+The compiler's AdamW is not in place: at its last launch the new
+parameters and moments are live beside the old ones and the gradient,
+seven times the parameters' bytes in `f64`.
+
+```sh
+presk memory corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --depth 3
+presk memory experiments/gpt_grad.psk --entry loss_grad --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --remat recompute
+presk memory corpus/nlp/05_gpt.psk --step --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16
+presk memory corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --symbolic
+```
 
 ## `presk autotune FILE.psk --entry ENTRY --out DIR …`
 

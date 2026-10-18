@@ -53,6 +53,12 @@ pub mod explain_loss {}
 #[doc = include_str!("../manual/explain_network.md")]
 pub mod explain_network {}
 
+/// `presk memory`: what a program needs in memory, counted from the
+/// program: the peak of live bytes beside the C arena, a training step under
+/// both `--remat`s, the polynomials, the page's overlay (0.15.0).
+#[doc = include_str!("../manual/memory.md")]
+pub mod memory {}
+
 /// The corpus: models from an NLP course, used as a forcing function.
 #[doc = include_str!("../manual/corpus.md")]
 pub mod corpus {}

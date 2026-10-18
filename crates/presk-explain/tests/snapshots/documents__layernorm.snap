@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.14.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.15.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -46,6 +46,7 @@ Compiler: presk 0.14.1. Each section ends with the commands that print what it s
 | Fusion | 10 launches without it, 5 with it: 5 saved | decision | §7 |
 | Layout plan | 5 nests, 19 points costed, 0 tiled, 0 split; predicted 0.046 µs a call over the nests it prices | decision, estimate | §8 |
 | Kernels | 4 distinct, 5 launches a call | fact | §9 |
+| Memory | 280 bytes a call: the inputs, 160 bytes, and the peak of live bytes, 120 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
 
@@ -496,6 +497,37 @@ By default, the three largest shares of the solver's estimate (the three largest
 
 *Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (14 lines).*
 
+## 13 Memory
+
+What one call of the entry needs in memory, counted from the program at its dimensions and its realization's types, never a process's resident size. The host is recorded as the C export records it (§9); each buffer the call makes is live from its first write to its last read, and the inputs, which its caller holds, are counted apart. The calls are the network diagram's boxes, the iterations of a fold taken together: a call's share is what it made that is live at the peak, its own peak the most what it made weighs while it runs.
+
+```text
+presk memory: `LayerNorm{8}.apply` at D = 8 in f32: 6 operations, 5 launches
+  parameters  64 bytes: 16 elements, 16 in f32
+  inputs      160 bytes, the parameters among them
+  peak        120 bytes live, at operation 3 of 6, `LayerNorm.apply/%6 (σ2)`
+  outputs     96 bytes
+  needs       280 bytes: the inputs and the peak
+  C arena     768 bytes, 512 beside the inputs, 4.27 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (768 released nothing)
+  placed      320 bytes beside the inputs: every buffer at an offset by its life, rounded to 64 (`--straight-line --placed`)
+```
+
+The C program's arena holds each function's buffers until it returns (D80), so it is 4.27 times the peak beside the inputs. A straight-line host with every buffer at an offset by its life takes 320 bytes beside them; that it computes the native backend's bits, which `make c-conformance` checks, is what shows the lifetimes sound.
+
+The same as polynomials in the entry's dimensions (plan 0.15.0 step 3), the `const`s as their numbers. Every axis of a buffer is a linear form in the dimensions, so a buffer's bytes are a polynomial; each is interpolated from recordings of the call on a grid of three values per dimension, the operations the same at every point, and checked at a point off the grid. The peak is the largest of the operations' live bytes that no other's dominates for dimensions of at least 1.
+
+```text
+presk memory --symbolic: `LayerNorm{8}.apply` in f32, in batch: each buffer's bytes interpolated on batch ∈ {3, 6, 9}, checked at batch = 12
+  inputs      32 · batch + 64
+  outputs     32 · batch
+  peak        40 · batch, at operation 3 (`LayerNorm.apply/%6 (σ2)`)
+```
+
+*Commands:*
+
+- `presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json --symbolic`
+
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
@@ -510,4 +542,6 @@ presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/layern
 presk dump ../../tests/examples/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json
 PRESK_THREADS=10 presk plan ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
 presk dump ../../tests/examples/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
+presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
+presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json --symbolic
 ```

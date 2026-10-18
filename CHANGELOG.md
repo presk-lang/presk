@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.15.0 — 2026-10-18
+
+`presk memory`: what a program needs in memory, counted from the program
+and its realization rather than estimated
+(`presk-specs/implementation/presk-plan-0.15.0.md`, D147–D152; the user's
+request of 2026-10-18). The host is recorded as the C export records it,
+each buffer live from its first write to its last read. The report gives:
+- the parameters at their stored types;
+- the peak of live bytes and each call's share of it;
+- the C program's arena beside it, which is 1.3 to 3.1 times the peak;
+- a training step's terms under both `--remat`s;
+- the same as polynomials in the dimensions;
+- an overlay of the Network tab.
+
+Judged on six statements fixed before the work:
+- nothing else moves (M0, holds: X1 by its version and commit lines
+  alone, the tables byte for byte, the tutorial but for its measurements,
+  `presk --help`'s line and section 13; `explain.json` by its `format` (4)
+  and its `memory` object);
+- one computation per number (M1, holds): the arena is the C export's,
+  and a straight-line C program placing each buffer by its life computes
+  the native bits on the 285 programs of `make c-conformance` and on the
+  decoder block at the 7B width;
+- a training step's terms sum to its peak (M2, holds);
+- the polynomials count what a recording counts at three more sizes (M3,
+  holds, on 14 programs);
+- the page's panel counts the compiler's numbers and answers under 200 ms
+  with the overlay on (M4, holds);
+- the numbers at scale (M5, stated). The course GPT at its course size
+  needs 3.76 GB for a training step storing its forward pass, 3.24 GB of
+  it kept for the backward, and 0.92 GB recomputing it. The decoder block
+  at the 7B width peaks at 57 MB of activations beside 1.86 GB of
+  parameters, and its C arena is 3.06 times that peak.
+
+- Plan 0.15.0, `presk memory` (D147): what a program needs in memory,
+  computed from the program and its realization (the parameters in their
+  stored types, the peak of live bytes and each box's share of it, a
+  training step's terms), as numbers, as a polynomial in the `dim`s and as
+  an overlay of the Network tab; version `0.15.0-dev`. Found: the C
+  export's arena is a stack of frames, 1.3 to 2.5 times the peak of live
+  bytes on the course GPT, so the report prints the peak with the arena
+  beside it; and no entry is a training step, which `presk train` makes
+  from three calls on one backend.
+- `presk memory` (plan 0.15.0 step 1, D148): what one call of an entry
+  needs in memory, from the program and its realization. It prints the
+  parameters at their stored types, the inputs, the peak of live bytes
+  (each buffer from its first write to its last read, over the host the C
+  export records) and its operation, the outputs, the C program's arena
+  beside them (`presk export`'s own, 1.3 to 2.5 times the peak on the
+  course GPT), and each call's share of the peak and its own peak, by the
+  network diagram's boxes. `presk explain` prints the same in a section
+  13, *Memory*, and `explain.json` is format 4, with a `memory` object;
+  the page refuses format 3. The hidden `presk export --target c
+  --straight-line --placed` puts every buffer at an offset by its life,
+  and `make c-conformance` checks that it computes the native backend's
+  bits on every program it exports, with the arena `presk memory` prints
+  equal to the export's (M1 holds).
+- `presk memory --step` (plan 0.15.0 step 2, D149): the training run's
+  step as `presk train` makes it, from its three calls on one backend
+  (`loss.value_vjp`, `adamw.lr`, `adamw.step`), the parameters and AdamW's
+  moments held across them, under `--remat store` and `recompute` side by
+  side: the parameters, the moments, the gradient, what is kept for the
+  backward, each call's phase and the step's peak, whose terms sum to it
+  (M2 holds). `presk explain` prints it in section 13 when its entry is
+  the training run's objective.
+- `presk memory --symbolic` (plan 0.15.0 step 3, D150): the inputs, the
+  outputs and the peak as polynomials in the entry's dimensions, the
+  `const`s as their numbers, each buffer's bytes interpolated exactly from
+  recordings on a grid (every axis a linear form in the dimensions) and
+  checked off it; the peak the largest of the candidates no other
+  dominates; written by the printer of the denotation. The course GPT's
+  forward pass at `D = 64` peaks at 4 608·B·T + 8·T² until `T = 75`, then
+  at its attention. M3 holds.
+- The memory overlay of the Network tab (plan 0.15.0 step 4, D151): each
+  box coloured by its share of the peak of live bytes, its share on its
+  header, and a panel with a slider per dimension and a stored type per
+  parameter group, the page counting again from each buffer's polynomial
+  (M4 holds); `presk dump --stage network --memory` for the SVG and the
+  TikZ. An executor that runs no kernel no longer draws its parameters'
+  random values: the kernel listing of the decoder block at the 7B width
+  takes 2.7 s, where it took 21.7 s.
+
 ## 0.14.1 — 2026-10-17
 
 The exploded view of the network diagram, by a compositional layout

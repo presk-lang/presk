@@ -29,8 +29,123 @@ use crate::doc::{Block, Document, Section};
 
 /// The layout's version, `format` in the file: 2 since plan 0.14.0 step 1
 /// (D141), which added `network`; 3 since plan 0.14.1 (D146), its frames
-/// in place of its views.
-pub const FORMAT: u64 = 3;
+/// in place of its views; 4 since plan 0.15.0 step 1 (D148), which added
+/// `memory`.
+pub const FORMAT: u64 = 4;
+
+/// A polynomial: its terms, each `[exponents, coefficient]`, the
+/// coefficient an integer or `"p/q"`.
+fn poly(p: &presk_driver::memory::Poly) -> Value {
+    Value::Array(p.terms.iter().map(|(e, c)| json!([e, if c.is_integer() { json!(c.to_integer().to_string().parse::<i64>().unwrap_or(0)) } else { json!(c.to_string()) }])).collect())
+}
+
+/// The memory as polynomials (plan 0.15.0 step 3, D150): the dimensions and
+/// the grid, the inputs, outputs and peak candidates with their LaTeX, and
+/// each buffer's polynomial with its life and its writer's call, so that a
+/// reader can count again at other dimensions what the compiler counted.
+fn symbolic(m: &presk_driver::memory::Memory, s: &presk_driver::memory::Symbolic) -> Value {
+    let tex = |p: &presk_driver::memory::Poly| presk_print_math::core::poly(&p.terms(&s.names)).render(Format::Latex);
+    let l = &m.lifetimes;
+    let call_of: Vec<Option<usize>> = l.lives.iter().map(|x| x.first.filter(|_| !x.input).and_then(|f| {
+        let path = presk_driver::memory::strip(&l.paths[f]);
+        m.calls.iter().position(|c| c.path == path)
+    })).collect();
+    // A parameter leaf's path, and its stored type, which the page's type
+    // selectors replace (plan 0.15.0 step 4).
+    // `m.params` holds the first argument's leaves in the order of their
+    // buffers.
+    let leaves: Vec<usize> = m.recording.as_ref().map(|r| r.bufs.iter().enumerate().filter(|(_, rb)| matches!(rb.made, presk_kernel::record::Made::Input { arg: 0, .. })).map(|(b, _)| b).collect()).unwrap_or_default();
+    let param = |b: usize| -> Option<(String, String)> { leaves.iter().position(|x| *x == b).and_then(|i| m.params.get(i)).map(|p| (p.path.clone(), p.store.clone())) };
+    let bufs: Vec<Value> = l
+        .lives
+        .iter()
+        .enumerate()
+        .map(|(b, x)| {
+            let mut v = json!({ "poly": poly(&s.bufs[b]), "first": x.first, "last": x.last, "input": x.input, "output": x.output, "call": call_of[b] });
+            if let Some((path, store)) = param(b) {
+                v["param"] = json!(path);
+                v["store"] = json!(store);
+            }
+            v
+        })
+        .collect();
+    json!({
+        "names": s.names,
+        "grid": s.grid,
+        "check": s.check,
+        "checks": s.checks.iter().map(|c| json!({ "at": c.at, "peak": c.peak, "op": c.op, "inputs": c.inputs, "outputs": c.outputs })).collect::<Vec<_>>(),
+        "inputs": poly(&s.inputs),
+        "inputs_tex": tex(&s.inputs),
+        "outputs": poly(&s.outputs),
+        "outputs_tex": tex(&s.outputs),
+        "peaks": s.peaks.iter().map(|(k, p)| json!({ "at": k, "poly": poly(p), "tex": tex(p) })).collect::<Vec<_>>(),
+        "bufs": bufs,
+        // The calls `bufs[].call` indexes, by their paths: the boxes are
+        // `memory.calls`' of the same path.
+        "calls": m.calls.iter().map(|c| c.path.clone()).collect::<Vec<_>>(),
+    })
+}
+
+/// A training step under one `--remat` (plan 0.15.0 step 2, D149).
+fn step(st: &presk_driver::memory::StepMemory) -> Value {
+    json!({
+        "remat": if st.remat == presk_core::ad::Remat::Store { "store" } else { "recompute" },
+        "calls": st.calls.iter().map(|c| json!({ "func": c.entry, "inputs": c.lifetimes.inputs, "peak": c.lifetimes.peak, "at": c.lifetimes.at, "outputs": c.lifetimes.outputs })).collect::<Vec<_>>(),
+        "params": st.params,
+        "moments": st.moments,
+        "gradients": st.gradients,
+        "others": st.others,
+        "kept": st.kept,
+        "reverse_at": st.reverse_at,
+        "phases": st.phases,
+        "peak": st.peak,
+        "peak_call": st.peak_call,
+        "terms": st.terms.iter().map(|t| json!([t.name, t.bytes])).collect::<Vec<_>>(),
+    })
+}
+
+/// What one call needs in memory (plan 0.15.0 step 1, D148): `presk
+/// memory`'s numbers, the bytes live at each operation, and each call with
+/// the diagram's boxes it is (by their call paths).
+fn memory(m: &presk_driver::memory::Memory, net: Option<&presk_diagram::Network>) -> Value {
+    let l = &m.lifetimes;
+    let (count, bytes) = m.parameters();
+    let mut types: Vec<(String, usize)> = Vec::new();
+    for p in &m.params {
+        match types.iter_mut().find(|(t, _)| *t == p.store) {
+            Some(e) => e.1 += p.elements,
+            None => types.push((p.store.clone(), p.elements)),
+        }
+    }
+    let calls: Vec<Value> = m
+        .calls
+        .iter()
+        .map(|c| {
+            let nodes: Vec<usize> = net.map(|n| n.nodes.iter().filter(|x| x.kind.is_box() && x.calls == c.path).map(|x| x.id).collect()).unwrap_or_default();
+            json!({ "path": c.path, "func": c.func, "params": c.params, "runs": c.runs, "share": c.share, "own": c.own, "own_at": c.own_at, "nodes": nodes })
+        })
+        .collect();
+    let arena = match &m.arena {
+        Ok(a) => json!({ "total": a.total, "inputs": a.inputs, "flat": a.flat }),
+        Err(e) => json!({ "refused": e }),
+    };
+    json!({
+        "params": { "count": count, "bytes": bytes, "types": types },
+        "inputs": l.inputs,
+        "peak": l.peak,
+        "at": l.at,
+        "site": m.peak_site(),
+        "call": m.peak_call(),
+        "outputs": l.outputs,
+        "needs": m.needs(),
+        "own": m.own_share(),
+        "live": l.live,
+        "launches": m.launches,
+        "arena": arena,
+        "placed": m.placed,
+        "calls": calls,
+    })
+}
 
 /// A number in LaTeX, three significant digits: `3.12 \cdot 10^{-2}`.
 fn tex_num(x: f64) -> String {
@@ -474,6 +589,16 @@ pub(crate) fn json(s: &State, doc: &Document, traced: &[String]) -> (Value, Opti
         "stages": stages,
         "links": links,
         "network": net_json,
+        "memory": s.memory.as_ref().ok().map(|m| {
+            let mut v = memory(m, net.as_ref());
+            if let Some(Ok(steps)) = &s.step {
+                v["step"] = steps.iter().map(step).collect();
+            }
+            if let Ok((base, sym)) = &s.symbolic {
+                v["symbolic"] = symbolic(base, sym);
+            }
+            v
+        }),
         "document": document(doc),
     });
     (v, net)

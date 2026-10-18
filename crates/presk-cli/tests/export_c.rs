@@ -231,6 +231,12 @@ struct Checked {
     c1: bool,
     /// The straight-line host's program: C1 too, and the same output file.
     flat: bool,
+    /// The straight-line host with its buffers placed by their lives (plan
+    /// 0.15.0 step 1, D148): C1 too, and the same output file; and `presk
+    /// memory` on the same entry: the export's arena, a peak no larger than
+    /// it and no smaller than the placed buffers allow (M1). `Err` says
+    /// what does not hold.
+    memory: Result<(), String>,
     /// Whether a launch is divided among threads.
     divided: bool,
     elements: usize,
@@ -400,6 +406,12 @@ fn c3_runs(dir: &Path) -> Result<(), String> {
 /// with the native outputs; then the other ways ([`other_ways`]). Whether C1
 /// holds every way.
 fn export_one(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path) -> (bool, String) {
+    let (c1, log, _) = export_line(what, file, entry, args, under, extra, out);
+    (c1, log)
+}
+
+/// [`export_one`], and what `presk export` printed.
+fn export_line(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path) -> (bool, String, String) {
     let mut all: Vec<String> = ["export", file, "--target", "c", "--entry", entry].iter().map(|s| s.to_string()).collect();
     all.extend(under.flags.iter().cloned());
     all.push("-o".into());
@@ -409,6 +421,7 @@ fn export_one(what: &str, file: &str, entry: &str, args: &[String], under: &Unde
     let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
     let r = presk(&refs);
     assert!(r.status.success(), "{what}: presk export failed:\n{}", stderr(&r));
+    let printed = stderr(&r);
     let check = Command::new("sh").arg(out.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
     let c1 = check.status.success() && String::from_utf8_lossy(&check.stdout).contains("C1 holds");
     // Built with -Wall -Wextra by its Makefile: no warning (C3, GCC's part).
@@ -416,17 +429,62 @@ fn export_one(what: &str, file: &str, entry: &str, args: &[String], under: &Unde
     assert!(!built.contains("warning"), "{what}: the build warns:\n{built}");
     let log = format!("{}{}", String::from_utf8_lossy(&check.stdout), built);
     if !c1 {
-        return (false, log);
+        return (false, log, printed);
     }
     match other_ways(out) {
-        Ok(_) => (true, log),
-        Err(e) => (false, format!("{log}{e}\n")),
+        Ok(_) => (true, log, printed),
+        Err(e) => (false, format!("{log}{e}\n"), printed),
     }
+}
+
+/// The first number after `key` in `text`.
+fn number_after(text: &str, key: &str) -> Option<usize> {
+    let rest = &text[text.find(key)? + key.len()..];
+    rest.trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// M1 (plan 0.15.0 step 1, D148): the straight-line host placed by the
+/// lifetimes computes the native bits, and `presk memory` on the entry
+/// prints the arena `presk export` printed (`exported`), a peak no larger
+/// than the arena beside the inputs, and placed buffers no smaller than the
+/// peak.
+fn memory_holds(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path, exported: &str) -> Result<(), String> {
+    let placed_dir = out.with_extension("placed");
+    let placed: Vec<&str> = extra.iter().copied().chain(["--straight-line", "--placed"]).collect();
+    let (c1, log, printed) = export_line(&format!("{what}, placed"), file, entry, args, under, &placed, &placed_dir);
+    let same = |f: &str| std::fs::read(out.join(f)).ok() == std::fs::read(placed_dir.join(f)).ok();
+    if !(c1 && same("conformance/out.psk.d")) {
+        return Err(format!("the placed host computes other bits:\n{log}"));
+    }
+    let mut all: Vec<String> = ["memory", file, "--entry", entry].iter().map(|s| s.to_string()).collect();
+    all.extend(under.flags.iter().cloned());
+    all.extend(args.iter().cloned());
+    let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
+    let m = presk(&refs);
+    let text = String::from_utf8_lossy(&m.stdout).to_string();
+    if !m.status.success() {
+        return Err(format!("presk memory failed:\n{}", stderr(&m)));
+    }
+    // `presk memory`'s lines, by their first word: `  C arena     N bytes, M beside the inputs …`.
+    let line = |key: &str| text.lines().find(|l| l.trim_start().starts_with(key)).map(|l| l.trim_start()[key.len()..].split(|c: char| !c.is_ascii_digit()).filter(|w| !w.is_empty()).filter_map(|w| w.parse::<usize>().ok()).collect::<Vec<_>>()).unwrap_or_default();
+    let (arena, peak, placed) = (line("C arena"), line("peak"), line("placed"));
+    let (Some(&total), Some(&beside), Some(&peak), Some(&bytes)) = (arena.first(), arena.get(1), peak.first(), placed.first()) else { return Err(format!("presk memory printed:\n{text}")) };
+    if Some(total) != number_after(exported, "an arena of") {
+        return Err(format!("presk memory's arena {total}, presk export's: {exported}"));
+    }
+    if peak > beside {
+        return Err(format!("a peak of {peak} above the arena's {beside} beside the inputs"));
+    }
+    if bytes < peak {
+        return Err(format!("the buffers placed in {bytes} bytes, under the peak of {peak}"));
+    }
+    let _ = printed;
+    Ok(())
 }
 
 fn export_and_check(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path) -> Checked {
     let t0 = Instant::now();
-    let (c1, log) = export_one(what, file, entry, args, under, extra, out);
+    let (c1, log, exported) = export_line(what, file, entry, args, under, extra, out);
     // The straight-line host, the structured one's oracle: the same bytes.
     let flat_dir = out.with_extension("flat");
     let straight: Vec<&str> = extra.iter().copied().chain(std::iter::once("--straight-line")).collect();
@@ -438,7 +496,11 @@ fn export_and_check(what: &str, file: &str, entry: &str, args: &[String], under:
     }
     let conf = out.join("conformance");
     let native = reals(&conf.join("native.psk.d"));
-    let mut checked = Checked { what: what.to_string(), c1, flat, divided: divided(out), elements: native.len(), nonzero: native.iter().filter(|x| **x != 0.0).count(), outside: None, worst: 0.0, secs: 0.0 };
+    let memory = memory_holds(what, file, entry, args, under, extra, out, &exported);
+    if let Err(e) = &memory {
+        eprintln!("{what}: M1 fails: {e}");
+    }
+    let mut checked = Checked { what: what.to_string(), c1, flat, memory, divided: divided(out), elements: native.len(), nonzero: native.iter().filter(|x| **x != 0.0).count(), outside: None, worst: 0.0, secs: 0.0 };
     if !c1 {
         eprintln!("{what}: C1 fails:\n{log}");
     } else if conf.join("exact.psk.d").exists() {
@@ -493,10 +555,10 @@ fn parallel<T: Send>(jobs: Vec<Box<dyn FnOnce() -> T + Send + '_>>) -> Vec<T> {
 }
 
 fn report(rows: &[Checked]) {
-    eprintln!("{:<52} {:>4} {:>5} {:>7} {:>7} {:>7} {:>12} {:>9} {:>6}", "entry", "C1", "flat", "threads", "reals", "≠ 0", "outside C/N", "worst/ε", "s");
+    eprintln!("{:<52} {:>4} {:>5} {:>4} {:>7} {:>7} {:>7} {:>12} {:>9} {:>6}", "entry", "C1", "flat", "M1", "threads", "reals", "≠ 0", "outside C/N", "worst/ε", "s");
     for r in rows {
         let outside = r.outside.map(|(c, n)| format!("{c}/{n}")).unwrap_or_else(|| "—".into());
-        eprintln!("{:<52} {:>4} {:>5} {:>7} {:>7} {:>7} {:>12} {:>9.3} {:>6.1}", r.what, if r.c1 { "ok" } else { "FAIL" }, if r.flat { "same" } else { "DIFF" }, if r.divided { "split" } else { "one" }, r.elements, r.nonzero, outside, r.worst, r.secs);
+        eprintln!("{:<52} {:>4} {:>5} {:>4} {:>7} {:>7} {:>7} {:>12} {:>9.3} {:>6.1}", r.what, if r.c1 { "ok" } else { "FAIL" }, if r.flat { "same" } else { "DIFF" }, if r.memory.is_ok() { "ok" } else { "FAIL" }, if r.divided { "split" } else { "one" }, r.elements, r.nonzero, outside, r.worst, r.secs);
     }
 }
 
@@ -504,6 +566,9 @@ fn assert_c1_c2(rows: &[Checked]) {
     for r in rows {
         assert!(r.c1, "{}: C1 fails", r.what);
         assert!(r.flat, "{}: the straight-line host's outputs are not the structured host's", r.what);
+        if let Err(e) = &r.memory {
+            panic!("{}: M1 fails: {e}", r.what);
+        }
         // C2: outside the band only where the native backend is.
         if let Some((c, n)) = r.outside {
             assert!(c <= n, "{}: {c} elements outside the band, the native backend's {n}", r.what);

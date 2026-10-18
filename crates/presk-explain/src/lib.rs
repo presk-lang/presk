@@ -231,6 +231,10 @@ pub struct Network {
     /// optimizer, and not when differentiation kept a fusion group for the
     /// precision stages alone (D94).
     pub elems: Option<std::collections::BTreeMap<String, u64>>,
+    /// Each box's share of the peak of live bytes, from 0 to 1, by its node
+    /// (plan 0.15.0 step 4): what `presk dump --stage network --memory`
+    /// colours the boxes by.
+    pub memory: std::collections::BTreeMap<usize, f64>,
 }
 
 /// The network diagram of the compilation `o` names: every stage run as for

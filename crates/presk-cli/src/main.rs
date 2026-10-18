@@ -201,6 +201,12 @@ enum Command {
         /// host's oracle.
         #[arg(long)]
         straight_line: bool,
+        /// C, with --straight-line: every buffer at an offset by its life,
+        /// two buffers live at once never overlapping, the check that
+        /// `presk memory`'s lifetimes are sound (plan 0.15.0 step 1). Hidden:
+        /// `make c-conformance` runs it.
+        #[arg(long, hide = true, requires = "straight_line")]
+        placed: bool,
         /// What a gradient does with its forward pass's values: `store` them
         /// for its reverse sweep, or `recompute` them inside each callee's
         /// `.vjp` (0.10.0 step 4). The same bits either way.
@@ -231,6 +237,11 @@ enum Command {
         /// (`blocks`) opened by itself, without what is around it.
         #[arg(long = "box", value_name = "NAME", conflicts_with = "level")]
         boxed: Option<String>,
+        /// For `--stage network --format svg|tikz`: each box coloured by its
+        /// share of the peak of live bytes, as the page's memory overlay
+        /// colours it (`presk memory`, plan 0.15.0 step 4).
+        #[arg(long)]
+        memory: bool,
         /// With `--format latex|unicode`: only this module.
         #[arg(long)]
         module: Option<String>,
@@ -472,6 +483,48 @@ enum Command {
         /// The directory the document, its listings and its artifacts are written to.
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
+    },
+    /// What one call of an entry needs in memory: its parameters, the peak of its live bytes, the C program's arena beside them (plan 0.15.0).
+    ///
+    /// The entry is recorded as `presk export --target c` records it, on an
+    /// executor that runs no kernel; each buffer the call makes is live from
+    /// its first write to its last read. Counted bytes, never a process's
+    /// resident size.
+    Memory {
+        file: PathBuf,
+        #[arg(long, required_unless_present = "step")]
+        entry: Option<String>,
+        /// The training run's step in place of an entry: the calls `presk
+        /// train` makes, the parameters and AdamW's moments held across,
+        /// under `--remat store` and `recompute` side by side (plan 0.15.0
+        /// step 2).
+        #[arg(long, conflicts_with_all = ["entry", "remat"])]
+        step: bool,
+        /// Also the inputs, the outputs and the peak as polynomials in the
+        /// entry's dimensions, each buffer's bytes interpolated on a grid of
+        /// recordings and checked off it (plan 0.15.0 step 3).
+        #[arg(long, conflicts_with = "step")]
+        symbolic: bool,
+        #[arg(long = "dim", value_name = "NAME=N")]
+        dims: Vec<String>,
+        #[arg(long = "const", value_name = "NAME=N")]
+        consts: Vec<String>,
+        /// The realization: `f64` (the default), `f32`, `bf16` or `@FILE.json`.
+        #[arg(long, conflicts_with = "plan")]
+        realize: Option<String>,
+        /// A realization plan, `@PLAN.json`, its realization with it.
+        #[arg(long, value_name = "@PLAN.json")]
+        plan: Option<String>,
+        /// What a gradient does with its forward pass's values: `store` them
+        /// for its reverse sweep, or `recompute` them inside each callee's
+        /// `.vjp` (0.10.0 step 4).
+        #[arg(long, value_enum)]
+        remat: Option<RematArg>,
+        /// The calls shown, this many levels deep.
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
     },
     /// Measure every point of every nest's layout space on the entry's own buffers, asserting each computes point 0's bits.
     Autotune {
@@ -1135,10 +1188,10 @@ fn main() -> ExitCode {
             Some(env) => check_precision(&file, &env, &parse_realize(&realize), sites, &model, measure),
             None => check(&file, &consts, summary, json),
         },
-        Command::Dump { file, stage, format, level, boxed, module, function, standalone, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
+        Command::Dump { file, stage, format, level, boxed, memory, module, function, standalone, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
             set_remat(remat);
             if let DumpStage::Network = stage {
-                return dump_network(&file, format, (level, boxed.as_deref()), standalone, entry.as_deref(), &dims, &consts, &realize, plan.as_deref(), profile, weights);
+                return dump_network(&file, format, (level, boxed.as_deref(), memory), standalone, entry.as_deref(), &dims, &consts, &realize, plan.as_deref(), profile, weights);
             }
             match format {
                 DumpFormat::Text => dump(&file, stage, unroll_stack, entry.as_deref(), &dims, &consts, &parse_plan(plan.as_deref(), &realize), plan.is_some(), profile, weights, sites),
@@ -1153,7 +1206,7 @@ fn main() -> ExitCode {
             }
         }
         Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads, remat } => { set_threads(threads); set_remat(remat); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
-        Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, remat } => {
+        Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, remat } => {
             set_remat(remat);
             let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
             if let Some((flag, _)) = pytorch.iter().find(|(_, given)| *given) {
@@ -1179,7 +1232,7 @@ fn main() -> ExitCode {
             };
             presk_driver::export_c::export_scop(&presk_driver::export_c::ScopOptions { file: &file, entry: &entry, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), seed, out: &out, remat: crate::remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
         }
-        Command::Export { file, target: ExportTarget::C, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, remat } => {
+        Command::Export { file, target: ExportTarget::C, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed, remat } => {
             set_remat(remat);
             if let Some(m) = mode {
                 eprintln!("presk export: `--mode {}` is a mode of the PyTorch export; --target c has `--mode scop`", if m == ExportMode::Graph { "graph" } else { "readable" });
@@ -1187,9 +1240,9 @@ fn main() -> ExitCode {
             }
             let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
             set_threads(threads);
-            export_c(&file, &out, entry.as_deref(), &dims, &consts, realize.as_deref().unwrap_or("f64"), plan.as_deref(), weights, seed, (no_exact, straight_line, serve), &pytorch)
+            export_c(&file, &out, entry.as_deref(), &dims, &consts, realize.as_deref().unwrap_or("f64"), plan.as_deref(), weights, seed, (no_exact, straight_line, placed, serve), &pytorch)
         }
-        Command::Export { file, target: ExportTarget::Pytorch, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, remat } => {
+        Command::Export { file, target: ExportTarget::Pytorch, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, remat } => {
             set_remat(remat);
             let c_only = [("--mode scop", mode == Some(ExportMode::Scop)), ("--entry", entry.is_some()), ("--realize", realize.is_some()), ("--weights", weights.is_some()), ("--plan", plan.is_some()), ("--threads", threads.is_some()), ("--no-exact", no_exact), ("--straight-line", straight_line)];
             if let Some((flag, _)) = c_only.iter().find(|(_, given)| *given) {
@@ -1288,6 +1341,43 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Command::Memory { file, entry: None, step: true, dims, consts, realize, plan, depth: _, seed, .. } => {
+            let o = presk_driver::memory::StepOptions { file: &file, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), plan: plan.as_deref(), seed };
+            match presk_driver::memory::step(&o, &mut stderr()) {
+                Ok(steps) => {
+                    for l in presk_driver::text::step(&steps) {
+                        println!("{l}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => exit(e),
+            }
+        }
+        Command::Memory { file, entry, dims, consts, realize, plan, remat, depth, seed, symbolic, .. } => {
+            set_remat(remat.unwrap_or(RematArg::Store));
+            let entry = entry.unwrap_or_default();
+            let o = presk_driver::memory::Options { file: &file, entry: &entry, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), plan: plan.as_deref(), seed, remat: crate::remat() };
+            match presk_driver::memory::memory(&o, &mut stderr()) {
+                Ok(m) => {
+                    for l in presk_driver::text::memory(&m, depth) {
+                        println!("{l}");
+                    }
+                    if symbolic {
+                        match presk_driver::memory::symbolic(&o, &m, &mut stderr()) {
+                            Ok(s) => {
+                                let render = |p: &presk_driver::memory::Poly| presk_print_math::core::poly(&p.terms(&s.names)).render(presk_print_math::Format::Unicode);
+                                for l in presk_driver::text::symbolic(&m, &s, &render) {
+                                    println!("{l}");
+                                }
+                            }
+                            Err(e) => return exit(e),
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => exit(e),
+            }
+        }
         Command::Explain { file, entry, dims, consts, budget, realize, plan, profile, threads, remat, opt, weights, seed, bits, envelope, no_exact, target, measure, sites, format, out } => {
             set_threads(threads);
             set_remat(remat);
@@ -2944,7 +3034,7 @@ fn parse_level(s: &str) -> Result<Level, String> {
 /// the document, on the native target and without the exact reference; the
 /// directory its artifacts would go to is removed afterwards.
 #[allow(clippy::too_many_arguments)]
-fn dump_network(file: &Path, format: DumpFormat, (level, boxed): (Option<Level>, Option<&str>), standalone: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, profile: Option<PathBuf>, weights: Option<PathBuf>) -> ExitCode {
+fn dump_network(file: &Path, format: DumpFormat, (level, boxed, memory): (Option<Level>, Option<&str>, bool), standalone: bool, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, profile: Option<PathBuf>, weights: Option<PathBuf>) -> ExitCode {
     let Some(entry) = entry else {
         eprintln!("presk dump --stage network: --entry is required (the diagram is an entry's, its arrows at the entry's shapes)");
         return ExitCode::from(2);
@@ -2984,10 +3074,18 @@ fn dump_network(file: &Path, format: DumpFormat, (level, boxed): (Option<Level>,
         Ok(n) => n,
         Err(stop) => return exit(stop),
     };
-    let Some(n) = n.network else {
+    let shares = n.memory;
+    let Some(mut n) = n.network else {
         eprintln!("presk dump --stage network: `{entry}` has no diagram");
         return ExitCode::from(1);
     };
+    if memory {
+        if shares.is_empty() {
+            eprintln!("presk dump --stage network --memory: `{entry}`'s host could not be recorded, so its memory is not counted");
+            return ExitCode::from(1);
+        }
+        n.memory = shares;
+    }
     let v = match boxed {
         Some(name) => match presk_diagram::layout::find_box(&n, name) {
             Some(b) => presk_diagram::layout::alone(&n, b),
@@ -3176,7 +3274,8 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
 /// file's generation function unless `--entry` names another, as for
 /// `presk serve`.
 #[allow(clippy::too_many_arguments)]
-fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, weights: Option<PathBuf>, seed: u64, (no_exact, straight_line, serve): (bool, bool, bool), pytorch: &[(&str, bool)]) -> ExitCode {
+#[allow(clippy::too_many_arguments)]
+fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, weights: Option<PathBuf>, seed: u64, (no_exact, straight_line, placed, serve): (bool, bool, bool, bool), pytorch: &[(&str, bool)]) -> ExitCode {
     if let Some((flag, _)) = pytorch.iter().find(|(_, given)| *given) {
         eprintln!("presk export: `{flag}` is an option of the PyTorch export, not of --target c");
         return ExitCode::from(2);
@@ -3185,7 +3284,7 @@ fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], const
         eprintln!("presk export --target c: --entry is required (the program is one entry at bound dimensions, as `presk run` runs it), or --serve for the file's generation function");
         return ExitCode::from(2);
     }
-    presk_driver::export_c::export(&presk_driver::export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, serve, out, remat: remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
+    presk_driver::export_c::export(&presk_driver::export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, placed, serve, out, remat: remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
 }
 
 #[allow(clippy::too_many_arguments)]

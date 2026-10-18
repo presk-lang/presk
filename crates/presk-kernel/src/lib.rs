@@ -8,6 +8,7 @@ pub mod exec;
 pub mod host;
 pub mod ir;
 pub mod lower;
+pub mod memory;
 pub mod plan;
 pub mod profile;
 pub mod record;

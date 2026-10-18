@@ -48,6 +48,9 @@ pub struct Options<'a> {
     /// Whether to write step 3's straight-line host, the structured one's
     /// oracle.
     pub straight_line: bool,
+    /// With `straight_line`, every buffer placed at an offset by its life
+    /// (plan 0.15.0 step 1, D148): the check of `presk memory`'s lifetimes.
+    pub placed: bool,
     /// Whether to export the generation loop (step 6).
     pub serve: bool,
     pub out: &'a Path,
@@ -86,6 +89,11 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
         for e in errs {
             report.line(&format!("presk: internal error (PSK-Core verification after AD): {e}"));
         }
+        return Err(Stop(2));
+    }
+
+    if o.placed && o.serve {
+        report.line("presk export: `--placed` places the buffers of one entry's straight-line host, not a generation loop's");
         return Err(Stop(2));
     }
 
@@ -262,6 +270,7 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
     });
     let exported = match (&serve, &greedy) {
         (Some(s), Some(g)) => presk_export_c::host::export_serve(&meta, &b.kernels, &rec, g, s, &arg_roles, weights_type.as_deref(), o.straight_line),
+        _ if o.straight_line && o.placed => presk_export_c::host::export_placed(&meta, &b.kernels, &rec, &arg_roles, weights_type.as_deref()),
         _ if o.straight_line => presk_export_c::host::export_flat(&meta, &b.kernels, &rec, &arg_roles, weights_type.as_deref()),
         _ => presk_export_c::host::export(&meta, &b.kernels, &rec, &arg_roles, weights_type.as_deref()),
     };

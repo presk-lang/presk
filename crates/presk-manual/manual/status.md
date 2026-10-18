@@ -1720,8 +1720,9 @@ the Explorer in the browser, the GPU.
 
 ## Version 0.14.1
 
-Done 2026-10-17, for review: plan
-`presk-specs/implementation/presk-plan-0.14.1.md` (D146, presk-specs !94).
+Done 2026-10-17: plan `presk-specs/implementation/presk-plan-0.14.1.md`
+(D146), presk !109 and presk-specs !94, merged and tagged `v0.14.1` on
+2026-10-18 (presk `c613617`, presk-specs `790ab94`).
 The exploded view of the network diagram, by a
 compositional layout (the user's choice, 2026-10-17): each box's graph
 laid out once in its own frame, an opening composing the frames, the page
@@ -1758,3 +1759,60 @@ through a box.
 **Does not have.** A layout the reader moves by hand; the exploded view as
 a figure on paper (the course GPT exploded is 1 062 × 3 954 pt); the
 memory a value holds while it is alive; and what 0.14.0 did not have.
+
+## Version 0.15.0
+
+Done 2026-10-18: plan `presk-specs/implementation/presk-plan-0.15.0.md`
+(D147–D152), presk !111 to !116 and presk-specs !95, for review. `presk
+memory`: what a program needs in memory, computed from the program and
+its realization rather than estimated. That is the parameters in their
+stored types, the peak of the live bytes over the launch sequence, each
+box's share of it, and, for a training step, the gradients, AdamW's
+moments and the intermediates kept or recomputed under `--remat`. It
+comes as numbers, as a polynomial in the `dim`s, and as an overlay of the
+Network tab with a panel of sliders.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements M0–M5, the facts checked, the user's answers; version `0.15.0-dev`; M0's baseline | done (2026-10-18, D147): the C export's arena is a stack of frames, 1.3 to 2.5 times the peak of live bytes on the course GPT, so the report prints the peak with the arena beside it (the user's answer); no entry is a training step, which `presk train` makes from three calls, so the step is composed from them; M0's baseline, X1's harness on `e8c7460` and `make quant-table`, `step-table` and `tutorial` |
+| 1 | Lifetimes over the recording, the peak and the boxes' shares, M1; `presk memory`; section 13 of `explain.md`; JSON format 4 | done (2026-10-18, D148): `presk_kernel::memory::Lifetimes` (a buffer live from its first write to its last read, the inputs apart), `Recorder::finish_counted` (a result the C program cannot write is counted), `presk memory` (the parameters, the inputs, the peak and its operation and call, the outputs, the C arena from the export's own computation, the placed size, each call's share and own peak), section 13 *Memory* and `explain.json` format 4 (`memory`, the calls naming the diagram's boxes); M1 holds: the arena `presk export`'s on the 285 programs `make c-conformance` exports, the straight-line host placed by the lifetimes (the hidden `--placed`) computing the native bits on every one, a mutation sharing memory where a life ends and the next begins failing 13 of 14 entries, and the call paths the launch log's; M0 holds (X1 by its version lines, the tables byte for byte, the tutorial but for its times, the help's line and section 13) |
+| 2 | The training step, `presk memory --step` | done (2026-10-18, D149): `presk_driver::layout::step_with_host` records the calls `presk train` makes for one step (`loss.value_vjp`, `adamw.lr`, `adamw.step`) on one backend that runs no kernel, in training mode; `memory::step_of` composes the step, each call's phase with what the loop holds, the step's peak the largest and its terms summing to it; *kept for the backward*, what the forward sweep made that is still live where the reverse sweep starts; `presk memory --step` prints `store` and `recompute` side by side, and `presk explain`'s section 13 too when its entry is the training run's objective; M2 holds on the course GPT's step in `f64` and `f32` (the step's peak 7 827 104 bytes under `store`, 7 296 520 under `recompute`) |
+| 3 | The polynomial, `--symbolic` | done (2026-10-18, D150): each buffer's bytes interpolated exactly from recordings on a grid of three values per dimension (every axis a linear form in the dimensions), checked off the grid; the inputs, the outputs, the live bytes and the peak, the largest of the live sets no other dominates for dimensions of at least 1; `presk_print_math::core::poly`; `presk memory --symbolic`, section 13, `explain.json`'s `memory.symbolic` with each buffer's polynomial; the course GPT's forward pass peaks at the feed-forward's 4 608·B·T + 8·T² until `T = 75`, then at the attention's 48·B·T² + 1 024·B·T + 8·T²; M3 holds on the 14 programs of 0.14.0's network test at three assignments off the document's |
+| 4 | The page: the memory overlay and its panel; `presk dump --stage network --memory` | done (2026-10-18, D151): the Network tab's **memory** button colours each box by its share of the peak, its share on its header; a panel with a slider per dimension, a stored type per parameter group, the numbers, the peak's formula and the live bytes as a curve, counted again in the page from each buffer's polynomial; the address and the lesson record it; `presk dump --stage network --memory` colours the SVG and the TikZ; M4 holds (the compiler's numbers at the document's dimensions and at three check points, the overlay in 2.0 ms and a move in at most 1.0 ms on the course GPT and the decoder block at the 7B width); found and changed: an executor that runs no kernel draws no random values, the 7B listing 2.7 s where it took 21.7 s |
+| 5 | M5, the checks of record, the documents, version `0.15.0` | done (2026-10-18, D152): M5 stated (the course GPT's step at its course size 3.76 GB storing, 3.24 GB of it kept for the backward, 0.92 GB recomputing; the decoder block at the 7B width peaks at 57 MB beside 1.86 GB of parameters, its C arena as `presk export` prints it equal to `presk memory`'s, the placed program needing exactly the inputs and the peak and computing the native bits); on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` pass, `cargo doc -p presk-manual` has no warning; M0 against `e8c7460`; the manual (a chapter `memory`; index, tutorial, cli, explain, status), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.21, the report, the slides, the summary and a status note (presk-specs !95); the poster at 0.15.0 |
+
+### What 0.15.0 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| M0 | Nothing else moves, against `e8c7460`: X1, the tables, the tutorial but for its times and `presk --help`'s line for `memory`; `explain.json` by its `format` and its `memory` object; `explain.md` by its section 13; the C export's files not at all | every byte | **holds**: X1 (18 files) by its version and commit lines alone; the tables byte for byte; the tutorial but for its measurements, the help's line and section 13; `explain.json` on the tutorial, the course GPT and the decoder block by `format` and `memory` alone |
+| M1 | One computation per number: the report's arena is the C export's; the peak is sound (a straight-line host placed by the lifetimes computes the native bits), never above the arena, and the boxes' shares sum to it | holds | **holds**, on the 285 programs of `make c-conformance` and on the decoder block at the 7B width; a mutation fails 13 of 14 entries |
+| M2 | The training step's named terms and the rest add up to its peak, to the byte, under `store` and `recompute` | holds | **holds**, on the course GPT's step in `f64` and `f32` |
+| M3 | The polynomial evaluated equals a recording's peak at three more assignments of the dimensions, on every program of 0.14.0's network test with a `dim` | holds | **holds**, on 14 programs |
+| M4 | The page's panel shows the report's numbers and the compiler's at the JSON's check points; P3's 200 ms with the overlay on | holds | **holds**: on the course GPT and the decoder block, the overlay in 2.0 ms, a move in at most 1.0 ms, a toggle in at most 14.0 ms |
+| M5 | The course GPT's step at its course constants and the decoder block at the 7B width, the numbers stated, the decoder's C arena beside them | reported | **stated**: the step 3.76 GB storing, 0.92 GB recomputing; the decoder's peak 57 MB, its C arena 3.06 times that, `presk export`'s to the byte |
+
+## What 0.15.0 has, and what it does not
+
+**Has.** What a program needs in memory, counted from the program at its
+dimensions and types (`presk memory`, the `memory` chapter):
+- the peak of live bytes over the host the C export records, and each
+  call's share of it;
+- the C program's arena beside it;
+- a training step's terms under both `--remat`s (`--step`);
+- the same as polynomials in the dimensions (`--symbolic`);
+- section 13 of `presk explain` and `explain.json` format 4;
+- the Network tab's memory overlay and its panel;
+- `presk dump --stage network --memory`.
+
+An executor that runs no kernel no longer draws random values.
+
+**Does not have.**
+- The C program's arena placed by the lifetimes: a later version, the
+  gap measured here its argument.
+- A KV cache, which the serve loop does not have.
+- Memory as a constraint of the solver.
+- The `const`s as symbols in the polynomials.
+- An optimizer update in place.
+- Sliders for the activations' types.
+- What 0.14.1 did not have.

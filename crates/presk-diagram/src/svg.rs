@@ -61,7 +61,7 @@ pub fn svg(net: &Network, v: &View, keys: bool) -> String {
         }
         let r = v.rects[id];
         let open = *id == 0 || v.open.contains(id);
-        node(&mut s, n, r, open);
+        node(&mut s, n, r, open, net.memory.get(id).copied());
     }
     for (id, pts) in &v.routes {
         let e = &net.edges[*id];
@@ -85,18 +85,27 @@ pub fn svg(net: &Network, v: &View, keys: bool) -> String {
     s
 }
 
-fn node(s: &mut String, n: &crate::Node, r: Rect, open: bool) {
+/// `#rrggbb` mixed `t` of the way towards the memory colour.
+fn mem_mix(base: (u8, u8, u8), t: f64) -> String {
+    let (m0, m1, m2) = (0xc2u8, 0x18u8, 0x5bu8);
+    let mix = |a: u8, b: u8| ((a as f64) + ((b as f64) - (a as f64)) * t).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", mix(base.0, m0), mix(base.1, m1), mix(base.2, m2))
+}
+
+fn node(s: &mut String, n: &crate::Node, r: Rect, open: bool, share: Option<f64>) {
     let text = |s: &mut String, x: f64, y: f64, t: &str, extra: &str| {
         let _ = writeln!(s, "<text x=\"{x:.1}\" y=\"{y:.1}\"{extra}>{}</text>", esc(t));
     };
     match n.kind {
         Kind::Root | Kind::Call | Kind::Stack => {
-            let fill = if n.kind == Kind::Root {
-                "#ffffff"
-            } else if open {
-                "#f7f8fb"
-            } else {
-                "#eef2f8"
+            let fill = match (n.kind == Kind::Root, open, share) {
+                (true, _, _) => "#ffffff".to_string(),
+                // The memory's scale, as the page draws it: a folded box
+                // takes it, an open one a light tint (plan 0.15.0 step 4).
+                (_, true, Some(f)) => mem_mix((0xf7, 0xf8, 0xfb), 0.03 + 0.09 * f),
+                (_, false, Some(f)) => mem_mix((0xee, 0xf2, 0xf8), 0.06 + 0.64 * f),
+                (_, true, None) => "#f7f8fb".to_string(),
+                (_, false, None) => "#eef2f8".to_string(),
             };
             let stroke = n.params.as_ref().and_then(|p| p.types.first()).map_or("#555555", |t| colour(t));
             if n.kind == Kind::Stack && !open {
@@ -107,6 +116,9 @@ fn node(s: &mut String, n: &crate::Node, r: Rect, open: bool) {
             }
             let x = r.x + 8.0;
             text(s, x, r.y + LINE, &title(n), " font-weight=\"bold\"");
+            if let (Some(f), false) = (share, n.kind == Kind::Root) {
+                text(s, r.x + r.w - 8.0, r.y + LINE, &format!("{:.0} %", 100.0 * f), " font-weight=\"bold\" text-anchor=\"end\"");
+            }
             text(s, x, r.y + 2.0 * LINE, &numbers(n), " fill=\"#555555\" font-size=\"10\"");
             if !open && let Some(t) = &n.text {
                 let longest = t.lines().map(|l| l.chars().count()).max().unwrap_or(1) as f64;

@@ -1,6 +1,7 @@
 //! What the commands print, as lines (plan 0.11.0 step 3): `presk
 //! calibrate --precision`, `presk dump --stage sensitivity`, `presk check
-//! --precision`, `presk solve` and `presk plan`. The command-line tool
+//! --precision`, `presk solve`, `presk plan` and `presk memory` (plan
+//! 0.15.0 step 1). The command-line tool
 //! prints them; `presk explain` quotes them, so that a document's figures
 //! are the commands' own, character for character (X3). A line that holds a
 //! time or a path the document does not print is the command's alone, and
@@ -267,5 +268,129 @@ pub fn host_profile(entry: &str, realize: &str, planned: bool, h: &crate::bench:
         out.push_str(&format!("-- without the timers, {:.0} minor page faults a call\n", h.plain_faults.iter().sum::<u64>() as f64 / h.plain_faults.len() as f64));
     }
     out.push_str(&presk_kernel::profile::table(&h.timed, "call"));
+    out
+}
+
+/// `presk memory` (plan 0.15.0 step 1): the parameters, the inputs, the peak
+/// of live bytes and what is needed, the C program's arena beside them, and
+/// the calls' shares of the peak, the deepest `depth` levels of calls.
+pub fn memory(m: &crate::memory::Memory, depth: usize) -> Vec<String> {
+    let l = &m.lifetimes;
+    let dims = if m.dims.is_empty() { "no dimension".to_string() } else { m.dims.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ") };
+    let ops = l.live.len();
+    let mut out = vec![format!("presk memory: `{}` at {dims} in {}: {ops} operations, {} launches", m.entry, m.realize, m.launches)];
+    let (count, bytes) = m.parameters();
+    if !m.params.is_empty() {
+        let mut by: Vec<(String, usize)> = Vec::new();
+        for p in &m.params {
+            match by.iter_mut().find(|(s, _)| *s == p.store) {
+                Some(e) => e.1 += p.elements,
+                None => by.push((p.store.clone(), p.elements)),
+            }
+        }
+        let types = by.iter().map(|(s, n)| format!("{n} in {s}")).collect::<Vec<_>>().join(", ");
+        out.push(format!("  parameters  {bytes} bytes: {count} elements, {types}"));
+    }
+    out.push(format!("  inputs      {} bytes{}", l.inputs, if m.params.is_empty() { "" } else { ", the parameters among them" }));
+    let at = match (ops, m.peak_call()) {
+        (0, _) => String::new(),
+        (_, Some(c)) => format!(", at operation {} of {ops}, `{}` in {c}", l.at + 1, m.peak_site()),
+        (_, None) => format!(", at operation {} of {ops}, `{}`", l.at + 1, m.peak_site()),
+    };
+    out.push(format!("  peak        {} bytes live{at}", l.peak));
+    out.push(format!("  outputs     {} bytes", l.outputs));
+    out.push(format!("  needs       {} bytes: the inputs and the peak", m.needs()));
+    match &m.arena {
+        Ok(a) => {
+            let ratio = if l.peak == 0 { String::new() } else { format!(", {:.2} times the peak", a.beside() as f64 / l.peak as f64) };
+            out.push(format!("  C arena     {} bytes, {} beside the inputs{ratio}: the frames of `presk export --target c`, each function's buffers held until it returns ({} released nothing)", a.total, a.beside(), a.flat));
+        }
+        Err(e) => out.push(format!("  C arena     none: {e}")),
+    }
+    out.push(format!("  placed      {} bytes beside the inputs: every buffer at an offset by its life, rounded to {} (`--straight-line --placed`)", m.placed, crate::memory::ALIGN));
+    let shown: Vec<&crate::memory::CallMemory> = m.calls.iter().filter(|c| c.path.len() <= depth).collect();
+    if !shown.is_empty() {
+        let n = m.calls.len();
+        out.push(if n == 1 { "presk memory: 1 call, its share of the peak and its own peak".to_string() } else { format!("presk memory: {n} calls, their shares of the peak and their own peaks") });
+        let names: Vec<String> = shown.iter().map(|c| format!("{}{}{}", "  ".repeat(c.path.len() - 1), c.params.clone().unwrap_or_else(|| format!("`{}`", c.func)), if c.runs > 1 { format!(" ×{}", c.runs) } else { String::new() })).collect();
+        let itself = format!("`{}` itself", m.entry);
+        let w = names.iter().chain(std::iter::once(&itself)).map(|n| n.chars().count()).max().unwrap_or(0).max(4);
+        out.push(format!("  {:<w$}  {:>12}  {:>12}", "call", "share", "own peak"));
+        out.push(format!("  {:<w$}  {:>12}", itself, m.own_share()));
+        for (c, n) in shown.iter().zip(&names) {
+            out.push(format!("  {n:<w$}  {:>12}  {:>12}", c.share, c.own, w = w + n.len() - n.chars().count()));
+        }
+    }
+    out
+}
+
+/// `presk memory --step` (plan 0.15.0 step 2): a training step under each
+/// `--remat`, side by side, its terms, each call's phase and the step's
+/// peak; then the peak's terms under each.
+pub fn step(steps: &[crate::memory::StepMemory]) -> Vec<String> {
+    let Some(first) = steps.first() else { return Vec::new() };
+    let c0 = &first.calls[0];
+    let dims = if c0.dims.is_empty() { "no dimension".to_string() } else { c0.dims.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ") };
+    let names: Vec<&str> = first.calls.iter().map(|c| c.entry.as_str()).collect();
+    let mut out = vec![format!("presk memory --step: the training run's step at {dims} in {}, as presk train makes it: `{}`", c0.realize, names.join("`, then `"))];
+    let remat = |s: &crate::memory::StepMemory| if s.remat == presk_core::ad::Remat::Store { "store" } else { "recompute" };
+    let mut rows: Vec<(String, Vec<String>)> = vec![
+        ("parameters".into(), steps.iter().map(|s| s.params.to_string()).collect()),
+        ("moments, AdamW's m and v".into(), steps.iter().map(|s| s.moments.to_string()).collect()),
+        ("the gradient".into(), steps.iter().map(|s| s.gradients.to_string()).collect()),
+        ("the batch, the key and the seed".into(), steps.iter().map(|s| s.others.to_string()).collect()),
+        ("kept for the backward".into(), steps.iter().map(|s| s.kept.to_string()).collect()),
+    ];
+    for (i, n) in names.iter().enumerate() {
+        rows.push((format!("`{n}`: its peak"), steps.iter().map(|s| s.calls[i].lifetimes.peak.to_string()).collect()));
+        rows.push((format!("`{n}`: with what the loop holds"), steps.iter().map(|s| s.phases[i].to_string()).collect()));
+    }
+    rows.push(("the step's peak".into(), steps.iter().map(|s| s.peak.to_string()).collect()));
+    let w = rows.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+    out.push(format!("  {:<w$}{}", "", steps.iter().map(|s| format!("{:>12}", remat(s))).collect::<String>()));
+    for (n, v) in rows {
+        let pad = w + n.len() - n.chars().count();
+        out.push(format!("  {n:<pad$}{}", v.iter().map(|x| format!("{x:>12}")).collect::<String>()));
+    }
+    for s in steps {
+        let m = &s.calls[s.peak_call];
+        let terms = s.terms.iter().map(|t| format!("{} {}", t.name, t.bytes)).collect::<Vec<_>>().join(", ");
+        out.push(format!("presk memory --step: under {}, the peak is `{}`'s, at its operation {}: {terms}", remat(s), m.entry, m.lifetimes.at + 1));
+    }
+    out
+}
+
+/// `presk memory --symbolic` (plan 0.15.0 step 3): the inputs, the outputs
+/// and the peak as polynomials in the entry's dimensions, `render` printing
+/// one (the printer of the denotation's form, `presk-print-math`), the
+/// peak the largest of its candidates when no one dominates the others.
+pub fn symbolic(m: &crate::memory::Memory, s: &crate::memory::Symbolic, render: &dyn Fn(&crate::memory::Poly) -> String) -> Vec<String> {
+    let grid = s.names.iter().zip(&s.grid).map(|(n, g)| format!("{n} ∈ {{{}}}", g.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(", ");
+    let at = |x: &[u64]| s.names.iter().zip(x).map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ");
+    let dims = if s.names.is_empty() { "no dimension".to_string() } else { s.names.join(" and ") };
+    let mut out = vec![format!(
+        "presk memory --symbolic: `{}` in {}, in {dims}: each buffer's bytes interpolated on {}, checked at {}",
+        m.entry,
+        m.realize,
+        if grid.is_empty() { "one point".to_string() } else { grid },
+        if s.check.is_empty() { "it".to_string() } else { at(&s.check) }
+    )];
+    out.push(format!("  inputs      {}", render(&s.inputs)));
+    out.push(format!("  outputs     {}", render(&s.outputs)));
+    let site = |k: usize| m.sites.get(k).map(String::as_str).unwrap_or("");
+    match &s.peaks[..] {
+        [(k, p)] => out.push(format!("  peak        {}, at operation {} (`{}`)", render(p), k + 1, site(*k))),
+        many => {
+            out.push(format!("  peak        the largest of {}, none of which dominates another:", many.len()));
+            for (k, p) in many {
+                out.push(format!("                {}, at operation {} (`{}`)", render(p), k + 1, site(*k)));
+            }
+        }
+    }
+    let x: Vec<u64> = m.dims.iter().filter(|(n, _)| s.names.contains(n)).map(|(_, v)| *v).collect();
+    if x.len() == s.names.len() {
+        let x: Vec<u64> = s.names.iter().map(|n| m.dims.iter().find(|(d, _)| d == n).map(|(_, v)| *v).unwrap_or(0)).collect();
+        out.push(format!("  at {}: the peak {}, the inputs {}, as counted", at(&x), s.peak_at(&x).0, s.inputs.eval(&x)));
+    }
     out
 }

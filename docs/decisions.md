@@ -14720,3 +14720,602 @@ merge request with presk-specs !94. What the version did:
   KB): the frames hold each rectangle once (7 and 5 KB), the two views
   the page checks against 9 and 6 KB.
 - The exploded course GPT at `D = 64` in `f64` is 1 062 × 3 954 pt.
+
+## D147 — Version 0.15.0 opened: `presk memory`, what a program needs in memory, computed from the program (2026-10-18)
+
+The plan is `presk-specs/implementation/presk-plan-0.15.0.md` (presk-specs
+!95, open until the version's end). On 2026-10-18 the user asked for
+what a program needs in memory, computed from the program and its
+realization rather than estimated:
+- the parameters in their stored types;
+- the peak of the live activations, the term an LLM memory calculator
+  leaves out;
+- for a training step, the gradients, AdamW's two moments, and the
+  intermediates the backward pass keeps or recomputes under `--remat`.
+
+It comes as numbers (`presk memory`, a section *Memory* of `presk
+explain`), as a polynomial in the `dim`s, and as a picture on the
+Network tab. The design note is presk-project
+`docs/presk-memory-2026-10-18.md`, from §5 of
+`presk-other-export-targets-2026-09-26.md`.
+
+**Facts checked** (a scratch test, not committed, on the course GPT at
+`D = 64`, `H = 2`, `L = 2`, `B = 2`, `T = 16`, in `f64`, each entry
+recorded as `presk export --target c` records it):
+- *A value's life in the recording.* A buffer is live from its first
+  write to its last read; the inputs from the start, the result's
+  buffers to the end. The peak of live bytes can be computed from the
+  recording as it is.
+- *The C export's arena is not that peak.* `Structured::arena()` is the
+  outputs plus the deepest chain of frames, and a frame holds every
+  buffer its function allocates until it returns (D80), each rounded to
+  64 bytes. It is an upper bound on the peak, and 1.3 to 2.5 times
+  larger:
+  - `GPT.apply`: 377 984 bytes beside the inputs against a peak of
+    149 504;
+  - `loss_grad` (`experiments/gpt_grad.psk`): 9 425 216 against
+    5 117 072 under `store`, and 8 298 816 against 4 562 944 under
+    `recompute`;
+  - `adamw.step`: 3 615 616 against 2 709 544.
+
+  So the note's M1, "this peak plus the outputs equals
+  `Structure::arena()`", cannot hold except by defining the peak as the
+  arena's own discipline (the plan's question 1).
+- *The forward pass peaks at the feed-forward's up projection.* Two
+  `B·T·4D` buffers (the product and its bias), the residual stream and
+  the causal mask are live: 4 608·B·T + 8·T² bytes. AdamW peaks at its
+  last launch, with `θ′`, `m′`, `v′` fresh beside `θ`, `m`, `v`, `g`:
+  7 × the parameters' bytes, where an update in place would hold 4 ×.
+- *A training step is not an entry.* `presk train` makes one from three
+  calls on one backend, `loss.value_vjp`, `adamw.lr` and `adamw.step`,
+  holding `θ` and `(m, v)` across them. The recorder refuses
+  `value_vjp`'s result (`E8006`, the key's cotangent in it), a C
+  program's refusal. Lifted, the step records completely, and training
+  mode changes no buffer (a mask is a fill of its size). The step's peak
+  is the gradient's phase: 7 827 104 bytes under `store`, 7 296 520
+  under `recompute`.
+- *Boxes:* the recording's tree of calls names the path of
+  `Launched::calls` (D141). *Sizes:* products of the `dim`s once the
+  `const`s are folded; a pack's panel has its operand's elements; the
+  arena's 64-byte rounding is not a polynomial.
+
+**The user's decisions (2026-10-18, directly and via the paper session,
+"ok for all"), each as recommended:**
+1. *The peak is the peak of live bytes*, each buffer from its first
+   write to its last read, with the C arena printed beside it, read from
+   the C export's own computation. The liveness is proved sound by a
+   straight-line host whose buffers are placed at offsets by the
+   lifetimes and which computes the native bits. The C export does not
+   change. Not taken: the arena's discipline as the definition; and the
+   C program's own arena placed by the lifetimes, which is for a later
+   version, the gap measured here being its argument.
+2. *The training step is composed from its calls*, as `presk train`
+   makes them (`presk memory --step`). Not taken: a generated
+   `train_step` function.
+3. *The `dim`s symbolic, the `const`s numbers.*
+4. *An overlay of the Network tab and a panel*, the type sliders for the
+   parameter groups only.
+
+**Statements, fixed before the work** (the plan's §3):
+- **M0:** nothing else moves, against `e8c7460`. `explain.json` changes
+  in its `format` (4) and a `memory` object; `explain.md` in a section
+  13 and its summary's line; `presk --help` by the line of `memory`;
+  the C export's files not at all.
+- **M1:** one computation per number. The report's arena is the C
+  export's, called. The peak is sound by the placed straight-line host,
+  never above the arena, and the boxes' shares sum to it, by call paths
+  equal to the launch log's.
+- **M2:** the training step's terms (parameters, gradients, moments,
+  kept intermediates, the rest) add up to its peak, to the byte, on the
+  course GPT's step under both `--remat`s.
+- **M3:** the polynomial evaluated equals a recording's peak at three
+  more assignments, on every program of 0.14.0's network test with a
+  `dim`.
+- **M4:** the page's panel shows the report's numbers, its sliders the
+  compiler's at the JSON's check points, and P3's 200 ms holds with the
+  overlay on.
+- **M5:** the numbers at scale (the course GPT's step at its course
+  constants, the decoder block at the 7B width) stated, the decoder's
+  arena as `presk export` prints it beside them.
+
+M0's baseline: X1's harness on `e8c7460`'s release build
+(`out/bin/presk-0.14.1`, built from `c20fe37`, whose code it is) into
+`out/x1/base-0.15.0`, with `make quant-table`, `step-table` and
+`tutorial` beside it. Version `0.15.0-dev`.
+
+## D148 — `presk memory`: the lifetimes over the recording, the peak and the calls' shares, the C arena beside them, section 13 and `explain.json` format 4 (plan 0.15.0 step 1); M1 holds (2026-10-18)
+
+What one call of an entry needs in memory, counted from the program at
+its dimensions and its realization's types. It is never a process's
+resident size.
+
+**The lifetimes** (`presk_kernel::memory`).
+- *The source:* a `Recording`, the native host as the C export records
+  it (D79).
+- *A buffer's life* runs from its first write to its last read, both
+  included, so that an operation's inputs and its output are live
+  together. A view reads its buffer. The inputs are held by the caller and
+  counted apart. The result's buffers live to the end.
+- *Bytes:* elements times the stored type's bytes; an integer weight's
+  integers (two `int4`s a byte) and its `f32` scales. Nothing is rounded.
+- *The peak* is the largest live set, at the first operation that reaches
+  it.
+- *Each operation's call path* is read from the recording's tree of calls
+  and folds, as `Launched::calls` names it (D141).
+- `Lifetimes::place` gives every buffer an offset, two buffers live at
+  once never overlapping: the largest first, each at the lowest offset
+  that fits.
+
+**The recorder counts what the C export refuses in a result.**
+`Recorder::finish_counted` returns the recording whenever it is complete.
+A result a C program cannot write (a key, a host scalar, integer weights:
+`E8006`, `E8008`, `E8007`) is refused for the export and recorded all the
+same; a refusal while recording leaves none. `finish` is unchanged.
+`layout::Hosted` keeps the counted recording when the export's is
+refused (`Hosted::counted`).
+
+**The report** (`presk_driver::memory`). The entry is recorded by
+`kernels_with_host`, on the executor that runs no kernel, after
+differentiating and checking the plan as `presk export` does. It holds:
+- the parameters at rest;
+- the lifetimes;
+- each call by its path, the iterations of a fold taken together as the
+  diagram's boxes are, with its function, its path in the parameters
+  (the common prefix of the parameter leaves its first argument views),
+  its runs, its share of the peak (what it made that is live there) and
+  its own peak (the most what it made weighs while it runs);
+- the C program's arena, computed by `presk_export_c::host::export` on
+  the same recording without writing a file. That is the user's answer to
+  question 1: the export's own computation, called and not recomputed;
+- the placed buffers' size.
+
+**`presk memory FILE --entry E --dim … --const … [--realize R | --plan
+@P] [--remat …] [--depth K]`** prints it; `presk_driver::text::memory`
+writes the lines, which `presk explain` quotes.
+
+**`presk export --target c --straight-line --placed`.** A hidden flag
+writes the straight-line host with every buffer at its offset in one
+allocation. A buffer reused while still read would change the bits, so
+C1 on that program is the check that the lifetimes are sound.
+
+**`presk explain`.** Section 13 *Memory* comes after section 12, so that
+no section's number moves:
+- the lines of `presk memory`, the arena's ratio to the peak, the placed
+  size, and the command;
+- a summary row;
+- a line in the appendix.
+
+`explain.json` is format 4, with a `memory` object:
+- the numbers;
+- the bytes live at every operation;
+- the calls, each with the network diagram's boxes it is: a diagram
+  node now keeps its call path, `Node::calls`.
+
+The page refuses format 3.
+
+**M1 holds:**
+- *(i) The arena.* `presk memory`'s C arena is `presk export`'s printed
+  arena, byte for byte, on every program `make c-conformance` exports:
+  285 programs, under every realization, plan, set of weights and
+  integer weights it exports.
+- *(ii) The placed straight-line host* computes the native backend's
+  bits on every one of them.
+- *(iii) The peak* never exceeds the arena beside the inputs, and the
+  placed buffers never take less than the peak.
+- *(iv) The call paths and the shares.* The recording's call paths are
+  the launch log's, launch by launch, on the 11 entries of
+  `tests/plan/entries.txt` and the course GPT's four, in `f64`, `f32`
+  and `bf16`, under `store` and `recompute`. The calls' shares and the
+  entry's own sum to the peak, and no call's share or own peak exceeds
+  its parent's (`presk-driver`'s test `memory`).
+
+The plan's §2 numbers are a test.
+
+**The check has teeth.** A mutation lets two buffers share memory when
+one's life ends at the operation where the other's begins, that is, a
+kernel writing over its own input. It made C1 fail, or the program
+crash on overlapping buffers, on 13 of 14 entries:
+- the 11 of `tests/plan/entries.txt`;
+- the course GPT's `GPT.apply` and `adamw.step`.
+
+The one it left was the course GPT's `loss_grad`. The mutation was
+reverted.
+
+**Found, and fixed before the merge request.** The first run of `make
+c-conformance` failed M1 on its 58 programs with integer weights. The
+report called the C export without the realization's `quant` map, which
+the export reads to know what it quantizes. It refused the arena ("holds
+integer weights the realization does not quantize"). The report now
+passes it, and the three tests pass.
+
+**Departures from the plan's step 1:**
+1. `presk memory` takes no `--budget`, `--weights`, `--threads` or
+   `--format json`:
+   - no size depends on the weights' values or on the executor's
+     workers;
+   - a budget is `presk solve`'s, whose realization `--realize @FILE`
+     takes;
+   - the JSON is `presk explain`'s, which also solves under `--budget`.
+2. The placement is greedy by size, not first fit in the order of first
+   write. First fit by first write took 206 976 bytes on the course GPT's
+   `GPT.apply` against a peak of 149 504; by size it takes 149 504.
+3. The counting recorder lifts only the result's refusals, not an
+   initializer's (`E8004`), whose entries are a model's `init`.
+4. `presk --help` gains the line of `memory`, which `make tutorial`
+   prints; M0 names it.
+
+**Numbers** (the course GPT at `D = 64`, `H = 2`, `L = 2`, `B = 2`, `T =
+16`, in `f64`), the plan's §2 again:
+- `GPT.apply`: a peak of 149 504 bytes at the feed-forward's up
+  projection in the first block; the C arena 377 984 beside the inputs
+  (2.53 times), placed in 149 504;
+- `loss_grad`: a peak of 5 117 072 in the backward pass of the block of
+  index 1, the reverse sweep's first;
+  the arena 9 425 216 (1.84 times), placed in 5 117 120;
+- `adamw.step`: a peak of 2 709 544 at its last launch; the arena
+  3 615 616 (1.33 times).
+
+**M0 on this step's tree** (against `out/x1/base-0.15.0`):
+- *X1's harness:* 18 files differ, by their version and commit lines
+  alone; `presk export`'s C programs do not move.
+- *The tables:* `make quant-table` and `step-table` byte for byte.
+- *`make tutorial`:* it differs in its measurements, in `presk --help`'s
+  line for `memory`, and in `presk explain`'s document, which has a
+  section 13 (15 sections where it had 14).
+- *`presk explain`'s six document snapshots and the manual's
+  `explain_loss`:* they differ by section 13, the summary's row *Memory*
+  and the appendix's line alone.
+- *The checks:* `make test`, `check-examples`, `coverage` and
+  `plan-check` pass; `make c-conformance` passes with M1 in it.
+
+## D149 — `presk memory --step`: a training step composed from the calls `presk train` makes, under both `--remat`s (plan 0.15.0 step 2); M2 holds (2026-10-18)
+
+No entry is a training step (D147). `presk train` makes one from three
+calls on one backend, the loop holding the parameters and AdamW's state
+across them:
+- `loss.value_vjp(θ, k, batch, 1)`;
+- `adamw.lr(t, total)`;
+- `adamw.step(θ, (m, v), g, t, total)`.
+
+The step is composed from those calls, the user's answer to the plan's
+question 2.
+
+**The recording** (`presk_driver::layout::step_with_host`). The file's
+training run is prepared as `presk train` prepares it
+(`prepare_training_as`, `plan_for_loop`). The three calls are recorded
+on one backend that runs no kernel, in training mode, each as
+`kernels_with_host` records an entry:
+- the parameters, the key and the batch are zeros of the objective's
+  shapes at `--dim`, the seed `1`;
+- the state is `adamw.init`'s;
+- the gradient is the first cotangent `value_vjp` returns, as
+  `value_and_gradient` takes it.
+
+The recorder counts `value_vjp`'s result, which the C export refuses
+(D148).
+
+**The composition** (`presk_driver::memory::step_of`). Each call's
+phase is what the call and the loop hold at the call's peak:
+- *the gradient:* the parameters, the batch, the key and the seed, the
+  moments, and its peak;
+- *the learning rate:* the parameters, the moments, the gradient, and its
+  peak;
+- *the update:* its inputs (the parameters, the moments, the gradient),
+  and its peak.
+
+The step's peak is the largest phase, and its terms sum to it: at the
+gradient's peak, the parameters, the moments, the batch, the key and the
+seed, what is kept for the backward and still live, the gradient made so
+far, and the rest.
+
+*Kept for the backward* is what the gradient's forward sweep made that
+is still live where its reverse sweep starts. That start is the first
+operation that reads the seed cotangent, the gradient's last argument.
+Under `store` it falls inside `loss.bwd`, after `loss.fwd` has returned
+its residuals. Under `recompute` the objective calls `GPT.apply` and then
+`GPT.apply.vjp`, which recomputes it.
+
+**`presk memory FILE --step [--dim …] [--const …] [--realize R |
+--plan @P]`** prints both `--remat`s side by side
+(`presk_driver::text::step`). `presk explain` prints the same in section
+13 when its entry is the objective of the file's training run, and
+`explain.json`'s `memory` gains `step`, one per `--remat`.
+
+**M2 holds** on the course GPT's step at `D = 64`, `B = 2`, `T = 16`, in
+`f64` and `f32`, under both `--remat`s (`presk-driver`'s test `memory`):
+- *parameters:* 112 896 elements at their stored type, 903 168 bytes in
+  `f64`;
+- *the gradient:* the parameters' shapes in the step's type;
+- *the moments:* twice the gradient;
+- *the terms:* they sum to the step's peak, which is the largest phase;
+- *kept for the backward:* less under `recompute` than under `store`.
+
+**The numbers** (`f64`):
+
+| | `store` | `recompute` |
+|---|---|---|
+| the parameters | 903 168 | 903 168 |
+| the moments | 1 806 336 | 1 806 336 |
+| the gradient | 903 168 | 903 168 |
+| the batch, the key and the seed | 520 | 520 |
+| kept for the backward | 1 371 040 | 23 808 |
+| `loss.value_vjp`'s peak | 5 117 080 | 4 586 496 |
+| the gradient's phase, the step's peak | 7 827 104 | 7 296 520 |
+| `adamw.step`'s phase | 6 322 216 | 6 322 216 |
+
+At `D = 64` and `T = 16`, `recompute` keeps 1.35 MB less for the
+backward, but the step's peak falls by 0.53 MB only, 7 %: the
+recomputing `.vjp`s' own forward sweeps take most of it back.
+
+**Departures from the plan's step 2:**
+1. *What `recompute` keeps.* The plan's M2 says the kept intermediates
+   are "none under `recompute`". They are not: the objective's own
+   forward values (the logits, the loss's terms) stay live for its
+   reverse sweep, 23 808 bytes on the course GPT. Only the callees'
+   values are recomputed. M2 checks `recompute`'s against `store`'s.
+2. *Moments and gradients are in the step's type.* "Moments = 2 × the
+   parameters" holds in elements; in bytes it holds when the
+   parameters are stored in the step's type. Under typed parameters
+   (the tutorial's, 280 bytes at rest) the gradient and the moments are
+   in the realization's default type (608 and 1 216 bytes in `f64`).
+3. *The step is not an entry of `presk explain`.* `presk explain`'s
+   section 13 counts the step when its entry is the training run's
+   objective, so no `presk explain --step` was added.
+4. *`--step` prints both `--remat`s.* It takes no `--remat`.
+
+**M0.** `presk explain`'s documents change in section 13 alone: the three
+of the tutorial's `loss`, the objective of its training run, by the
+step's lines and command, and the manual's `explain_loss` with them.
+`make test` passes.
+
+## D150 — `presk memory --symbolic`: what a call needs as polynomials in the entry's dimensions (plan 0.15.0 step 3); M3 holds (2026-10-18)
+
+The inputs, the outputs and the peak of live bytes as polynomials in
+the entry's dimensions (the `--dim` names), the `const`s as their numbers
+(the user's answer to question 3).
+
+**How a buffer gets its polynomial** (`presk_driver::memory::symbolic`).
+Every axis of a buffer is a linear form in the dimensions: a dimension
+expression is linear over ℚ (`presk_types::dim`, chapter 2), the
+`const`s folded. So a buffer's elements, and its bytes at its stored
+type, are a product of linear forms: a polynomial with rational
+coefficients.
+- Each buffer's polynomial is interpolated exactly, in rationals, from
+  recordings of the call on a grid of three values per dimension. The
+  values are multiples of the given value, or of its divisors, that the
+  entry records at, the other dimensions at the given values.
+- The recording's structure (every operation's kind and site, every
+  buffer's maker and site) must be the same at every point of the grid,
+  so a buffer is the same buffer everywhere. A dimension that counts a
+  fold's iterations or changes the operations is refused, said as such.
+- The degree is at most two in each dimension. A dimension in more than
+  two axes of one buffer would break that, and the polynomials are
+  checked at a fourth point off the grid, the peak and the inputs to the
+  byte.
+
+From the buffers' polynomials and the document's lifetimes, which do not
+change with the dimensions:
+- the inputs, the outputs, and the live bytes at every operation;
+- the peak, the largest of the live sets that no other's dominates for
+  dimensions of at least 1. A polynomial dominates another when their
+  difference, written in `yᵢ = xᵢ − 1`, has no negative coefficient.
+
+The candidates are printed when there are several. The course GPT's
+forward pass at `D = 64`, `H = 2`, `L = 2` has three:
+- the feed-forward's 4 608·B·T + 8·T², the peak at `T = 16`;
+- two of the attention's, 16·B·T² + 2 048·B·T + 8·T² and 48·B·T² +
+  1 024·B·T + 8·T².
+
+The attention's take over as `T` grows: the second from `T = 75`,
+whatever `B`, which a recording at `T = 74`, `75` and `76` confirms.
+
+**The printer.** `presk_print_math::core::poly` writes a polynomial as
+the printer of the denotation writes a dimension expression. Unicode in
+`presk memory --symbolic` and in section 13, LaTeX in `explain.json`.
+
+**`presk explain`.** Section 13 prints `presk memory --symbolic`'s lines
+and command. `explain.json`'s `memory` gains `symbolic`:
+- the dimensions, the grid and the check;
+- the inputs, the outputs and the peak's candidates, each with its
+  LaTeX;
+- each buffer's polynomial, its life and its call. With them the page
+  counts at other dimensions what the compiler counted (step 4).
+
+**M3 holds.** `presk-driver`'s test `memory` covers the 14 programs of
+0.14.0's network test, in `f32`: the 11 of `make plan-check`, BERT and
+Llama at the coverage's tiny constants, and the course GPT's `loss`. On
+each one, at the given dimensions and at three assignments off them
+(every dimension times 5, times 7, and in turn times 9 and as given),
+the polynomials evaluated equal the recording's peak, inputs and
+outputs, to the byte.
+
+**Departure from the plan's step 3.** The plan read each buffer's size
+from the `let` that made it, under its call's dimension arguments (the
+diagram's `shape`), a copy's or a pack's from its source. The recording
+holds numbers and buffers of many makers: launches, fusion groups and
+epilogues, packs' panels, conversions at kernels' edges, fills,
+scalars, stacks. Reading each one's shape back would need the diagram's
+call contexts for every kind. The interpolation gives the same
+polynomial wherever the shapes are products of linear forms in which a
+dimension appears at most twice, and the check off the grid and M3 hold
+it to that.
+
+**M0.** `presk explain`'s six document snapshots and the manual's
+`explain_loss` change in section 13 alone, by the polynomials' lines and
+command. `make test` passes.
+
+## D151 — The memory overlay of the Network tab, its panel, and `presk dump --stage network --memory` (plan 0.15.0 step 4); M4 holds (2026-10-18)
+
+The user's answer to question 4: an overlay of the Network tab and a
+panel, not a third tab.
+
+**The overlay.** A button **memory** in the Network tab's bar colours
+each box by its call's share of the peak of live bytes:
+- a folded box takes the scale;
+- an open box, whose inside shows where its share is, takes a light
+  tint;
+- each box carries its share in per cent on its header;
+- hovering over a box adds its share in bytes and per cent, and its own
+  peak and that peak's operation, at the document's dimensions.
+
+The address records the overlay (`memory`) and the panel's settings
+(`mdims=B:4,T:32`, `mtypes=blocks:f32`). A lesson's step records them
+too, and going to the step restores them.
+
+**The panel** sits above the diagram:
+- a slider for each dimension;
+- a stored type for each parameter group (the first component of a
+  leaf's path: `tok`, `pos`, `blocks`, `lnf`, `head`), `f64`, `f32` or
+  `bf16`, the realization's as default. Integer weights are shown as
+  they are and not offered;
+- the parameters, the inputs, the peak and its operation, and what is
+  needed;
+- the peak's polynomial, in KaTeX, the largest of the candidates at the
+  sliders' values;
+- the live bytes over the operations, drawn as a curve, the peak marked.
+
+The page counts again at the panel's values what the compiler counted,
+by its arithmetic. Each buffer's polynomial is evaluated, a parameter
+leaf's scaled from its stored type to the one selected. The buffers'
+lives, which do not change, give the live bytes at every operation, the
+peak at the first operation that reaches it, and each call's share there,
+summed over the calls inside it. A type selected for the parameters
+changes the parameters and the inputs. The activations keep the
+realization's types: another type for them is another realization, with
+other conversions, which the page cannot count (the plan's §5).
+
+**`presk dump --stage network --memory`** colours the SVG's and the
+TikZ's boxes by the same scale, each share on its header. It takes the
+shares from `presk explain`'s count (`presk_explain::Network::memory`);
+`presk_diagram::Network::memory` is empty otherwise, so `network.svg`
+and the report's figures do not move.
+
+**M4 holds**, by the page's own check under `#bench`:
+- at the document's dimensions and types, the page's peak, its
+  operation, the inputs, the outputs, the parameters and every call's
+  share are the compiler's (`memory`);
+- at the JSON's three check points, recorded by the compiler off the
+  grid (`symbolic.checks`), its peak, operation, inputs and outputs are
+  the recording's;
+- with the overlay on, P3's bound holds.
+
+The runs:
+- *the course GPT's `loss` at `D = 64`:* the overlay drawn on the
+  exploded view in 2.0 ms, 11 slider and type moves at most 1.0 ms, 26
+  toggles with it at most 14.0 ms;
+- *the decoder block at the 7B width* (X5's parameters, `--no-exact`),
+  three runs: the overlay drawn on the exploded view in 2.0 ms each time,
+  11 slider and type moves at most 1.0 ms, 22 toggles with it at most
+  11.0 ms.
+
+**Found and changed: an executor that runs no kernel no longer draws.**
+The polynomials record a call about a dozen times (step 3). On the
+decoder block at the 7B width each recording took 20 s, and `presk
+explain` 6 min 56 s where X5 took 40 s.
+
+The time went to the parameters. The shapes-only runs (the kernel
+listing and the host's recording, plan 0.11.0 step 2) build them by the modules'
+initializers, and `normal` drew its 466 million values on the host,
+where nothing reads them. The kernel backend now has `draws`: off, an
+initializer gives zeros and a training dropout mask ones, of the same
+shapes. The listing's and the recordings' executors set it off. The
+native backend and the C export, whose values are read, keep it on.
+
+What changes:
+- `presk dump --stage kernel` on the decoder block takes 2.7 s, where it
+  took 21.7 s;
+- `presk memory --symbolic` on it takes 29 s;
+- `presk explain` takes 54 s and 14.6 GB.
+
+The listing and the recordings depend on shapes alone, which X4's test
+(`kernels_from_shapes_are_the_run_s`) and M1 to M3 check.
+
+The symbolic report also records each point of its grid once and
+leaves the C arena out of the grid's recordings.
+
+The screenshots of the course GPT with the overlay, light and dark, are
+`docs/network-memory-gpt-{light,dark}-2026-10-18.png`. `presk
+dump --stage network --memory` on its level 1 is
+`docs/network-memory-gpt-tikz-2026-10-18.png`.
+
+## D152 — Version 0.15.0: the numbers at scale (M5), the checks of record on the version's tree, the documents (plan 0.15.0 step 5) (2026-10-18)
+
+**M5, the numbers at scale, stated, not timed.**
+
+*The course GPT at its course constants* (`D = 384`, `H = 6`, `L = 6`),
+at `B = 16` and `T = 256`, in `f64` (`presk memory --step` and `presk
+memory --symbolic`, `out/m5/`):
+
+| | `store` | `recompute` |
+|---|---|---|
+| the parameters | 86 532 096 | 86 532 096 |
+| the moments | 173 064 192 | 173 064 192 |
+| the gradient | 86 532 096 | 86 532 096 |
+| kept for the backward | 3 238 627 392 | 3 047 424 |
+| `loss.value_vjp`'s peak | 3 503 193 152 | 660 592 648 |
+| the step's peak (the gradient's phase) | 3 762 854 984 | 920 254 480 |
+| `adamw.step`'s phase | 605 724 712 | 605 724 712 |
+
+Storing the forward pass's values costs 3.2 GB of the 3.8 GB the step
+needs; recomputing them brings the step to 0.92 GB, 4.1 times less, where
+at `D = 64` and `T = 16` the saving was 7 % (D149). The forward pass
+(`GPT.apply`):
+- it peaks at 176 685 056 bytes, at the attention's probabilities;
+- its C arena is 469 895 296 bytes beside the inputs, 2.66 times the
+  peak;
+- its peak is the largest of `48·B·T² + 12 288·B·T + 8·T²`,
+  `144·B·T² + 6 144·B·T + 8·T²` and the feed-forward's `27 648·B·T +
+  8·T²`. The attention's holds it from `T = 150`, whatever `B`, which
+  recordings at `T = 149` and `150` confirm.
+
+*The Llama 2 decoder block at the 7B width* (X5's parameters, D106's
+realization), `B = 1`, `T = 384`:
+
+| | bytes |
+|---|---|
+| the parameters (in `f32`) | 1 864 417 280 |
+| the peak of live bytes, at the SwiGLU | 57 016 320 |
+| what is needed, the inputs and the peak | 1 921 439 744 |
+| the C arena, as `presk memory` prints it | 2 039 014 464 (174 591 040 beside the inputs, 3.06 times the peak) |
+| the C arena, as `presk export --target c` prints it | 2 039 014 464 (2 183 729 024 released nothing) |
+| the placed straight-line program's arena | 1 921 439 744 |
+
+M1 at scale:
+- *The arena.* `presk export` on the decoder, on the native backend's own
+  run, prints the arena `presk memory` prints from its shapes-only
+  recording, to the byte.
+- *The placed program.* The straight-line program placing every buffer
+  by its life (`--straight-line --placed`) needs exactly the inputs and
+  the peak. `make -C … check` builds it and it computes the native
+  backend's bits (C1).
+- *The cost.* The export took 133 s and 42.1 GB alone on falicon, beyond
+  the 13 GB the plan foresaw: it synthesizes the parameters at 256 bits,
+  as `presk run` does (466 million values). Building and running the C program
+  took 75 s, its process at most 1.9 GB resident.
+
+The decoder's peak is the largest of four polynomials:
+- the SwiGLU's `148 480·T·B`;
+- three of the attention's, two of which grow as `T²·B`.
+
+`presk memory --symbolic` takes about 30 s and 9 GB on it, and `presk
+explain` 54 s and 14.6 GB (D151).
+
+**M0 holds** (against `out/x1/base-0.15.0`, presk `e8c7460`): X1 (18 files) differs by its version and commit lines alone, the C export's programs unchanged; `make quant-table` and `step-table` byte for byte; `make tutorial` but for its measurements, `presk --help`'s line for `memory` and its document's section 13; `explain.json` on the tutorial, the course GPT and the decoder block by its `format` (4) and its `memory` object alone, `explain.md` by its section 13, its summary's row and its appendix's lines.
+
+**The checks of record on the version's tree.** `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` pass, M1 holding on the 285 programs the last exports; `cargo doc -p presk-manual` gives no warning.
+
+**The documents** (the user, 2026-09-30):
+- *the manual:* a new chapter `memory`; `explain` (section 13, format 4,
+  the Network tab's memory overlay, M4's bench), `cli` (`presk memory`,
+  `--step`, `--symbolic`, `dump --memory`), `status`, `index` and
+  `tutorial` at 0.15.0, and `explain_loss` generated again;
+- *in presk-specs (!95):*
+  - the plan marked done;
+  - the reference at draft v0.21, its Status paragraphs at 0.15.0, the
+    C export's arena and `--remat`'s memory counted;
+  - the report's chapter 8 (a paragraph on what a program needs in
+    memory), the foreword, roadmap and history;
+  - the slides, the summary, and a status note,
+    `docs/status-2026-10-18-0.15.0.md`;
+- *the poster at 0.15.0* (presk-project `docs/poster/`);
+- CHANGELOG `## 0.15.0`, `CLAUDE.md`, version `0.15.0`.

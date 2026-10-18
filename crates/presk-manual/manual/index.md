@@ -1,6 +1,6 @@
 # Presk compiler — user manual
 
-**Version 0.14.1** (plans 0.1.0 to 0.14.0 and the patches 0.10.1 and 0.14.1 done; [`status`]). This
+**Version 0.15.0** (plans 0.1.0 to 0.15.0 and the patches 0.10.1 and 0.14.1 done; [`status`]). This
 manual describes the `presk` tool as it is implemented, no more: every
 chapter was updated at each step of each plan, and features that exist only
 in the language specification are marked *not implemented*. The reference for the language itself is the
@@ -32,6 +32,7 @@ it may be differentiated; randomness is an explicit effect.
 - [`explain`] — `presk explain`: one compilation as a document, every stage's representation and its decisions, each figure the commands' own (0.11.0); its JSON, and the pipeline view: the stages as columns, every element linked to what it was made from, its equations and each kernel's machine code (0.13.0); the network diagram, the program as boxes and arrows in the view's second tab, `presk dump --stage network` (0.14.0); any set of its boxes opened, and the exploded view (0.14.1).
 - [`explain_loss`] — the document `presk explain` writes for the tutorial's `loss`, generated.
 - [`explain_network`] — the course GPT's network diagram at level 2, generated.
+- [`memory`] — `presk memory`: what a program needs in memory, counted from the program at its dimensions and types: the peak of live bytes and each call's share, the C program's arena beside it, a training step under both `--remat`s, the polynomials in the dimensions, the Network tab's overlay.
 - [`corpus`] — models from an NLP course, transcribed as a forcing function.
 - [`coverage`] — what the shape fragment can say, measured on the MLPerf architectures; BERT-large run at MLPerf's constants.
 - [`precision`] — precision as a resource: the envelope, the bound and the condition number, sensitivities, the solver, integer weights, a budget on a training step, and what a budget promises.

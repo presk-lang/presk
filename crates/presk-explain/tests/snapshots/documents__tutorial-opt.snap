@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | on | `--opt` |
 | Targets | native (Cranelift), C | `--target native,c` |
 
-Compiler: presk 0.14.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.15.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -46,6 +46,7 @@ Compiler: presk 0.14.1. Each section ends with the commands that print what it s
 | Layout plan | none: every nest at its default layout | fact | §8 |
 | Kernels | 10 distinct, 30 launches a call | fact | §9 |
 | C program | 9 files, 4316 lines with its runtime | fact | §10 |
+| Memory | 624 bytes a call: the inputs, 432 bytes, and the peak of live bytes, 192 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
 
@@ -782,6 +783,68 @@ By default, the three largest shares of the solver's estimate (the three largest
 
 *Every site of the functions the entry reaches, its line and the sections that name it, in `listings/site-index.tsv` (31 lines).*
 
+## 13 Memory
+
+What one call of the entry needs in memory, counted from the program at its dimensions and its realization's types, never a process's resident size. The host is recorded as the C export records it (§9); each buffer the call makes is live from its first write to its last read, and the inputs, which its caller holds, are counted apart. The calls are the network diagram's boxes, the iterations of a fold taken together: a call's share is what it made that is live at the peak, its own peak the most what it made weighs while it runs.
+
+```text
+presk memory: `loss` at B = 4 in f32: 34 operations, 30 launches
+  parameters  304 bytes: 76 elements, 76 in f32
+  inputs      432 bytes, the parameters among them
+  peak        192 bytes live, at operation 15 of 34, `Block.apply/%13` in blocks, iteration 1
+  outputs     4 bytes
+  needs       624 bytes: the inputs and the peak
+  C arena     1088 bytes, 576 beside the inputs, 3.00 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (2688 released nothing)
+  placed      256 bytes beside the inputs: every buffer at an offset by its life, rounded to 64 (`--straight-line --placed`)
+presk memory: 5 calls, their shares of the peak and their own peaks
+  call                  share      own peak
+  `loss` itself             0
+  `Tower.apply`           192           192
+    blocks ×3              192           192
+    final                   0            80
+```
+
+The C program's arena holds each function's buffers until it returns (D80), so it is 3.00 times the peak beside the inputs. A straight-line host with every buffer at an offset by its life takes 256 bytes beside them; that it computes the native backend's bits, which `make c-conformance` checks, is what shows the lifetimes sound.
+
+Counted on the program the optimizer rewrote, which `presk memory` does not run: the command below counts the program before it.
+
+The same as polynomials in the entry's dimensions (plan 0.15.0 step 3), the `const`s as their numbers. Every axis of a buffer is a linear form in the dimensions, so a buffer's bytes are a polynomial; each is interpolated from recordings of the call on a grid of three values per dimension, the operations the same at every point, and checked at a point off the grid. The peak is the largest of the operations' live bytes that no other's dominates for dimensions of at least 1.
+
+```text
+presk memory --symbolic: `loss` in f32, in B: each buffer's bytes interpolated on B ∈ {4, 8, 12}, checked at B = 16
+  inputs      32 · B + 304
+  outputs     4
+  peak        48 · B, at operation 15 (`Block.apply/%5`)
+  at B = 4: the peak 192, the inputs 432, as counted
+```
+
+The entry is the objective of the file's training run, so the step `presk train` makes from it is counted too (plan 0.15.0 step 2), under both values of `--remat`: its calls, each as an entry is, the parameters and AdamW's two moments held by the loop across them. *Kept for the backward* is what the gradient's forward sweep made that is still live where its reverse sweep starts, the term `--remat` moves.
+
+```text
+presk memory --step: the training run's step at B = 4 in f32, as presk train makes it: `loss.value_vjp`, then `adamw.lr`, then `adamw.step`
+                                                   store   recompute
+  parameters                                         304         304
+  moments, AdamW's m and v                           608         608
+  the gradient                                       304         304
+  the batch, the key and the seed                    132         132
+  kept for the backward                               68          64
+  `loss.value_vjp`: its peak                        1460        1408
+  `loss.value_vjp`: with what the loop holds        2504        2452
+  `adamw.lr`: its peak                                40          40
+  `adamw.lr`: with what the loop holds              1256        1256
+  `adamw.step`: its peak                             932         932
+  `adamw.step`: with what the loop holds            2148        2148
+  the step's peak                                   2504        2452
+presk memory --step: under store, the peak is `loss.value_vjp`'s, at its operation 107: parameters 304, moments 608, the batch, the key and the seed 132, kept for the backward 4, the gradient made so far 4, the rest 1452
+presk memory --step: under recompute, the peak is `loss.value_vjp`'s, at its operation 118: parameters 304, moments 608, the batch, the key and the seed 132, kept for the backward 64, the gradient made so far 0, the rest 1344
+```
+
+*Commands:*
+
+- `presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --realize f32`
+- `presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --realize f32 --symbolic`
+- `presk memory ../../tutorial/07_train.psk --step --dim B=4 --realize f32`
+
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
@@ -798,4 +861,7 @@ presk check --precision $DOC/artifacts/envelope.json ../../tutorial/07_train.psk
 presk dump ../../tutorial/07_train.psk --stage realize --realize f32
 presk dump ../../tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --realize f32
 presk export ../../tutorial/07_train.psk --target c --entry loss --dim B=4 --realize f32 --threads 10 -o $DOC/artifacts/c
+presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --realize f32
+presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --realize f32 --symbolic
+presk memory ../../tutorial/07_train.psk --step --dim B=4 --realize f32
 ```

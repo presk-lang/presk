@@ -434,6 +434,11 @@ pub struct Hosted {
     pub listing: Listing,
     /// The host program, or why the recorder refused it.
     pub recording: std::result::Result<presk_kernel::record::Recording, String>,
+    /// The host program when the recorder refused only its result, which a
+    /// C program cannot write (a key, a host scalar, integer weights): what
+    /// `presk memory` counts (plan 0.15.0 step 1, D148). `None` when
+    /// `recording` holds it, or when the recorder refused while recording.
+    pub counted: Option<presk_kernel::record::Recording>,
     /// The entry's arguments' names.
     pub names: Vec<String>,
     /// When the first argument is a parameter tree: its leaves' paths and
@@ -442,6 +447,13 @@ pub struct Hosted {
     /// Every launch of the call: its kernel's place in the listing and its
     /// nest (plan 0.13.0 step 1, D134).
     pub launched: Vec<presk_kernel::Launched>,
+}
+
+impl Hosted {
+    /// The host program as recorded, whether or not the C export takes it.
+    pub fn counted(&self) -> Option<&presk_kernel::record::Recording> {
+        self.recording.as_ref().ok().or(self.counted.as_ref())
+    }
 }
 
 /// [`kernels`], and the host program of the call that launched them, as the
@@ -457,10 +469,12 @@ fn listed(core: &presk_core::Program, prog: &presk_types::elab::ElabProgram, ent
     let realize = &plan.realization;
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits: 64, digits: 12 };
     let mut b = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(NoRun));
+    b.draws = false;
     b.set_plan(plan.clone());
     let (func, fdims, args, names) = if realize.quant.is_empty() {
         let (func, fdims, shaped) = presk_interp::run::prepare_shapes(core, prog, &opts)?;
         let mut init = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(NoRun));
+        init.draws = false;
         let mut args = shaped.iter().map(|(_, s)| zeros(&mut init, realize, s)).collect::<presk_rt::Result<Vec<_>>>()?;
         realize.store_params(&mut args)?;
         (func, fdims, args, shaped.iter().map(|(n, _)| n.clone()).collect::<Vec<String>>())
@@ -481,11 +495,86 @@ fn listed(core: &presk_core::Program, prog: &presk_types::elab::ElabProgram, ent
     }
     presk_rt::Backend::call(&mut b, &p, args)?;
     let launched = b.launch_log.take().unwrap_or_default();
-    let recording = match b.recorder.take() {
-        Some(r) => r.finish().map_err(|e| e.message),
-        None => Err("not recorded".into()),
+    let (recording, counted) = match b.recorder.take().map(|r| r.finish_counted()) {
+        Some((Some(rec), Ok(()))) => (Ok(rec), None),
+        Some((rec, Err(e))) => (Err(e.message), rec),
+        Some((None, Ok(()))) | None => (Err("not recorded".into()), None),
     };
-    Ok(Hosted { listing: Listing { kernels: std::mem::take(&mut b.kernels), launches: b.launches, fused: b.fused, label: b.realize.label() }, recording, names, params, launched })
+    Ok(Hosted { listing: Listing { kernels: std::mem::take(&mut b.kernels), launches: b.launches, fused: b.fused, label: b.realize.label() }, recording, counted, names, params, launched })
+}
+
+/// One call of a training step recorded (plan 0.15.0 step 2, D149): its
+/// function, its dimensions by name, the host and its launches.
+pub struct StepCall {
+    pub func: String,
+    pub dims: Vec<(String, u64)>,
+    pub hosted: Hosted,
+}
+
+/// The calls `presk train` makes for one step (`presk_train::train`), each
+/// recorded as [`kernels_with_host`] records an entry, on one backend that
+/// runs no kernel, in training mode: the objective's `.value_vjp` on the
+/// parameters, a key and a batch at `dims`, then `adamw.lr`, then
+/// `adamw.step` on the parameters, the state `adamw.init` gives them and the
+/// gradient. The parameters are zeros of their shapes, the state too, as
+/// the listing's are; a step's buffers depend on its shapes only.
+pub fn step_with_host(core: &presk_core::Program, prog: &presk_types::elab::ElabProgram, fns: &presk_train::TrainingFns, dims: Vec<(String, u64)>, plan: &presk_rt::Plan, seed: u64) -> presk_rt::Result<Vec<StepCall>> {
+    use presk_rt::{Backend, Tensor, Value};
+    let realize = &plan.realization;
+    let objective = core.func(fns.objective).name.clone();
+    let opts = presk_interp::RunOptions { entry: objective, dims: dims.clone(), seed, bits: 64, digits: 12 };
+    let (_, fdims, shaped) = presk_interp::run::prepare_shapes(core, prog, &opts)?;
+    let mut init = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(NoRun));
+    init.draws = false;
+    let mut args = shaped.iter().map(|(_, s)| zeros(&mut init, realize, s)).collect::<presk_rt::Result<Vec<_>>>()?;
+    realize.store_params(&mut args)?;
+    let mut names: Vec<String> = shaped.iter().map(|(n, _)| n.clone()).collect();
+    let mut b = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(NoRun));
+    b.draws = false;
+    b.set_plan(plan.clone());
+    b.set_training(true);
+    let named = |f: presk_core::FuncId| -> presk_interp::eval::Dims { core.func(f).dims.iter().filter_map(|v| fdims.iter().find(|(w, _)| prog.dim_name(**w) == prog.dim_name(*v)).map(|(_, n)| (*v, *n))).collect() };
+    let mut out = Vec::new();
+    let mut record = |b: &mut presk_kernel::KernelBackend, f: presk_core::FuncId, d: presk_interp::eval::Dims, args: Vec<Value>, names: Vec<String>| -> presk_rt::Result<Value> {
+        let p = b.prepare(f, &d, realize)?;
+        let params = match args.first() {
+            Some(theta @ Value::Record(_)) => presk_rt::quant::param_paths(theta).into_iter().filter_map(|path| crate::gap::param_leaf(theta, &path).map(|t| (path, t.data.len()))).collect(),
+            _ => Vec::new(),
+        };
+        b.recorder = Some(Box::new(presk_kernel::record::Recorder::named(names.clone())));
+        b.launch_log = Some(Vec::new());
+        let (launches, fused) = (b.launches, b.fused);
+        let v = b.call(&p, args)?;
+        let launched = b.launch_log.take().unwrap_or_default();
+        let (recording, counted) = match b.recorder.take().map(|r| r.finish_counted()) {
+            Some((Some(rec), Ok(()))) => (Ok(rec), None),
+            Some((rec, Err(e))) => (Err(e.message), rec),
+            Some((None, Ok(()))) | None => (Err("not recorded".into()), None),
+        };
+        let dims: Vec<(String, u64)> = d.iter().map(|(v, n)| (prog.dim_name(*v), *n)).collect();
+        let listing = Listing { kernels: b.kernels.clone(), launches: b.launches - launches, fused: b.fused - fused, label: b.realize.label() };
+        out.push(StepCall { func: core.func(f).name.clone(), dims, hosted: Hosted { listing, recording, counted, names, params, launched } });
+        Ok(v)
+    };
+    // The objective's value and its gradient, the first of the cotangents.
+    args.push(Value::Real(Tensor::scalar_f64(1.0)));
+    names.push("seed".into());
+    let theta = args[0].clone();
+    let vv = record(&mut b, fns.value_vjp, fdims.clone(), args, names)?;
+    // As `presk_train::value_and_gradient` takes it.
+    let g = match vv {
+        Value::Tuple(mut parts) if parts.len() >= 2 => {
+            parts.truncate(2);
+            parts.pop().unwrap()
+        }
+        other => return presk_rt::err("E7001", format!("value_vjp returned a {}", other.kind())),
+    };
+    let d_opt = named(fns.opt_step);
+    let p = b.prepare(fns.opt_init, &d_opt, realize)?;
+    let state = b.call(&p, vec![theta.clone()])?;
+    record(&mut b, fns.opt_lr, presk_interp::eval::Dims::new(), vec![Value::Nat(1), Value::Nat(1)], vec!["t".into(), "total".into()])?;
+    record(&mut b, fns.opt_step, d_opt, vec![theta, state, g, Value::Nat(1), Value::Nat(1)], vec!["θ".into(), "s".into(), "g".into(), "t".into(), "total".into()])?;
+    Ok(out)
 }
 
 /// One kernel of a point, priced: its group, the model's inputs and the

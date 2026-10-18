@@ -572,13 +572,35 @@ impl Recorder {
 
     /// The recording, or why the entry cannot be exported.
     pub fn finish(self) -> std::result::Result<Recording, Refusal> {
-        if let Some(r) = self.refused {
-            return Err(r);
+        match self.finish_counted() {
+            (Some(rec), Ok(())) => Ok(rec),
+            (_, Err(r)) => Err(r),
+            (None, Ok(())) => internal("a recording without a refusal is complete"),
         }
-        let Some(result) = &self.rec.result else { return internal("the entry's call did not return") };
+    }
+
+    /// The recording whenever it is complete, for counting its buffers
+    /// (plan 0.15.0 step 1, D148), and whether the C export takes it: a
+    /// result the C program cannot write (a key, a host scalar, integer
+    /// weights) is refused for the export and recorded all the same. A
+    /// refusal while recording leaves no recording.
+    pub fn finish_counted(self) -> (Option<Recording>, std::result::Result<(), Refusal>) {
+        if let Some(r) = self.refused {
+            return (None, Err(r));
+        }
+        if self.rec.result.is_none() {
+            return (None, internal("the entry's call did not return"));
+        }
+        let checked = Self::writable(&self.rec);
+        (Some(self.rec), checked)
+    }
+
+    /// Whether a C program can write the recording's result.
+    fn writable(rec: &Recording) -> std::result::Result<(), Refusal> {
+        let Some(result) = &rec.result else { return internal("the entry's call did not return") };
         for leaf in leaves(result) {
             match leaf {
-                Sym::Tensor(v) if matches!(self.rec.bufs[v.buf].store, Store::Quant { .. }) => {
+                Sym::Tensor(v) if matches!(rec.bufs[v.buf].store, Store::Quant { .. }) => {
                     return refuse("E8007", "the entry's result holds integer weights, its argument's as they were quantized: the C program writes the reals it computes, and the weights are read, not computed");
                 }
                 Sym::Tensor(_) => {}
@@ -586,7 +608,7 @@ impl Recorder {
                 other => return refuse("E8008", format!("the entry's result holds a {}, which a `.psk.d` file cannot hold: the C program writes tensors only", kind(&other))),
             }
         }
-        Ok(self.rec)
+        Ok(())
     }
 
     /// Runs `f` unless the recording was refused already; a refusal stops it.

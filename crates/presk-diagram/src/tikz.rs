@@ -76,6 +76,21 @@ pub fn tikz(net: &Network, v: &View, standalone: bool, command: &str) -> String 
     for (n, h) in COLOURS {
         let _ = writeln!(s, "\\definecolor{{pk{n}}}{{HTML}}{{{h}}}");
     }
+    if !net.memory.is_empty() {
+        s.push_str("\\definecolor{pkmem}{HTML}{C2185B}\n");
+    }
+    // A box's fill: the memory's scale when the drawing has it (plan 0.15.0
+    // step 4), a folded box taking it and an open one a light tint.
+    let fill = |id: usize, open: bool, plain: &str| match net.memory.get(&id) {
+        Some(f) if open => format!("pkmem!{:.0}!white", 3.0 + 9.0 * f),
+        Some(f) => format!("pkmem!{:.0}!white", 6.0 + 64.0 * f),
+        None => plain.to_string(),
+    };
+    let share = |s: &mut String, id: usize, r: crate::layout::Rect| {
+        if let Some(f) = net.memory.get(&id) {
+            let _ = writeln!(s, "\\node[anchor=base east] at ({:.1},{:.1}) {{\\textbf{{{:.0}\\,\\%}}}};", r.x + r.w - 8.0, r.y + 15.0, 100.0 * f);
+        }
+    };
     s.push_str("\\begin{tikzpicture}[x=1pt, y=-1pt, every node/.style={inner sep=0pt, outer sep=0pt}, font=\\small\\ttfamily]\n");
     // Boxes first, outermost first; then the arrows; then the nodes.
     let mut ids: Vec<usize> = v.rects.keys().copied().filter(|i| !net.nodes[*i].key).collect();
@@ -85,7 +100,8 @@ pub fn tikz(net: &Network, v: &View, standalone: bool, command: &str) -> String 
         let (n, r) = (&net.nodes[id], v.rects[&id]);
         if n.kind != Kind::Root {
             let c = n.params.as_ref().and_then(|p| p.types.first()).map_or("pkother", |t| colour(t));
-            let _ = writeln!(s, "\\draw[rounded corners=4pt, draw={c}, line width=0.8pt, fill=white] ({:.1},{:.1}) rectangle ({:.1},{:.1});", r.x, r.y, r.x + r.w, r.y + r.h);
+            let _ = writeln!(s, "\\draw[rounded corners=4pt, draw={c}, line width=0.8pt, fill={}] ({:.1},{:.1}) rectangle ({:.1},{:.1});", fill(id, true, "white"), r.x, r.y, r.x + r.w, r.y + r.h);
+            share(&mut s, id, r);
         }
         let _ = writeln!(s, "\\node[anchor=base west] at ({:.1},{:.1}) {{\\textbf{{{}}}}};", r.x + 8.0, r.y + 15.0, esc(&title(n)));
         let _ = writeln!(s, "\\node[anchor=base west, gray] at ({:.1},{:.1}) {{\\scriptsize {}}};", r.x + 8.0, r.y + 29.0, esc(&numbers(n)));
@@ -111,9 +127,10 @@ pub fn tikz(net: &Network, v: &View, standalone: bool, command: &str) -> String 
             Kind::Call | Kind::Stack => {
                 let c = n.params.as_ref().and_then(|p| p.types.first()).map_or("pkother", |t| colour(t));
                 if n.kind == Kind::Stack {
-                    let _ = writeln!(s, "\\draw[rounded corners=4pt, draw={c}, fill=white] ({:.1},{:.1}) rectangle ({:.1},{:.1});", r.x + 4.0, r.y + 4.0, r.x + r.w + 4.0, r.y + r.h + 4.0);
+                    let _ = writeln!(s, "\\draw[rounded corners=4pt, draw={c}, fill={}] ({:.1},{:.1}) rectangle ({:.1},{:.1});", fill(id, false, "white"), r.x + 4.0, r.y + 4.0, r.x + r.w + 4.0, r.y + r.h + 4.0);
                 }
-                let _ = writeln!(s, "\\draw[rounded corners=4pt, draw={c}, line width=0.8pt, fill=black!3] ({:.1},{:.1}) rectangle ({:.1},{:.1});", r.x, r.y, r.x + r.w, r.y + r.h);
+                let _ = writeln!(s, "\\draw[rounded corners=4pt, draw={c}, line width=0.8pt, fill={}] ({:.1},{:.1}) rectangle ({:.1},{:.1});", fill(id, false, "black!3"), r.x, r.y, r.x + r.w, r.y + r.h);
+                share(&mut s, id, r);
                 let _ = writeln!(s, "\\node[anchor=base west] at ({:.1},{:.1}) {{\\textbf{{{}}}}};", r.x + 8.0, r.y + 15.0, esc(&title(n)));
                 let _ = writeln!(s, "\\node[anchor=base west, gray] at ({:.1},{:.1}) {{\\scriptsize {}}};", r.x + 8.0, r.y + 29.0, esc(&numbers(n)));
                 if let Some(t) = &n.tex {

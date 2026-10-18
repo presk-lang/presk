@@ -25,6 +25,7 @@
   --lit: #fff4c2; --sel: #ffd84d; --dim: 0.22; --panel: #f3f1ec; --ink2: #45443f;
   --f64: #2f5d9e; --f32: #2b8a3e; --bf16: #d9730d; --int: #8e44ad; --none: #8a8780;
   --how-lower: #5f6f8f; --how-ad: #a03d6f; --how-opt: #7a4fc4; --how-fuse: #1f7a7a; --how-pass: #b9b5ac;
+  --mem: #c2185b;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -32,6 +33,7 @@
     --lit: #4a4220; --sel: #8a6d00; --panel: #22221f; --ink2: #cfcdc6;
     --f64: #7aa7e8; --f32: #6fcf7f; --bf16: #f0a050; --int: #c08ae0; --none: #8a8780;
     --how-lower: #9aa9c8; --how-ad: #e07aa8; --how-opt: #b495f0; --how-fuse: #5fc9c9; --how-pass: #5a5853;
+    --mem: #f06292;
   }
 }
 :root[data-theme="light"] { color-scheme: light; }
@@ -41,6 +43,7 @@
   --lit: #4a4220; --sel: #8a6d00; --panel: #22221f; --ink2: #cfcdc6;
   --f64: #7aa7e8; --f32: #6fcf7f; --bf16: #f0a050; --int: #c08ae0; --none: #8a8780;
   --how-lower: #9aa9c8; --how-ad: #e07aa8; --how-opt: #b495f0; --how-fuse: #5fc9c9; --how-pass: #5a5853;
+  --mem: #f06292;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -132,7 +135,18 @@ body.network .pipeonly { display: none; }
 #net.dimmed .node:not(.lit), #net.dimmed path.e:not(.lit) { opacity: 0.35; }
 #net .node.lit > rect { stroke-width: 2.6; }
 #net path.e.lit { opacity: 1; }
-@media (max-width: 760px) { #panel { display: none; } #scroll, #net { height: auto; } }
+#mempanel { position: sticky; left: 0; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; margin: 0 0 8px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; max-width: 100%; }
+#mempanel label { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; }
+#mempanel input[type=range] { width: 140px; }
+#mempanel select { font: inherit; font-size: 12px; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; }
+#mempanel .nums { font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+#mempanel .scale { display: inline-block; width: 120px; height: 8px; border-radius: 4px; background: linear-gradient(to right, color-mix(in srgb, var(--mem) 6%, var(--panel)), var(--mem)); vertical-align: middle; }
+#mempanel svg { display: block; }
+#mempanel .curve { fill: none; stroke: var(--mem); stroke-width: 1.2; }
+#mempanel .pk { fill: var(--mem); }
+#mempanel .formula { font-size: 12px; }
+#net text.mp { font-weight: 700; font-size: 11px; fill: var(--fg); }
+@media (max-width: 760px) { #panel { display: none; } #scroll, #net { height: auto; } #mempanel input[type=range] { width: 100px; } }
 </style>
 <style>/*KATEX_CSS*/</style>
 </head>
@@ -155,13 +169,14 @@ body.network .pipeonly { display: none; }
   <button id="netreset" class="netonly" title="the default opening">default</button>
   <button id="netall" class="netonly" title="every box opened: the exploded view">expand all</button>
   <button id="netnone" class="netonly" title="every box folded">fold all</button>
+  <button id="memory" class="netonly" title="what one call needs in memory: each box coloured by its share of the peak of live bytes, and a panel to change the dimensions and the parameters' types">memory</button>
   <button id="math" title="the cards as formulas, or as text">∑ math</button>
   <button id="theme" title="light or dark">◐</button>
   <span id="legend"></span>
 </div>
 <div id="main">
   <div id="scroll"><div id="cols"></div><svg id="arrows"></svg></div>
-  <div id="net" hidden><svg id="netsvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+  <div id="net" hidden><div id="mempanel" hidden></div><svg id="netsvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
   <aside id="panel"><p>Select an element: its origins and what it became light up through every stage. Hover for its facts. A function folds and opens by its header. <kbd>←</kbd> <kbd>→</kbd> step through the lesson in the address; <kbd>Esc</kbd> clears.</p></aside>
 </div>
 <div id="bench" hidden></div>
@@ -605,6 +620,17 @@ function go(i) {
   if (s.open) for (const g of s.open) open.add(g);
   // A step of the lesson may be on the network, with its boxes opened.
   if (N && s.net) netOpen = new Set(s.net.filter((i) => i < N.nodes.length));
+  // And with the memory overlay, at its dimensions and types (plan 0.15.0
+  // step 4).
+  if (MEM) {
+    memOn = !!s.memory;
+    $("#memory").classList.toggle("on", memOn);
+    if (s.memory && SYM) {
+      if (Array.isArray(s.memory.dims) && s.memory.dims.length === memX.length) memX = s.memory.dims.map(Number);
+      if (s.memory.types) memTypes = new Map([...memDocType, ...Object.entries(s.memory.types)]);
+    }
+    memPanel();
+  }
   showTab(s.tab === "network" && N ? "network" : "pipeline");
   $("#caption").innerHTML = `<b>${L.step + 1}/${L.lesson.length}</b> ${esc(s.caption || "")}`;
   const q = new URLSearchParams(location.hash.slice(1));
@@ -620,7 +646,7 @@ $("#add").onclick = () => {
   if (caption === null) return;
   const q = new URLSearchParams(location.hash.slice(1));
   const lesson = q.get("lesson") ? JSON.parse(q.get("lesson")) : [];
-  lesson.push({ sel: [...selection], open: [...open], caption, tab, net: [...netOpen] });
+  lesson.push({ sel: [...selection], open: [...open], caption, tab, net: [...netOpen], ...(memOn ? { memory: { dims: memX.slice(), types: Object.fromEntries(memTypes) } } : {}) });
   q.set("lesson", JSON.stringify(lesson));
   q.set("step", lesson.length - 1);
   location.hash = q.toString();
@@ -889,6 +915,7 @@ function drawNet() {
     }
   }
   fitFormulas();
+  memPaint();
   lightNet();
   return performance.now() - t0;
 }
@@ -966,6 +993,16 @@ function inspectNode(n) {
   if (n.bytes != null) row("bytes Q", fmt(n.bytes) + (n.runs > 1 ? ` over ${n.runs} runs` : ""));
   if (n.work && n.bytes) row("intensity W/Q", fmt(n.work / n.bytes));
   if (n.generated) row("generated", `.${n.generated.kind} of ${n.generated.of}`);
+  if (memOn && MEM) {
+    const c = memCallOfNode.get(n.id);
+    const m = memNow();
+    if (n.kind === "root") row("memory", `the peak, ${m.peak} bytes, at operation ${m.at + 1}`);
+    else if (c != null) {
+      row("its share of the peak", `${m.share[c]} bytes, ${(100 * m.share[c] / Math.max(1, m.peak)).toFixed(1)} %`);
+      const mc = MEM.calls.find((x) => memKey(x.path) === memKey(SYM ? SYM.calls[c] : x.path));
+      if (mc) row("its own peak", `${mc.own} bytes, at operation ${mc.own_at + 1} (at the document's dimensions)`);
+    }
+  }
   if (n.members && n.members.length > 1) row("members", n.members.join(", "));
   h += "</table>";
   if (mathOn && n.tex) h += `<div class="math"><div class="what">${["call", "stack", "root"].includes(n.kind) ? "its function's display (the reference, section 3.10)" : "its equation (section 3.10)"}</div>${tex(n.tex, true)}${n.sum ? `<div class="what">the sum it computes</div>${tex(n.sum, true)}<div class="what">its terms added in the order</div>${tex(n.order, true)}` : ""}</div>`;
@@ -999,6 +1036,138 @@ const toggleBtn = (id, f) => { $(id).onclick = () => { f(); $(id).classList.togg
 toggleBtn("#labels", () => { labelsOn = !labelsOn; });
 toggleBtn("#keys", () => { keysOn = !keysOn; });
 toggleBtn("#backward", () => { backwardOn = !backwardOn; });
+// ----- memory (plan 0.15.0 step 4, D151) -------------------------------------------
+// What one call needs, counted again here at the dimensions and parameter
+// types the panel sets, from each buffer's polynomial and its life
+// (`memory.symbolic`), by the compiler's arithmetic: the live bytes at each
+// operation, their peak and its operation, each call's share there. A box is
+// coloured by its call's share of the peak. At the document's dimensions and
+// types the numbers are the compiler's (checked under #bench, M4).
+const MEM = D.memory || null;
+const SYM = MEM && MEM.symbolic ? MEM.symbolic : null;
+let memOn = false;
+const memKey = (path) => path.join("\u0001");
+const BYTES = { f64: 8, f32: 4, bf16: 2 };
+const coefOf = (c) => { if (typeof c === "number") return c; const [p, q] = String(c).split("/").map(Number); return p / (q || 1); };
+const evalPoly = (p, x) => { let v = 0; for (const [e, c] of p) { let t = coefOf(c); for (let a = 0; a < e.length; a++) for (let k = 0; k < e[a]; k++) t *= x[a]; v += t; } return v; };
+// The document's dimensions, in the polynomials' order, and the types the
+// selectors start from.
+const memDoc = SYM ? SYM.names.map((n) => { const d = (P0().dims || []).find((x) => x[0] === n); return d ? d[1] : 1; }) : [];
+function P0() { return D.program || {}; }
+let memX = memDoc.slice();
+const memGroup = (path) => path.split(".")[0];
+const memGroups = SYM ? [...new Set(SYM.bufs.filter((b) => b.param != null).map((b) => memGroup(b.param)))] : [];
+const memDocType = new Map();
+if (SYM) for (const b of SYM.bufs) if (b.param != null && !memDocType.has(memGroup(b.param))) memDocType.set(memGroup(b.param), b.store);
+let memTypes = new Map(memDocType);
+// Each call of `symbolic.calls`, its descendants (itself among them), and
+// the diagram's boxes it is (`memory.calls`, by path).
+const memDesc = SYM ? SYM.calls.map((p) => SYM.calls.map((q, j) => (q.length >= p.length && p.every((x, k) => x === q[k]) ? j : -1)).filter((j) => j >= 0)) : [];
+const memCallOfNode = new Map();
+if (SYM && MEM) SYM.calls.forEach((p, i) => { const mc = MEM.calls.find((c) => memKey(c.path) === memKey(p)); if (mc) for (const id of mc.nodes) memCallOfNode.set(id, i); });
+let memCache = null;
+// The count at `x` with the parameter types `types`.
+function memAt(x, types) {
+  const n = MEM.live.length;
+  const delta = new Float64Array(n + 1);
+  let inputs = 0, outputs = 0, params = 0;
+  const bytes = SYM.bufs.map((b) => {
+    let v = Math.round(evalPoly(b.poly, x));
+    if (b.param != null) {
+      const t = types.get(memGroup(b.param));
+      if (t && BYTES[t] && BYTES[b.store]) v = (v / BYTES[b.store]) * BYTES[t];
+      params += v;
+    }
+    return v;
+  });
+  SYM.bufs.forEach((b, i) => {
+    if (b.input) inputs += bytes[i];
+    if (b.output) outputs += bytes[i];
+    if (!b.input && b.first != null) { delta[b.first] += bytes[i]; delta[b.last + 1] -= bytes[i]; }
+  });
+  const live = new Float64Array(n);
+  let cur = 0, peak = 0, at = 0;
+  for (let k = 0; k < n; k++) { cur += delta[k]; live[k] = cur; if (cur > peak) { peak = cur; at = k; } }
+  const direct = new Float64Array(SYM.calls.length);
+  SYM.bufs.forEach((b, i) => { if (!b.input && b.call != null && b.first != null && b.first <= at && b.last >= at) direct[b.call] += bytes[i]; });
+  const share = memDesc.map((js) => js.reduce((s, j) => s + direct[j], 0));
+  return { live, peak, at, inputs, outputs, params, needs: inputs + peak, share };
+}
+function memNow() {
+  const key = memX.join(",") + "|" + [...memTypes].join(",");
+  if (!memCache || memCache.key !== key) memCache = { key, m: memAt(memX, memTypes) };
+  return memCache.m;
+}
+// Each drawn box coloured by its call's share of the peak.
+function memPaint() {
+  if (!N) return;
+  // A folded box takes the scale; an open one, whose inside shows where
+  // its share is, a light tint; each its share, in per cent, on its header.
+  const m = memOn && SYM ? memNow() : null;
+  for (const [i, g] of netNodes) {
+    const rs = g.querySelectorAll(":scope > rect.b");
+    for (const t of g.querySelectorAll(":scope > text.mp")) t.remove();
+    if (!rs.length) continue;
+    const c = memCallOfNode.get(i);
+    const f = m && c != null && m.peak > 0 ? m.share[c] / m.peak : null;
+    const open = netOpened.has(i);
+    for (const r of rs) r.style.fill = f == null ? "" : open ? `color-mix(in srgb, var(--mem) ${Math.round(3 + 9 * f)}%, var(--card))` : `color-mix(in srgb, var(--mem) ${Math.round(6 + 64 * f)}%, var(--panel))`;
+    if (f != null) {
+      const r = rs[rs.length - 1];
+      const t = text(g, +r.getAttribute("x") + +r.getAttribute("width") - 8, +r.getAttribute("y") + 15, `${(100 * f).toFixed(f > 0 && f < 0.1 ? 1 : 0)} %`, "mp");
+      t.setAttribute("text-anchor", "end");
+    }
+  }
+}
+// The panel: a slider per dimension, a type per parameter group, the
+// numbers, the peak's formula, and the live bytes over the operations.
+function memPanel() {
+  const el = $("#mempanel");
+  el.hidden = !memOn || !MEM;
+  if (el.hidden) return 0;
+  const t0 = performance.now();
+  if (!SYM) { el.textContent = "No polynomial for this entry: the numbers are the document's (§13)."; return 0; }
+  const m = memNow();
+  const range = (a) => { const g = SYM.grid[a]; return [1, Math.max(4 * Math.max(...g), 2 * memDoc[a])]; };
+  let h = "";
+  SYM.names.forEach((n, a) => { const [lo, hi] = range(a); h += `<label>${esc(n)} <input type="range" min="${lo}" max="${hi}" step="1" value="${memX[a]}" data-dim="${a}"> <b>${memX[a]}</b></label>`; });
+  for (const g of memGroups) {
+    const t0g = memDocType.get(g);
+    const opts = BYTES[t0g] ? ["f64", "f32", "bf16"] : [t0g];
+    h += `<label>θ.${esc(g)} <select data-group="${esc(g)}">${opts.map((t) => `<option${t === memTypes.get(g) ? " selected" : ""}>${t}</option>`).join("")}</select></label>`;
+  }
+  const best = SYM.peaks.map((p) => [evalPoly(p.poly, memX), p]).sort((a, b) => b[0] - a[0])[0];
+  h += `<span class="nums">parameters ${m.params} · inputs ${m.inputs} · peak ${m.peak} at operation ${m.at + 1} · needs ${m.needs} bytes</span>`;
+  h += `<span><span class="scale"></span> share of the peak, 0 to 100 %</span>`;
+  if (best && mathOn) h += `<span class="formula">peak = ${tex(best[1].tex, false)}${SYM.peaks.length > 1 ? ` <span class="nums">(the largest of ${SYM.peaks.length})</span>` : ""}</span>`;
+  // The curve.
+  const W = 320, H = 46, n = m.live.length, top = Math.max(1, m.peak);
+  let pts = "";
+  for (let k = 0; k < n; k++) pts += `${((k / Math.max(1, n - 1)) * W).toFixed(1)},${(H - 2 - (m.live[k] / top) * (H - 6)).toFixed(1)} `;
+  const px = (m.at / Math.max(1, n - 1)) * W;
+  h += `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><title>the live bytes at each of the ${n} operations</title><polyline class="curve" points="${pts}"/><circle class="pk" cx="${px.toFixed(1)}" cy="4" r="3"/></svg>`;
+  el.innerHTML = h;
+  el.querySelectorAll("input[data-dim]").forEach((inp) => inp.oninput = () => { memX[+inp.dataset.dim] = +inp.value; memToAddress(); memPanel(); memPaint(); });
+  el.querySelectorAll("select[data-group]").forEach((sel) => sel.onchange = () => { memTypes.set(sel.dataset.group, sel.value); memToAddress(); memPanel(); memPaint(); });
+  return performance.now() - t0;
+}
+function memToAddress() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  if (memOn) q.set("memory", ""); else q.delete("memory");
+  if (SYM && memX.some((x, a) => x !== memDoc[a])) q.set("mdims", SYM.names.map((n, a) => n + ":" + memX[a]).join(",")); else q.delete("mdims");
+  const changed = [...memTypes].filter(([g, t]) => memDocType.get(g) !== t);
+  if (changed.length) q.set("mtypes", changed.map(([g, t]) => g + ":" + t).join(",")); else q.delete("mtypes");
+  history.replaceState(null, "", "#" + q.toString());
+}
+function memSet(on) {
+  memOn = on;
+  $("#memory").classList.toggle("on", memOn);
+  memToAddress();
+  memPanel();
+  return drawNet();
+}
+$("#memory").onclick = () => memSet(!memOn);
+if (!MEM) $("#memory").hidden = true;
 $("#netreset").onclick = () => { netOpen = new Set(N.default); netToAddress(); drawNet(); };
 $("#netall").onclick = () => { netOpen = new Set(allBoxes); netToAddress(); drawNet(); };
 $("#netnone").onclick = () => { netOpen = new Set(); netToAddress(); drawNet(); };
@@ -1014,8 +1183,8 @@ $("#sub").textContent = `presk ${D.compiler} · ${P.file} · entry ${P.entry}` +
 $("#legend").innerHTML = [["lowering", "--how-lower"], ["differentiation", "--how-ad"], ["optimizer", "--how-opt"], ["fusion and sites", "--how-fuse"], ["pass-through", "--how-pass"], ["f64", "--f64"], ["f32", "--f32"], ["bf16", "--bf16"]].map(([n, c]) => `<span style="--c: var(${c})">${n}</span>`).join("");
 
 // ----- start, and the bench of statement P3 -----------------------------------------
-if (D.format !== 3) {
-  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 3; this one is format ${esc(D.format)}.</p>`;
+if (D.format !== 4) {
+  document.body.innerHTML = `<p style="padding:16px">This page reads explain.json of format 4; this one is format ${esc(D.format)}.</p>`;
 } else {
   const first = render();
   if (L.lesson.length) go(L.step);
@@ -1027,6 +1196,15 @@ if (D.format !== 3) {
   for (const [k, set] of [["labels", () => { labelsOn = true; }], ["keys", () => { keysOn = true; }], ["backward", () => { backwardOn = true; }]]) if (q0.has(k)) { set(); $("#" + k).classList.add("on"); }
   // `theme=light|dark`; `plain`: nothing selected.
   if (["light", "dark"].includes(q0.get("theme"))) document.documentElement.dataset.theme = q0.get("theme");
+  // `memory`: the overlay on; `mdims=B:4,T:32` and `mtypes=blocks:f32`, the
+  // panel's dimensions and types.
+  if (MEM && q0.has("memory")) {
+    if (SYM && q0.get("mdims")) for (const kv of q0.get("mdims").split(",")) { const [n, v] = kv.split(":"); const a = SYM.names.indexOf(n); if (a >= 0 && +v > 0) memX[a] = +v; }
+    if (q0.get("mtypes")) for (const kv of q0.get("mtypes").split(",")) { const [g, t] = kv.split(":"); if (memDocType.has(g) && BYTES[t]) memTypes.set(g, t); }
+    memOn = true;
+    $("#memory").classList.add("on");
+    memPanel();
+  }
   if (q0.has("plain")) selection = new Set();
   if (N && q0.get("tab") === "network") showTab("network");
   else if (q0.has("plain")) light();
@@ -1097,8 +1275,40 @@ if (D.format !== 3) {
           }
         }
       }
+      // M4 (plan 0.15.0 step 4): the panel at the document's dimensions and
+      // types counts the compiler's numbers, and at the JSON's check points
+      // what a recording there counted; the overlay, an opening with it and
+      // a slider's move under P3's bound.
+      let m4 = "";
+      if (MEM && SYM) {
+        const wrong = [];
+        const d = memAt(memDoc, memDocType);
+        if (d.peak !== MEM.peak) wrong.push(`the peak ${d.peak}, the compiler's ${MEM.peak}`);
+        if (d.at !== MEM.at) wrong.push(`the peak's operation ${d.at}, the compiler's ${MEM.at}`);
+        if (d.inputs !== MEM.inputs) wrong.push(`the inputs ${d.inputs}, the compiler's ${MEM.inputs}`);
+        if (d.outputs !== MEM.outputs) wrong.push(`the outputs ${d.outputs}, the compiler's ${MEM.outputs}`);
+        if (d.params !== MEM.params.bytes) wrong.push(`the parameters ${d.params}, the compiler's ${MEM.params.bytes}`);
+        SYM.calls.forEach((p, i) => { const mc = MEM.calls.find((c) => memKey(c.path) === memKey(p)); if (mc && mc.share !== d.share[i]) wrong.push(`${p.join(" ")}: a share of ${d.share[i]}, the compiler's ${mc.share}`); });
+        for (const c of SYM.checks) {
+          const x = memAt(c.at, memDocType);
+          if (x.peak !== c.peak || x.at !== c.op || x.inputs !== c.inputs || x.outputs !== c.outputs) wrong.push(`at ${c.at.join(", ")}: ${x.peak} at ${x.at}, the recording's ${c.peak} at ${c.op}`);
+        }
+        showTab("network");
+        netOpen = new Set(allBoxes);
+        const on = memSet(true);
+        const moves = [];
+        for (let a = 0; a < memX.length; a++) for (const v of SYM.grid[a]) { const t1 = performance.now(); memX[a] = v; memPanel(); memPaint(); moves.push(performance.now() - t1); }
+        memX = memDoc.slice();
+        for (const g of memGroups) { const t1 = performance.now(); memTypes.set(g, "f32"); memPanel(); memPaint(); moves.push(performance.now() - t1); }
+        memTypes = new Map(memDocType);
+        const toggled = [];
+        for (const b of allBoxes.slice(0, 40)) { toggled.push(openBox(b)); toggled.push(openBox(b)); }
+        memSet(false);
+        m4 = ` · M4: ${wrong.length ? "DIFFER: " + wrong.slice(0, 6).join("; ") : `the compiler's numbers at the document's dimensions and at ${SYM.checks.length} check points`}; the overlay on the exploded view ${on.toFixed(1)} ms, ${moves.length} slider and type moves at most ${max(moves).toFixed(1)} ms, ${toggled.length} toggles with it at most ${max(toggled).toFixed(1)} ms`;
+      } else if (MEM) m4 = " · M4: no polynomial";
       netOpen = new Set(N.default);
       showTab("pipeline");
+      el.textContent += m4;
       el.textContent += ` · N5, E5: ${opens.length} openings drawn, at most ${max(opens).toFixed(1)} ms, the exploded one ${exploded.toFixed(1)} ms; ${toggles.length} toggles in the exploded one, at most ${max(toggles).toFixed(1)} ms; ${picks.length} selects, at most ${max(picks).toFixed(1)} ms · E3: ${N.views.length} openings composed, ${differ.length ? "DIFFER: " + differ.slice(0, 8).join("; ") : "the compiler's to the tenth"} · N1, E2: ${clicked} boxes clicked, ${bad.length ? "NOT LIT: " + bad.join("; ") : "every one lit in the columns"}`;
     }
     document.title = el.textContent;

@@ -142,12 +142,23 @@ fn the_json_holds_the_document_and_the_table() {
         let (md, json) = written(name, "tutorial/07_train.psk", "loss", &["B=4"], &[], how, &[Target::Native, Target::C], opt, true);
         let json = json.expect("explain.json written");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["format"], 3);
+        assert_eq!(v["format"], 4);
         // The network diagram, since format 2 (plan 0.14.0, D141), its
         // frames since format 3 (plan 0.14.1, D146).
         assert!(v["network"]["nodes"].as_array().is_some_and(|n| !n.is_empty()), "{name}: no network");
         assert!(v["network"]["frames"].as_array().is_some_and(|f| !f.is_empty()), "{name}: no frames");
         assert_eq!(v["network"]["views"].as_array().map(|v| v.len()), Some(2), "{name}: the default and the exploded openings");
+        // The memory, since format 4 (plan 0.15.0 step 1, D148): the live
+        // bytes at every operation, the peak among them, and the boxes'
+        // shares, each call that the diagram draws naming its box.
+        let m = &v["memory"];
+        let live: Vec<u64> = m["live"].as_array().expect("memory.live").iter().map(|x| x.as_u64().unwrap()).collect();
+        assert_eq!(live.iter().max().copied(), m["peak"].as_u64(), "{name}: the peak is the largest live set");
+        assert_eq!(live[m["at"].as_u64().unwrap() as usize], m["peak"].as_u64().unwrap(), "{name}: the peak's operation");
+        let calls = m["calls"].as_array().unwrap();
+        let top: u64 = calls.iter().filter(|c| c["path"].as_array().unwrap().len() == 1).map(|c| c["share"].as_u64().unwrap()).sum();
+        assert_eq!(top + m["own"].as_u64().unwrap(), m["peak"].as_u64().unwrap(), "{name}: the shares sum to the peak");
+        assert!(calls.iter().any(|c| !c["nodes"].as_array().unwrap().is_empty()), "{name}: no call names a box of the diagram");
         let again = presk_explain::doc::markdown(&from_json(&v)).0;
         assert!(again == md, "{name}: the Markdown rendered from the JSON differs from explain.md");
         let stages: Vec<&str> = v["stages"].as_array().unwrap().iter().map(|s| s["stage"].as_str().unwrap()).collect();

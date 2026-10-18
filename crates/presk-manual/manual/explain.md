@@ -79,6 +79,7 @@ paying for the exact reference again.
 | 10 | Targets | the native backend; the C program, its files and its first contraction as C; the PyTorch modules |
 | 11 | Measured | with `--measure`: the realization natively against the exact reference, a call timed, each kernel's median launch beside its prediction, the host by phase |
 | 12 | Sites through every stage | each site's line, magnitude, sensitivity, type and why, fusion, nest and layout, kernel, C function and time; an index of every site and the sections that name it, in `listings/` |
+| 13 | Memory | what one call needs in memory, as `presk memory` prints it (0.15.0 step 1, D148): the parameters at their stored types, the inputs, the peak of live bytes and its operation, the outputs, the C program's arena beside them, the buffers placed by their lives, and each call's share of the peak and its own peak; when the entry is the training run's objective, the step `presk train` makes from it under both `--remat`s, as `presk memory --step` prints it (step 2, D149); the inputs, the outputs and the peak as polynomials in the dimensions, as `presk memory --symbolic` prints them (step 3, D150) |
 | | Appendix | every command behind the sections, in order |
 
 **The site is the thread.** A site is named `<function>/%<n>`, `n` the
@@ -256,12 +257,13 @@ D135), for a program that reads a compilation rather than a person: the
 pipeline view's page reads it. It holds the document's facts as values and
 the provenance table of §12, and it is deterministic without `--measure`,
 as the Markdown is: no time, no absolute path. Its fields, in layout
-`format` 3 (0.14.1, D146, the network's frames in place of its views;
-format 2 is 0.14.0's, which added `network`, D141; format 1 0.13.0's):
+`format` 4 (0.15.0 step 1, D148, which added `memory`; format 3 is
+0.14.1's, the network's frames in place of its views, D146; format 2
+0.14.0's, which added `network`, D141; format 1 0.13.0's):
 
 | Field | What it holds |
 |---|---|
-| `format` | `2`, the layout's version; a reader refuses one it does not know |
+| `format` | `4`, the layout's version; a reader refuses one it does not know |
 | `compiler` | the compiler's version |
 | `program` | `file`, `entry`, `dims` (`[name, value]` pairs), `consts`, `realization` (its label), `opt`, `planned` (a profile planned the layouts), `differentiated` (the program has generated functions) |
 | `traced` | the sites §12 traces: `--site`'s, or the default ones |
@@ -273,6 +275,7 @@ format 2 is 0.14.0's, which added `network`, D141; format 1 0.13.0's):
 | `precision` | under `--budget`: `estimate` (the solver's first-order estimate, the sum of the terms), `budget` (absolute), `measured` (the gap measured against the exact reference) and `bound` (the conditioned rule's, on the output), or `null` |
 | `links` | every link: `child` and `parents` as `stage:key`, `how` (the reason's name, from the `presk_provenance::How` list) and its fields: `rule`, `kind`, `mode`, `role`, `rules`, `members`, `stop`, `point`, `points`, `shared_by`, `count`, `lines` |
 | `network` | the network diagram (below), or `null` when the entry does not resolve |
+| `memory` | what one call needs in memory (§13), or `null` when the host could not be recorded: `params` (`count`, `bytes`, `types`, `[type, elements]` pairs), `inputs`, `peak`, `at` (the peak's operation), `site` and `call` (its site and its call, as §13 names them), `outputs`, `needs`, `own` (what the entry's own body made that is live at the peak), `live` (the bytes live at each operation of the recording, the inputs left out), `launches`, `arena` (`total`, `inputs`, `flat`, the C program's as `presk export` computes it, or `refused` and why), `placed` (the bytes the buffers take placed by their lives), and `calls`: each with its `path` (the calls' `let`s, a fold's iterations together), `func`, `params` (its path in the entry's parameters), `runs`, `share`, `own`, `own_at` and `nodes`, the network diagram's boxes it is; and, when the entry is the training run's objective, `step`, one per `--remat` (step 2, D149): `remat`, `calls` (each `func`, `inputs`, `peak`, `at`, `outputs`), `params`, `moments`, `gradients`, `others`, `kept`, `reverse_at`, `phases`, `peak`, `peak_call` and `terms` (`[name, bytes]` pairs, which sum to `peak`); and `symbolic` (step 3, D150): `names` (the dimensions), `grid`, `check`, `inputs`, `outputs` (each a polynomial: `[exponents, coefficient]` terms, a coefficient an integer or `"p/q"`) with their LaTeX (`inputs_tex`, `outputs_tex`), `peaks` (each candidate's operation `at`, `poly` and `tex`), `bufs` (each buffer's `poly`, `first`, `last`, `input`, `output` and `call`, an index into `calls`) and `calls` (the calls' paths): what the page counts again at other dimensions |
 | `document` | the document itself: `title`, `subtitle`, `header` and `sections` (`number`, `title`, `purpose`, `blocks`, `commands`, `sections`), each block one of `prose`, `table` (`head`, `rows`), `code` (`lang`, `text`, `name`), `note` (`title`, `text`), `attach` (`name`, `text`) |
 
 The document's strings are those the Markdown prints, and the Markdown is
@@ -488,10 +491,30 @@ opening, the entry and its first box opened.
   diagram too; what the opening does not draw, inside a folded box, lights
   that box. The rest is dimmed only around something lit, and `Esc`
   clears.
-- **The lesson** records the tab and the opened boxes with each step.
+- **Memory** (0.15.0 step 4, D151) colours each box by its call's share
+  of the peak of live bytes (§13). A folded box takes the scale; an open
+  one, whose inside shows where its share is, takes a light tint. Each box
+  carries its share in per cent on its header, and hovering over a box
+  adds its share and its own peak. A panel above the diagram has:
+  - a slider for each dimension;
+  - a stored type for each parameter group (`f64`, `f32` or `bf16`, the
+    realization's by default);
+  - the parameters, the inputs, the peak and its operation, what is
+    needed;
+  - the peak's formula;
+  - the live bytes over the operations as a curve.
+
+  The page counts these again at the panel's values from each buffer's
+  polynomial and its life (`memory.symbolic`), by the compiler's
+  arithmetic. The activations keep the realization's types: another type
+  for them is another realization, with other conversions.
+- **The lesson** records the tab, the opened boxes and the memory overlay
+  with its settings, with each step.
 
 The address takes `tab=network`, `net=` (the open boxes' ids), `labels`,
-`keys`, `backward`, `theme=light|dark` and `plain` (nothing selected).
+`keys`, `backward`, `memory` (the overlay on), `mdims=B:4,T:32` and
+`mtypes=blocks:f32` (the panel's settings), `theme=light|dark` and
+`plain` (nothing selected).
 
 Under `#bench`, after P3's timings, the page draws each box opened with
 the boxes it is inside, the exploded opening and the folded one, folds and
@@ -511,6 +534,18 @@ headless Firefox on falicon, three runs each (0.14.1):
 Every opening composed was the compiler's, and every box clicked lit its
 elements. An opening's time is mostly KaTeX's, typesetting the folded
 boxes' formulas.
+
+Since 0.15.0 step 4 (D151), the bench also checks the memory panel
+(statement M4). At the document's dimensions and types, the page's peak,
+its operation, the inputs, the outputs, the parameters and every call's
+share are the compiler's. At the JSON's three check points
+(`symbolic.checks`, recorded off the grid), its peak, operation, inputs
+and outputs are what the recording counted. With the overlay on, the
+exploded view, the slider and type moves and the toggles are timed. On
+the course GPT at `D = 64` and on the decoder block at the 7B width:
+- the overlay draws in 2.0 ms;
+- a move takes at most 1.0 ms;
+- a toggle takes at most 14.0 and 11.0 ms.
 
 ## The native column
 

@@ -157,6 +157,41 @@ pub fn dim(e: &DimExpr, elab: &ElabProgram) -> M {
     acc.unwrap_or_else(|| M::num("0"))
 }
 
+/// A polynomial in the dimensions (plan 0.15.0 step 3): its terms, each a
+/// rational coefficient and the dimensions' names with their powers, the
+/// highest degree first as given.
+pub fn poly(terms: &[(presk_types::dim::Rational, Vec<(String, u32)>)]) -> M {
+    let mut acc: Option<M> = None;
+    for (c, vars) in terms {
+        if *c == rat(0) {
+            continue;
+        }
+        let neg = *c < rat(0);
+        let a = if neg { -c.clone() } else { c.clone() };
+        let factors: Vec<M> = vars.iter().filter(|(_, e)| *e > 0).map(|(n, e)| if *e == 1 { M::name(n.clone()) } else { M::Pow(Box::new(M::name(n.clone())), Box::new(M::num(e.to_string()))) }).collect();
+        // The coefficient first, then the factors, left to right.
+        let mut parts: Vec<M> = Vec::new();
+        if a.numer() != &1.into() || factors.is_empty() {
+            parts.push(M::num(a.numer().to_string()));
+        }
+        parts.extend(factors);
+        let mut term = parts.remove(0);
+        for f in parts {
+            term = M::bin(B::DimMul, term, f);
+        }
+        if !a.is_integer() {
+            term = M::bin(B::Div, term, M::num(a.denom().to_string()));
+        }
+        acc = Some(match (acc, neg) {
+            (None, false) => term,
+            (None, true) => M::Neg(Box::new(term)),
+            (Some(x), false) => M::bin(B::Add, x, term),
+            (Some(x), true) => M::bin(B::Sub, x, term),
+        });
+    }
+    acc.unwrap_or_else(|| M::num("0"))
+}
+
 fn shape(s: &Shape, elab: &ElabProgram) -> Vec<M> {
     let mut v = Vec::new();
     if s.prefix.is_some() {
