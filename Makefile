@@ -38,6 +38,11 @@
 #   make pytorch-gap      PyTorch's own gap to the exact model and its flips: the course GPT at D = 64 exported and run by PyTorch eager in float32 and float64 on the 461 held-out windows, against make margins' exact logits, beside the compiler's realizations, into out/pytorch-gap/margins.md (D130; needs make margins; seconds, nothing timed)
 #   make gappa            one nest's bound proved in Gappa beside the compiler's bound and the measured gap: the layer norm in f32 at D = 8…64 on eight rows, into out/gappa/summary.md (D108; needs `gappa`, apt's; minutes, nothing timed)
 #   make gappa-dot        a contraction's bound proved in Gappa beside the compiler's bound and the measured gap: `dot` of [8, K]·[K, 8] in f32 at K = 8…128 under the sequential order and interleaved(4, 8, 16), into out/gappa-dot/summary.md (D131; needs `gappa`; minutes, nothing timed)
+#   make solver-rounding  the solver's rounding term measured on the envelope and a narrowing step by measurement (--rounding measured, --narrow measured; defaults unchanged): V6's protocol on the logits at D = 64 at 4.67e-4 and 1e-6 in four forms, each judged on the 461 held-out windows beside D154's searches, into out/solver-rounding/report.md (D155; needs make margins and make precision-tuning; about half an hour)
+#   make off-sample       the certificate off-sample against the size of the calibration sample: the envelope of the logits at D = 64 on the first 1, 2, 4, 8, 16, 32 held-out windows and on all 461, the solver in three forms at 4.67e-4 and 1e-6 on each, every realization judged on the windows it was not calibrated on, into out/off-sample/report.md (D156; needs make margins and make solver-rounding; about an hour and a half on 12 jobs)
+#   make spend            three ways to spend the budget judged out of sample: the logits at D = 64 on the envelopes of the first 4 and 16 held-out windows, seven forms (--rounding unit, the default, --estimate rss, --narrow measured, --narrow heldout and the two with rss) at 4.67e-4 and 1e-6, every realization judged on the windows no form saw, into out/spend/report.md (D161; needs make margins)
+#   make precision-tuning a precision-tuning tool on the exported C: CRAFT's variable mode on the C program of the logits at D = 64 under the paper's criterion, Precimonious's and CRAFT's searches on presk's realizations, all of it judged on the 461 held-out windows, into out/precision-tuning/report.md (D154; needs make margins; network once for the tools, about half an hour)
+#   make pytorch-modes    PyTorch compiled (torch.compile) and in mixed precision (AMP bfloat16) beside eager: the course GPT's forward pass and training step by D126's protocol, the modes' identity, their gap to the exact logits at D = 64 and their quality after 600 steps, into out/pytorch-modes/report.md (D153; needs make margins; alone, about an hour)
 #   make pytorch-decoder  the Llama 2 decoder block at the 7B width, its forward pass natively and in PyTorch eager, ten X925 cores pinned, into out/pytorch-decoder/report.md (D107; alone, about three and a half hours)
 #   make host-profile     the native host's time by phase on the course GPT's forward pass, gradient and training step, into out/host-profile/report.md (0.10.0 step 5, D95; a quiet machine)
 #   make zig              zig from PyPI in .venv-zig: the Clang and the x86-64 cross-compiler of statement C3 (0.9.0 step 5)
@@ -99,7 +104,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: network-figure math-check margins widening pytorch-gap gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -964,6 +969,58 @@ C_WAIT ?= GOMP_SPINCOUNT=8M
 pytorch-baseline:
 	env -u CFLAGS $(CARGO) build --release -p presk
 	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) CFLAGS="$(CFLAGS)" C_WAIT="$(C_WAIT)" experiments/pytorch_baseline.sh $(BASELINE_OUT)
+
+# PyTorch compiled and in mixed precision, beside eager (D153): the exported
+# course GPT in four modes (eager, torch.compile with its defaults, AMP
+# bfloat16, both), the forward pass and the training step in five processes
+# a row on the X925 cores (RA4_CORES) with D127's rows and the compiler's
+# step as controls, the modes' logits against the native f64 ones and, at
+# D = 64, against make margins' exact ones, and each mode's model trained
+# 600 steps at D = 64. Needs make margins' output, make pytorch-gap's rows,
+# D127's out/retime-0.12.0 and the .venv's torch.
+pytorch-modes:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) C_WAIT="$(C_WAIT)" experiments/pytorch_modes.sh out/pytorch-modes
+
+# A precision-tuning tool on the exported C (D154): CRAFT's variable mode
+# (crafthpc/craft, its Ruby driver) on `presk export --target c` of the
+# logits at D = 64, its variables the C program's buffers and kernel
+# locals, its builder experiments/tuning/retype.py (TypeForge's stand-in),
+# its test the exact reference on the conformance inputs at ε*(10⁻³) and
+# 10⁻⁶; the solver beside it; Precimonious's and CRAFT's searches on presk's
+# realizations; every result run on the 461 held-out windows. Fetches Ruby
+# 3.1, CRAFT, ADAPT and CoDiPack into .tuning (experiments/tuning/setup.sh).
+# Needs make margins' output.
+precision-tuning:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	CORE=$(firstword $(subst -, ,$(firstword $(subst $(comma), ,$(RA4_CORES))))) experiments/tuning/tuning.sh out/precision-tuning
+
+# The estimate's rounding term measured on the envelope and a narrowing
+# step decided by measurement (D155): `presk solve --rounding measured` and
+# `--narrow measured`, both off by default, on V6's protocol at D = 64 (the
+# logits at ε*(10⁻³) and at 10⁻⁶), every realization run on the 461 held-out
+# windows beside D154's searches. Needs make margins' and make
+# precision-tuning's outputs.
+solver-rounding:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/solver_rounding.sh out/solver-rounding
+
+# The certificate off-sample against the size of the calibration sample
+# (D156): the envelope of the logits at D = 64 on the first N held-out
+# windows, N = 1 to 32, and on all 461 (by chunks, folded); `presk solve`
+# at ε*(10⁻³) and 10⁻⁶ in three forms on each; every realization's gap on
+# the 461 windows split into the N it was calibrated on and the others,
+# with the flips and the certification out of sample. Needs make margins'
+# and make solver-rounding's outputs.
+off-sample:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/off_sample.sh out/off-sample
+
+# Three ways to spend the budget, judged out of sample (plan 0.16.0 step 4,
+# D161): --estimate rss, --narrow measured --margin k and --narrow heldout.
+spend:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/spend.sh out/spend
 
 # PyTorch eager on the Llama 2 decoder block (D107): D100's protocol on one
 # block of coverage/llama.psk at the 7B width, the forward pass at 384

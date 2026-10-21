@@ -25,12 +25,16 @@ impl Elem for f64 {
     fn un(self, op: UnOp) -> Self {
         match op {
             UnOp::Neg => -self,
-            UnOp::Exp => self.exp(),
-            UnOp::Log => self.ln(),
-            UnOp::Tanh => self.tanh(),
+            // The `libm` crate's functions, musl's, which the native backend
+            // binds and the C export ships (D76, D78), so that the kernel
+            // interpreter computes their bits (0.16.0, D159; until then the
+            // standard library's, the system's, differed in the last bits).
+            UnOp::Exp => libm::exp(self),
+            UnOp::Log => libm::log(self),
+            UnOp::Tanh => libm::tanh(self),
             UnOp::Sqrt => self.sqrt(),
-            UnOp::Sin => self.sin(),
-            UnOp::Cos => self.cos(),
+            UnOp::Sin => libm::sin(self),
+            UnOp::Cos => libm::cos(self),
             UnOp::Erf => libm::erf(self),
             UnOp::Abs => self.abs(),
         }
@@ -55,12 +59,12 @@ impl Elem for f32 {
     fn un(self, op: UnOp) -> Self {
         match op {
             UnOp::Neg => -self,
-            UnOp::Exp => self.exp(),
-            UnOp::Log => self.ln(),
-            UnOp::Tanh => self.tanh(),
+            UnOp::Exp => libm::expf(self),
+            UnOp::Log => libm::logf(self),
+            UnOp::Tanh => libm::tanhf(self),
             UnOp::Sqrt => self.sqrt(),
-            UnOp::Sin => self.sin(),
-            UnOp::Cos => self.cos(),
+            UnOp::Sin => libm::sinf(self),
+            UnOp::Cos => libm::cosf(self),
             UnOp::Erf => libm::erff(self),
             UnOp::Abs => self.abs(),
         }

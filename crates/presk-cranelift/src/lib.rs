@@ -3,9 +3,10 @@
 //! function pointer; the host program is the kernel backend's. Buffers are
 //! passed as an array of pointers, loops become basic blocks, `sqrt` is
 //! native and the other transcendental functions and `erf` are calls into
-//! the `libm` crate, a port of musl's. The kernel interpreter uses the same
-//! crate for `erf` only, and Rust's standard library, the system's C library,
-//! for the others (D76).
+//! the `libm` crate, a port of musl's (D76). The kernel interpreter calls
+//! the same crate for every one of them since 0.16.0 (D159), so that the two
+//! executors compute the same bits; until then it called it for `erf` only,
+//! and Rust's standard library, the system's C library, for the others.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

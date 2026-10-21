@@ -50,6 +50,12 @@ pub struct Interp<'p, R: Real> {
     /// grows as `b` shrinks, so the analysis needs a floor as well as a
     /// ceiling (0.5.0 step 4).
     pub minima: Option<BTreeMap<String, f64>>,
+    /// And the largest rounding error of the site's values in each storage
+    /// type, `max |fl_d(x) − x|` for `d` = `f64`, `f32`, `bf16` in that order
+    /// ([`max_rounding`]): what the estimate's term `u(d) · max|x|` stands
+    /// for, measured on the same values (D155). It is 0 where every value is
+    /// exact in the type, as 1 and 32 are in `bf16`.
+    pub roundings: Option<BTreeMap<String, [f64; 3]>>,
     /// And `Σ |x|` at each site. The sensitivity analysis wants a **1-norm**
     /// of an adjoint, not a maximum: perturbing every element of `v` by `δ`
     /// moves the output by `‖∂L/∂v‖₁ · δ`, which is the quantity a budget is
@@ -138,7 +144,7 @@ impl Deaths {
 
 impl<'p, R: Real> Interp<'p, R> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32) -> Self {
-        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, sums: None, elems: None, ops: None, terms: None, live: None, deaths: Vec::new(), zeros: Default::default(), _r: std::marker::PhantomData }
+        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, roundings: None, sums: None, elems: None, ops: None, terms: None, live: None, deaths: Vec::new(), zeros: Default::default(), _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.
@@ -228,13 +234,20 @@ impl<'p, R: Real> Interp<'p, R> {
                     self.terms.as_mut().expect("just checked").entry(site).or_default().join(&t);
                 }
             }
-            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.elems.is_some() || self.ops.is_some() {
+            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.roundings.is_some() || self.elems.is_some() || self.ops.is_some() {
                 let site = format!("{}/%{}", func.name, l.var.0);
                 let m = max_abs(&v);
                 if self.magnitudes.is_some() {
                     let e = self.magnitudes.as_mut().expect("just checked").entry(site.clone()).or_insert(0.0);
                     if m > *e {
                         *e = m;
+                    }
+                }
+                if let Some(rs) = self.roundings.as_mut() {
+                    let r = max_rounding(&v);
+                    let e = rs.entry(site.clone()).or_insert([0.0; 3]);
+                    for (a, b) in e.iter_mut().zip(r) {
+                        *a = a.max(b);
                     }
                 }
                 if let Some(o) = self.ops.as_mut()
@@ -628,6 +641,61 @@ pub fn max_abs<R: Real>(v: &Value<R>) -> f64 {
         Value::F64(x) => x.abs(),
         _ => 0.0,
     }
+}
+
+/// The largest rounding error over every real leaf of a value, in each
+/// storage type: `max |fl_d(x) − x|` for `d` = `f64`, `f32`, `bf16`.
+///
+/// Each `x` is rounded as the runtime rounds it: to the nearest `f64`, that
+/// to the nearest `f32`, and that to the nearest `bf16`, ties to even on the
+/// `f32`'s bits (`presk_rt::f32_to_bf16`, which this crate cannot call: the
+/// runtime depends on it). The difference is taken at the value's own
+/// precision, so the `f64` term is the 128-bit value's distance to its double,
+/// and a value exact in a type contributes 0 to that type's term. Never more
+/// than `u(d) · max|x|`, the term the estimate used before D155. A value that
+/// overflows a type has an infinite error there; a NaN is skipped.
+pub fn max_rounding<R: Real>(v: &Value<R>) -> [f64; 3] {
+    let join = |a: [f64; 3], b: [f64; 3]| [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])];
+    match v {
+        Value::Real(t) => t.data.iter().map(|x| rounding_of(x)).fold([0.0; 3], join),
+        Value::Tuple(xs) => xs.iter().map(max_rounding).fold([0.0; 3], join),
+        Value::Record(xs) => xs.iter().map(|(_, x)| max_rounding(x)).fold([0.0; 3], join),
+        Value::F64(x) => rounding_of_f64(*x),
+        _ => [0.0; 3],
+    }
+}
+
+/// One value's rounding error in `f64`, `f32` and `bf16`.
+fn rounding_of<R: Real>(x: &R) -> [f64; 3] {
+    let x64 = x.to_f64();
+    if x64.is_nan() {
+        return [0.0; 3];
+    }
+    let p = x.prec();
+    let off = |y: f64| if y.is_finite() { x.sub(&R::from_f64(y, p)).abs().to_f64() } else { f64::INFINITY };
+    let x32 = x64 as f32;
+    [off(x64), off(x32 as f64), off(bf16_of(x32) as f64)]
+}
+
+/// The same for a machine double, whose `f64` error is 0.
+pub fn rounding_of_f64(x: f64) -> [f64; 3] {
+    if x.is_nan() {
+        return [0.0; 3];
+    }
+    let x32 = x as f32;
+    let off = |y: f32| if y.is_finite() { (x - y as f64).abs() } else { f64::INFINITY };
+    [0.0, off(x32), off(bf16_of(x32))]
+}
+
+/// The `bf16` nearest an `f32`, ties to even, as an `f32`: the runtime's
+/// `f32_to_bf16` followed by `bf16_to_f32`.
+pub fn bf16_of(x: f32) -> f32 {
+    if x.is_nan() {
+        return x;
+    }
+    let bits = x.to_bits();
+    let lsb = (bits >> 16) & 1;
+    f32::from_bits(((bits + 0x7fff + lsb) >> 16) << 16)
 }
 
 /// The smallest non-zero `|x|` over every real leaf of a value, or infinity

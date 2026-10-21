@@ -386,6 +386,53 @@ sides is the kernels' code: 323.5 ms of native kernels on the forward pass
 against GCC's 207.8, 1.56×, which decision 2 leaves for later. T4 is
 judged at step 8, on the final measurement.
 
+### PyTorch compiled and in mixed precision (D153)
+
+Eager is not what a PyTorch user who cares about speed runs. `make
+pytorch-modes` (`experiments/pytorch_modes.sh`, the report
+`docs/pytorch-modes-2026-10-18.md`) runs the exported course GPT in four
+modes, on the same inputs and the same ten X925 cores, by D126's
+protocol:
+- eager;
+- `torch.compile` with its defaults (inductor, on the CPU);
+- AMP, `torch.autocast` in `bfloat16` around the forward pass and the
+  loss;
+- both.
+
+D127's PyTorch rows and the compiler's step are timed again as controls,
+and reproduce D127 within its spread.
+
+**The time.**
+- *Compiled*, PyTorch's training step takes 558.2 ms, 0.57× eager's
+  987.6, and its forward pass 122.4 ms, 0.81×. So **the C step under the
+  plans (1 003.5 ms) is 1.80× the compiled step**, where it is 0.98×
+  eager's (T2).
+- *With AMP as well*, PyTorch's step takes 466.2 ms, so the C step is
+  2.15× it.
+- *Like for like*, PyTorch's step with its dropout off, as the C step
+  draws no masks, takes 685.0 ms in eager and 483.8 compiled, so the C
+  step is 1.46× and 2.07× them.
+- *The compiles*, cold, take 3.7 s for the forward pass and 8.3 s for the
+  step; each is one graph, with no graph break.
+
+**Where the compiled step wins.** The compiled graph sends every product to
+ATen's `mm` and `bmm`, as eager does, about two thirds of its step. It wins
+on two things: the elementwise passes, fused into its C++ kernels, and the
+dropout masks, drawn inside them. In eager, `bernoulli_` takes a quarter
+of the step.
+
+**The accuracy at D = 64**, on the 461 held-out windows against the exact
+logits:
+- *Compiled `float32`* is 3.3·10⁻⁶ from the exact logits, eager's
+  2.9·10⁻⁶ and presk's all-`f32` 3.1·10⁻⁶, with no flip.
+- *AMP's `bfloat16`* is 4.0·10⁻² from them and flips 505 decisions, as the
+  compiler's all-`bf16` does (480). It certifies nothing at ε\*(10⁻³).
+
+**The quality.** Trained 600 steps at D = 64 from three seeds, AMP's
+validation loss is eager's +1.4·10⁻³. That is ten times the curve's
+realizations' 1.3·10⁻⁴, and inside the 10⁻² a different dropout draw alone
+makes.
+
 ## 4. Precision as a resource: the four statements of 0.5.0
 
 Version 0.5.0 named four falsifiable statements before it began
@@ -1366,6 +1413,8 @@ is narrowed again: widening it alone would hold the budget at 1.33× and
 defect: a tensor first argument was offered to the solver as a parameter,
 which no executor runs, and every measurement narrowing it read ∞.
 
+*At 0.16.0* (D163): the measured term lowers the estimates. The measurement still refuses the proposals D128 found refused, and two more at the largest budgets. `attn_raw` widens two values instead of four (§20, `docs/rows-0.16.0.md` §8).
+
 ## 13. PyTorch's own gap to the exact model (D130)
 
 `make pytorch-gap` (`experiments/pytorch_gap.sh`, the report
@@ -1379,6 +1428,8 @@ thread or ten, bit for bit the same. The compiler's all-`f32` is 3.12·10⁻⁶.
 PyTorch's `float64` run is 5.9·10⁻¹⁵ from the exact logits, as the native
 `f64` is: PyTorch could approximate its `float32` gap by its own `float64`
 run, but only the exact reference says how close that `float64` is.
+
+*At 0.16.0* (D163): PyTorch's rows and the compiler's uniform ones are the same digits. V6's row moves to 1.4·10⁻⁴ (§20).
 
 ## 14. The course GPT trained at course scale, through the margins (D129)
 
@@ -1396,6 +1447,8 @@ decisions, and every certified realization's validation loss is the exact
 model's to 2·10⁻⁵. PyTorch's `float32` run of the same model is 6.4·10⁻⁶
 from the exact logits, the native all-`f32` 1.8·10⁻⁵.
 
+*At 0.16.0* (D163): the logits' solve gives 1.99× and 4.2·10⁻⁴ on the 461 windows, still inside ε\*. The curve's 10⁻³ realization is 13 ε\* with 29 flips, as before (§20).
+
 ## 15. A contraction's bound proved (D131)
 
 `make gappa-dot` (`experiments/gappa_dot.sh`, the report
@@ -1409,6 +1462,176 @@ flat over a sixteenfold length; under `interleaved(n)` 3.3 to 6.0 times.
 Both bounds grow as K², the measured gap much more slowly: at K = 128 the
 proof is 514 times the gap and `cond` 164 times.
 
+## 16. A precision-tuning tool on the exported C (D154)
+
+`make precision-tuning` (`experiments/tuning/tuning.sh`, the report
+`docs/precision-tuning-2026-10-19.md`) sets the solver beside the C
+precision-tuning tools. Their own input is the program `presk export
+--target c` writes: `make margins`' model at D = 64, its logits in `f64`. The
+criterion is the paper's: the logits within ε\*(10⁻³) = 4.67·10⁻⁴ of the
+exact outputs the export ships, on its conformance inputs.
+
+- *CRAFT on the C.* CRAFT's variable mode runs on it. Its builder is
+  `experiments/tuning/retype.py`, a stand-in for TypeForge that retypes the
+  C's 39 buffers and 24 kernel locals. Its default search passes the whole
+  program in `float` on its first trial, though that program is slower than
+  the `f64` one: the weights stay `double`, as inputs. Its delta-debugging
+  search, Precimonious's, keeps the products' register tiles in `double` and
+  runs 1.29× faster. As realizations, its answers are 1.81–1.95× less traffic,
+  against the solver's 1.97×. They hold on the 461 held-out windows.
+- *The searches on presk's space.* Precimonious's and CRAFT's searches,
+  reimplemented on presk's realizations (`bf16` and the parameters
+  included), find **2.17×**, in 70 and 2 858 trials. The realization holds on
+  the 461 windows: 3.7·10⁻⁴, no flip, certified at 10⁻³.
+  - *Where the gain comes from.* 84 % of the bytes it saves over the solver
+    are the eval-mode dropout masks, tensors of ones, in `bf16`. They are
+    exact there, but the solver's first-order estimate charges them as if
+    they rounded.
+- *At a budget of 10⁻⁶* the searches overfit the two windows they test on:
+  their realizations fail on the 461. The solver's holds.
+- *ADAPT* does not run on the export. ADAPT is C++, the export C11, and the
+  export's arena holds bytes where ADAPT needs C++ objects.
+
+*At 0.16.0* (D165): the searches find the same realization and price it at 2.00×, the masks no longer counted. The solver is 2 % short of it, where it was 10 % short (§20).
+
+## 17. The rounding term measured, and narrowing by measurement (D155)
+
+`make solver-rounding` (`experiments/solver_rounding.sh`, the report
+`docs/solver-rounding-2026-10-19.md`) takes §16's finding to the compiler.
+`presk solve` gains two options, both off by default: `--rounding measured`,
+which charges each site the largest rounding error of its sampled values
+instead of `u · max|x|`, and `--narrow measured`, which narrows each decision
+one step after a passing measurement while the measured gap fits. On the
+logits at D = 64, V6's protocol:
+
+| budget | `--rounding` | `--narrow` | traffic vs all-`f64` | measurements | on the 461 windows |
+|---|---|---|---|---|---|
+| ε\*(10⁻³) | unit (of record) | off | 1.97× | 1 | 7.5·10⁻⁵, no flip |
+| ε\*(10⁻³) | measured | off | **2.14×** | 1 | 1.6·10⁻⁴, no flip |
+| ε\*(10⁻³) | measured | measured | **2.17×**, §16's searches' realization | 79 | 3.7·10⁻⁴, no flip |
+| 10⁻⁶ | unit (of record) | off | 1.27× | 1 | 8.7·10⁻⁷, holds |
+| 10⁻⁶ | measured | off | 1.40× | 1 | 8.9·10⁻⁷, holds |
+| 10⁻⁶ | measured | measured | 2.07× | 93 | **1.6·10⁻⁶, fails** |
+
+- *The measured term* is safe at both budgets. Its gain is the four dropout
+  masks, ones, in `bf16`.
+- *The narrowing* reaches the searches' answer and inherits their overfit
+  at 10⁻⁶.
+- *The masks* are 15 % of the realization of record's bytes. The compiler
+  stores them because the program is the same in and out of training: spec
+  question 78.
+
+*At 0.16.0* (D165): the measured term gives 1.96× at ε\*, as the unit term does. Its gain here was the masks, which D160 removed. The narrowing still reaches the searches' realization, at 2.00× in 74 measurements, and still fails out of sample at 10⁻⁶ (§20).
+
+## 18. The certificate off-sample against the sample's size (D156)
+
+`make off-sample` (`experiments/off_sample.sh`, the report
+`docs/certificate-off-sample-2026-10-19.md`) asks how far a gap the solver
+measures on the envelope's windows is from the gap on the others. The
+envelope of the logits at D = 64 is calibrated on the first N held-out
+windows, the solver run on it at ε\*(10⁻³) and 10⁻⁶, and every realization
+judged on the 461 windows, its gap split into the N it was calibrated on
+(in) and the others (out). For the solver of record:
+
+| N | ε\*(10⁻³): out/in | 10⁻⁶: out/in | its realization |
+|---|---|---|---|
+| 1 | 1.72× | 3.76× | another at ε\*, V6's at 10⁻⁶ |
+| 2 | 1.72× | 2.57× | another at both |
+| 4 | 2.30× | 2.48× | V6's |
+| 8 | 2.30× | 1.74× | V6's |
+| 16 | 1.92× | 1.53× | V6's |
+| 32 | 1.92× | 1.53× | V6's at ε\*, √32 apart at 10⁻⁶ |
+
+- *The ratio falls slowly and in steps.* The out-of-sample gap is one
+  window's: V6's largest over the 461 is in window 402, no other within
+  10 % of it.
+- *The realization is the model's.* From four windows on, the sample sets
+  the gap the solver measures, not the realization it picks.
+- *The narrowing* (`--narrow measured`) fails out of sample at 10⁻⁶ from
+  every N up to 32, 1.4–1.7·10⁻⁶, narrowing less as N grows.
+- *The certificate.* No realization inside ε\* flips a decision on the
+  windows it was not calibrated on.
+- *The two executors.* The solver measures on the kernel interpreter, the
+  rows are native, and under `bf16` sites the two gaps differ by up to 15 %
+  on the same windows (D76's transcendental functions).
+
+*At 0.16.0* (D165): the default, `measured / off`, is 1.94× out of sample against in at four windows and 1.15× at 32. Its realization is the same from one window to 32, and the solver's measurement is the native gap to the digit (§20).
+
+## 19. Three ways to spend the budget, judged out of sample (D161)
+
+`make spend` (`experiments/spend.sh`, 57 minutes, nothing timed) solves the
+logits at D = 64 on the envelopes of the first 4 and 16 held-out windows, at
+ε\*(10⁻³) = 4.67·10⁻⁴ and 10⁻⁶, in seven forms. It judges every realization
+on windows 2N to 460, which no form saw. The traffic is one sample's, and the
+program the inference one, with no mask.
+
+| form | 4.67·10⁻⁴, N = 4 / 16 | 10⁻⁶, N = 4 / 16 |
+|---|---|---|
+| the default (`measured / off`) | 1.966×, out 0.31 of the budget / the same | 1.266×, 0.89 / the same |
+| `--estimate rss` | 1.965×, 0.66, 1 flip / the same | 1.206×, 0.69 / another, 0.75 |
+| `--narrow measured` (k = 2.5) | 2.002×, 0.79 / 2.001×, 0.40 | 1.554×, 0.82 / 1.266× (none kept) |
+| `--narrow heldout` | as `--narrow measured` | 1.266× (all 22 undone) / 1.266× |
+
+What this shows:
+- *Every form holds* in every cell.
+- *The margin helps the narrowing.* With k = 2.5 the narrowing holds at
+  10⁻⁶, where at k = 1 it failed from every sample size (§18). But it
+  then depends on N: at 16 windows it keeps nothing.
+- *The rule.* The plan's rule asks for 1.5× of the budget left out of
+  sample in every cell and the same realization at both sizes. Nothing
+  meets the first condition at 10⁻⁶, the default included (0.89 of the
+  budget), and no new form meets the second. So the three options stay
+  flags, and the defaults are final.
+
+## 20. The rows of record at 0.16.0 (D162–D166)
+
+Plan 0.16.0's step 5 solved and timed every row of record again, each by
+its own script and whole protocol. They ran on presk `22dd345`, the tree
+of steps 1 to 4, and the timings on falicon alone. Since 0.16.0 four
+things move a row:
+- the measured rounding term is the default (D158);
+- the traffic is one sample's (D158);
+- the kernel interpreter computes the native bits (D159);
+- an entry outside a training run has no dropout mask (D160).
+
+The report, with each row's old value, its new one and the paper's
+sentence, is `docs/rows-0.16.0.md`. The outputs are archived in
+presk-project `data/`.
+
+| row | before | 0.16.0 |
+|---|---|---|
+| the decoder's solve (D162) | D124: 31 of 32, 13 weights in `f32`, 1.99×, 2.6·10⁻⁵ | the same 31, 13 weights with RMSNorm's three gains (ones at initialization) in `bf16`, 1.99×, 2.5·10⁻⁵ (the native gap, which D124's realization had too) |
+| H2, the curve at 10⁻³ (D163) | D132: 33 stored values, 2.12×, 1.6·10⁻⁵ | 27 (the masks gone), **2.04×**, 4.9·10⁻⁶ |
+| H5, the margins | four of seven certified; H2's realization 17 ε\*, 30 flips | four of seven; H2's 5.5 ε\*, 9 flips |
+| V6 | D124: 29 of 31, 1.97×, 7.5·10⁻⁵ | 22 of 25, **1.97×**, 1.4·10⁻⁴, no decision changed |
+| the course GPT through the margins (D129) | the logits' solve 1.97×, 2.1·10⁻⁴ | 1.99×, 4.2·10⁻⁴, still inside ε\* |
+| `make precision` | D124: 2.12×, 3.9·10⁻⁶ | **2.02×**, 1.2·10⁻⁶ |
+| the quant and step tables, J′ | D124 | byte for byte, so J′ stands |
+| D128, D130 | | as before, with lower estimates (§12) and the same PyTorch rows (§13) |
+| D154: the tools' searches (D165) | 2.17× | **2.00×**, the same realization, the masks no longer counted |
+| D155: the measured term at ε\* | 2.14× against 1.97× | **1.96× either way**: its gain was the masks, ones exact in `bf16` |
+| D156: out of sample against in, N = 4 and 32 | 2.30×, 1.92× | 1.94×, 1.15×, the default's realization the same from one window, the solver's measurement the native gap to the digit |
+| Table 1 (D166) | D101, D124 | the solves within 7 %; the calibrations 14–19 % slower, measured: D155's rounding table (+5 %) and D158's pass for one sample's counts (+9 %) |
+| V5: the decoder block's realization ÷ all-`f32` | D124: as fast | **0.73×**, below all-`f32` in each of eight processes |
+| T2 and T4 (Table 4) | D127: 0.98×; 1.52×, 1.60× | **0.93×; 1.63×, 1.67×**, the C program 5 % faster without masks |
+| D153: the C step ÷ `torch.compile`'s | 1.80× (2.07× like for like) | 1.70× (1.97×) |
+| H6 (D50): course scale, D = 64 | 1.13×, 1.06× (apremont) | 1.02×, 0.74× (falicon) |
+
+What changed the numbers:
+- *The masks.* They are gone from every entry outside a training run, so
+  they leave the solver's menu, the traffic and the C program.
+- *The measured term.* It charges nothing to a value exact in a type, and
+  with the masks gone that means the norms' gains at initialization and
+  the head width 32.
+- *The cost per sample.* It makes the weights weigh more against the
+  activations.
+
+What stayed: every row is inside its budget by measurement, H2, H5 and
+statement S hold at both scales, and T2 holds and T4 fails as before.
+The step-5 runs found one defect. Since D160, `presk plan` had planned
+the inference reading, so `presk train` refused the plan of a training
+step (`E7002`). `presk plan --mode training` fixes it (D164).
+
 ## What these experiments do not show
 
 - **Speed against a mature stack, beyond one model on one machine.** §3's
@@ -1418,9 +1641,12 @@ proof is 514 times the gap and `cond` 164 times.
   `dot`; at 0.10.0 the C program's training step is level with PyTorch's
   (0.99×, §10) and its forward pass 1.86× behind, on the course GPT at its
   course constants, in `f32`, on ten X925 cores of one machine, against
-  PyTorch on the CPU (OpenBLAS and oneDNN). A GPU, a larger model, another
-  machine, and the native backend's own kernels (1.6× GCC's) are not
-  shown.
+  PyTorch eager on the CPU (OpenBLAS and oneDNN). Against PyTorch
+  compiled by `torch.compile`, the C step is 1.80× behind, and 2.07× like
+  for like without dropout masks (D153, §3); at 0.16.0, the masks gone,
+  1.70× and 1.97× (§20). A GPU, a larger model,
+  another machine, and the native backend's own kernels (1.6× GCC's) are
+  not shown.
 - **A static choice as good as measuring.** RA4, the programme's first
   thesis, was tested twice on the attention of one model family, on one
   machine's two kinds of core. 0.7.0's model failed it for a named cause

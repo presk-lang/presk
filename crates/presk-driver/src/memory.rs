@@ -528,7 +528,8 @@ pub fn step(o: &StepOptions, report: &mut dyn Report) -> Result<Vec<StepMemory>>
             return Err(Stop(2));
         }
     };
-    let (sm, prog, typed, lowered) = crate::front::typed_core(o.file, o.consts, false, report)?;
+    // A training step's program keeps its masks (0.16.0, D160).
+    let (sm, prog, typed, lowered) = crate::front::typed_core_as(o.file, o.consts, false, crate::front::Mode::Training, report)?;
     let mut out = Vec::new();
     for remat in [Remat::Store, Remat::Recompute] {
         let mut core = lowered.clone();

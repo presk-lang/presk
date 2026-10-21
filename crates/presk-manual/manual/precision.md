@@ -440,18 +440,20 @@ problems. Pricing time per site needs the roofline's `W` beside its `Q`.
 
 On the corpus GPT at `D = 64`, trained 600 steps (`make gpt-trained`, the
 weights of the corrected gradient), budget 10⁻³ (`make precision` at
-0.12.0, D124):
+0.16.0, D163):
 
 | | |
 |---|---|
-| traffic | 9.03e6 bytes against 1.91e7 all-`f64`, the weights counted, **2.12×** |
-| stored values | 33, 29 in `f32` and 4 in `bf16`, the functions' results among them |
+| traffic | 3.72e6 bytes against 7.51e6 all-`f64`, one sample's activations and the weights counted once, **2.02×** |
+| stored values | 27, 23 in `f32` and 4 in `bf16`, the functions' results among them; no dropout mask, the loss being compiled outside a training run |
 | parameters | 21, 10 in `f32` and 11 in `bf16` (the biases and the norms' β among them): 5.10e5 bytes at rest against 1.03e6 |
 | widening rounds | 0 — the proposal was accepted first time |
-| measured gap | 3.87e-6 against a budget of 2.8e-3 (estimate 2.72e-3) |
+| measured gap | 1.25e-6 against a budget of 2.8e-3 (estimate 2.45e-3, 87 % of it) |
 | solved run, natively | 4.521755695, where `f64` gives 4.521788577 (on the parameters `presk run` synthesizes, as the target runs it) |
 
-(At 0.11.0, the stored values alone and the weights not counted: 29
+(At 0.12.0, D124: 33 stored values with the masks among them, 9.03·10⁶
+bytes against 1.91·10⁷ at the envelope's two samples, 2.12×, measured
+3.87·10⁻⁶, estimate 2.72·10⁻³. At 0.11.0, the stored values alone and the weights not counted: 29
 sites, 25 in `f32` and 4 in `bf16`, 7.68·10⁶ bytes against 1.64·10⁷,
 2.14×, measured 1.20·10⁻⁷, the solved run 4.521788597, D117. The bound
 `cond` moves from 4.8·10⁴ to 3.0·10⁶, the parameter tree now charged at
@@ -490,7 +492,9 @@ on the weights of `make gpt-trained` at `T = 256`, the reference at 128 bits;
 the quality column trains the model **from scratch under each realization**,
 600 steps on 90 % of the Code civil, and evaluates it in `f64` on the other
 10 %. Every run starts from the same initialisation, seed and batch order, so
-the only thing that differs between two rows is the realization:
+the only thing that differs between two rows is the realization. The
+table is 0.12.0's (D124). 0.16.0 measured the curve again on the trained
+model's envelope only, the curve of record since D132 (below):
 
 | budget | traffic, vs all-`f64`, the weights counted | measured gap | inside | validation loss | vs all-`f64` |
 |---|---|---|---|---|---|
@@ -506,11 +510,16 @@ the only thing that differs between two rows is the realization:
 **On the trained model's envelope** (D132, `experiments/curve_trained.sh`,
 `docs/envelope-state-2026-10-16.md`). `curve.sh` calibrates its envelope on
 the initialization and random tokens, and a solve runs on its envelope's
-inputs. Calibrated on the trained weights and two held-out windows
-instead, the solver narrows more at most budgets (3.17× at 10⁻¹, 2.12× at
-10⁻³, 1.15× at 10⁻⁷), every point still inside its budget and none
-widening. Its realization at 10⁻³ lands 7.8·10⁻³ from the exact logits and
-flips 30 decisions, where this table's lands 2.5·10⁻⁴ and flips none: a
+inputs. Calibrated on the trained weights and two windows of the validation
+text instead (windows those weights were trained on: `make gpt-trained`
+streams the whole corpus), the solver narrows more at most budgets.
+At 0.16.0 (D163) it gives 3.35× at 10⁻¹, 2.04× at 10⁻³ and 1.31× at 10⁻⁷,
+every point still inside its budget and none widening (D132 at 0.12.0:
+3.17×, 2.12×, 1.15×). The stored values exact or nearly exact in `bf16`
+stay there for nothing under the measured term: the head width 32 at
+every budget, and the layer norm's ε down to 10⁻⁶. Its realization at
+10⁻³ lands 2.6·10⁻³ from the exact logits and flips 9 decisions (D132:
+7.8·10⁻³ and 30), where this table's lands 2.5·10⁻⁴ and flips none: a
 budget on the loss, a mean, does not bound the logits. The budget on the
 logits does (V6), and statement S holds under both envelopes.
 
@@ -617,6 +626,105 @@ realization within it. Two limits:
   Its largest gap on the 461 held-out windows is 7.5·10⁻⁵, and it changes
   no decision, where statement D's realization, solved on the loss at
   10⁻³, has 3.3·10⁻⁴ and one (D124).
+
+## A rounding term from the values, and narrowing by measurement
+
+Two options of `presk solve` (D155, `make solver-rounding`, the
+`experiments` chapter §17). The first is the default since 0.16.0 (D157,
+D158), the user's decision after D155 and D156 measured it holding out of
+sample at both budgets and every sample size; `--rounding unit` is the
+solver of 0.12.0–0.15.0, by which every row of record until 0.16.0 was
+solved. The second is off by default.
+- **`--rounding measured`.** The envelope records at each site the largest
+  rounding error of its sampled values in each type, `max |fl_d(x) − x|`,
+  and the estimate charges a site that, where it charged `u(d) · max|x|`.
+  The term is never larger. It is 0 for a value exact in the type: the
+  constant 32 costs nothing in `bf16`, and so did the four dropout masks
+  of the course GPT's logits, tensors of ones outside training, until
+  0.16.0 compiled an entry outside training with no mask (D160). It is the
+  estimate's rounding step measured on the sample, as conditional on the
+  envelope as the magnitude, and no bound; the bound `cond` is unchanged.
+  On the logits at ε\*(10⁻³) the solver went from 1.97× to 2.14× in one
+  sweep and one measurement at 0.15.0, 1.6·10⁻⁴ from the exact logits on
+  the 461 held-out windows with no decision changed. That gain was the
+  masks. At 0.16.0, with no mask left, the term gives 1.96× at ε\*, as the
+  unit term does, and 1.31× against 1.26× at 10⁻⁶ (D165). It still counts
+  where a value is exact: the head width, and the norms' gains of a model
+  at its initialization (D162, D166).
+- **`--narrow measured`.** After the measurement passes, each decision is
+  narrowed one step, the largest saving first, measured, and kept while the
+  gap stays inside the budget, in up to three passes. At ε\*(10⁻³) it finds
+  the realization the tuning tools' searches found (D154), in 79
+  measurements, and it holds on the held-out windows. That was 2.17× at
+  0.15.0, and 2.00× in 74 measurements at 0.16.0, the masks no longer
+  counted (D165). At 10⁻⁶ it
+  narrows until the envelope's four windows are within 0.7 % of the budget,
+  and fails on the held-out ones, as the searches did. A narrowing decided
+  by measurement needs a check on data it was not measured on, whatever the
+  sample's size: calibrated on the first 1 to 32 windows, it fails the
+  others at 10⁻⁶ every time (D156, the `experiments` chapter §18).
+
+## Three ways to spend the budget
+
+The solver of record spends a small part of its budget in sample: its
+first-order estimate is conservative, and a measurement that passes is not
+narrowed further. Narrowing by measurement spends it to the last per cent and
+fails out of sample (D155, D156). D156 gives the factor between the two: on
+the course GPT's logits, the gap out of sample is at most 2.5 times the gap in
+sample from four windows on. Three options of `presk solve` (0.16.0, D161)
+keep that factor:
+- **`--estimate rss`**: the proposal's estimate is the root-sum-square of the
+  sites' terms, the roundings taken as independent (Higham and Mary's
+  probabilistic analysis), instead of their sum, and it is aimed at the
+  budget divided by `--margin`. The measurement then checks the budget as
+  before.
+- **`--narrow measured --margin k`**: D155's narrowing, each step kept while
+  the measured gap is inside the budget divided by `k` (D155's is `--margin
+  1`).
+- **`--narrow heldout`**: the same narrowing, then early stopping. The steps
+  kept are undone, the last first, until the gap on the samples after the
+  envelope's in its data file (as many as the envelope's, or `--heldout M`)
+  is inside the budget divided by `k`. Kept while the gap was inside one
+  threshold on both parts, a narrowing would be the narrowing measured on
+  their union, which D156 measured failing; the held-out samples judge the
+  sequence of steps instead.
+
+`--margin` is 2.5 by default; the solver of record does not read it. Each
+option was to become a default only if, measured as D155 and D156 were, it
+held out of sample in every cell with a margin of 1.5× left and its
+realization stayed the same from 4 to 16 windows (the plan's rule, `make
+spend`, the `experiments` chapter §19). None did (D161):
+- *Every form holds* out of sample on the course GPT's logits at D = 64.
+- *Nothing keeps 1.5× at 10⁻⁶,* the default included, which ends at 0.89
+  of the budget.
+- *No new form keeps its realization* between 4 and 16 windows.
+- *The narrowing with k = 2.5* is the one form that saves traffic at both
+  budgets: 2.002× against 1.966×, and 1.554× against 1.266×. It holds where
+  D155's failed, but at 16 windows it keeps nothing at 10⁻⁶.
+
+The three stay flags.
+
+## The cost per sample
+
+The traffic of a site is its elements times its type's bytes. A parameter
+is counted once; an activation's elements, at an envelope calibrated on N
+samples of a data file, are N samples' at most sites and the model's at a
+few (a mask, a constant). Until 0.16.0 the solver priced the activations at
+the envelope's N, so that a parameter weighed 4/N times as much against them
+as at four samples, and the decisions moved with N below four (D156). Since
+0.16.0 (D158) `presk calibrate --data` also counts each site's elements for
+one sample, by running the entry again on the first sample alone, and
+writes them as the envelope's `per_sample`; the solver prices the
+activations at those counts, the parameters once, the same cost at any N.
+`presk solve` says so in a line `per sample`. An envelope without data, or
+of one sample, is priced as it is; one of several samples written before
+0.16.0 is priced at its batch, and the line says that too. The ratio the
+solver prints, all-`f64`'s traffic over the realization's, is therefore one
+sample's. Ratios from before 0.16.0 read differently: the weights weigh
+more against one sample's activations than against N's, and the masks no
+longer count. The course GPT's curve at 10⁻³ prints 2.04× at 0.16.0 where
+D132's printed 2.12×, with fewer stored values narrowed and the same
+budget met.
 
 ## Time, not traffic
 
@@ -1110,7 +1218,9 @@ measurements leave for later, and where each is recorded:
   and 72 GB, 52 of 56 sites narrowed, measured 4.3·10⁻⁶ against 1.1·10⁻²
   (D106, the `coverage` chapter; at 0.11.0, 24 of 25 stored values in the
   same time, measured 2.0·10⁻⁵, D117; at 0.12.0, 31 of 32 and the 13
-  parameters in 13 h 32 min, measured 2.6·10⁻⁵, D124). The time is the next limit: the
+  parameters in 13 h 32 min, measured 2.6·10⁻⁵, D124; at 0.16.0, the same 31,
+  three of the 13 parameters in `bf16`, in 13 h 35 min, measured 2.5·10⁻⁵,
+  the native gap, D162). The time is the next limit: the
   reference is one thread on MPFR, and the solve takes 7.4 times it.
 - **The statistical model, to propose** (question 58). The root-sum-square
   propagation is within 3.2–17× of the measured gap on uniform realizations
@@ -1119,6 +1229,16 @@ measurements leave for later, and where each is recorded:
   on 0.6.0's weights, D51), because one magnitude per site is too
   coarse; finer magnitudes, per row or per channel, are named and not built,
   and the solver still proposes with sensitivities (D41, D51).
+- **Results beyond the data measured.** Every budget met, every
+  certification and the envelope itself hold on the windows measured, on
+  one text, the Code civil, and the static bound only for inputs within the
+  envelope's magnitudes (presk-project `docs/presk-data-dependence-2026-10-21.md`).
+  A second corpus, an exact fallback when serving, and a bound over a region
+  of inputs are recorded there and not built.
+- **A bound that knows an exact value.** The measured rounding term charges
+  nothing to a value exact in its type, but the static bound still charges
+  it `u·|v|`. On the decoder, three gains of ones in `bf16` raise `cond`
+  129 times (D162).
 - **The state a training budget is stated at** (question 61), and the
   program's `precision` clause, which nothing reads yet: the budget is
   `presk solve`'s `--budget`.

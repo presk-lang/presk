@@ -15319,3 +15319,1172 @@ explain` 54 s and 14.6 GB (D151).
     `docs/status-2026-10-18-0.15.0.md`;
 - *the poster at 0.15.0* (presk-project `docs/poster/`);
 - CHANGELOG `## 0.15.0`, `CLAUDE.md`, version `0.15.0`.
+
+## D153 — PyTorch compiled and in mixed precision, beside eager: `torch.compile` takes PyTorch's training step of the course GPT to 0.57× eager's on ten X925 cores, so the compiler's C step is 1.80× the compiled step where it is 0.98× eager's (2.07× like for like, neither drawing dropout masks); AMP `bfloat16` is 4.0·10⁻² from the exact logits at D = 64, flips 505 decisions and costs 1.4·10⁻³ of validation loss (2026-10-18)
+
+The paper's session asked, at the user's request, for PyTorch as its users
+run it beside eager (presk-project `docs/prompt-paper-baselines-2026-10-18.md`,
+item 5 of the paper's improvements): Table 4 and T2 compare with eager
+`float32` only. The record is `docs/pytorch-modes-2026-10-18.md`; the
+tables are `experiments/pytorch_modes.sh`'s (`make pytorch-modes`), a new
+script, no script of record changed.
+
+**How.**
+- *The modes.* The exported module, unchanged (D127's export byte for
+  byte), run in four modes by `experiments/pytorch_modes.py`:
+  - eager;
+  - `torch.compile` with its defaults (inductor, the default mode, CPU);
+  - AMP, `torch.autocast("cpu", dtype=torch.bfloat16)` around the forward
+    pass and the loss, the parameters and AdamW in `float32`;
+  - both.
+- *The step and the forward pass.* The step is `train.py`'s loop with the
+  model called directly. The forward pass is `pytorch_baseline.py`'s.
+- *The protocol.* D126's: five processes a row, on ten X925 cores pinned
+  and twenty unpinned, every compile cold and timed apart.
+- *The controls.* In each round, D127's own PyTorch rows and the
+  compiler's step under the plans, the C and the native.
+- *The addendum.* After the rounds, the step with its dropout off in five
+  rounds of its own, since the C step draws no masks.
+- *The rest.* The modes' logits against the native `f64` ones and, at
+  D = 64, against the exact ones; each mode's model trained 600 steps at
+  D = 64 from three seeds.
+
+**The controls.**
+- *PyTorch's rows:* every control reproduces D127 within its five
+  processes or just below their fastest. PyTorch's step by the exported
+  `train.py` took 1 022.0 ms (D127: 1 026.9); the C step under the plans
+  995.9 (1 003.5), the native 1 346.9 (1 354.3).
+- *The C programs:* those T2 times are D127's byte for byte but for their
+  version lines, their plans byte for byte, their outputs bit for bit.
+- *The ratios:* those of record read D127's compiler rows.
+
+**The time** (ten X925 pinned, ms, the median of five processes):
+
+| PyTorch | step | ÷ eager | C step ÷ it | forward | ÷ eager |
+|---|---|---|---|---|---|
+| eager, `train.py` (T2's row) | 1 022.0 | 1.03 | **0.98** | 147.3 | 0.97 |
+| eager | 987.6 | 1.00 | 1.02 | 151.4 | 1.00 |
+| `torch.compile` | 558.2 | 0.57 | **1.80** | 122.4 | 0.81 |
+| AMP `bfloat16` | 827.3 | 0.84 | 1.21 | 107.2 | 0.71 |
+| `torch.compile` + AMP | 466.2 | 0.47 | **2.15** | 88.4 | 0.58 |
+| eager, no dropout | 685.0 | 0.69 | **1.46** | | |
+| `torch.compile`, no dropout | 483.8 | 0.49 | **2.07** | | |
+
+- *The compiles.* The compiled modes compile in 3.7–4.4 s for the forward
+  pass and 8.3–9.7 s for the step, cold. Each workload is one graph, with
+  no graph break.
+- *Where the compiled step wins.* The products cost the same in every mode,
+  inductor sending them to ATen's `mm` and `bmm` (about two thirds of the
+  compiled step). What it saves is:
+  - the elementwise passes, fused into its C++ kernels;
+  - the dropout masks, drawn inside them, where eager's `bernoulli_` takes
+    a quarter of its step.
+- *The C forward pass* under the plan (274.2 ms, D127) is 2.24× the
+  compiled one.
+
+**The identity.**
+- *`torch.compile`'s `float32`* is not eager's bit for bit (its fused
+  reductions reorder sums, 2.3·10⁻⁹ apart on the course logits), and as
+  close to the function:
+  - at D = 64 it is 3.32·10⁻⁶ from the exact logits on the 461 held-out
+    windows, no flip, against eager's 2.948·10⁻⁶ (D130's row reproduced
+    bit for bit);
+  - presk's all-`f32` is 3.115·10⁻⁶ on the same windows.
+- *AMP's `bfloat16`* is 4.028·10⁻² from the exact logits, 86 times
+  ε\*(10⁻³), flips 505 of 118 016 decisions and certifies at no δ, as
+  presk's all-`bf16` (5.033·10⁻², 480 flips). The solver's certified
+  realizations stay at 2.5·10⁻⁴ and 7.5·10⁻⁵ with no flip.
+
+**The quality at D = 64** (600 steps at the curve's batch of 16, seeds 0,
+1, 2, validation in `float64`, eager and AMP paired by seed and masks):
+- *AMP − eager:* +4.0·10⁻³, +3.1·10⁻⁴, −4·10⁻⁶, mean +1.4·10⁻³.
+- *Against the curve:* above its realizations' 1.3·10⁻⁴.
+- *Against the spread:* inside what a different dropout draw alone makes
+  (`torch.compile` − eager, about 10⁻²) and PyTorch's seeds' spread
+  (0.040).
+- *The evaluator:* it gives `make curve`'s all-`f64` model 2.7736101 to
+  every digit.
+- *The batch:* the prompt's B = 2 is the solver's dimension; the curve
+  trains at the training run's 16.
+
+**What it decides.** Nothing of the compiler.
+- *T2.* Its verdict stands as stated, against eager. The paper's
+  comparison with PyTorch changes: the C step is level with eager and
+  behind compiled PyTorch, 1.80× as `train.py` runs it and 2.07× like for
+  like.
+- *Where the C step loses.* Not in the products' libraries, which compiled
+  PyTorch shares with eager. It is in the elementwise passes and in the
+  products' own kernels.
+- *The recipe.* AMP in `bfloat16` buys PyTorch 0.84× its step. It certifies
+  nothing at the margins' budget and costs ten times the solver's
+  realizations' quality.
+
+The outputs are archived as presk-project `data/pytorch-modes-0.15.0.tar.xz`.
+
+## D154 — A precision-tuning tool on the exported C: CRAFT's variable mode runs on the C program of the logits at D = 64 and finds `double`/`float` programs that pass the paper's criterion and hold on the 461 windows, at most 1.95× less traffic as a realization against the solver's 1.97×; given presk's own space, Precimonious's and CRAFT's searches find a narrower realization than the solver's, 2.17×, that holds at ε\*(10⁻³) out of sample, and overfit their two windows at 10⁻⁶ (2026-10-19)
+
+The paper's session asked, at the user's request, for a precision-tuning
+tool on the exported C (presk-project `docs/prompt-paper-tuning-2026-10-19.md`,
+item 6 of the paper's improvements): §7 argues what separates the solver
+from the tools and measures none of it. The record is
+`docs/precision-tuning-2026-10-19.md`; the tables are
+`experiments/tuning/tuning.sh`'s (`make precision-tuning`), new scripts, no
+script of record changed, nothing of the compiler changed.
+
+**How.**
+- *The program.* `presk export --target c` of `logits` of
+  `experiments/margins.psk` at D = 64, B = 2, T = 256 on `make curve`'s
+  all-`f64` weights, in `f64`: 39 `double` buffers in `model.c`, 26 shared
+  kernels with 24 `double` locals, C1 holding.
+- *The criterion.* The largest gap of the logits at most ε\*(10⁻³) =
+  4.67·10⁻⁴, **absolute** (V6's `--budget-abs`; the prompt's "relative" is
+  not what ε\* is), on the conformance inputs against the exact outputs the
+  export ships. A second budget, 10⁻⁶, below all-`f32`, so that a search over
+  `double`/`float` has something to search.
+- *The solver.* V6's protocol at 0.15.0, once per budget; at 4.67·10⁻⁴ V6's
+  realization to every type. Every cost is the solver's own traffic.
+- *Tier A.* CRAFT (`03f2514`) in its variable mode, Ruby 3.1 from
+  conda-forge, both strategies, `bin_simple` and `ddebug` (Precimonious's).
+  Its builder is `experiments/tuning/retype.py`, the prompt's stand-in for
+  TypeForge: declarations retyped, functions specialized by their pointers'
+  types, the parameters (inputs) left `double`. Its test is the criterion,
+  the program pinned to one X925 core. ADAPT (`09119e1`) looked at; FloatSmith
+  and Precimonious not run, the prompt ordering them only if CRAFT had not.
+- *Tier B.* Precimonious's delta debugging (`dd2.py`'s order and stopping
+  rule) and CRAFT's binary search (`bin_simple`'s rule) reimplemented over
+  presk's realizations (`experiments/tuning/search.py`): the 31 stored
+  values, and with the 21 parameters, each `f64`, `f32` or `bf16`; each
+  trial a native run on the conformance inputs; the cost the solver's.
+- *The judgment.* Everything found, as a realization and (tier A) as the C
+  program the tool built, on the 461 held-out windows against the exact
+  logits (`experiments/margins.sh`, `experiments/tuning/windows.py`); the
+  export's own C program judged so is the native `f64` row bit for bit.
+
+**Tier A, CRAFT on the C:**
+
+| budget | strategy | configurations | answer | as a realization | its C program on the 461 windows | ÷ the `f64` program (note) |
+|---|---|---|---|---|---|---|
+| 4.67·10⁻⁴ | `bin_simple` | 1 | all 63 `float` | 1.95× | 3.26·10⁻⁶, 0 flips | 0.58× |
+| 4.67·10⁻⁴ | `ddebug` | 227 | 42 `float`, 21 `double` | 1.81× | 2.95·10⁻⁶, 0 flips | 1.29× |
+| 10⁻⁶ | `bin_simple` | 12 | 15 `float` | 1.47× | 3.44·10⁻⁷ | 1.05× |
+| 10⁻⁶ | `ddebug` | 211 | 45 `float`, 18 `double` | 1.88× | 9.65·10⁻⁷ | 1.29× |
+
+- *The answer is the fastest program.* In variable mode CRAFT returns the
+  fastest passing configuration. The all-`float` program is slower than the
+  `f64` one, since the weights stay `double` and every product mixes types.
+  `ddebug` keeps the products' register tiles in `double`.
+- *ADAPT does not run on the export.* Its example builds and runs with
+  CoDiPack v2.0.2 in C++17. But the export is C11 (248 errors as C++ in
+  `model.c`), its arena hands out bytes where CoDiPack's active real is a
+  C++ object, and ADAPT's instrumentation is per assignment in the source.
+
+**Tier B, the searches on presk's space** (at 4.67·10⁻⁴, the two strategies
+find the same realization):
+
+| budget | space | trials (CRAFT's / Precimonious's) | `f64` / `f32` / `bf16` | traffic | on the 461 windows |
+|---|---|---|---|---|---|
+| 4.67·10⁻⁴ | 31 stored values | 43 / 716 | 21 / 24 / 7 | 2.11× | 3.35·10⁻⁴, 1 flip, certified at 10⁻³ |
+| 4.67·10⁻⁴ | with the 21 parameters | 70 / 2 858 | 0 / 36 / 16 | **2.17×** | **3.69·10⁻⁴, 0 flips, certified at 10⁻³** |
+| 10⁻⁶ | with the 21 parameters | 33 / 1 596 | 40 / 10 / 2 and 3 / 43 / 6 | 1.53× / 1.89× | 1.41 / 1.69·10⁻⁶: **fails** |
+| the solver at 4.67·10⁻⁴ | | one solve | 2 / 48 / 2 | 1.97× | 7.53·10⁻⁵, 0 flips, certified at 10⁻³ |
+| the solver at 10⁻⁶ | | one solve | 33 / 18 / 1 | 1.27× | 8.66·10⁻⁷: holds |
+
+- *What the searches add.* 16 decisions over the solver's:
+  - the four eval-mode dropout masks (ones) and the scalars 32 and √32, in
+    `bf16`;
+  - eight biases and shifts in `bf16`;
+  - the layer norm's centred squares and standard deviation in `f32`.
+
+  84 % of the 1.71·10⁶ bytes are the masks of ones, exact in `bf16`, which
+  the solver's estimate `s · u · |v|` charges 1.7–7.6·10⁻³ each. **A finding
+  for later, not a change here:** a value every element of which is
+  representable in the narrower type costs nothing.
+- *At 10⁻⁶ the searches overfit* the two windows they test on (spending
+  the budget to 2–27 %), where the solver stops with its estimate 2.8 times
+  its measurement.
+
+**What it decides.** Nothing of the compiler.
+
+- *What the paper may claim.* The paper's §7 can now say what one of those
+  tools does on the same program under the same criterion:
+  - on the C, it cannot express the solver's realization, which has `bf16`
+    and typed parameters;
+  - it needed the exact outputs and the variables' list from the compiler;
+  - its objective is the program's speed.
+- *What it must not claim.* Not that the solver's realization is the
+  narrowest that passes. On the compiler's own space a measuring search
+  narrows it by 9 % of its traffic at ε\*(10⁻³), out of sample too, at
+  43–2 858 trials against one solve, and only the exact reference and
+  held-out windows tell such an answer from one that overfits (10⁻⁶).
+- *For §4's claim about the space.* The C's 63 declarations are not
+  presk's 52 decisions:
+  - three stored values are split over 3–6 declarations;
+  - two are tied in one;
+  - 24 locals have no site;
+  - there is neither `bf16` nor a parameter type.
+
+The outputs are archived as presk-project `data/precision-tuning-0.15.0.tar.xz`.
+
+## D155 — The estimate's rounding term measured on the envelope (`presk solve --rounding measured`) and a narrowing step decided by measurement (`--narrow measured`), both off by default: on the logits at ε\*(10⁻³) the measured term takes the solver from 1.97× to 2.14× in one sweep and one measurement, holding on the 461 windows; the narrowing step finds D154's searches' 2.17× exactly in 79 measurements, and overfits at 10⁻⁶ as they did (2026-10-19)
+
+The paper's session asked, on the user's word, for D154's conclusion
+(presk-project `docs/prompt-solver-rounding-2026-10-19.md`): the solver
+should not lose to a 70-trial search on its own space for a reason it can
+remove. The record is `docs/solver-rounding-2026-10-19.md`; the tables are
+`experiments/solver_rounding.sh`'s (`make solver-rounding`).
+
+**What changed in the compiler** (presk `ecd8357`; every default is the
+solver of record):
+- *The envelope* records per site and per storage type the largest
+  rounding error of the sampled values, `max |fl_d(x) − x|`, rounded as the
+  runtime rounds them. It is optional in the file (`serde(default)`), and
+  an overflow is kept as the largest double.
+- *The printing.* `presk calibrate --precision` prints the sites where the
+  term departs most from `u · max|x|`, and so does `presk explain`'s
+  envelope section (X3: its documents gain those lines and nothing else).
+- *`presk solve --rounding measured`* charges a decision `s ·
+  max|fl_d(x) − x|`, from its values at rest for a parameter. The default
+  `unit` is `s · u(d) · max|x|`.
+- *`presk solve --narrow measured`*, after a passing measurement: each
+  decision narrowed one step, the largest saving first, kept while the
+  measured gap stays inside the budget, up to three passes (`Move::Narrowed`,
+  the passes and the measurements reported). Default `off`.
+
+**The solves** (V6's protocol at D = 64; traffic the solver's `cost_at`):
+
+| budget | form | `f64`/`f32`/`bf16` | traffic | measurements | measured | on the 461 windows |
+|---|---|---|---|---|---|---|
+| 4.67·10⁻⁴ | unit (of record) | 2 / 48 / 2 | 1.97× | 1 | 3.24·10⁻⁵ | 7.53·10⁻⁵, 0 flips |
+| 4.67·10⁻⁴ | **measured** | 2 / 40 / 10 | **2.14×** | **1** | 9.58·10⁻⁵ | **1.64·10⁻⁴, 0 flips, certified at 10⁻³** |
+| 4.67·10⁻⁴ | unit, narrow | 0 / 36 / 16 | 2.17× | 87 | 1.35·10⁻⁴ | 3.69·10⁻⁴, 0 flips |
+| 4.67·10⁻⁴ | **measured, narrow** | 0 / 36 / 16 | **2.17×** | **79** | 1.35·10⁻⁴ | **3.69·10⁻⁴, 0 flips, certified at 10⁻³** |
+| 10⁻⁶ | unit (of record) | 33 / 18 / 1 | 1.27× | 1 | 3.49·10⁻⁷ | 8.66·10⁻⁷: holds |
+| 10⁻⁶ | measured | 32 / 14 / 6 | 1.40× | 1 | 3.47·10⁻⁷ | 8.87·10⁻⁷: holds |
+| 10⁻⁶ | measured, narrow (and unit, narrow) | 6 / 40 / 6 | 2.07× | 93 (145) | 9.93·10⁻⁷ | **1.61·10⁻⁶: fails** |
+
+- *The measured term* prices the four eval-mode dropout masks (ones) and
+  32 at nothing in `bf16`. Its gain over the unit term is those masks' bytes.
+- *What it leaves.* It stops 8 decisions short of the searches: the layer
+  norm's `%4` and `%10`, √32, and five biases. Their measured term is the
+  unit one within 4×, and only a measurement says that they fit.
+- *With narrowing* both terms end at D154's searches' realization, decision
+  for decision.
+- *At 10⁻⁶* the narrowing passes the envelope's four windows to 0.7 % of
+  the budget and fails the 461, as D154's searches did.
+
+**The masks** are 15 % of the realization of record's bytes. Not storing
+them would make it 2.33×. The lowering emits `dropout_mask` and a product
+whatever the run, and the executors fill ones at launch outside training,
+so the compiler does not know statically that they are ones. That is spec
+question 78, and nothing changes in the optimizer.
+
+**What it decides.**
+- *The defaults stay* `--rounding unit` and `--narrow off`: every row of
+  record was solved so.
+- *The question of the default is the user's.* `--rounding measured`, a
+  term never larger, from the same sample, its realizations holding at both
+  budgets, could be the default at the next version that solves the rows
+  again (curve, V6, D132, D129, BERT, the decoder: about 33 hours).
+  `--narrow measured` should stay a flag with a held-out check beside it.
+
+The outputs are archived as presk-project `data/solver-rounding-0.15.0.tar.xz`.
+
+## D156 — The certificate off-sample against the size of the calibration sample: from the first N = 1 to 32 held-out windows, the solver of record's realization is 1.5× to 3.8× further from the exact logits on the 461 − N others than on its own, 2.3× at the four windows of record and still 1.9× (ε\*) and 1.5× (10⁻⁶) at 32; the realization is the same from 4 to 32 windows; narrowing by measurement fails out of sample at 10⁻⁶ from every N; no realization inside ε\* flips a decision out of sample (2026-10-19)
+
+The paper's session asked, on the user's word, for item 7 of the paper's
+improvements (presk-project `docs/prompt-certificate-off-sample-2026-10-19.md`):
+how the out-of-sample ratio the paper quotes (2.3× at D = 64, V6; 4.8× at
+course scale, D129) depends on the size of the envelope's sample, and
+whether D155's narrowing becomes safe with a larger one. The record is
+`docs/certificate-off-sample-2026-10-19.md`; the tables are
+`experiments/off_sample.sh`'s (`make off-sample`). Nothing in the compiler
+changed.
+
+**The protocol.** The logits of the margins' model at D = 64 on the
+trained weights:
+- *The envelopes.* Calibrated on the first N = 1, 2, 4, 8, 16, 32 held-out
+  windows at 128 bits, and on all 461 by 15 chunks folded together. The
+  fold is exact for every figure but the element counts, which it leaves
+  out; it is checked bit for bit on 16 + 16 against 32. N = 4 is D155's
+  envelope, and so V6's, bit for bit.
+- *The solves.* At ε\*(10⁻³) = 4.67·10⁻⁴ and 10⁻⁶, in three forms: unit/off
+  (the solver of record), measured/off, measured/narrow. 36 solves, 15
+  distinct realizations.
+- *The judgment.* Every realization's native gap on the 461 windows, split
+  into the N calibration windows and the 461 − N others; flips, the bound
+  #{m < 2ε} and certification on the others only.
+
+**The findings.**
+- *The out/in ratio of the solver of record.* At ε\*: 1.72× (N = 1, 2,
+  another realization), 2.30× (N = 4, 8, V6's), 1.92× (N = 16, 32). At 10⁻⁶:
+  3.76×, 2.57×, 2.48×, 1.74×, 1.53×, 1.53×. It is never within 1.5× up to
+  32 windows.
+- *Why it falls slowly.* The out-of-sample gap is one window's: V6's
+  largest gap over the 461 is in window 402, no other within 10 % of it.
+  Held fixed, V6's realization comes within 1.15× only at 256 windows. The
+  ratio is extreme-value statistics, and moves when the sample reaches a
+  worse window.
+- *The realization against N.* The solver of record's 52 decisions are V6's
+  from N = 4 to 32 at ε\*. At 10⁻⁶ they are V6's at N = 1, 4, 8, 16; six
+  differ at N = 2 and one (√32, one element) at 32. The measured term's
+  realization is the same at every N at 10⁻⁶ and from N = 4 at ε\*. From
+  four windows the sample sets the measured gap, not the realization.
+- *The narrowing.* At 10⁻⁶ it fails out of sample from every N: 1.64, 1.71,
+  1.61, 1.53, 1.44, 1.44·10⁻⁶. It narrows less as N grows (2.12× to 1.89×),
+  and the excess falls from 71 % to 44 % but stays. At ε\* it holds from
+  N = 2 (2.17×, D154's searches' realization) and fails from one window
+  (8.55·10⁻⁴, one flip).
+- *The factor an in-sample gap promises.* At most 2.5× at four windows for
+  the solver of record and 2.7× in any form; 3.8× from one window; 1.9× at
+  32. It is below D129's 4.8× at course scale, and does not carry across
+  models.
+- *The certificate.* Every realization inside ε\* out of sample flips no
+  decision on its 109 824 to 117 760 out-of-sample positions (bound 17 to
+  80, certified at 10⁻³). The one outside ε\* flips one of 117 760. At
+  10⁻⁶ nothing flips, the failing narrowings included.
+- *The two executors.* The solver measures on the kernel interpreter (the
+  system's `exp`, `log`, `tanh`); the rows are native (the `libm` crate's,
+  D76). On the same windows the two gaps differ by up to 15 % under a
+  realization with `bf16` sites. Two narrowings at 10⁻⁶ are inside the
+  budget by the solver's measurement and outside it natively on their own
+  windows. The ratios compare native with native.
+
+**What it decides.**
+- *Nothing changes in the compiler, and the defaults stay* as the user
+  decided on D155. `--rounding measured` holds out of sample at every N.
+- *`--narrow measured` needs a held-out check whatever the sample's size:*
+  at 10⁻⁶ it overfits every sample up to 32 windows. The manual's
+  `precision` chapter says so.
+- *The paper's sentences* (the record's "For the paper"): the ratio and its
+  dependence on N beside "4.8× out of sample", and the narrowing's need for
+  a held-out check in the threats.
+
+The outputs are archived as presk-project
+`data/certificate-off-sample-0.15.0.tar.xz`.
+
+## D157 — Version 0.16.0 opened: the solver's defaults after D154–D156, `dropout` outside a training run as the identity, one executor's bits, the cost per sample, three ways to spend the budget judged out of sample, and every row of record solved again (2026-10-19)
+
+The plan is `presk-specs/implementation/presk-plan-0.16.0.md` (presk-specs
+!97, with the answer to question 78 in the reference, draft v0.22). The
+prompt is presk-project `docs/prompt-0.16.0-2026-10-19.md`, written by
+the paper session on the user's decisions of 2026-10-19, after D154–D156.
+
+**The user's decisions:**
+1. `--rounding measured` becomes `presk solve`'s default; `unit` stays,
+   for the record.
+2. Outside a training run, `dropout` is the identity of the language: the
+   mode is part of an entry's meaning (question 78, answered). An entry
+   evaluated, solved, exported or served outside a training run is
+   compiled with no mask; the training path stays byte-identical.
+3. The solver measures on the executor the rows of record run on.
+4. The traffic cost is counted per sample, so that decisions do not
+   depend on the envelope's N.
+5. Three ways to spend the budget are measured: `--estimate rss` at
+   budget/k, `--narrow measured --margin k` and `--narrow heldout`. Each
+   is taken as a default only if two things hold: it stays inside the
+   budget out of sample in every cell with 1.5× left, and its
+   realization is the same from 4 to 16 windows.
+6. No type per layer of a stack in this version.
+
+Then every row of record is solved again, and where it depends on a
+solved realization or on an inference forward, timed again, by its whole
+protocol.
+
+**Facts checked** (the plan's §2, read at `454bb9f`):
+- *The defaults.* `--rounding unit` and `--narrow off` are the CLI's and
+  the library's (`presk-cli/src/main.rs:878-886`,
+  `presk-precision/src/solve.rs:123-152`). No `--estimate` and no
+  `--margin` exist, and the estimate is a plain sum (`Split::estimate`).
+- *The cost.* The activations are counted from the envelope's `elems`,
+  which are a batch of N windows' counts (`solve.rs:270`,
+  `presk-train/src/lib.rs:429-441`); the parameters are counted from
+  their tensors. A few sites do not scale with N. The envelope's
+  `samples` field is never read.
+- *The executors.* The kernel interpreter evaluates `exp`, `ln`, `tanh`,
+  `sin` and `cos` with Rust's standard library
+  (`presk-kernel/src/exec.rs:28-34`, `58-64`); the native backend binds
+  the `libm` crate (`presk-cranelift/src/lib.rs:150-161`). The solver
+  measures on the kernel interpreter (`presk-driver/src/precision.rs:327-336`).
+  The step solve measures natively (`presk-cli/src/step.rs:73`).
+- *`dropout`.* The lowering emits a `dropout_mask` and a product in every
+  mode (`presk-core/src/lower/expr.rs:556-559`). The mode is a backend
+  flag, `set_training`, which only `presk train`, the `--step` paths and
+  `presk memory --step` turn on. The C recorder writes a fill of ones
+  whatever the flag (`presk-kernel/src/record.rs:1203-1211`), so the
+  exported C training step of T2 (`loss_grad`, H9's 1 003.5 ms)
+  multiplies by ones; `presk train`'s native step draws its masks. A mask
+  is a decision of the solver, of magnitude 1.
+- *The held-out check.* Kept while the gap is inside one threshold on
+  both parts of a split, a narrowing is the narrowing measured on their
+  union, which D156 measured failing at 10⁻⁶ at every N.
+
+**The statements**, fixed before the work (the plan's §3):
+
+| # | Statement |
+|---|---|
+| R0 | Nothing else moves against `454bb9f`; what moves is named with its cause |
+| R1 | The default gives D155's `measured / off` realization (2.14×) on V6's envelope before the cost changes; every row of record solves inside its budget |
+| R2 | No `dropout_mask` outside training; the native and C outputs bit-identical to 0.15.0's under `f64` and `f32`; the training path and the PyTorch export byte-identical |
+| R3 | The kernel interpreter computes the native backend's bits, transcendental functions included; the solver's gap equals the native gap on V6's and D155's realizations |
+| R4 | The cost per sample the same at N = 1, 2, 4, 16 (by construction); the decisions at N = 1, 2, 4 the same (measured, may fail) |
+| R5 | The forms of decision 5 judged on the windows no form saw; a default only by the rule |
+| R6 | The rows of record at 0.16.0, old and new side by side |
+
+**The plan's choices** (its §6; each changes before its step if the
+review objects):
+1. The kernel interpreter takes the `libm` crate's functions; the solver
+   does not measure natively. The three executors then agree bit for
+   bit, and the measurement loop needs no compilation per candidate. The
+   draws stay on the standard library, being host code that every
+   executor shares.
+2. The cost per sample is the cost of one window: the parameters once
+   and each activation site at its elements for a batch of one, counted
+   by `presk calibrate` on its first window and recorded as the
+   envelope's `per_sample`.
+3. A training run under a realization solved outside training gives each
+   mask, and the product by it, the storage type of the product's
+   operand.
+4. The PyTorch export is not specialized; `F.dropout(training=False)` is
+   already the identity.
+5. `--margin k` defaults to 2.5 (D156's largest out/in from four windows
+   on). It is the target of `--estimate rss` and the narrowings'
+   threshold; the solver of record keeps the budget.
+6. `--narrow heldout` is early stopping. The narrowing runs on the
+   envelope's windows at budget/k, and its moves are undone in reverse
+   until the gap on the M windows after the envelope's is within
+   budget/k.
+7. If more than one form passes, the default is the one saving the most.
+8. The decoder (24 h, alone, its times Table 1's) starts once step 4's
+   decision is taken, so that it is solved once under the final defaults.
+
+**R0's baseline.** X1's harness on `454bb9f`'s release build
+(`out/bin/presk-454bb9f`) is in `out/x1/base-0.16.0`, with `make
+quant-table`, `step-table` and `tutorial` beside it
+(`out/x1/base-0.16.0-*`). R2's extras are in `out/r2-base-0.16.0/base`:
+- the logits at D = 64, natively and in C, in `f64` and `f32`;
+- 20 native training steps of the course GPT;
+- the step solves' realizations;
+- the PyTorch export.
+
+Version `0.16.0-dev`: the workspace's and the version line of `presk
+explain`'s six document snapshots and of the manual's `explain_loss`, the
+only outputs that move. On step 0's build (`out/bin/presk-0.16.0-step0`)
+X1's harness differs from the baseline in 19 files, by their version and
+commit lines alone. The quant and step tables of `454bb9f` are 0.15.0's
+baseline's byte for byte. Question 78 is answered in
+`docs/spec-questions.md`.
+
+## D158 — Plan 0.16.0, step 1: `--rounding measured` is `presk solve`'s default, and the traffic cost is one sample's. R1 (i) holds: the default gives D155's `measured / off` realization at both budgets. R4 (i) holds by construction; R4 (ii) fails by one decision of one element, LayerNorm's `eps` at ε\*(10⁻³) (2026-10-19)
+
+**The default.** `RoundingTerm::Measured` is the library's default and
+`--rounding measured` the CLI's, the user's decision 1 (D157). `exhaustive`
+and `breakdown` follow it, so that the soundness test still compares the
+proposal with the optimum of the same estimate. `--rounding unit` stays
+as the solver of 0.12.0–0.15.0. `presk solve` now prints its rounding
+term whichever it is. `presk explain`'s section 6.3 states the estimate
+by the term the solve used: `Σ s · r(type)` under the measured term,
+where it always said `Σ s · u(type) · |v|`.
+
+**R1 (i) holds.** Before the cost changed, `presk solve` with no option on
+V6's envelope (`out/solver-rounding-0.15.0/env_logits.json`, four
+windows) gives D155's `measured / off` realization: every type of
+`default`, `storage`, `params`, `order` and `quant` equal. That is 2.14×
+at 4.67·10⁻⁴ and 1.40× at 10⁻⁶ (`out/r1-0.16.0/`).
+
+**The cost per sample** (decision 4; the plan's choice 2).
+- *The counts.* `presk calibrate --precision --data`, when it calibrates
+  more than one sample, runs the entry again on the first sample alone at
+  64 bits, for the element counts only. It writes them as the envelope's
+  `per_sample` (`presk_driver::precision::calibrate`).
+- *The price.* The solver prices each activation site at those counts
+  (`Envelope::cost_elems`) and the parameters once, as before.
+- *Older envelopes.* An envelope without data or with one sample is its
+  own count. An envelope of several samples written before 0.16.0 is
+  priced at its batch, and `presk solve` says so in a line `per sample`.
+- *The step path.* The step solve's groups are unchanged
+  (`step_groups` reads `elems`).
+- *What the pass costs.* On the logits at D = 64 the extra pass adds
+  at most 4 s to a calibration of 1 to 4 windows (15.3–61.1 s in D156);
+  the 16-window one ran beside three others.
+
+**R4**, on the logits at D = 64 on the trained weights, the envelopes of
+the first N = 1, 2, 4 and 16 held-out windows calibrated again
+(`out/r4-0.16.0/`, `run.sh`). Each is D156's at the same N bit for bit in
+every field it had, `off_sample.py same`.
+- **(i) holds.** At N = 2, 4 and 16 the per-sample counts equal the
+  one-window envelope's `elems` at all 98 sites. 51 of the 98 sites
+  scale with N; the other 47 do not.
+- **(ii) fails by one decision.** The default solve on each envelope:
+
+  | budget | N = 1 | N = 2 | N = 4 | N = 16 |
+  |---|---|---|---|---|
+  | 4.67·10⁻⁴ | 2.12×, 11 `bf16` | 2.12×, the same as N = 1 | 2.12×, 10 `bf16`: `LayerNorm.apply/%8` in `f32` | 2.12×, the same as N = 1 |
+  | 10⁻⁶ | 1.36×, 6 `bf16`, 14 `f32` | the same | the same | the same |
+
+  The ratios are now one window's (at four windows they were 2.14× and
+  1.40×). `LayerNorm.apply/%8` is the constant `eps`, `real 1e-05`, one
+  element.
+  - *Why N = 4 differs.* At N = 4 the proposal's estimate stops at
+    4.664·10⁻⁴ of the 4.67·10⁻⁴ budget, so that term no longer fits; no
+    widening happened at any N. That is the sensitivities and magnitudes
+    of the sample, at the knapsack's edge, not the cost, which is the
+    same at every N.
+  - *Batch pricing, for comparison.* D156's solves of the same form,
+    priced at their batch, differed at N = 1 and 2 from N = 4 in two
+    decisions (`LayerNorm.apply/%5` and `blocks.ff.up.b`). Priced per
+    sample, those two no longer move.
+- *How the default compares with the batch price.* At N = 4 the
+  per-sample price gives three decisions other than D155's realization:
+  those two and `eps`.
+
+**What moved** (R0's (R) and (C)):
+- the solver's tests (`rounding.rs`'s default; the unit term named where
+  a test meant it, in `rounding.rs` and `presk-driver`'s `driver.rs`);
+- `presk-explain`'s `mlp` and `tutorial` snapshots: the solve's text, its
+  realization, the estimate's sentence, the memory of the parameters at
+  rest; and its network snapshot of the tutorial, whose parameters at
+  rest are 248 bytes where they were 280;
+- the manual's generated `explain_loss`.
+
+The manual's `precision` chapter gains "The cost per sample", and its
+`cli` chapter states both changes. `experiments/off_sample.py` keeps the
+per-sample counts when it folds envelopes and compares them in `same`.
+
+**R0 at this step.** X1's harness on this step's build
+(`out/bin/presk-0.16.0-step1`) differs from step 0's in 15 files:
+- the four solves it runs (the tutorial's loss, with and without
+  `--quant`; the course GPT's at small constants; the tensor entry's);
+- the two realizations they write, and what is built from them (the C
+  export of the tutorial's solved realization, the kernels under its
+  quantized one);
+- three exports' READMEs, by their commit line alone.
+
+Nothing else moves.
+
+**The scripts of record** that call `presk solve` without `--rounding`
+now solve with the measured term and the per-sample cost. Every row of
+record is solved again at step 5.
+
+## D159 — Plan 0.16.0, step 2: the kernel interpreter takes the `libm` crate's `exp`, `log`, `tanh`, `sin` and `cos`, so that it computes the native backend's bits and the solver measures what a native run computes. R3 holds (2026-10-19)
+
+The user's decision 3 (D157), by the plan's choice 1. `presk_kernel::exec`'s
+two `Elem`s, `f64` and `f32`, evaluate `exp`, `log`, `tanh`, `sin` and `cos`
+with `libm::{exp, log, tanh, sin, cos}` and `libm::{expf, logf, tanhf, sinf,
+cosf}`, the functions the native backend binds
+(`presk-cranelift/src/lib.rs:150-161`). Until now they used Rust's
+standard library, glibc's here. `erf` was already the crate's, and `sqrt`
+is IEEE's in both.
+
+**What else uses the system's library.** Nothing that separates the
+executors. The normal draws (Box–Muller, `presk-interp/src/key.rs`) are
+host code that the interpreter, the kernel interpreter and the native
+backend all share. `sample`'s `exp` was already the crate's (D83). The
+draws stay on the standard library: moving them would change every
+initialization, which R2 (iii) forbids (the plan's §8).
+
+**R3 holds.**
+- *The test set.* X1's harness runs U1's 31 entries on both executors in
+  `f64`, `f32` and `bf16`, under both `--remat`s: 186 pairs. At step 1, 48
+  pairs differed between the kernel interpreter and the native backend;
+  at this step none differs, byte for byte at 17 digits.
+- *The margins' model.* Under V6's realization and D155's seven others,
+  on the envelope's four windows, the kernel interpreter's logits are the
+  native backend's bit for bit (`out/r3-0.16.0/run.sh`). So the solver's
+  measured gap, taken on the kernel interpreter, is the native gap on the
+  same windows. Step 1's binary gives other logits under the two
+  narrowings, the realizations D156 found up to 15 % apart.
+- *The tests, now made strict.*
+  - `presk-cranelift/tests/layout.rs` asserts the two executors equal on
+    every nest at the default, a softmax included, where it asserted it on
+    contractions only.
+  - `params.rs` asserts them equal on every realization that types the
+    parameters, where it compared them only where the plain runs agreed:
+    56 realizations, all equal, 42 of them also with the parameters
+    rounded first.
+- *C1 holds.* `make c-conformance` on this step's tree: its 16 export
+  tests and the SCoP mode's 5 pass, the C programs computing the native
+  bits (27 minutes). The whole workspace's tests pass too (`cargo test
+  --workspace --release --no-fail-fast`, 104 suites).
+
+**R0 at this step.** X1's harness differs from step 1's in 52 files:
+- the 48 kernel-interpreter outputs that differed from the native ones,
+  which are now the native ones;
+- four exports' READMEs, by their commit line alone.
+
+No solve that X1 runs moves in the digits it prints.
+
+**Documents.** The manual's `native` chapter (the two executors, the
+conformance suite's gaps) and `dependencies` (the `libm` crate's role);
+`presk-cranelift`'s crate comment; the solve's comment on "the kernel
+interpreter against the exact reference". presk-specs' `presk-tooling.md`
+is brought up at step 6.
+
+## D160 — Plan 0.16.0, step 3: outside a training run `dropout` is the identity. Every entry is compiled in a mode; in the inference mode the lowering's program is its inference reading, with no `dropout_mask` and no product by it, so that no realization types a mask. R2 holds (2026-10-19)
+
+The user's decision 2 (D157), the compiler's question 78 answered by the
+reference's draft v0.22 (requirement 3.30).
+
+**The mode.**
+- *Where it lives.* `presk_core::inference::Mode`, `Training` or
+  `Inference`, is a field of the lowering's options. `lower_traced` runs
+  `inference::reading` on the lowered program in the inference mode,
+  before any differentiation, so that no `.vjp`, `.fwd` or `.bwd` ever
+  holds a mask.
+- *What the reading does.* It removes each `%m = dropout_mask r, k, x`
+  and its `%y = mul x, %m`, reads `x` wherever `%y` was read, and removes
+  the `let`s that only those two read, a key's `split_key` among them. A
+  `let` keeps its number and a function its name, as `ad::prune` keeps
+  them, since a site is named `<function>/%<let>`.
+- *Which commands are in which mode.* `presk_driver::front::core`,
+  `typed_core` and `typed_core_traced` are now the inference mode's, and
+  every command that compiles an entry goes through them: `run`, `solve`,
+  `calibrate`, `check --precision`, `bench`, `export --target c` (both
+  modes), `explain`, `memory`, `plan`, `autotune`, `dump`. `presk serve`
+  lowers in the inference mode too.
+- *The training mode.* `presk train`, the `--step` paths (`step.rs`), the
+  PyTorch conformance runs and `presk check` lower with
+  `presk_core::lower`, whose default mode is `Training`: the program as
+  written. `presk memory --step` asks for it with `typed_core_as(…,
+  Mode::Training)`.
+- *Seeing either program.* `presk dump --mode training` prints the
+  program as written; the default is the inference one.
+
+**A training run under a realization solved outside training** (the
+plan's choice 3). `presk_train::masks_typed`, which `presk train` applies
+to its plan right after lowering, gives each mask and its product the
+type of the product's operand: its site's type, else the default. It
+does so only where the realization types neither the mask nor the
+product nor their function, so that a step's realization (whose
+`functions` type every site of a function) and a uniform one run as
+before.
+
+For the paper (the plan's §6.3): *a budget on an entry is discharged on
+the entry's inference reading, in which `dropout` is the identity; a
+training run under the solved realization keeps its masks, each stored in
+the type of the value it multiplies.*
+
+**R2 holds.**
+- **(i) No mask outside training.** Every program that calls `dropout`
+  has none in its inference program, before or after differentiation:
+  - the course GPT (`corpus/nlp/05_gpt.psk`, four masks as written);
+  - `experiments/gpt_grad.psk` (four), `margins.psk` (four) and
+    `ra4_attention.psk` (one);
+  - the tests' `dropout_reg.psk` (two), `dropout_grad.psk` (one),
+    `stack_keys.psk` (two) and `stack_dropout_grad.psk` (one).
+
+  BERT's and the Llama decoder's programs have no `dropout`.
+- **(ii) The same bits under `f64` and `f32`.** Against `454bb9f`
+  (`out/r2-base-0.16.0/base`):
+  - the logits at D = 64 on four windows, natively in `f64` and `f32`,
+    are byte-identical;
+  - so are the C export's outputs on its conformance inputs
+    (`conformance/native.psk.d`, `out.psk.d`), and C1 holds on both;
+  - the C program loses the four mask fills (`presk_fill` 6 → 2) and the
+    products (`kernels.c` 704 → 658 lines in `f64`).
+
+  On X1's harness every native, kernel-interpreter and exact output in
+  `f64` and `f32` is unchanged.
+- **Not in R2: `bf16`, which moves where a gradient passes a mask.** In a
+  `bf16` nest the arithmetic is `f32` and only a group's root is stored
+  in `bf16`. The backward pass's product by the mask was a stored site,
+  so it rounded the cotangent to `bf16`; without it, the cotangent stays
+  in `f32` into the next nest of its group, one rounding fewer. So
+  `tests/data/stack_dropout_grad.psk`'s `loss_grad` in `bf16` (both
+  executors, both `--remat`s; X1's four files) moves in 3 of the 12
+  elements of `γ`'s gradient, the three smallest (about 10⁻³ and 10⁻²),
+  by 1.9 % to 3.4 %. Each is now nearer the exact gradient: 0.6 %, 0.2 %
+  and 0.5 % from it, where 0.15.0 was 1.3 %, 2.9 % and 3.0 % away. Every
+  other `bf16` output of X1 is unchanged. The same holds for a mixed realization that stores
+  the product narrower than its operand, as the plan's §6 said.
+- **(iii) The training path is byte-identical.** Under 0.15.0's
+  realizations, 20 native steps of `presk train` on the course GPT at
+  D = 64 give the same losses and the same checkpoint
+  (`53d1a4e5…`). `make step-table`'s step solves give the same
+  realizations, and the step table is the same (below).
+- **(iv) The PyTorch export is byte-identical.** It prints
+  `F.dropout(x, rate, training=…)` from the typed program, unchanged.
+
+**R0 at this step.** X1 differs from step 2's in 53 files:
+- the four programs' dumps (PSK-Core, after differentiation, PSK-Realize);
+- the kernels of the course GPT and of the three test programs with
+  `dropout`;
+- the course GPT's envelope, its solve, its bound and its sensitivities
+  (the mask sites gone);
+- the plans of the course GPT and its gradient;
+- `stack_dropout_grad.psk`'s four `bf16` runs (above);
+- four READMEs, by their commit line alone.
+
+**What else moved.**
+- *Memory.* The course GPT's `presk memory` at `B = 2`, `T = 16`: its
+  forward pass's peak is the same, 149 504 bytes, in 86 operations where
+  there were 96. Its C arena beside the inputs is 328 832 bytes, where it
+  was 377 984: 2.20 times the peak, where it was 2.53.
+- *The gradient.* `loss_grad`'s peak is 5 002 384 bytes under `store`,
+  where it was 5 117 072; its arenas are 9 244 992 and 8 184 512, where
+  they were 9 425 216 and 8 298 816. `adamw.step`'s numbers are 0.15.0's
+  (`presk-driver`'s memory test).
+- *The network diagram.* The course GPT's has 119 nodes and 119 arrows,
+  where it had 125 and 133, its `split_key` and `dropout_mask` boxes gone
+  (`presk-explain`'s network snapshot, the manual's `explain_network`).
+- *Tests.* `presk-core`'s `inference` (the reading on six programs: no
+  mask before or after differentiation, every `let` kept the training
+  program's at its number) and `presk-train`'s `masks` (the masks' types
+  under a realization) are new. The whole workspace's tests pass (106
+  suites), C1 holds (`make c-conformance`: its 16 export tests and the
+  SCoP mode's 5), and `cargo doc -p presk-manual` gives no warning.
+- *The manual.* `language` (the mode), `training` (the masks of a
+  training run under a solved realization), `cli` (`presk dump --mode`),
+  `memory` (the example and the ratio), `precision` and `export_c`.
+- *Not yet.* The reference's Status paragraphs and the report's figures of
+  the course GPT's network (presk-specs `report/figures/network-gpt*.tex`,
+  drawn by the same layout) are brought up at step 6.
+
+## D161 — Plan 0.16.0, step 4: three ways to spend the budget, judged out of sample. Every form holds on the windows no form saw, but none keeps 1.5× of the budget at 10⁻⁶ (the default 0.89 of it), and none of the five new ones keeps its realization from 4 to 16 windows: by the plan's rule none becomes a default, and 0.16.0's defaults are final (2026-10-19)
+
+The user's decision 5 (D157).
+
+**The options** (`presk_precision::solve`; `presk solve`):
+- `--estimate sum|rss`: the proposal's estimate, the sites' first-order
+  terms summed and aimed at the budget (`sum`, the default), or their
+  root-sum-square aimed at the budget divided by the margin
+  (`Split::estimate_sq`, compared on the squares). The measurement checks
+  the budget as before.
+- `--margin K`, 2.5 by default: the factor kept between the budget and
+  what is spent in sample. `--estimate rss` aims at budget/K, and the
+  narrowings keep a step while the gap is inside budget/K; D155's
+  narrowing is `--margin 1`. The default solve does not read it.
+- `--narrow heldout [--heldout M]`: the narrowing, then early stopping
+  (the plan's choice 6). The steps kept are undone, the last first, until
+  the gap on the M samples after the envelope's in its data file (by
+  default as many as the envelope's) is inside budget/K. The driver
+  computes their exact value once (`presk_driver::precision::solve`,
+  `solve_with_heldout`, `Move::Undone`). An envelope not calibrated on a
+  slice of a data file is refused (exit 2).
+
+`presk solve` prints each option when it is on, and `presk explain` gives
+an undone step its reason. `presk-precision`'s `tests/spend.rs` checks the
+three. The tests of D155 that meant its narrowing say `margin: 1.0`.
+
+**The run** (`experiments/spend.sh`, `make spend`, `out/spend/`, 57
+minutes on falicon, nothing timed of record; the report
+`out/spend/report.md` by `experiments/spend.py`).
+- *The program.* The logits at D = 64 on the trained weights, at this
+  step's tree: no mask, the kernel interpreter on the `libm` crate, the
+  cost per sample.
+- *The envelopes.* The first N = 4 and 16 held-out windows.
+- *The solves.* ε\*(10⁻³) = 4.67·10⁻⁴ and 10⁻⁶; seven forms, k = 2.5: 28
+  solves, 10 distinct realizations, each run natively on the 461
+  windows.
+- *The judgment.* In sample on the envelope's N windows, and out of
+  sample on windows 2N to 460, which no form saw (`--narrow heldout`
+  measured N to 2N − 1).
+
+| form | 4.67·10⁻⁴, N = 4 | N = 16 | 10⁻⁶, N = 4 | N = 16 |
+|---|---|---|---|---|
+| `unit / off` | 1.965×, out 1.64·10⁻⁴ (0.35) | the same realization | 1.225×, 8.84·10⁻⁷ (0.88) | the same |
+| `measured / off`, the default | 1.966×, 1.43·10⁻⁴ (0.31) | the same | 1.266×, 8.87·10⁻⁷ (0.89) | the same |
+| `--estimate rss` | 1.965×, 3.10·10⁻⁴ (0.66), 1 flip | the same | 1.206×, 6.92·10⁻⁷ (0.69) | 1.206×, another, 7.47·10⁻⁷ (0.75) |
+| `--narrow measured` | 2.002×, 3.69·10⁻⁴ (0.79), 8 narrowed | 2.001×, another, 1.87·10⁻⁴ (0.40) | **1.554×, 8.21·10⁻⁷ (0.82)**, 22 narrowed | 1.266×, none narrowed |
+| `--narrow heldout` | as `narrow`, none undone | as `narrow` | 1.266×, all 22 undone | 1.266× |
+| `--estimate rss --narrow measured` | 2.002×, 3.69·10⁻⁴ (0.79) | the same realization | 1.554×, 8.21·10⁻⁷ (0.82) | 1.206×, 7.47·10⁻⁷ |
+| `--estimate rss --narrow heldout` | as the previous | 1.965×, 6 undone, 3.10·10⁻⁴ | 1.206×, 18 undone | 1.206× |
+
+The traffic is one sample's (D158). "Out" is the largest gap on windows
+2N to 460, with its share of the budget in parentheses. No realization
+flips a decision out of sample but `rss`'s at ε\*, one of 115 968 (its
+bound allows 64), and every one is certified at δ = 10⁻³.
+
+**The findings.**
+- **Every form holds out of sample in every cell**, at most 0.89 of the
+  budget.
+- **The margin makes the narrowing hold at 10⁻⁶.** With k = 1, D155's
+  narrowing failed out of sample at every N (D156). With k = 2.5, at N = 4
+  it narrows 22 decisions, to 1.554× where the default is 1.266×, and
+  holds at 0.82 of the budget. At ε\* it gives 2.002× against 1.966×.
+- **The margin also makes the narrowing depend on N.** At N = 16 the
+  default's in-sample gap at 10⁻⁶ is already 5.8·10⁻⁷, above budget/k =
+  4·10⁻⁷, so the narrowing keeps nothing. At ε\* it keeps 5 decisions
+  where it kept 8 at N = 4.
+- **Early stopping is the narrowing or nothing.**
+  - At ε\* the held-out windows are inside budget/k, and no step is
+    undone.
+  - At 10⁻⁶, N = 4, every one of the 22 steps is undone. The default's own
+    gap on windows 4–7 (4.65·10⁻⁷) is above 4·10⁻⁷, so the held-out
+    threshold cannot be met, and the form falls back to the default.
+- **The root-sum-square spends the budget elsewhere, not more.** At ε\*
+  its traffic is the default's to three digits, with twice the gap out of
+  sample. At 10⁻⁶, aimed at budget/2.5, it is narrower than the default
+  allows (1.206× against 1.266×).
+- **The rule (the plan's §1).** A form becomes a default only if it holds
+  out of sample with 1.5× of the budget left in every cell and its
+  realization is the same at N = 4 and 16.
+  - *1.5× left.* No form meets it at 10⁻⁶, the default and the solver of
+    record included (0.88–0.89 of the budget).
+  - *The same realization.* None of the five new forms meets it.
+
+  So **none of the three becomes a default**, and 0.16.0's defaults are
+  final: `--rounding measured` (D158), `--estimate sum`, `--narrow off`.
+  The three stay flags.
+- **The default is now N-independent here.** It gives the same
+  realization at N = 4 and 16 at both budgets. At step 1, on the program
+  with masks, N = 4 kept LayerNorm's `eps` apart (D158's R4 (ii)).
+
+**What the report recommends to the paper.** The 1.5× rule is stricter
+than the solver of record's own behaviour at 10⁻⁶. A form's "safety" is
+therefore a ratio out of sample against in sample, not a pass. The
+narrowing with k = 2.5 is the only way that saves traffic at both budgets
+and holds everywhere, at the price of a realization that depends on N.
+
+**R5 holds as stated** (reported, each form a row; a default only by the
+rule). With this decision **the decoder starts** (the plan's choice 8),
+alone, on this step's tree.
+
+## D162 — Plan 0.16.0, step 5: the Llama 2 decoder's block solved again by D106's whole protocol. The same 31 of 32 stored values in the same types, 1.99×; the 13 parameters typed, three of them now in `bf16` (RMSNorm's gains, ones at initialization, which the measured term finds exact there); the gap 2.544·10⁻⁵, the native one, which D124's realization had too; the times within 1 % of D124's (2026-10-19/20)
+
+The first row of record of plan 0.16.0's step 5 (R6), run first and
+alone, as the plan's §5 asks, since its times are Table 1's.
+`STAGES=solve L=1 T=384 ./experiments/llama.sh` ran on presk `22dd345`,
+the tree of steps 1 to 4, in a 105 GB scope, from 19:58 on 2026-10-19 to
+19:43 on 2026-10-20 (23 h 45 min; D124: 23 h 46 min). Its report is
+`docs/compile-times-2026-10-19-llama.md`, and every output is archived as
+presk-project `data/llama-7b-0.16.0.tar.xz` with `presk explain` on the
+realization.
+
+| | D124 (0.12.0) | D162 (0.16.0) | what moved it |
+|---|---|---|---|
+| stored values narrowed | 31 of 32 (28 `f32`, 3 `bf16`) | the same, site for site | — |
+| parameters | 13 of 13, all `f32` | 13 of 13: 10 `f32`, 3 `bf16` | R (D155, D158) |
+| bytes at rest | 1.8644·10⁹ against 3.7288·10⁹ | the same to five digits (24 KB fewer) | R |
+| traffic | 2.2621·10⁹ against 4.5116·10⁹, 1.99× | the same | — |
+| estimate | 7.595·10⁻³ | 3.553·10⁻³ | R |
+| measured gap | 2.639·10⁻⁵, no widening round | **2.544·10⁻⁵**, no widening round | E (D159) |
+| bound `cond` | 1.1901·10⁶ | 1.5304·10⁸ | R, through the three gains |
+| `calibrate`, `solve`, reference (s) | 30 030.7, 48 698.5, 6 813.5 | 29 830.9, 48 888.0, 6 807.0 | — (within 1 %) |
+| peaks (GB) | 32.0, 71.7, 29.3 | 32.0, 71.7, 29.3 | — |
+
+- **The three parameters.** `blocks.n1.γ`, `blocks.n2.γ` and `norm.γ`,
+  RMSNorm's gains, are declared `init = ones`. The decoder is solved at
+  its initialization, as §6 of the paper says. The measured rounding term
+  charges a parameter s · max|fl_d(w) − w| over its values, which is zero
+  for a one in `bf16`, so the solver stores them there for nothing. On
+  trained weights it would not.
+- **The gap moved with the executor.** The solver measures on the kernel
+  interpreter, which since D159 computes the native backend's bits. Run
+  natively (`presk run coverage/llama.psk --entry loss --const G=32
+  --const L=1 --dim T=384 --data out/llama-0.16.0/ids_loss_T384.psk.d
+  --backend native --realize @…`, 136 s), D124's realization and D162's
+  both give the loss 11.1762084961. That is a gap of 2.544·10⁻⁵ to the
+  exact 11.1761830595, under presk `454bb9f` (0.15.0's tree) and
+  `22dd345` alike. D124's 2.639·10⁻⁵ was therefore the interpreter's
+  `std` `exp`, and the gains in `bf16` change no bit.
+- **The bound moved with the gains.** `presk check --precision` charges a
+  parameter its type's unit roundoff whatever its values. With the three
+  gains put back in `f32` the bound is 1.1901·10⁶, D124's to the digit;
+  with them in `bf16` it is 129 times that. It was vacuous before and is
+  still, the discharge being the measurement's.
+- **Unchanged.** The envelope differs from D124's only by its date and
+  the rounding table D155 added (65 sites, 5 exact in `bf16`). With one
+  sample, its counts are its `elems` (D158). The exact loss is the same,
+  as are the token ids' bytes. The decoder has no `dropout`, and its
+  PSK-Core, its optimized PSK-Core and its kernels at `T = 384` are
+  byte-identical between `454bb9f` and `22dd345` (`presk dump`). So D107's
+  comparison with PyTorch, run on that program under a realization fixed
+  by hand, stands, as the plan's §5 expects.
+
+**What the paper may take.** The decoder's sentence in §6 changes in two
+ways. Its weights are "10 in `f32` and 3 in `bf16`, RMSNorm's gains, ones
+at initialization". The gap is 2.5·10⁻⁵, the bound 1.5·10⁸, and the solve
+takes 13 h 35 min, still at 72 GB. Table 1's decoder row is this report's
+(`docs/compile-times-2026-10-19-llama.md`). The abstract's and §1's
+"2.6·10⁻⁵ with 1.99×" become 2.5·10⁻⁵. V5, the block's speed under this
+realization, is re-timed in step 5's timing phase.
+
+## D163 — Plan 0.16.0, step 5: the rows that are solved and not timed, solved again. Every one holds what it held: H2 inside its budget (2.04× at 10⁻³ on the loss, 4.95·10⁻⁶), H5 at both scales, V6 certified (1.97×, 1.4·10⁻⁴), D128's refusals where D128 found them; the quant and step tables byte for byte, so J′ stands. The numbers move with the masks gone and the traffic of one sample (2026-10-20/21)
+
+The rows of plan 0.16.0's §5 that are solved and not timed. They ran
+side by side on presk `22dd345` from 19:48 to 23:15 on 2026-10-20, after
+the decoder (D162), by `out/step5-0.16.0/phaseA.sh`. Each row ran by its
+script of record. The report, with every old value beside its new one
+and the paper's sentence that quotes it, is `docs/rows-0.16.0.md`.
+
+| row | before | 0.16.0 |
+|---|---|---|
+| H2 (Figure 4 at 10⁻³) | D132: 33 stored values (4 `bf16`), 21 weights (11), 2.12×, 1.60·10⁻⁵ | 27 (3), 21 (12), **2.04×**, **4.95·10⁻⁶** |
+| the curve, 10⁻¹ … 10⁻⁷ | 3.17× → 1.15×, 3.57·10⁻⁵ → 1.74·10⁻⁹ | 3.35× → 1.31×, 6.26·10⁻³ → 1.86·10⁻⁹, every point inside, no widening round |
+| its quality axis | within 1.28·10⁻⁴ of 2.7736101 | the same |
+| the course curve at 10⁻³ (trained, initial envelopes) | D132 1.98×, D129 1.98× | 1.99×, 1.98× |
+| V6 | D124: 29 of 31, 1.97×, 7.5·10⁻⁵, 0 flips | 22 of 25, **1.97×**, **1.4·10⁻⁴**, 0 flips |
+| H5 at D = 64 | four of seven certified, H2's 17 ε\*, 30 flips | four of seven, H2's **5.5 ε\***, **9 flips** |
+| H5 at course scale | D129: the logits' solve 1.97×, 2.1·10⁻⁴ (2.4× inside ε\*); the 10⁻³ curve 13 ε\*, 29 flips | **1.99×**, **4.2·10⁻⁴** (1.17× inside); 13 ε\*, 29 flips |
+| §2's realization (`make precision`) | D124: 33 stored values, 2.12×, estimate 97 %, 3.87·10⁻⁶ | 27, **2.02×**, **87 %**, **1.25·10⁻⁶** |
+| Figure 2's largest share | the attention's mask in `bf16`, 55 % | a head split in `bf16`, 74 % |
+| H4, the step table | D124 | byte-identical |
+| D128 | the measurement refuses the proposals of `attn_raw`, `std_two_pass`, `clock` (and `std_one_pass` at 10⁻¹) | the same, `attn_raw` in 2 rounds instead of 4; two more at 10⁻¹ and 3·10⁻², where the lower estimates narrow further |
+| D130 | PyTorch's rows | the same digits |
+
+- **What moved them.** The four dropout masks and two products by a mask
+  left the menu (M), so the loss at D = 64 offers 27 stored values, not 33.
+  The traffic is one sample's (C), so the weights' share of the bytes
+  grows. The measured term (R) charges nothing to a value exact in a type:
+  the head width 32 stays in `bf16` at every budget of the curve, and ε
+  leaves `bf16` at 10⁻⁷ instead of 10⁻⁶. So the curve's bottom is not
+  monotone (1.80·10⁻⁷, 2.97·10⁻⁷, 1.86·10⁻⁹ from 10⁻⁵ to 10⁻⁷). The
+  solver's measurement is the native gap (E).
+- **H2's realization moved closest.** At D = 64 it no longer stores the
+  attention's mask in `bf16`. It is 5.5 ε\* from the logits and changes 9
+  decisions, where D132's was 17 ε\* and 30. At course scale nothing
+  changes: 13 ε\* and 29 decisions.
+- **The logits' solves keep their traffic and double their gap.** V6
+  keeps 1.97×, and the course solve gains (1.99×). On the 461 windows they
+  are two times further from the exact logits than D124's and D129's
+  were. Both are still certified at 10⁻³, V6 at 0.31 of ε\*, the course
+  solve at 0.85.
+- **The training path is unchanged.** The step's realizations are
+  byte-identical, so J′ stands and Table 4 runs the same step realization
+  (R2 (iii), on the version's tree).
+- **One defect found.** Table 4's native step under the plan failed, and
+  D164 fixes it.
+
+**What the paper may take.** Every sentence that quotes these rows has
+its new figures in `docs/rows-0.16.0.md`:
+- §2's realization;
+- H2, Figure 4 and its bottom, where the ε now leaves at 10⁻⁷ and the
+  head width stays in `bf16`;
+- the margins at both scales, with H2's realization at 5.5 ε\* and 9
+  decisions;
+- V6's 22 of 25 and 1.4·10⁻⁴;
+- the course solve's 1.99×, 4.2·10⁻⁴, 7.6× out of sample and 1.17×
+  inside ε\*;
+- D128's `attn_raw`, in two rounds, and its two new refusals at the
+  largest budgets;
+- Figure 2's §6.3, where the mask is gone.
+
+## D164 — `presk plan --mode training`: a training run's plan is planned on the program it runs. Since D160 `presk plan` planned the inference reading, so the plan of a gradient that drops named nests a training run fuses into others, and `presk train --plan` refused it (`E7002`); found by Table 4's first run at 0.16.0 (2026-10-21)
+
+**What failed.** Plan 0.16.0's step 5 timed Table 4 by D127's protocol,
+five rounds of `experiments/pytorch_baseline.sh` on presk `22dd345`
+(2026-10-21 05:17–06:14). In each round the native training step under
+the plan stopped:
+
+```text
+[E7002] Error: the plan's layout of `Block.apply.bwd/%50`: %50 is inside the fusion group whose root, %69, is the nest
+```
+
+With `set -e` the round ended there, so every row after it is missing:
+the linear products, the C program kernel by kernel, the native kernels,
+the distances and the report.
+
+**Why.** Since D160 every command but a training run lowers the
+inference reading. `presk plan` is one of those commands, so it plans
+`loss_grad` of `experiments/gpt_grad.psk` without its masks. The
+gradient's lets are then numbered otherwise than in the program `presk
+train` lowers, which keeps its masks. A layout named for one program's
+`%50` therefore falls on the other program's fusion group. Steps 3 and 4
+did not see it, because R2 (iii) checked `presk train` under its default
+layout, and no test planned a training run. The C step and `presk bench`
+run the inference reading, as they should, so their plan was right.
+
+**The fix.**
+- `presk plan --mode inference|training` (the default `inference`), as
+  `presk dump --mode` (D160). In the driver, `layout::capture_as` lowers
+  the program of a mode, and `capture` is its inference form. The CLI's
+  `ra4::capture` lowers in the command's mode.
+- `pytorch_baseline.sh` and `host_profile.sh` plan the step's gradient
+  with `--mode training` (`grad-train.json`, merged with the optimizer's
+  into `step.json`). `grad.json` stays for the C step and `presk bench`.
+  `gpt_grad.psk`'s comment says so.
+- A test, `presk-cli/tests/plan_mode.rs`, on `tests/train/dropout_reg_grad.psk`
+  (the gradient of `dropout_reg.psk`'s objective as an entry, named as
+  `presk train` names the run's functions):
+  - the two modes' plans name different nests;
+  - `presk train tests/train/dropout_reg.psk --plan` runs under the
+    training plan.
+- The manual's `cli` chapter.
+
+**What it changes.** No output of a command run without `--mode` moves.
+`presk train --plan` takes a plan of its own program again, as it did
+until 0.15.0. Table 4 is timed again on this tree, five rounds (D166).
+
+## D165 — Plan 0.16.0, step 5: D154–D156 run again on 0.16.0. With the masks gone, the measured rounding term buys nothing on V6 (1.96×, as the unit term), which shows that D155's 2.14× was the masks; the searches price their realization at 2.00× and not 2.17×, and the narrowing still reaches it; the solver's measurement is the native gap to the digit, and the default's realization is the same from one window to 32 (2026-10-21)
+
+The plan's §5 runs D154, D155 and D156 again as new decisions, their
+reports kept. They ran on presk `22dd345` in phase B, alone (2026-10-21
+08:24–10:37): `make precision-tuning`, `make solver-rounding` and `make
+off-sample`, into `out/precision-tuning-0.16.0`, `out/solver-rounding-0.16.0`
+and `out/off-sample-0.16.0`. `docs/rows-0.16.0.md` §11–13 gives every row
+with the old value and the paper's sentence.
+
+- **D154's searches.** The space is 25 stored values and 21 parameters,
+  where it was 31 and 21. CRAFT's and Precimonious's searches still find
+  the realization at 3.687·10⁻⁴ on the 461 windows, 0 flips, certified at
+  10⁻³, in 64 and 1 972 trials. They now price it at **2.00×**, not 2.17×,
+  since D154 counted the masks in `bf16`. The solver at ε\* is 1.96×, 2 %
+  short of them where it was 10 % short, and 10 decisions differ where 16
+  did. At 10⁻⁶ the searches still fail the 461 windows (1.41 to
+  1.72·10⁻⁶).
+- **D155's measured term.** At ε\* it gives **1.96×**, the same as the
+  unit term, where D155 had 2.14× against 1.97×. So the gain D155
+  measured was the masks: ones, exact in `bf16`, which the measured term
+  charges nothing. At 10⁻⁶ it still gains, 1.31× against 1.26×, and holds
+  out of sample (8.87·10⁻⁷).
+- **D155's narrowing.** With `--margin 1`, D155's rule, the narrowing
+  still ends at the searches' realization at ε\* (2.00×, 74
+  measurements). It still fails out of sample at 10⁻⁶: 1.91×, 1.50·10⁻⁶
+  on the 461.
+- **D156's dependence on N.** The solver of record is now `measured /
+  off`. Its out-of-sample ratio is 1.94× at four windows and 1.15× at 32
+  at ε\* (D156: 2.30× and 1.92×), and 1.52× at 10⁻⁶. Its realization is
+  the same from one window to 32 at both budgets. The solver's
+  measurement and the native gap on the same windows are at most 0.0 %
+  apart, where D156 found 14.9 % and two solves inside by the one and
+  outside by the other. That is R3 at this scale (D159).
+- **The report scripts.** Each report's counts were written for D154's
+  space (`of 52`, `31 stored values`); they are now computed from the
+  space. `solver_rounding.py` reads D161's narrowing line, which names
+  the margin before the count. `off_sample.py` says that the solver's own
+  cost is one sample's (D158) and describes the executor as it is since
+  D159. The three reports were regenerated from the run's outputs, with
+  no solve run again. `solver_rounding.sh` and `off_sample.sh` pass
+  `--margin "$NARROW_MARGIN"`, 1 by default, D155's rule (D161).
+
+**What the paper may take.** §4's paragraphs on the precision tuners
+(D154), the rounding term and the narrowing (D155) and the certificate
+off-sample (D156), with the figures of `docs/rows-0.16.0.md` §11–13:
+- the searches' 2.00× in 64 and 1 972 trials;
+- the measured term's 1.96× at ε\*, which no longer beats the unit term,
+  the masks having been its gain;
+- the narrowing's 74 measurements;
+- 1.31× at 10⁻⁶;
+- out/in 1.94× and 1.15×, with the same realization from one window;
+- the executor's 0.0 %.
+
+The masks' 15 % paragraph is now in the past (D160).
+
+## D166 — Plan 0.16.0, step 5: the timings of record, taken again alone. Table 1's solves are within 7 % and its calibrations 14–19 % slower (D155's rounding table, D158's per-sample pass); the decoder block under its realization beats all-`f32` in every process (0.73×); without the masks the C step is 5 % faster, so T2 holds at 0.93× and T4 fails at 1.63× and 1.67×; D153's ratios become 1.70× and 1.97× like for like; H6 fails at 1.02× and 0.74× (2026-10-21)
+
+The timed rows of plan 0.16.0's §5, by their protocols, alone on falicon:
+- Table 1's course GPT, MiniGPT and BERT rows, by D101's protocol, one
+  process a command (phase B, presk `22dd345`). The decoder's row is
+  D162's.
+- V5, by D124's protocol and D126's processes (phase B).
+- Table 4, five rounds of `pytorch_baseline.sh` by D127's protocol (presk
+  `d318d6f`, after D164).
+- H6, D50's method in five processes (`out/step5-0.16.0/h6.sh`,
+  `d318d6f`).
+
+The reports are `docs/compile-times-2026-10-20.md` and
+`docs/compile-times-2026-10-20-bert.md`, and `docs/rows-0.16.0.md` §14–18
+gives every row beside its record and the paper's sentence.
+
+| row | before | 0.16.0 |
+|---|---|---|
+| Table 1, the course GPT: solve, calibrate, reference (s) | D101: 2 702.4, 1 497.7, 178.6 | 2 647.6, 1 732.5, 186.2 |
+| Table 1, BERT's two blocks | D124: 10 112.6, 4 821.6, 557.2 | 10 204.2, 5 742.5, 595.1 |
+| BERT's solve | 28 values, 23 weights (10 `bf16`), 2.00×, 9.2·10⁻⁷ | 28, 23 (13 `bf16`), **2.01×**, **1.0·10⁻⁵** |
+| V5: D162's realization ÷ all-`f32`, B = 1, eight processes | D124: "as fast as all-`f32`" | **0.73×** by the medians, below `f32` in every process; 0.67× at B = 20 |
+| T2 (H9): the C step ÷ PyTorch's | 0.98× | **0.93×** |
+| T4: native ÷ C, the forward pass and the step | 1.52×, 1.60× | **1.63×, 1.67×** |
+| D153: the C step ÷ `torch.compile`'s, and like for like | 1.80×, 2.07× | **1.70×, 1.97×** |
+| H6: the loss's realization, a training step ÷ all-`f64`'s | D50: 1.13× (course), 1.06× (D = 64, apremont) | **1.02×**, **0.74×** (falicon) |
+
+- **Table 1's calibrations have two causes,** measured on the D = 64 row,
+  three processes a binary: D155's rounding table (+5 %) and D158's pass
+  for one sample's counts (+9 %, only on several samples). Every row of
+  Table 1 calibrates on two samples. The references are 4–7 % slower; each
+  is one process, and that cause was not separated.
+- **BERT moves as the decoder does.** Its three LayerNorm gains, ones at
+  initialization, are in `bf16` for nothing under the measured term, and
+  its query after `split_heads` is in `bf16` too, which the gap follows.
+  The exact loss is the same.
+- **V5.** No all-`f32` process ran in the fast mode that D124's first round
+  had (2 438.9 ms), so D162's realization is below all-`f32` in each of
+  eight. The two solved realizations are within each other's spread.
+- **Table 4.** The C program is 5 % faster on the step and 8 to 11 % on the
+  forward pass, because an inference entry has no mask to fill or multiply
+  by (D160). The native rows move within 2 %, and `presk train`'s step is
+  D127's to 0.1 ms. So T2 holds by more and T4 fails by more. PyTorch's
+  step, timed again in every round, moves within 1 % (1 018.2 ms against
+  1 026.9).
+- **D153's like-for-like rows** now compare the same arithmetic, since the
+  C step draws no mask and multiplies by none: 1.39× eager without dropout,
+  1.97× compiled without dropout.
+- **H6** fails for D50's reason. The budget binds the loss's forward
+  sites, and a training step is mostly the reverse sweep and the
+  optimizer, at the default `f64`. All-`f32` is 1.75× at course scale, so
+  the gain is there to be had. At D = 64 the realization is 35 % slower
+  than all-`f64`, for a cause not measured. `presk train` refuses a
+  realization that types parameters (`E7001`), so the step trains under the
+  realization less its `params`, as `curve.sh` does.
+- **J′ (H7) stands**, the step's realizations being byte-identical (D163).
+
+**What the paper may take.**
+- Table 1's GPT and BERT rows, from the two reports, and §6's sentence on
+  the commands' times: 3, 29 and 44 min; 10 min, 1 h 36 and 2 h 50 at 11 GB.
+- BERT's solve.
+- V5's "faster than all-`f32`".
+- Table 4's C rows, and T2 and T4 (`out/retime-0.16.0/tables.md` has every
+  row of the five rounds).
+- D153's 1.70× and 1.97×.
+- H6's 1.02× and 0.74×.
+
+## D167 — Version 0.16.0: R0 on the version's tree, the checks of record, the documents (plan 0.16.0 step 6) (2026-10-21)
+
+**R0 holds on the version's tree.** X1's harness, the quant and step
+tables and the tutorial were run under the release build of this step's
+tree (`out/bin/presk-0.16.0-step6`, `out/x1/version-0.16.0.sh`). Each step
+compared its own tree with the one before and named what moved (D158–D161).
+The version's tree against step 3's:
+- **X1:** 22 files differ, by their version lines (`0.16.0-dev` →
+  `0.16.0`), their commit lines (the C exports name the checkout's commit)
+  and the envelopes' `measured` dates, and by nothing else.
+- **The tables:** `make quant-table` and `step-table` are byte for byte
+  `454bb9f`'s.
+- **The tutorial:** run alone, it differs from `454bb9f`'s by its
+  measurements and by D158's line `rounding` in `presk solve`'s report, and
+  by nothing else. A first run beside `c-conformance` also moved step 17's
+  plan for the attention and statement O's verdict, both decided by a
+  profile calibrated and two days timed in the run itself.
+
+**The checks of record on the version's tree.**
+- `cargo test --workspace --release --no-fail-fast` passes: 108 suites,
+  D164's test among them.
+- `make check-examples`, `coverage` and `plan-check` pass.
+- `make c-conformance` passes: `export_c`'s 16 tests and `export_scop`'s 5.
+  The worktree it ran in reads the trained checkpoints `out/ckpt` and
+  `out/course_probe_f32` from the main checkout, where `make
+  train-examples` and `make corpus-gpt` wrote them.
+- `cargo doc -p presk-manual` gives no warning.
+
+**The documents** (the user, 2026-09-30, and the paper session's three
+points of 2026-10-21):
+- *The manual.*
+  - `status`: the section *Version 0.16.0*, with its steps, R0–R6 and what
+    the version has and has not.
+  - `experiments`: §20, the rows of record at 0.16.0, and a line *At
+    0.16.0* in §12–§14 and §16–§18.
+  - `precision`:
+    - `make precision`'s realization at 0.16.0;
+    - the curve on the trained envelope at 0.16.0, the weights that saw its
+      windows named;
+    - the measured term's gain, which was the masks (D165);
+    - how ratios read under the cost per sample;
+    - the decoder at 0.16.0;
+    - two open items, the results beyond the data measured and a bound
+      that knows an exact value.
+  - `training` (`presk plan --mode training`), `coverage` (BERT at 0.16.0),
+    `index`, the tutorial's version lines.
+- *In presk-specs (!98).*
+  - The plan marked done.
+  - The reference at draft v0.23, its Status paragraphs at 0.16.0: the
+    inference reading as a program, the solver's estimate and cost, the
+    kernel interpreter's library.
+  - The report: the foreword, chapter 8 (a paragraph on 0.16.0, the two
+    network figures drawn again without the masks, their captions), the
+    roadmap and the history.
+  - The slides, the summary and a status note,
+    `docs/status-2026-10-21-0.16.0.md`.
+  - The spec questions at 0.16.0 (question 78).
+  - `presk-tooling.md`'s `libm` section (D159).
+- *The poster at 0.16.0* (presk-project `docs/poster/`).
+- CHANGELOG `## 0.16.0`, `CLAUDE.md`, version `0.16.0`. The user tags
+  `v0.16.0`.

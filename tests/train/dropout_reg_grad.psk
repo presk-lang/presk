@@ -1,0 +1,16 @@
+-- dropout_reg_grad.psk — the gradient of dropout_reg.psk's objective as an
+-- entry, as experiments/gpt_grad.psk is the course GPT's (D87). Its
+-- functions are named as `presk train tests/train/dropout_reg.psk` names
+-- that run's (`loss`, `loss.fwd`, `Reg.apply.bwd`, …), so a plan of
+-- `loss_grad` holds for that run once planned in the training mode, `presk
+-- plan --mode training` (0.16.0, D164): the inference reading has no mask
+-- and numbers its nests otherwise (D160).
+import "dropout_reg.psk" as r
+dim B
+
+fn loss(θ : params r.Reg, key : key, batch : (ℝ[batch: B, 2], ℝ[batch: B, 1])) -> ℝ[] uses Rand =
+  let (x, y) = batch
+  mean((r.Reg.apply(θ, x, key) - y)^2)
+
+fn loss_grad(θ : params r.Reg, key : key, batch : (ℝ[batch: B, 2], ℝ[batch: B, 1])) -> params r.Reg uses Rand =
+  grad(λ θ. loss(θ, key, batch))(θ)

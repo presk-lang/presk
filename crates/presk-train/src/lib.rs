@@ -545,3 +545,33 @@ fn fill<T: Clone>(axes: &[Axis], b: usize, sample: impl Fn(usize) -> Result<Vec<
 pub fn format_step(l: &StepLog, total: u64) -> String {
     format!("step {}/{total}  epoch {}  loss {:.6}  lr {:.3e}  |g| {:.4e}", l.step, l.epoch, l.loss, l.lr, l.grad_norm)
 }
+
+/// The plan a training run runs under when its realization types no mask
+/// (0.16.0, D160; the reference's requirement 3.30). A realization solved
+/// on an entry is a realization of its inference reading, which has no
+/// `dropout_mask`; a training run's program has them, and under such a
+/// realization each mask and the product by it take the storage type of
+/// the product's operand: its site's type, else its function's, else the
+/// default. A mask a realization types keeps its type, and one in a
+/// function the realization types as a whole takes that function's, so
+/// that a step's realization (`presk solve --step`) and a uniform one run
+/// as before. `core` is the program as written, before differentiation.
+pub fn masks_typed(plan: &Plan, core: &Program) -> Plan {
+    let mut out = plan.clone();
+    let r = &mut out.realization;
+    for m in presk_core::inference::masks(core) {
+        let site = |v: presk_core::ir::VarId| format!("{}/%{}", m.func, v.0);
+        if r.storage.contains_key(&site(m.mask)) || r.storage.contains_key(&site(m.product)) || r.functions.contains_key(&m.func) {
+            continue;
+        }
+        let d = match m.operand {
+            presk_core::inference::Operand::Let(x) => r.storage.get(&site(x)).copied().unwrap_or(r.default),
+            presk_core::inference::Operand::Param(_) => r.default,
+        };
+        if d != r.default {
+            r.storage.insert(site(m.mask), d);
+            r.storage.insert(site(m.product), d);
+        }
+    }
+    out
+}

@@ -61,6 +61,7 @@ pub fn calibrate(core: &presk_core::Program, prog: &ElabProgram, c: &Calibrate) 
     let mut backend = InterpBackend::new(core, prog, c.bits);
     backend.interp.magnitudes = Some(Default::default());
     backend.interp.minima = Some(Default::default());
+    backend.interp.roundings = Some(Default::default());
     backend.interp.elems = Some(Default::default());
     backend.interp.ops = Some(Default::default());
     backend.interp.terms = Some(Default::default());
@@ -76,10 +77,27 @@ pub fn calibrate(core: &presk_core::Program, prog: &ElabProgram, c: &Calibrate) 
     })?;
     env.observe(&backend.interp.magnitudes.take().unwrap_or_default());
     env.observe_minima(&backend.interp.minima.take().unwrap_or_default());
+    env.observe_rounding(&backend.interp.roundings.take().unwrap_or_default());
     env.observe_elems(&backend.interp.elems.take().unwrap_or_default());
     env.observe_ops(&backend.interp.ops.take().unwrap_or_default());
     env.observe_terms(&backend.interp.terms.take().unwrap_or_default());
     env.samples = c.samples.unwrap_or(1).max(1);
+    // One sample's elements (D157): the batch's are N samples' at most
+    // sites and the model's at a few, so the counts of a batch of one are
+    // taken by running the entry again on the first sample alone. The
+    // values are not kept, so 64 bits do; the counts depend on no value.
+    if let Some(d) = env.data.as_ref().filter(|d| d.samples != Some(1)) {
+        let one = DataSlice { path: d.path.clone(), from: d.from, samples: Some(1) };
+        let bits = c.bits.min(64);
+        let opts = RunOptions { entry: c.entry.into(), dims: c.dims.clone(), seed: c.seed, bits, digits: 17 };
+        let mut counter = InterpBackend::new(core, prog, bits);
+        counter.interp.elems = Some(Default::default());
+        entry_args(core, prog, &opts, Some(&one), c.weights).and_then(|(func, fdims, args)| {
+            let r = Realization::uniform(Dtype::F64);
+            Backend::prepare(&mut counter, func, &fdims, &r).and_then(|p| Backend::call(&mut counter, &p, args)).map_err(|e| e.message)
+        })?;
+        env.per_sample = counter.interp.elems.take().unwrap_or_default();
+    }
     Ok(env)
 }
 
@@ -197,6 +215,9 @@ pub struct SolveArgs<'a> {
     pub profile: Option<&'a Path>,
     /// Also offer the matrix parameters as `int8` or `int4`.
     pub quant: Option<QuantScheme>,
+    /// The estimate's rounding term and the narrowing step (D155): the
+    /// default is the solver of record.
+    pub options: solve::Options,
 }
 
 /// What `presk solve` found.
@@ -236,6 +257,9 @@ pub enum SolveError {
     Reference(String),
     /// `--quant` without the parameters' gradient.
     QuantWithoutGradient,
+    /// `--narrow heldout` on an envelope whose samples are not a slice of a
+    /// data file of known size, which no held-out samples follow.
+    NoHeldout(String),
 }
 
 /// A machine profile's roofline, pricing *time*: 0.5.0 minimised traffic
@@ -329,6 +353,37 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
             Err(_) => f64::INFINITY,
         }
     };
+    // The held-out samples of `--narrow heldout` (D161): the ones after the
+    // envelope's in its data file, as many as its own unless asked, their
+    // exact value computed once.
+    let held = if a.options.narrow == solve::Narrow::Heldout {
+        let Some(d) = env.data.as_ref() else {
+            return Err(SolveError::NoHeldout("the envelope was not calibrated on a data file".into()));
+        };
+        let Some(n) = d.samples else {
+            return Err(SolveError::NoHeldout("the envelope was calibrated on every sample of its data file".into()));
+        };
+        let slice = DataSlice { path: d.path.clone(), from: d.from + n, samples: Some(a.options.heldout.unwrap_or(n)) };
+        let (_, hdims, hargs) = entry_args(core, prog, &opts, Some(&slice), a.weights).map_err(SolveError::NoHeldout)?;
+        let mut exact = InterpBackend::new(core, prog, a.bits);
+        let href = Backend::prepare(&mut exact, entry, &hdims, &one).and_then(|p| Backend::call(&mut exact, &p, hargs.clone())).map_err(|e| SolveError::Reference(e.message))?;
+        Some((hdims, hargs, href))
+    } else {
+        None
+    };
+    let mut measure_heldout = |r: &Realization| -> f64 {
+        let Some((hdims, hargs, href)) = held.as_ref() else {
+            return f64::INFINITY;
+        };
+        let mut b = presk_kernel::KernelBackend::new(core, prog, r);
+        let Ok(a) = r.realize_args(hargs) else {
+            return f64::INFINITY;
+        };
+        match Backend::prepare(&mut b, entry, hdims, r).and_then(|p| Backend::call(&mut b, &p, a)) {
+            Ok(v) => leaf_gap(href, &v),
+            Err(_) => f64::INFINITY,
+        }
+    };
     let menu = Menu::default();
     let (machine, time): (Box<dyn Machine>, bool) = match a.profile.map(presk_opt::Profile::load) {
         Some(Ok(p)) => (Box::new(Roofline(p)), true),
@@ -340,9 +395,10 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     let params = param_sites(core, entry, &args[0], &param_sens);
     let roles = solve::Roles::of(core).with_params(params);
     let mut sol = if a.verify {
-        solve::solve(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), Some(&mut measure))
+        let heldout: Option<&mut dyn FnMut(&Realization) -> f64> = if held.is_some() { Some(&mut measure_heldout) } else { None };
+        solve::solve_with_heldout(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), Some(&mut measure), heldout, a.options)
     } else {
-        solve::solve(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), None)
+        solve::solve_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), None, a.options)
     };
     // The integer menu, on top of the float assignment and under what it
     // left of the budget (0.6.0 step 5d). Verified, the measurement is of
@@ -373,8 +429,8 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
         (Some(_), None) => return Err(SolveError::QuantWithoutGradient),
         _ => None,
     };
-    let optimal = solve::exhaustive(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000).map(|(_, bytes)| bytes);
-    let breakdown = solve::breakdown(env, &sens, &roles, &sol.realization, &menu, Dtype::F64, machine.as_ref());
+    let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000, a.options.rounding).map(|(_, bytes)| bytes);
+    let breakdown = solve::breakdown_with(env, &sens, &roles, &sol.realization, &menu, Dtype::F64, machine.as_ref(), a.options.rounding);
     Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time })
 }
 
@@ -440,8 +496,12 @@ fn param_sites(core: &presk_core::Program, entry: FuncId, theta: &Value, sens: &
     let mut out = Vec::new();
     theta.map_leaves_at(&mut |path, l| {
         if let (Value::Real(t), Some(s)) = (l, sens.get(path)) {
-            let mag = t.data.to_f64().iter().fold(0.0f64, |m, x| m.max(x.abs()));
-            out.push(solve::ParamSite { path: path.to_string(), elems: t.numel() as f64, mag, sens: *s, fields: fields.get(path).cloned().unwrap_or_default() });
+            let values = t.data.to_f64();
+            let mag = values.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            // Its rounding at rest in each type, from its own values: they
+            // are doubles, so the `f64` term is 0 (D155).
+            let round = values.iter().map(|x| presk_interp::eval::rounding_of_f64(*x)).fold([0.0f64; 3], |a, b| [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]);
+            out.push(solve::ParamSite { path: path.to_string(), elems: t.numel() as f64, mag, sens: *s, fields: fields.get(path).cloned().unwrap_or_default(), round: Some(presk_precision::envelope::Rounding::of(round)) });
         }
         Value::Nat(0)
     });

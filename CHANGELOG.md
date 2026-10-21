@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.16.0 — 2026-10-21
+
+The solver's defaults after D154–D156, `dropout` outside a training run as
+the identity of the language, and every row of record solved and timed
+again (`presk-specs/implementation/presk-plan-0.16.0.md`, D157–D167; the
+user's decisions of 2026-10-19).
+- `presk solve` charges each site the rounding its values take
+  (`--rounding measured`), and prices one sample's activations.
+- The kernel interpreter computes the native backend's bits, so the
+  solver's measurement is the native gap.
+- An entry compiled outside a training run has no dropout mask.
+- `presk plan --mode training` plans a training run's own program.
+- Three flags spend the budget out of sample, and none became a default.
+
+Measured on every row of record (`docs/rows-0.16.0.md`):
+- the measured term buys nothing on the logits once the masks are gone;
+- the norms' gains of a model at its initialization go to `bf16` for
+  nothing;
+- the C program is 5 % faster without masks (T2 0.93×);
+- the decoder block under its realization is faster than all-`f32` in
+  every process.
+
+- Version 0.16.0 (D167): R0 holds on the version's tree; `make test`,
+  `check-examples`, `coverage`, `plan-check` and `c-conformance` pass; the
+  manual, the report, the reference, the slides, the summary, a status note
+  and the poster are at 0.16.0.
+- `presk plan --mode inference|training` (D164): the plan of a training run
+  is planned on the program it runs, its masks kept; since D160 the plan of a
+  gradient that drops, planned on the inference reading, named nests `presk
+  train` fuses into others, which it refused (`E7002`).
+- The rows of record solved again at 0.16.0 (plan 0.16.0 step 5). The Llama 2
+  decoder's block by D106's whole protocol (D162): the same 31 of 32 stored
+  values, 1.99×; RMSNorm's three gains, ones at initialization, in `bf16`;
+  the gap 2.544·10⁻⁵, the native one (D124's 2.639·10⁻⁵ was the kernel
+  interpreter's `std` `exp`); the times within 1 % of D124's
+  (`docs/compile-times-2026-10-19-llama.md`). The rows solved and not timed
+  (D163, `docs/rows-0.16.0.md`): every one holds what it held, the curve at
+  10⁻³ 2.04× (the masks gone, one sample's traffic), V6 1.97×, the quant and
+  step tables byte for byte. D154–D156 run again (D165): the measured
+  rounding term buys nothing on V6 once the masks are gone (1.96×, as the
+  unit term), the tools' searches 2.00×, the solver's measurement the native
+  gap to the digit; their report scripts count the space they read. The
+  timings taken again alone (D166): Table 1 (`docs/compile-times-2026-10-20.md`
+  and `-bert.md`), V5, Table 4 in five processes (T2 0.93×, T4 1.63× and
+  1.67×) and H6 (1.02×).
+- Three ways to spend the budget, judged out of sample (D161, `make spend`):
+  `presk solve --estimate rss` (the proposal's estimate a root-sum-square,
+  aimed at the budget over `--margin`), `--margin K` (2.5; the narrowings'
+  threshold) and `--narrow heldout [--heldout M]` (early stopping on the
+  samples after the envelope's). Every form holds out of sample on the
+  logits at D = 64; none keeps 1.5× of the budget at 10⁻⁶ and none of the new
+  ones keeps its realization from 4 to 16 windows, so they stay flags and the
+  defaults are final.
+- Outside a training run `dropout` is the identity of the language (D160,
+  the compiler's question 78): an entry compiled outside a training run is
+  its inference reading, with no `dropout_mask` and no product by it, so
+  that no realization types a mask and the solver offers none. A training
+  run compiles the program as written; under a realization solved outside
+  training each mask takes its operand's type. The outputs under `f64` and
+  `f32` are the same bits, the training path is byte-identical, and the C
+  export loses its mask fills. `presk dump --mode training` prints the
+  program as written.
+- The kernel interpreter takes the `libm` crate's `exp`, `log`, `tanh`,
+  `sin` and `cos`, as the native backend does (D159): the two executors
+  now compute the same bits everywhere, and the solver, which measures on
+  the kernel interpreter, measures what a native run computes. On U1's
+  entries 48 of 186 kernel/native outputs differed and none does now.
+- `presk solve --rounding measured` is the default (D158, the user's
+  decision after D155 and D156); `--rounding unit` is the solver of
+  0.12.0–0.15.0. The traffic cost is one sample's: `presk calibrate --data`
+  records each site's elements for one sample (`per_sample`), and the
+  solver prices the activations at them, the same at any number of
+  samples. On the logits at D = 64 the default gives 2.12× at ε\*(10⁻³)
+  and 1.36× at 10⁻⁶ from 1, 2 and 16 windows; at four windows one
+  one-element decision differs at ε\*.
+- Version 0.16.0 opened (D157, plan `presk-plan-0.16.0.md`, presk-specs
+  !97): the solver's defaults after D154–D156, `dropout` outside a
+  training run as the identity of the language (question 78 answered: an
+  entry's mode is part of its meaning), the kernel interpreter on the
+  `libm` crate, the traffic cost per sample, three ways to spend the
+  budget judged out of sample, and every row of record solved again.
+  Version `0.16.0-dev`.
+- The certificate off-sample against the size of the calibration sample
+  (D156, `docs/certificate-off-sample-2026-10-19.md`, `make off-sample`).
+  The envelope of the logits at D = 64 is calibrated on the first 1 to 32
+  held-out windows and on all 461, the solver run on each in three forms
+  at ε\*(10⁻³) and 10⁻⁶, and every realization judged on the windows it was
+  not calibrated on. No code changes.
+  - *The ratio.* The solver of record's realization is 1.5× to 3.8×
+    further from the exact logits out of sample than in, 2.3× at the four
+    windows of record and still 1.9× at 32. Its decisions are the same from
+    4 to 32 windows.
+  - *The narrowing.* `--narrow measured` fails out of sample at 10⁻⁶ from
+    every sample size: it needs a held-out check.
+  - *The certificate.* No realization inside ε\* flips a decision out of
+    sample.
+- The estimate's rounding term measured on the envelope, and a narrowing
+  step decided by measurement (D155, `docs/solver-rounding-2026-10-19.md`,
+  `make solver-rounding`). Both are off by default; every row of record was
+  solved without them.
+  - *The envelope* records each site's largest rounding error per storage
+    type, `max |fl_d(x) − x|` over the sampled values, and `presk calibrate
+    --precision` and `presk explain` print it beside the magnitude.
+  - *`presk solve --rounding measured`* charges a site that rounding
+    instead of `u(d) · max|x|`, so that a value exact in a type costs
+    nothing there. On the logits at ε\*(10⁻³) it takes the solver from 1.97×
+    to 2.14× in one sweep and one measurement, holding on the 461 held-out
+    windows.
+  - *`--narrow measured`* narrows each decision one step after a passing
+    measurement and keeps it while the measured gap fits. It finds D154's
+    searches' 2.17× in 79 measurements, and overfits at 10⁻⁶ as they did.
+- A precision-tuning tool on the exported C (D154,
+  `docs/precision-tuning-2026-10-19.md`, `make precision-tuning`). CRAFT's
+  variable mode ran on the `f64` C program of the logits at D = 64, with a
+  script retyping its declarations (`experiments/tuning/retype.py`), under the
+  paper's criterion: the logits within ε\*(10⁻³) of the exact outputs the
+  export ships. It finds `double`/`float` programs that pass and hold on the
+  461 held-out windows, at most 1.95× less traffic as a realization against
+  the solver's 1.97×: it has no `bf16`, and the parameters are its inputs.
+  Precimonious's and CRAFT's searches, reimplemented on presk's realizations,
+  find 2.17× in 70 to 2 858 trials, holding out of sample. Most of what they
+  add are dropout masks of ones in `bf16`, which the solver's estimate charges
+  as if they rounded. At 10⁻⁶ they overfit their two windows, where the
+  solver's realization holds. New scripts, `experiments/tuning/`, the tools
+  fetched into `.tuning`; no code changes.
+- PyTorch compiled and in mixed precision, beside eager (D153,
+  `docs/pytorch-modes-2026-10-18.md`, `make pytorch-modes`): the exported
+  course GPT run by `torch.compile` with its defaults and by AMP in
+  `bfloat16`, by D126's protocol on ten X925 cores. Compiled, PyTorch's
+  training step is 0.57× eager's, so the C step is 1.80× it where it is
+  0.98× eager's (T2), and 2.07× like for like, neither side drawing dropout
+  masks. AMP's `bfloat16` is 4.0·10⁻² from the exact logits at D = 64 and
+  flips 505 of 118 016 decisions, as the compiler's all-`bf16` does. It
+  costs 1.4·10⁻³ of validation loss, above the curve's realizations
+  (1.3·10⁻⁴) and inside the spread of one dropout draw. A new script,
+  `experiments/pytorch_modes.{sh,py}`; no code changes.
+
 ## 0.15.0 — 2026-10-18
 
 `presk memory`: what a program needs in memory, counted from the program

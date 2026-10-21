@@ -102,9 +102,17 @@ fn zeros(b: &mut presk_kernel::KernelBackend, realize: &presk_rt::Realization, s
 /// (every nest when it is empty; several since 0.10.0 step 2).
 #[allow(clippy::too_many_arguments)]
 pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], plan: &presk_rt::Plan, seed: u64, nests: &[String], mode: Capture, remat: Remat, report: &mut dyn Report) -> Result<Captured> {
+    capture_as(file, entry, dims, consts, plan, seed, nests, mode, remat, presk_core::inference::Mode::Inference, report)
+}
+
+/// [`capture`] of the program of a mode (0.16.0, D164): `Training` for the
+/// plan of a training run, whose program keeps its masks and so names its
+/// nests otherwise than the inference reading does.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_as(file: &Path, entry: &str, dims: &[String], consts: &[String], plan: &presk_rt::Plan, seed: u64, nests: &[String], mode: Capture, remat: Remat, lowering: presk_core::inference::Mode, report: &mut dyn Report) -> Result<Captured> {
     let t0 = Instant::now();
     let dims = crate::front::parse_dims(dims, report)?;
-    let (sm, prog, mut core) = crate::front::core(file, consts, false, report)?;
+    let (sm, prog, _, mut core) = crate::front::typed_core_as(file, consts, false, lowering, report)?;
     let realize = &plan.realization;
     let mut diags = crate::ad::differentiate(&mut core, remat, realize.groups_visible());
     diags.extend(crate::ad::stored_vjps(&core, realize));

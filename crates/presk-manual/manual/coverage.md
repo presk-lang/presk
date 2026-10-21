@@ -330,8 +330,9 @@ norm's ε). The traffic is 1.99× less than all-`f64`'s, and the realization
 measures **4.3·10⁻⁶** against the exact loss, where the budget allows
 1.1·10⁻², with no widening round. BERT-large's two blocks measured 5.1·10⁻⁷
 at 2.00× (D101; 1.05·10⁻⁵ at 2.03× at 0.11.0, D117; 9.2·10⁻⁷ at 2.00×,
-the weights counted, at 0.12.0, D124), the course GPT 2.1·10⁻⁵ at 2.00×
-(D102, D117; 2.1·10⁻⁶ at 0.12.0, D124). The solve takes
+the weights counted, at 0.12.0, D124; 1.0·10⁻⁵ at 2.01× at 0.16.0, D166,
+its three LayerNorm gains in `bf16`, ones at its initialization), the
+course GPT 2.1·10⁻⁵ at 2.00× (D102, D117; 2.1·10⁻⁶ at 0.12.0, D124). The solve takes
 7.4 times the reference, calibrate 4.4 times. The bound on that realization
 is 6.2·10⁵, vacuous: the discharge is the measurement's (the `precision`
 chapter).
@@ -369,6 +370,21 @@ Natively, the block's forward pass under that realization takes 2.4 to
 2.9 s at batch 1, as fast as all-`f32`, where under 0.11.0's it took 9.7 s,
 its results in `f64` and every weight converted at the kernels' edges
 (D124, the `experiments` chapter).
+
+**At 0.16.0** (D162, `docs/compile-times-2026-10-19-llama.md`) the solver
+charges each site the rounding it measures on the values (D155, the
+default since D158), and it measures on the native backend's bits (D159).
+The same four commands, run again:
+- *the same envelope and loss,* the times within 1 % of D124's and the
+  peaks the same, the solve 13 h 35 min and 71.7 GB;
+- *the same 31 of 32 stored values,* each in D124's type;
+- *10 parameters in `f32` and 3 in `bf16`.* The three are RMSNorm's gains.
+  They are ones at initialization, which `bf16` holds exactly, so the
+  measured term charges them nothing;
+- *1.99× less traffic,* measured **2.5·10⁻⁵**, the native gap, which
+  D124's realization has too (its 2.6·10⁻⁵ was the kernel interpreter's
+  `exp`). The bound is 1.5·10⁸: it charges the three gains `bf16`'s unit
+  roundoff whatever their values.
 
 **Two blocks** (D106). The exact logits at two blocks take 3 h 36 min and
 41.4 GB (the largest is 7.21), and the native gaps move little:

@@ -25,6 +25,10 @@ pub struct Options {
     /// Unroll `stack{L}(M)` into `L` calls (0.1.0's form) instead of a `Fold`;
     /// a debugging aid, `L` must then be a constant.
     pub unroll_stack: bool,
+    /// The mode the program is lowered for (0.16.0, D160): as written, for
+    /// a training run, or its inference reading, with no `dropout_mask`
+    /// ([`crate::inference`]).
+    pub mode: crate::inference::Mode,
 }
 
 pub fn lower(elab: &ElabProgram, typed: &TypedProgram) -> (Program, Vec<Diagnostic>) {
@@ -69,8 +73,19 @@ pub fn lower_traced(elab: &ElabProgram, typed: &TypedProgram, opts: &Options) ->
         l.lower_init(ModuleId(i as u32));
     }
     l.lower_optimizers();
-    let trace = Trace { rules: std::mem::take(&mut l.rules) };
-    (Program { funcs: l.funcs }, l.diags, trace)
+    let mut trace = Trace { rules: std::mem::take(&mut l.rules) };
+    let mut prog = Program { funcs: l.funcs };
+    if opts.mode == crate::inference::Mode::Inference {
+        let removed = crate::inference::reading(&mut prog);
+        for (i, f) in prog.funcs.iter().enumerate() {
+            if let (Some(gone), Some(rules)) = (removed.lets.get(&f.name), trace.rules.get_mut(&FuncId(i as u32))) {
+                for v in gone {
+                    rules.remove(v);
+                }
+            }
+        }
+    }
+    (prog, l.diags, trace)
 }
 
 fn placeholder(name: String, origin: Origin, span: Span) -> Func {

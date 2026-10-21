@@ -360,9 +360,14 @@ basic blocks with an induction variable per loop, scalar variables are
 Cranelift variables, `sqrt` is a native instruction, and the transcendental
 functions and `erf` are calls into the `libm` crate, a port of musl's C
 library as it was before musl 1.1.23 rewrote `exp` and `log` (the C export
-ships those functions, bit-identical to the crate: D78). The kernel interpreter calls the same crate for `erf` only, and
-Rust's standard library, the system's C library (glibc on Linux), for
-`exp`, `log`, `tanh`, `sin` and `cos`. Everything else, from the host program to the sampling
+ships those functions, bit-identical to the crate: D78). The kernel
+interpreter calls the same crate for all of them since 0.16.0 (D159), so
+that it computes the native backend's bits everywhere and the solver, which
+measures on it, measures what a native run computes; until then it called
+it for `erf` only, and Rust's standard library, the system's C library
+(glibc on Linux), for `exp`, `log`, `tanh`, `sin` and `cos`, and the two
+differed there in the last bits, by up to 15 % of a measured gap under
+`bf16` sites (D156). Everything else, from the host program to the sampling
 keys, is the kernel backend's, so a native run is the kernel run with the
 launches compiled. Compilation happens in process; there is no object file,
 no bundle and no cross-compilation yet (spec question 36): an entry that
@@ -378,10 +383,10 @@ and without them. `presk explain --format json|html` writes it and the
 pipeline view shows it (`explain` chapter, "The native column").
 
 The native backend passes the same conformance suite as the kernel
-interpreter with the same measured gaps, up to the last digits of `libm`'s
-functions against the standard library's (`loss_grad` through a stacked
-module in f32: 9.4e-6 native, 5.3e-6 interpreted; both under the
-tolerance).
+interpreter with the same measured gaps, bit for bit since 0.16.0 (D159;
+until then up to the last digits of `libm`'s functions against the
+standard library's, `loss_grad` through a stacked module in f32 giving
+9.4e-6 native and 5.3e-6 interpreted).
 
 ## Training natively
 

@@ -118,8 +118,12 @@ mkdir -p "$P"
 echo '{"realization": "f32", "layout": {}}' > "$P/default.json"
 "$PRESK" plan "$FILE" --entry GPT.apply "${DIMS[@]}" --realize f32 --profile "$PROFILE" --out "$P/forward.json" > "$P/forward.log" 2>&1
 "$PRESK" plan "$GRAD" --entry loss_grad "${DIMS[@]}" --realize f32 --profile "$PROFILE" --out "$P/grad.json" > "$P/grad.log" 2>&1
+# A training run's gradient keeps its masks, so its nests are named as in the
+# program as written (0.16.0, D160, D164): `presk train`'s plan is planned in
+# the training mode, the C step's and `presk bench`'s in the inference one.
+"$PRESK" plan "$GRAD" --entry loss_grad "${DIMS[@]}" --realize f32 --mode training --profile "$PROFILE" --out "$P/grad-train.json" > "$P/grad-train.log" 2>&1
 "$PRESK" plan "$FILE" --entry adamw.step "${DIMS[@]}" --realize f32 --profile "$PROFILE" --out "$P/adam.json" > "$P/adam.log" 2>&1
-# The step's plan: the gradient's layouts and the optimizer's, whose nests are
+# The step's plan: the training gradient's layouts and the optimizer's, whose nests are
 # named apart; `presk train` runs both, and names its functions as the
 # wrapper does (`loss.fwd`, `GPT.apply.bwd`, ..., since the gradient keeps
 # its residuals, 0.10.0 step 4). The linear products' plan: the
@@ -127,7 +131,7 @@ echo '{"realization": "f32", "layout": {}}' > "$P/default.json"
 python3 - "$P" <<'EOF'
 import json, sys
 p = sys.argv[1]
-g, a, f = (json.load(open(f"{p}/{n}.json")) for n in ("grad", "adam", "forward"))
+g, a, f = (json.load(open(f"{p}/{n}.json")) for n in ("grad-train", "adam", "forward"))
 assert not set(g["layout"]) & set(a["layout"])
 step = dict(g, layout={**g["layout"], **a["layout"]})
 json.dump(step, open(f"{p}/step.json", "w"), indent=2)

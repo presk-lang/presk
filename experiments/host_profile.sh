@@ -80,11 +80,13 @@ P=$OUT/plans
 mkdir -p "$P"
 "$PRESK" plan "$FILE" --entry GPT.apply "${DIMS[@]}" --realize f32 --profile "$PROFILE" --out "$P/forward.json" > "$P/forward.log" 2>&1
 "$PRESK" plan "$GRAD" --entry loss_grad "${DIMS[@]}" --realize f32 --profile "$PROFILE" --out "$P/grad.json" > "$P/grad.log" 2>&1
+# `presk train`'s plan, of the program with its masks (0.16.0, D160, D164).
+"$PRESK" plan "$GRAD" --entry loss_grad "${DIMS[@]}" --realize f32 --mode training --profile "$PROFILE" --out "$P/grad-train.json" > "$P/grad-train.log" 2>&1
 "$PRESK" plan "$FILE" --entry adamw.step "${DIMS[@]}" --realize f32 --profile "$PROFILE" --out "$P/adam.json" > "$P/adam.log" 2>&1
 python3 - "$P" <<'EOF'
 import json, sys
 p = sys.argv[1]
-g, a = (json.load(open(f"{p}/{n}.json")) for n in ("grad", "adam"))
+g, a = (json.load(open(f"{p}/{n}.json")) for n in ("grad-train", "adam"))
 assert not set(g["layout"]) & set(a["layout"])
 json.dump(dict(g, layout={**g["layout"], **a["layout"]}), open(f"{p}/step.json", "w"), indent=2)
 EOF

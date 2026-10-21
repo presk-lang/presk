@@ -106,14 +106,13 @@ fn every_point_of_a_contractions_layout_space_is_exact() {
                 }
                 bits
             };
-            // Each executor against its own default: the two agree bit for bit
-            // on a contraction, and not on an exponential, which the native
-            // backend takes from libm and the kernel interpreter from Rust's
-            // standard library (the conformance suite's caveat).
+            // Each executor against its own default, and the two against each
+            // other on every nest: since 0.16.0 (D159) the kernel interpreter
+            // takes the `libm` crate's exponential, as the native backend
+            // does, where until then it took Rust's standard library's and
+            // the two agreed on a contraction only.
             let reference = [run(None, false), run(None, true)];
-            if matches!(kind, presk_rt::NestKind::Contraction(_)) {
-                assert_eq!(reference[0], reference[1], "{nest} ({d}): the two executors disagree at the default");
-            }
+            assert_eq!(reference[0], reference[1], "{nest} ({d}, {kind:?}): the two executors disagree at the default");
             for l in &space {
                 for native in [false, true] {
                     assert!(reference[native as usize] == run(Some(l), native), "{nest} ({d}, {}): the layout {l} moved a bit", if native { "native" } else { "kernel interpreter" });

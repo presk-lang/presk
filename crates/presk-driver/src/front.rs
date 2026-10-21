@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+pub use presk_core::inference::Mode;
 use presk_syntax::diag::has_errors;
 use presk_syntax::{FileId, SourceMap, parse_file};
 use presk_types::check::{self as typing, TypedProgram};
@@ -66,21 +67,33 @@ pub fn typed_front(file: &Path, consts: &[String], report: &mut dyn Report) -> R
     if has_errors(&diags) { Err(Stop(1)) } else { Ok((sm, prog, typed)) }
 }
 
-/// Lower to PSK-Core and verify the result.
+/// Lower to PSK-Core in the inference mode and verify the result: the
+/// program every command but a training run compiles, `dropout` read as
+/// the identity (0.16.0, D160; [`typed_core_as`] for a training run's).
 pub fn core(file: &Path, consts: &[String], unroll_stack: bool, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, presk_core::Program)> {
     typed_core(file, consts, unroll_stack, report).map(|(sm, prog, _, core)| (sm, prog, core))
 }
 
 /// [`core()`], and the typed program it was lowered from.
 pub fn typed_core(file: &Path, consts: &[String], unroll_stack: bool, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, TypedProgram, presk_core::Program)> {
-    typed_core_traced(file, consts, unroll_stack, report).map(|(sm, prog, typed, core, _)| (sm, prog, typed, core))
+    typed_core_as(file, consts, unroll_stack, Mode::Inference, report)
+}
+
+/// [`typed_core`] in a mode: a training run's program keeps its masks.
+pub fn typed_core_as(file: &Path, consts: &[String], unroll_stack: bool, mode: Mode, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, TypedProgram, presk_core::Program)> {
+    typed_core_traced_as(file, consts, unroll_stack, mode, report).map(|(sm, prog, typed, core, _)| (sm, prog, typed, core))
 }
 
 /// [`typed_core`], and what the lowering made each `let` from (plan 0.13.0
 /// step 1, D134).
 pub fn typed_core_traced(file: &Path, consts: &[String], unroll_stack: bool, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, TypedProgram, presk_core::Program, presk_core::lower::Trace)> {
+    typed_core_traced_as(file, consts, unroll_stack, Mode::Inference, report)
+}
+
+/// [`typed_core_traced`] in a mode.
+pub fn typed_core_traced_as(file: &Path, consts: &[String], unroll_stack: bool, mode: Mode, report: &mut dyn Report) -> Result<(SourceMap, ElabProgram, TypedProgram, presk_core::Program, presk_core::lower::Trace)> {
     let (sm, prog, typed) = typed_front(file, consts, report)?;
-    let (core, diags, trace) = presk_core::lower::lower_traced(&prog, &typed, &presk_core::lower::Options { unroll_stack });
+    let (core, diags, trace) = presk_core::lower::lower_traced(&prog, &typed, &presk_core::lower::Options { unroll_stack, mode });
     report.diagnostics(&diags, &sm);
     if has_errors(&diags) {
         return Err(Stop(1));

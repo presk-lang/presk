@@ -371,7 +371,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
     let scalar = presk_driver::precision::returns_scalar(&pcore, entry);
     let (mut sens, mut sens_none, mut solved) = (None, None, None);
     if let (Some(budget), Some((e, _))) = (o.budget, &env) {
-        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None };
+        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None, options: Default::default() };
         match presk_driver::precision::solve(&mut pcore.clone(), &prog, e, &args) {
             Ok(s) => {
                 if let Err(m) = std::fs::write(art("realization.json"), s.solution.realization.to_json()) {
@@ -393,6 +393,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
                     E::NoGradient(m) => format!("presk solve: the objective does not differentiate: {m}"),
                     E::Reference(m) => format!("presk solve: {m}"),
                     E::QuantWithoutGradient => "presk solve: --quant needs the parameters' gradient".into(),
+                    E::NoHeldout(m) => format!("presk solve: --narrow heldout needs samples after the envelope's: {m}"),
                 };
                 report.line(&m);
                 return Err(Stop(1));
@@ -1074,7 +1075,7 @@ fn precision(s: &State) -> Section {
     let mut e = Section::new("6.1", "The envelope").purpose("The exact interpreter runs the entry once and records the largest |x| at every site, and at each sum and contraction what its terms add up to without cancelling: divided by the sum, its condition number.");
     match (&s.env, &s.env_src) {
         (Some((env, path)), src) => {
-            e.code("text", text::calibrate(env, &s.o.entry, env.bits).join("\n"));
+            e.code("text", text::calibrate(env, &s.o.entry, env.bits).into_iter().chain(text::rounding(env)).collect::<Vec<_>>().join("\n"));
             let on = env.weights.as_deref().map(|w| format!("the weights `{}`", shown(Path::new(w)))).unwrap_or_else(|| "the initial weights".into());
             e.prose(format!("The envelope holds {} sites from **{} sample{}** on {on}, at {} bits; every bound below is conditional on it, and says so.", env.sites.len(), env.samples, if env.samples == 1 { "" } else { "s" }, env.bits));
             match src {
@@ -1100,7 +1101,10 @@ fn precision(s: &State) -> Section {
     let mut v = Section::new("6.3", "The realization");
     match &s.solved {
         Some(sv) => {
-            v.purpose.push("The solver ranks the values the program stores by sensitivity and narrows the cheapest first while its first-order estimate Σ s · u(type) · |v| stays under the budget, then measures the candidate against the exact reference and widens until the measurement holds.".into());
+            v.purpose.push(match sv.solution.options.rounding {
+                presk_precision::solve::RoundingTerm::Measured => "The solver ranks the values the program stores by sensitivity and narrows the cheapest first while its first-order estimate Σ s · r(type), r the largest rounding error of the sampled values in the type, stays under the budget, then measures the candidate against the exact reference and widens until the measurement holds.",
+                presk_precision::solve::RoundingTerm::Unit => "The solver ranks the values the program stores by sensitivity and narrows the cheapest first while its first-order estimate Σ s · u(type) · |v| stays under the budget, then measures the candidate against the exact reference and widens until the measurement holds.",
+            }.into());
             let (env, _) = s.env.as_ref().expect("a solve has an envelope");
             v.code("text", text::solve(env, presk_precision::solve::Budget::Relative(s.o.budget.unwrap_or(0.0)), sv, 0).join("\n"));
             breakdown(s, sv, &mut v);
@@ -1161,7 +1165,12 @@ fn role_name(r: Option<&Role>) -> String {
 fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
     let sum: f64 = sv.breakdown.iter().map(|c| c.err).sum();
     v.prose(format!(
-        "**Why each site has its type.** The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`). The terms below sum to {}, the solver's {}. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost. A **parameter** is a decision keyed by its path (since 0.12.0): its term is its rounding at the narrowest of its own type and the types of the nests that read it, s its cotangent's 1-norm and |v| its largest magnitude, and the field sites that read it carry none.",
+        "**Why each site has its type.** {} The terms below sum to {}, the solver's {}. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost. A **parameter** is a decision keyed by its path (since 0.12.0): its term is its rounding at the narrowest of its own type and the types of the nests that read it, s its cotangent's 1-norm and |v| its largest magnitude, and the field sites that read it carry none.",
+        match sv.solution.options.rounding {
+            // The default since 0.16.0 (D157).
+            presk_precision::solve::RoundingTerm::Measured => "The estimate is Σ s · r(type) over the sites, s the sensitivity and r the largest rounding error the site's sampled values take in the type, which the envelope records (D155; 0 for a value exact in the type, never above u(type) · |v|, u the unit roundoff: 2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`, and |v| the envelope's magnitude); a site the envelope records none for is charged u(type) · |v|.",
+            presk_precision::solve::RoundingTerm::Unit => "The estimate is Σ s · u(type) · |v| over the sites, s the sensitivity, |v| the envelope's magnitude and u the unit roundoff (2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`).",
+        },
         sci(sum),
         sci(sv.solution.estimated_error)
     ));
@@ -1193,13 +1202,15 @@ fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
 fn why(sv: &Solved, site: &str, unit: &str) -> String {
     use presk_precision::solve::Move;
     let moves: Vec<&Move> = sv.solution.moves.iter().filter(|m| match m {
-        Move::Tried { site: x, .. } | Move::Widened { site: x, .. } => x == site,
+        Move::Tried { site: x, .. } | Move::Widened { site: x, .. } | Move::Narrowed { site: x, .. } | Move::Undone { site: x, .. } => x == site,
     }).collect();
     let mut parts: Vec<String> = Vec::new();
     for m in &moves {
         match m {
             Move::Tried { to, saved, added, spent, taken: true, rank, .. } => parts.push(format!("narrowed to `{}` (move {rank}): saves {} {unit}, adds {} to the estimate, then {}", to.name(), sci(*saved), sci(*added), sci(spent + added))),
             Move::Widened { round, from, to, gap, .. } => parts.push(format!("widened from `{}` to `{}` at round {round}, the gap {} over the budget", from.name(), to.name(), sci(*gap))),
+            Move::Narrowed { pass, from, to, gap, kept: true, .. } => parts.push(format!("narrowed from `{}` to `{}` by measurement at pass {pass}, the gap then {}", from.name(), to.name(), sci(*gap))),
+            Move::Undone { from, to, heldout, .. } => parts.push(format!("widened back from `{}` to `{}` when the held-out samples' gap was {} (D161)", from.name(), to.name(), sci(*heldout))),
             _ => {}
         }
     }

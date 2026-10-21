@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.15.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.16.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -196,6 +196,18 @@ presk calibrate: 13 sites over 1 samples of `LayerNorm{8}.apply` at 128 bits
 presk calibrate: 2 sums and contractions, worst condition numbers Σ|xᵢwᵢ| / |Σxᵢwᵢ|:
   LayerNorm.apply/%3           1.4505e0
   LayerNorm.apply/%6           1.0000e0
+presk calibrate: the largest rounding error of each site's values (D155): 12 sites, 1 exact in bf16, 1 below a tenth of u·max|x| there
+  site                              max|x|         f32        bf16 bf16/u|x|
+  LayerNorm.apply/%12             1.0000e0    0.0000e0    0.0000e0     0.000
+  LayerNorm.apply/%5              4.9415e0   1.9760e-7   3.9689e-3     0.206
+  LayerNorm.apply/%9              1.0944e0   1.3677e-9   1.3036e-3     0.305
+  LayerNorm.apply/%6              1.0944e0   1.4742e-8   1.3136e-3     0.307
+  LayerNorm.apply/%10             1.0461e0   5.7385e-8   1.4117e-3     0.345
+  LayerNorm.apply/%8             1.0000e-5  2.5262e-13   1.3580e-8     0.348
+  LayerNorm.apply/%11             2.1249e0   5.1303e-8   3.5855e-3     0.432
+  LayerNorm.apply/%13             2.1249e0   5.1303e-8   3.5855e-3     0.432
+  LayerNorm.apply/%15             2.1249e0   5.1303e-8   3.5855e-3     0.432
+  LayerNorm.apply/%4              2.2229e0   1.0157e-7   4.1915e-3     0.483
 ```
 
 The envelope holds 13 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.

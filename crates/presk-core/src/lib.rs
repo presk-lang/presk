@@ -8,6 +8,7 @@
 pub mod ad;
 pub mod analysis;
 pub mod fusion;
+pub mod inference;
 pub mod ir;
 pub mod lower;
 pub mod pretty;

@@ -9,9 +9,10 @@
 //!   without `params` gives on the parameters rounded to their types before
 //!   the run, when no parameter is wider than the default (rounded once, and
 //!   read exactly);
-//! - the kernel interpreter and the native backend agree bit for bit
-//!   wherever they agree without `params` (they differ by their libraries'
-//!   `exp` and `log` in the last bits, D78).
+//! - the kernel interpreter and the native backend agree bit for bit, with
+//!   `params` and without (since 0.16.0, D159, both take the `libm` crate's
+//!   `exp` and `log`; until then they differed there in the last bits, D78,
+//!   and were compared only where the plain runs agreed).
 
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -135,16 +136,17 @@ fn parameters_in_their_own_types_are_rounded_once_on_every_executor() {
             let (kp, k, np, n) = (&outs[0], &outs[1], &outs[2], &outs[3]);
             if let (Some(kp), Some(np)) = (kp, np) {
                 compared += 1;
-                if kp == np {
-                    assert_eq!(k, n, "{what}: the kernel interpreter and the native backend differ where they agree on the rounded parameters");
-                } else {
+                assert_eq!(kp, np, "{what}: the kernel interpreter and the native backend differ on the rounded parameters");
+                if kp != np {
                     differ += 1;
                 }
             }
+            assert_eq!(k, n, "{what}: the kernel interpreter and the native backend differ");
             typed_cases += 1;
         }
     }
-    eprintln!("{typed_cases} realizations typing every parameter; {compared} compared across the two executors, {differ} where their libraries already differ");
+    eprintln!("{typed_cases} realizations typing every parameter; {compared} compared across the two executors with the parameters rounded first, {differ} differing");
+    assert_eq!(differ, 0);
     assert!(typed_cases >= 40, "{typed_cases}");
 }
 

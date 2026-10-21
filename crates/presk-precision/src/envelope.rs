@@ -53,10 +53,30 @@ pub struct Envelope {
     /// that step, which is why it defaults to empty rather than failing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub minima: BTreeMap<String, f64>,
+    /// The largest rounding error of each site's values in each storage type
+    /// (D155): `max |fl_d(x) − x|` over the values seen, rounded as the
+    /// runtime rounds them. It is what the estimate's term `u(d) · max|x|`
+    /// bounds, measured on the same sample as the magnitude, and as
+    /// conditional on it; 0 where every value is exact in the type. Absent
+    /// from envelopes written before D155, where the solver keeps the
+    /// unit-roundoff term.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rounding: BTreeMap<String, Rounding>,
     /// Real elements at each site. Traffic is elements times bytes per
     /// element, so this is what a narrower type actually saves.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub elems: BTreeMap<String, u64>,
+    /// Real elements at each site for one sample (0.16.0, D157): the entry
+    /// run again on the first of `data`'s samples alone, for the counts
+    /// only. `elems` counts the batch of the envelope's samples at most
+    /// sites and the model's elements at a few (a mask, a constant), so
+    /// that dividing it by the sample count would undercount those; the
+    /// solver prices the activations at these counts, the same whatever the
+    /// number of samples. Empty when the envelope has no data or one
+    /// sample, where `elems` is that count, and in an envelope written
+    /// before 0.16.0.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_sample: BTreeMap<String, u64>,
     /// The primitive each site computes, so the solver can price *time* and
     /// not only traffic: the roofline needs `W`, and `W` is elements times
     /// the weight of the operation (0.6.0 step 4).
@@ -103,6 +123,30 @@ pub struct StepSpec {
     /// names say which.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remat: Option<String>,
+}
+
+/// A site's largest rounding error in each type of the menu: `max |fl_d(x)
+/// − x|`, a maximum over its elements and the samples (D155).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Rounding {
+    pub f64: f64,
+    pub f32: f64,
+    pub bf16: f64,
+}
+
+impl Rounding {
+    pub fn at(&self, d: presk_rt::Dtype) -> f64 {
+        match d {
+            presk_rt::Dtype::F64 => self.f64,
+            presk_rt::Dtype::F32 => self.f32,
+            presk_rt::Dtype::Bf16 => self.bf16,
+        }
+    }
+
+    /// From the interpreter's record, `[f64, f32, bf16]`.
+    pub fn of(r: [f64; 3]) -> Rounding {
+        Rounding { f64: r[0], f32: r[1], bf16: r[2] }
+    }
 }
 
 /// `samples` entries of a `.psk.d` file, starting at `from`.
@@ -153,7 +197,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 impl Envelope {
     pub fn new(program: &str, entry: &str, bits: u32, measured: &str) -> Envelope {
-        Envelope { program: program.into(), entry: entry.into(), samples: 0, measured: measured.into(), bits, dims: Vec::new(), consts: Vec::new(), sites: BTreeMap::new(), minima: BTreeMap::new(), elems: BTreeMap::new(), ops: BTreeMap::new(), terms: BTreeMap::new(), weights: None, data: None, step: None }
+        Envelope { program: program.into(), entry: entry.into(), samples: 0, measured: measured.into(), bits, dims: Vec::new(), consts: Vec::new(), sites: BTreeMap::new(), minima: BTreeMap::new(), rounding: BTreeMap::new(), elems: BTreeMap::new(), per_sample: BTreeMap::new(), ops: BTreeMap::new(), terms: BTreeMap::new(), weights: None, data: None, step: None }
     }
 
     /// Fold one run's magnitudes in: the envelope of a set of samples is the
@@ -177,6 +221,26 @@ impl Envelope {
                 *e = *v;
             }
         }
+    }
+
+    /// Fold one run's rounding errors in, pointwise maximum: like the
+    /// ceiling, it must cover every sample. A value that overflows a type
+    /// has an infinite error there, kept as `f64::MAX`, since the file is
+    /// JSON and JSON has no infinity: the type cannot hold the site, and no
+    /// estimate under it fits a budget.
+    pub fn observe_rounding(&mut self, m: &BTreeMap<String, [f64; 3]>) {
+        let fit = |x: f64| x.min(f64::MAX);
+        for (site, r) in m {
+            let e = self.rounding.entry(site.clone()).or_default();
+            e.f64 = e.f64.max(fit(r[0]));
+            e.f32 = e.f32.max(fit(r[1]));
+            e.bf16 = e.bf16.max(fit(r[2]));
+        }
+    }
+
+    /// The largest rounding error at a site in a type, if it was recorded.
+    pub fn rounding(&self, site: &str, d: presk_rt::Dtype) -> Option<f64> {
+        self.rounding.get(site).map(|r| r.at(d))
     }
 
     /// Fold one run's element counts in.
@@ -234,6 +298,19 @@ impl Envelope {
     /// Real elements at a site, or zero when unknown.
     pub fn elems(&self, site: &str) -> u64 {
         self.elems.get(site).copied().unwrap_or(0)
+    }
+
+    /// The elements the solver prices a site at (D157): one sample's when
+    /// the envelope records them, else `elems`.
+    pub fn cost_elems(&self, site: &str) -> u64 {
+        self.per_sample.get(site).copied().unwrap_or_else(|| self.elems(site))
+    }
+
+    /// Whether the cost is one sample's: the envelope has no data, or one
+    /// sample of it, or it records the per-sample counts. An envelope of
+    /// several samples written before 0.16.0 is priced at its batch.
+    pub fn priced_per_sample(&self) -> bool {
+        !self.per_sample.is_empty() || self.data.as_ref().is_none_or(|d| d.samples == Some(1))
     }
 
     pub fn get(&self, site: &str) -> Option<f64> {
@@ -331,6 +408,32 @@ mod tests {
         // The file form is what a bound will quote, so it must round trip.
         let back: Envelope = serde_json::from_str(&e.to_json()).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn the_rounding_is_the_pointwise_maximum_and_optional_in_the_file() {
+        let mut e = Envelope::new("p.psk", "loss", 128, "2026-10-19");
+        e.observe_rounding(&BTreeMap::from([("f/%1".into(), [0.0, 1e-8, 1e-3])]));
+        e.observe_rounding(&BTreeMap::from([("f/%1".into(), [1e-17, 0.0, 2e-3])]));
+        assert_eq!(e.rounding("f/%1", presk_rt::Dtype::Bf16), Some(2e-3));
+        assert_eq!(e.rounding("f/%1", presk_rt::Dtype::F32), Some(1e-8));
+        assert_eq!(e.rounding("f/%1", presk_rt::Dtype::F64), Some(1e-17));
+        assert_eq!(e.rounding("f/%2", presk_rt::Dtype::Bf16), None);
+        let back: Envelope = serde_json::from_str(&e.to_json()).unwrap();
+        assert_eq!(back, e);
+        // A value that overflows a type is kept as the largest double, so
+        // that the file stays JSON (gap.rs's overflowing group).
+        e.observe_rounding(&BTreeMap::from([("f/%3".into(), [0.0, f64::INFINITY, f64::INFINITY])]));
+        assert_eq!(e.rounding("f/%3", presk_rt::Dtype::F32), Some(f64::MAX));
+        let back: Envelope = serde_json::from_str(&e.to_json()).unwrap();
+        assert_eq!(back, e);
+        // An envelope written before D155 has no `rounding`, and loads.
+        let mut old = Envelope::new("p.psk", "loss", 128, "2026-10-19");
+        old.observe(&BTreeMap::from([("f/%1".into(), 2.0)]));
+        let text = old.to_json();
+        assert!(!text.contains("rounding"), "an empty field is not written");
+        let back: Envelope = serde_json::from_str(&text).unwrap();
+        assert!(back.rounding.is_empty());
     }
 
     #[test]

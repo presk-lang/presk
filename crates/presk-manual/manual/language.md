@@ -580,7 +580,14 @@ random function `dropout` denotes: `presk run`, `presk serve` and the export
 evaluate the model with every mask at its expectation — the usual inference
 rule, which is the model's mean only where its output is affine in each mask —
 and only `presk train` drops, and the exported `train.py`, with masks
-PyTorch draws (D54). An objective may
+PyTorch draws (D54). The mode is part of what an entry means (the
+reference's requirement 3.30, question 78): since 0.16.0 (D160) an entry
+compiled outside a training run is its inference reading, a program in which
+`dropout(rate, key, x)` is `x`, with no `dropout_mask` and no product by it,
+so that no realization types a mask and no solver offers one; until then the
+program was the same in both modes and the executors filled the mask with
+ones at launch. A training run lowers the program as written. `presk dump
+--mode training` prints that one, the default the inference one. An objective may
 take a per-step key between `θ` and the batch (`training` chapter).
 
 **A key inside `stack{L}`** needs one idiom, and it is worth stating because

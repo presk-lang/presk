@@ -204,7 +204,17 @@ reproducible and every step drops differently; `dropout` draws its mask from
 that key (`language` chapter). A training run is the only place where
 dropout drops: everywhere else its mask is all ones, the expectation of the
 random function (the exported `train.py` drops too, with PyTorch's masks:
-D54). A `stack{L}` fold passes the same extra arguments to each of
+D54), and since 0.16.0 the program compiled there has no mask at all
+(D160). A training run under a realization solved outside training, which
+types no mask, stores each mask and the product by it in the type of the
+value it multiplies (`presk_train::masks_typed`): a budget on an entry is
+discharged on its inference reading, and the training run keeps its masks.
+The same holds for a layout plan. `presk plan` plans the inference reading
+by default, and a gradient that drops numbers its nests otherwise there.
+A plan for `presk train --plan` is therefore planned with `presk plan
+--mode training`, on the program as written. An inference plan given to a
+training run names nests the run fuses into others, and `presk train`
+refuses it (`E7002`, D164). A `stack{L}` fold passes the same extra arguments to each of
 its iterations, so blocks handed the key that way would share it. Since 0.5.0
 step 1 the key rides in the fold's *accumulator* instead, which is already
 threaded from one block to the next: each block splits it, uses one half and

@@ -55,7 +55,7 @@ fn breakdown_sums_to_the_estimate() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, options: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
     use presk_precision::solve::Role;
     let sum: f64 = solved.breakdown.iter().map(|s| s.err).sum();
@@ -68,6 +68,41 @@ fn breakdown_sums_to_the_estimate() {
     assert!(solved.solution.realization.params.keys().all(|k| decisions.iter().any(|d| d.param && &d.name == k)));
     // Only a decision has a type in the realization (step 2b).
     assert!(solved.solution.realization.storage.keys().all(|k| decisions.iter().any(|d| &d.name == k)));
+}
+
+/// D155: the envelope's measured rounding is at most the unit term at every
+/// site, `u(d)·max|x|`, and 0 in `bf16` at a site of exact constants; the
+/// solver under it and under the narrowing step returns a realization that
+/// holds; the default options are the measured term's since 0.16.0 (D157).
+#[test]
+fn the_measured_rounding_is_at_most_the_unit_term() {
+    use presk_precision::solve::{Narrow, Options, RoundingTerm};
+    use presk_rt::Dtype;
+    let file = root().join("tutorial/07_train.psk");
+    let (_, prog, mut core) = program(&file, &[]);
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
+    assert!(!env.rounding.is_empty(), "the calibration records it");
+    for (site, r) in &env.rounding {
+        let m = env.get(site).unwrap_or(0.0);
+        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+            assert!(r.at(d) <= d.unit_roundoff() * m * (1.0 + 1e-12), "{site} in {d}: {} against u·|x| {}", r.at(d), d.unit_roundoff() * m);
+        }
+    }
+    let solve = |core: &mut presk_core::Program, options: Options| {
+        let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, options };
+        presk_driver::precision::solve(core, &prog, &env, &a).ok().expect("the tutorial's loss solves").solution
+    };
+    let unit = solve(&mut core, Options { rounding: RoundingTerm::Unit, narrow: Narrow::Off, ..Options::default() });
+    let measured = solve(&mut core, Options { rounding: RoundingTerm::Measured, narrow: Narrow::Off, ..Options::default() });
+    assert_eq!(solve(&mut core, Options::default()).realization, measured.realization, "the default is the measured term");
+    let both = solve(&mut core, Options { rounding: RoundingTerm::Measured, narrow: Narrow::Measured, margin: 1.0, ..Options::default() });
+    for s in [&unit, &measured, &both] {
+        assert!(s.measured.is_some_and(|g| g <= s.budget_abs), "{:?} {} {}", s.options, s.measured.unwrap_or(f64::NAN), s.budget_abs);
+    }
+    assert!(measured.estimated_error <= unit.estimated_error * (1.0 + 1e-12) || measured.bytes <= unit.bytes, "the measured term is never the larger");
+    assert!(both.bytes <= measured.bytes, "narrowing only narrows");
+    assert_eq!(both.measurements, both.rounds + 1 + both.moves.iter().filter(|m| matches!(m, presk_precision::solve::Move::Narrowed { .. })).count());
 }
 
 /// D128: an entry whose first argument is a tensor, not a parameter tree,
@@ -83,7 +118,7 @@ fn a_tensor_first_argument_is_no_parameter() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, options: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the attention row solves") };
     assert!(solved.breakdown.iter().all(|s| !s.param), "a parameter offered");
     assert!(solved.solution.realization.params.is_empty());

@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | on | `--opt` |
 | Targets | native (Cranelift), C | `--target native,c` |
 
-Compiler: presk 0.15.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.16.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -350,6 +350,18 @@ presk calibrate: 3 sums and contractions, worst condition numbers Σ|xᵢwᵢ| /
   Linear.apply/%3              1.1620e0
   RMSNorm.apply/%4             1.0000e0
   loss/%7                      1.0000e0
+presk calibrate: the largest rounding error of each site's values (D155): 29 sites, 3 exact in bf16, 3 below a tenth of u·max|x| there
+  site                              max|x|         f32        bf16 bf16/u|x|
+  Block.apply/%2                  1.0000e0    0.0000e0    0.0000e0     0.000
+  RMSNorm.apply/%9                1.0000e0    0.0000e0    0.0000e0     0.000
+  Tower.apply/%4                  1.0000e0    0.0000e0    0.0000e0     0.000
+  Block.apply/%3                 1.0000e-6  2.5248e-15   1.6222e-9     0.415
+  RMSNorm.apply/%5               1.0000e-6  2.5248e-15   1.6222e-9     0.415
+  Tower.apply/%5                 1.0000e-6  2.5248e-15   1.6222e-9     0.415
+  loss/%2                         1.9798e0   5.7874e-8   3.2625e-3     0.422
+  Tower.apply/%3                  1.9342e0   5.5737e-8   3.2815e-3     0.434
+  Block.apply/%4                  1.9640e0   5.5232e-8   3.4988e-3     0.456
+  Block.apply/%7                  1.6182e0   5.8360e-8   2.8909e-3     0.457
 ```
 
 The envelope holds 30 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.

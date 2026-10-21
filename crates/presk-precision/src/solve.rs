@@ -32,6 +32,20 @@
 //! 4. **Report the gap** to the relaxation's lower bound — every site at its
 //!    narrowest — and, on programs small enough, to exhaustive search.
 //!
+//! Two options change steps 1 and 3 (D155), both off by default, since every
+//! row of record was solved without them:
+//! - **`RoundingTerm::Measured`**: the estimate's rounding step is the
+//!   envelope's measured `max |fl_d(x) − x|` at each site instead of `u(d) ·
+//!   max|x|` ([`crate::envelope::Rounding`]). A value exact in a type, a mask
+//!   of ones in `bf16`, then costs nothing there. The term is as conditional
+//!   on the envelope as the magnitude is; the estimate was never a bound.
+//! - **`Narrow::Measured`**, a step 3′ after a passing measurement: each
+//!   decision not at the menu's narrowest, the largest saving first, is
+//!   narrowed one step and kept if the measured gap stays inside the budget;
+//!   up to three passes while one changes something. The solver then takes
+//!   by its measurement a step only the proposal decided before, at one
+//!   measurement a decision a pass.
+//!
 //! # What the solver chooses
 //!
 //! A type, in the reference's chapter 4, means something only where a value
@@ -69,7 +83,7 @@ use std::collections::BTreeMap;
 
 use presk_rt::{Dtype, Realization};
 
-use crate::envelope::Envelope;
+use crate::envelope::{Envelope, Rounding};
 use crate::sensitivity::Sensitivity;
 
 /// A budget on an entry's output: relative to its largest magnitude in the
@@ -105,6 +119,79 @@ impl Default for Menu {
     }
 }
 
+/// The estimate's rounding step at a site in a type (D155).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RoundingTerm {
+    /// `u(d) · max|x|`, the unit roundoff times the magnitude: the solver
+    /// of 0.12.0–0.15.0, kept for the record.
+    Unit,
+    /// The envelope's `max |fl_d(x) − x|`, measured on the sampled values; a
+    /// site without it, from an envelope written before D155, keeps `Unit`.
+    /// The default since 0.16.0 (D157, the user's decision after D155 and
+    /// D156 measured it holding out of sample).
+    #[default]
+    Measured,
+}
+
+/// Whether the solver narrows by measurement after its measurement passes
+/// (D155).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Narrow {
+    /// No: what the proposal left wide stays wide. The default.
+    #[default]
+    Off,
+    /// Step 3′: each decision narrowed one step, the largest saving first,
+    /// kept while the measured gap stays inside the budget divided by
+    /// [`Options::margin`] (D161; inside the budget itself in D155, a
+    /// margin of 1); up to three passes.
+    Measured,
+    /// [`Narrow::Measured`], then early stopping on held-out samples
+    /// (D161): the moves it kept are undone, the last first, until the gap
+    /// on samples the envelope was not calibrated on is inside the budget
+    /// divided by the margin. The held-out samples are measured by the
+    /// second verifier of [`solve_with_heldout`].
+    Heldout,
+}
+
+/// The estimate the proposal spends the budget by (D161).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Estimate {
+    /// The sum of the sites' first-order terms, aimed at the budget: the
+    /// solver of record. The default.
+    #[default]
+    Sum,
+    /// Their root-sum-square, the roundings taken as independent (Higham
+    /// and Mary's probabilistic analysis), aimed at the budget divided by
+    /// [`Options::margin`].
+    Rss,
+}
+
+/// The options of [`solve_with`]; the default is 0.16.0's solver: the
+/// measured rounding term, the sum aimed at the budget, no narrowing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    pub rounding: RoundingTerm,
+    pub narrow: Narrow,
+    pub estimate: Estimate,
+    /// The factor kept between the budget and what is spent in sample
+    /// (D161): the target of [`Estimate::Rss`] and the narrowings'
+    /// threshold, the budget divided by it. The solver of record (`Sum`,
+    /// `Off`) does not read it. 2.5 by default, the largest gap out of
+    /// sample over the gap in sample that D156 measured from four windows
+    /// on, on the course GPT's logits at D = 64.
+    pub margin: f64,
+    /// Under `Narrow::Heldout`: how many samples are held out, the ones
+    /// after the envelope's in its data file; `None`, as many as the
+    /// envelope's.
+    pub heldout: Option<usize>,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options { rounding: RoundingTerm::default(), narrow: Narrow::default(), estimate: Estimate::default(), margin: 2.5, heldout: None }
+    }
+}
+
 /// What the solver found, and what it cost.
 #[derive(Clone, Debug)]
 pub struct Solution {
@@ -131,6 +218,19 @@ pub struct Solution {
     pub budget_abs: f64,
     /// How many widen-and-measure rounds the tightening took.
     pub rounds: usize,
+    /// How many decisions the narrowing step kept narrowed (D155), and in
+    /// how many passes: 0 without `Narrow::Measured`.
+    pub narrowed: usize,
+    pub narrow_passes: usize,
+    /// Under `Narrow::Heldout` (D161): the narrowings undone, and the gap
+    /// of the final realization on the held-out samples.
+    pub undone: usize,
+    pub heldout: Option<f64>,
+    /// How many realizations were measured against the exact reference: the
+    /// verification and its widening rounds, then the narrowing's trials.
+    pub measurements: usize,
+    /// The options it was solved under.
+    pub options: Options,
     /// Sites the solver could narrow at all (the rest had no magnitude, no
     /// sensitivity or no element count and were left at the default).
     pub considered: usize,
@@ -155,6 +255,14 @@ pub enum Move {
     /// with the largest share of the estimate, widened from `from` to `to`
     /// at round `round` (1 the first).
     Widened { round: usize, site: String, from: Dtype, to: Dtype, gap: f64 },
+    /// The narrowing step (D155): `site` narrowed from `from` to `to` at
+    /// pass `pass` (1 the first), the realization measured at `gap`, and
+    /// `kept` when that is inside the budget, else undone.
+    Narrowed { pass: usize, site: String, from: Dtype, to: Dtype, gap: f64, kept: bool },
+    /// Early stopping (D161): the realization measured `heldout` on the
+    /// held-out samples, outside the threshold, so the last narrowing kept,
+    /// `site`'s from `from` to `to`, is undone.
+    Undone { site: String, from: Dtype, to: Dtype, heldout: f64 },
 }
 
 impl Solution {
@@ -173,6 +281,9 @@ struct Site {
     work: f64,
     /// A parameter, decided by its path (plan 0.12.0), not a nest.
     param: bool,
+    /// The envelope's measured rounding errors, or the parameter's own
+    /// (D155): `None` keeps the unit-roundoff term.
+    round: Option<Rounding>,
 }
 
 /// What a site costs in a given machine type.
@@ -205,10 +316,12 @@ fn sites(env: &Envelope, sens: &Sensitivity) -> Vec<Site> {
     env.sites
         .iter()
         .filter_map(|(name, mag)| {
-            let elems = env.elems(name) as f64;
+            // One sample's elements (D157), so that the parameters, counted
+            // once, weigh the same against the activations at every N.
+            let elems = env.cost_elems(name) as f64;
             let sens = sens.get(name)?;
             let work = elems * op_weight(env.op(name));
-            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false })
+            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false, round: env.rounding.get(name).copied() })
         })
         .collect()
 }
@@ -259,6 +372,9 @@ pub struct ParamSite {
     pub sens: f64,
     /// The field sites that read it ([`param_reads`]).
     pub fields: Vec<String>,
+    /// Its largest rounding error in each type, from its values at rest
+    /// (D155); `None` keeps the unit-roundoff term.
+    pub round: Option<Rounding>,
 }
 
 /// The paths of the entry's parameter tree each field or projection site
@@ -409,9 +525,11 @@ struct Split {
     readers: Vec<(Vec<usize>, bool)>,
     /// For a nest, the parameters it reads.
     reads: Vec<Vec<usize>>,
+    /// The estimate's rounding step (D155).
+    rounding: RoundingTerm,
 }
 
-fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles) -> Split {
+fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTerm) -> Split {
     let mut decisions = Vec::new();
     let mut pending = Vec::new();
     let param_fields: std::collections::BTreeSet<&str> = roles.1.iter().flat_map(|p| p.fields.iter().map(String::as_str)).collect();
@@ -425,7 +543,7 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles) -> Split {
     }
     let nests = decisions.len();
     for p in &roles.1 {
-        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true });
+        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true, round: p.round });
     }
     let index: BTreeMap<&str, usize> = decisions[..nests].iter().enumerate().map(|(i, s)| (s.name.as_str(), i)).collect();
     let mut led = vec![Vec::new(); decisions.len()];
@@ -465,7 +583,7 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles) -> Split {
         }
         readers[i].1 = outside;
     }
-    Split { decisions, followers, led, readers, reads }
+    Split { decisions, followers, led, readers, reads, rounding }
 }
 
 impl Split {
@@ -482,7 +600,7 @@ impl Split {
     }
 
     fn decision_err(&self, i: usize, chosen: &[Dtype], default: Dtype) -> f64 {
-        err_at(&self.decisions[i], self.rounded(i, chosen, default))
+        err_at(&self.decisions[i], self.rounded(i, chosen, default), self.rounding)
     }
 
     /// A follower's type: the narrowest of its leaders', the default for a
@@ -493,13 +611,20 @@ impl Split {
     }
 
     fn follower_err(&self, f: usize, chosen: &[Dtype], default: Dtype) -> f64 {
-        err_at(&self.followers[f].0, self.follower_type(f, chosen, default))
+        err_at(&self.followers[f].0, self.follower_type(f, chosen, default), self.rounding)
     }
 
     /// The estimate: every decision's term and every follower's.
     fn estimate(&self, chosen: &[Dtype], default: Dtype) -> f64 {
         let d: f64 = (0..self.decisions.len()).map(|i| self.decision_err(i, chosen, default)).sum();
         d + (0..self.followers.len()).map(|f| self.follower_err(f, chosen, default)).sum::<f64>()
+    }
+
+    /// The squares of every decision's term and every follower's: the
+    /// root-sum-square estimate squared (D161).
+    fn estimate_sq(&self, chosen: &[Dtype], default: Dtype) -> f64 {
+        let d: f64 = (0..self.decisions.len()).map(|i| self.decision_err(i, chosen, default).powi(2)).sum();
+        d + (0..self.followers.len()).map(|f| self.follower_err(f, chosen, default).powi(2)).sum::<f64>()
     }
 
     /// What decision `i`, the followers it leads and the parameters it
@@ -550,8 +675,9 @@ pub struct SiteCost {
     pub mag: f64,
     /// `‖∂L/∂v‖₁`.
     pub sens: f64,
-    /// `s · u(dtype) · |v|`, its term of the estimate; 0 for a carried
-    /// value.
+    /// Its term of the estimate: `s · max|fl_d(x) − x|` under the measured
+    /// rounding term, `s · u(dtype) · |v|` under the unit one; 0 for a
+    /// carried value.
     pub err: f64,
     /// What it costs under the machine, in its type; 0 but for a decision.
     pub cost: f64,
@@ -563,19 +689,25 @@ pub struct SiteCost {
 /// Every site the solver offers, decisions first, then the followers and
 /// the carried values, under `r`.
 pub fn breakdown(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realization, menu: &Menu, default: Dtype, machine: &dyn Machine) -> Vec<SiteCost> {
+    breakdown_with(env, sens, roles, r, menu, default, machine, RoundingTerm::default())
+}
+
+/// [`breakdown`] under a rounding term (D155).
+#[allow(clippy::too_many_arguments)]
+pub fn breakdown_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realization, menu: &Menu, default: Dtype, machine: &dyn Machine, rounding: RoundingTerm) -> Vec<SiteCost> {
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
-    let sp = split(env, sens, roles);
+    let sp = split(env, sens, roles, rounding);
     let chosen: Vec<Dtype> = sp.decisions.iter().map(|s| if s.param { r.params.get(&s.name) } else { r.storage.get(&s.name) }.copied().unwrap_or(r.default)).collect();
     let mut out: Vec<SiteCost> = sp
         .decisions
         .iter()
         .zip(&chosen)
         .enumerate()
-        .map(|(i, (s, d))| SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, dtype: *d, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), widest_err: err_at(s, widest), widest_cost: cost_at(s, widest, machine) })
+        .map(|(i, (s, d))| SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, dtype: *d, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), widest_err: err_at(s, widest, rounding), widest_cost: cost_at(s, widest, machine) })
         .collect();
     for (f, (s, _, _)) in sp.followers.iter().enumerate() {
         let d = sp.follower_type(f, &chosen, r.default);
-        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), dtype: d, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d), cost: 0.0, widest_err: err_at(s, widest), widest_cost: 0.0 });
+        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), dtype: d, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d, rounding), cost: 0.0, widest_err: err_at(s, widest, rounding), widest_cost: 0.0 });
     }
     for s in sites(env, sens) {
         if roles.role(&s.name) == Role::Carried {
@@ -586,9 +718,13 @@ pub fn breakdown(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realizat
 }
 
 /// `s_v · u(d) · mag(v)`: how much the output moves, to first order, when a
-/// site is stored in `d`.
-fn err_at(s: &Site, d: Dtype) -> f64 {
-    s.sens * d.unit_roundoff() * s.mag
+/// site is stored in `d`; under `RoundingTerm::Measured`, `s_v · max |fl_d(x)
+/// − x|`, the rounding the site's sampled values actually take (D155).
+fn err_at(s: &Site, d: Dtype, rounding: RoundingTerm) -> f64 {
+    match (rounding, s.round) {
+        (RoundingTerm::Measured, Some(r)) => s.sens * r.at(d),
+        _ => s.sens * d.unit_roundoff() * s.mag,
+    }
 }
 
 fn bytes_at(s: &Site, d: Dtype) -> f64 {
@@ -618,11 +754,49 @@ pub fn solve(
     menu: &Menu,
     default: Dtype,
     machine: &dyn Machine,
+    verify: Option<&mut dyn FnMut(&Realization) -> f64>,
+) -> Solution {
+    solve_with(env, sens, roles, output_site, budget, menu, default, machine, verify, Options::default())
+}
+
+/// [`solve`] under [`Options`] (D155): the measured rounding term, the
+/// narrowing step.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_with(
+    env: &Envelope,
+    sens: &Sensitivity,
+    roles: &Roles,
+    output_site: &str,
+    budget: Budget,
+    menu: &Menu,
+    default: Dtype,
+    machine: &dyn Machine,
+    verify: Option<&mut dyn FnMut(&Realization) -> f64>,
+    options: Options,
+) -> Solution {
+    solve_with_heldout(env, sens, roles, output_site, budget, menu, default, machine, verify, None, options)
+}
+
+/// [`solve_with`], with `heldout` measuring a candidate on samples the
+/// envelope was not calibrated on, which `Narrow::Heldout` stops early by
+/// (D161).
+#[allow(clippy::too_many_arguments)]
+pub fn solve_with_heldout(
+    env: &Envelope,
+    sens: &Sensitivity,
+    roles: &Roles,
+    output_site: &str,
+    budget: Budget,
+    menu: &Menu,
+    default: Dtype,
+    machine: &dyn Machine,
     mut verify: Option<&mut dyn FnMut(&Realization) -> f64>,
+    mut heldout: Option<&mut dyn FnMut(&Realization) -> f64>,
+    options: Options,
 ) -> Solution {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
     let budget_abs = budget.absolute(out_mag);
-    let sp = split(env, sens, roles);
+    let sp = split(env, sens, roles, options.rounding);
     let sites = &sp.decisions;
 
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
@@ -634,7 +808,12 @@ pub fn solve(
     // saved per unit of error added (its followers' with its own), while
     // the estimate fits.
     let mut chosen: Vec<Dtype> = vec![widest; sites.len()];
-    let mut spent: f64 = sp.estimate(&chosen, default);
+    // The proposal's target (D161): the budget under the sum; under the
+    // root-sum-square the budget over the margin, compared on the squares,
+    // which add as the sum's terms do.
+    let rss = options.estimate == Estimate::Rss;
+    let target = if rss { (budget_abs / options.margin).powi(2) } else { budget_abs };
+    let mut spent: f64 = if rss { sp.estimate_sq(&chosen, default) } else { sp.estimate(&chosen, default) };
     let mut moves: Vec<(f64, usize, Dtype)> = Vec::new();
     for (i, s) in sites.iter().enumerate() {
         for d in &menu.0 {
@@ -644,7 +823,7 @@ pub fn solve(
             let saved = cost_at(s, widest, machine) - cost_at(s, *d, machine);
             let mut moved = chosen.clone();
             moved[i] = *d;
-            let added = sp.share(i, &moved, default) - sp.share(i, &chosen, default);
+            let added = if rss { sp.estimate_sq(&moved, default) - sp.estimate_sq(&chosen, default) } else { sp.share(i, &moved, default) - sp.share(i, &chosen, default) };
             if saved <= 0.0 {
                 continue;
             }
@@ -660,12 +839,15 @@ pub fn solve(
         if d.bytes() >= cur.bytes() {
             continue;
         }
-        let before = sp.share(*i, &chosen, default);
+        let before = if rss { spent } else { sp.share(*i, &chosen, default) };
         chosen[*i] = *d;
-        let delta = sp.share(*i, &chosen, default) - before;
+        let delta = if rss { sp.estimate_sq(&chosen, default) - spent } else { sp.share(*i, &chosen, default) - before };
         let saved = cost_at(&sites[*i], cur, machine) - cost_at(&sites[*i], *d, machine);
-        let taken = spent + delta <= budget_abs;
-        log.push(Move::Tried { site: sites[*i].name.clone(), to: *d, saved, added: delta, spent, taken, rank: rank + 1 });
+        let taken = spent + delta <= target;
+        // Logged in the estimate's own units: under the root-sum-square, what
+        // the move adds to it, not to its square.
+        let (added, at) = if rss { ((spent + delta).max(0.0).sqrt() - spent.sqrt(), spent.sqrt()) } else { (delta, spent) };
+        log.push(Move::Tried { site: sites[*i].name.clone(), to: *d, saved, added, spent: at, taken, rank: rank + 1 });
         if taken {
             spent += delta;
         } else {
@@ -680,10 +862,12 @@ pub fn solve(
     // Verify, and tighten while the *measured* gap exceeds the budget.
     let mut rounds = 0usize;
     let mut measured = None;
+    let mut measurements = 0usize;
     if let Some(v) = verify.as_mut() {
         loop {
             let r = build(&chosen);
             let gap = v(&r);
+            measurements += 1;
             measured = Some(gap);
             if gap <= budget_abs || rounds >= sites.len() * menu.0.len() {
                 break;
@@ -712,8 +896,80 @@ pub fn solve(
         }
     }
 
+    // Narrow by measurement (D155): only from a realization that holds,
+    // each step kept while the gap is inside the budget over the margin
+    // (D161). The steps kept, in order, for early stopping.
+    let (mut narrowed, mut narrow_passes) = (0usize, 0usize);
+    let limit = budget_abs / options.margin;
+    let mut kept_steps: Vec<(usize, Dtype, Dtype, Option<f64>)> = Vec::new();
+    if matches!(options.narrow, Narrow::Measured | Narrow::Heldout)
+        && let Some(v) = verify.as_mut()
+        && measured.is_some_and(|g| g <= budget_abs)
+    {
+        for pass in 1..=3 {
+            // Each decision one step narrower, the largest saving first.
+            let mut steps: Vec<(f64, usize, Dtype)> = (0..sites.len())
+                .filter_map(|i| {
+                    let cur = chosen[i];
+                    let next = menu.0.iter().copied().filter(|d| d.bytes() < cur.bytes()).max_by_key(|d| d.bytes())?;
+                    let saved = cost_at(&sites[i], cur, machine) - cost_at(&sites[i], next, machine);
+                    (saved > 0.0).then_some((saved, i, next))
+                })
+                .collect();
+            steps.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+            if steps.is_empty() {
+                break;
+            }
+            narrow_passes = pass;
+            let mut changed = false;
+            for (_, i, next) in steps {
+                let cur = chosen[i];
+                chosen[i] = next;
+                let gap = v(&build(&chosen));
+                measurements += 1;
+                let kept = gap <= limit;
+                log.push(Move::Narrowed { pass, site: sites[i].name.clone(), from: cur, to: next, gap, kept });
+                if kept {
+                    kept_steps.push((i, cur, next, measured));
+                    measured = Some(gap);
+                    narrowed += 1;
+                    changed = true;
+                } else {
+                    chosen[i] = cur;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    // Early stopping on the held-out samples (D161): the last step kept is
+    // undone while their gap is outside the threshold; the envelope's gap
+    // is then the one measured before that step.
+    let (mut undone, mut heldout_gap) = (0usize, None);
+    if options.narrow == Narrow::Heldout
+        && let Some(h) = heldout.as_mut()
+        && measured.is_some()
+    {
+        loop {
+            let g = h(&build(&chosen));
+            measurements += 1;
+            heldout_gap = Some(g);
+            if g <= limit {
+                break;
+            }
+            let Some((i, from, to, before)) = kept_steps.pop() else { break };
+            chosen[i] = from;
+            narrowed -= 1;
+            undone += 1;
+            measured = before;
+            log.push(Move::Undone { site: sites[i].name.clone(), from: to, to: from, heldout: g });
+        }
+    }
+
     let bytes: f64 = sp.cost(&chosen, machine);
-    let estimated_error: f64 = sp.estimate(&chosen, default);
+    let estimated_error: f64 = if rss { sp.estimate_sq(&chosen, default).sqrt() } else { sp.estimate(&chosen, default) };
     Solution {
         realization: build(&chosen),
         bytes,
@@ -724,6 +980,12 @@ pub fn solve(
         measured,
         budget_abs,
         rounds,
+        narrowed,
+        narrow_passes,
+        undone,
+        heldout: heldout_gap,
+        measurements,
+        options,
         considered: sites.len(),
         moves: log,
     }
@@ -736,9 +998,16 @@ pub fn solve(
 /// Returns `None` when the search space exceeds `max_states`.
 #[allow(clippy::too_many_arguments)]
 pub fn exhaustive(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64) -> Option<(Realization, f64)> {
+    exhaustive_with(env, sens, roles, output_site, budget, menu, default, machine, max_states, RoundingTerm::default())
+}
+
+/// [`exhaustive`] under a rounding term (D155): the best assignment under the
+/// same estimate the proposal used.
+#[allow(clippy::too_many_arguments)]
+pub fn exhaustive_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64, rounding: RoundingTerm) -> Option<(Realization, f64)> {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
     let budget_abs = budget.absolute(out_mag);
-    let sp = split(env, sens, roles);
+    let sp = split(env, sens, roles, rounding);
     let sites = &sp.decisions;
     let m = menu.0.len() as u64;
     let states = m.checked_pow(sites.len() as u32)?;

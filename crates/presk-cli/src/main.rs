@@ -256,6 +256,12 @@ enum Command {
         /// Unroll `stack{L}` into L calls instead of a fold (debugging aid).
         #[arg(long)]
         unroll_stack: bool,
+        /// The program of which mode (0.16.0, D160): `inference`, every
+        /// command's but a training run's, `dropout` the identity; or
+        /// `training`, the program as written, its masks drawn by a
+        /// training run.
+        #[arg(long, value_enum, default_value_t = ModeArg::Inference)]
+        mode: ModeArg,
         /// For `--stage sensitivity`: how many sites to list.
         #[arg(long, default_value_t = 20)]
         sites: usize,
@@ -399,6 +405,12 @@ enum Command {
         /// The realization the plan is for.
         #[arg(long, default_value = "f32")]
         realize: String,
+        /// The program of which mode (0.16.0, D164): `inference`, for
+        /// `presk run`, `bench`, `serve` and the C export; or `training`,
+        /// for `presk train --plan`, whose program keeps its masks and
+        /// names its nests as written.
+        #[arg(long, value_enum, default_value_t = ModeArg::Inference)]
+        mode: ModeArg,
         /// A calibrated profile with a layout cost model (`presk bench --calibrate FILE --space calib`).
         #[arg(long, value_name = "FILE.json")]
         profile: PathBuf,
@@ -870,6 +882,38 @@ enum Command {
         /// With --quant: `absmax` scales, or `pow2`.
         #[arg(long, default_value = "absmax")]
         scheme: String,
+        /// The estimate's rounding term (D155): `measured`, the envelope's
+        /// largest `|fl_d(x) − x|` over the sampled values, which is 0 where
+        /// every value is exact in the type, the default since 0.16.0 (an
+        /// envelope written before D155 has none, and keeps `unit`); or
+        /// `unit`, `u(d)·max|x|` at each site, the solver of 0.12.0–0.15.0.
+        #[arg(long, value_enum, default_value_t = RoundingArg::Measured)]
+        rounding: RoundingArg,
+        /// After the measurement passes, narrow by measurement (D155):
+        /// `measured` narrows each decision one step, the largest saving
+        /// first, and keeps it while the measured gap stays inside the
+        /// budget divided by `--margin`, in up to three passes; `heldout`
+        /// does so, then undoes the narrowings kept, the last first, until
+        /// the gap on the samples after the envelope's (`--heldout`) is
+        /// inside it too (D161); `off`, the default, does not.
+        #[arg(long, value_enum, default_value_t = NarrowArg::Off)]
+        narrow: NarrowArg,
+        /// The proposal's estimate (D161): `sum`, the sites' first-order
+        /// terms added and aimed at the budget, the default; or `rss`, their
+        /// root-sum-square, the roundings taken as independent, aimed at
+        /// the budget divided by `--margin`.
+        #[arg(long, value_enum, default_value_t = EstimateArg::Sum)]
+        estimate: EstimateArg,
+        /// The factor kept between the budget and what is spent in sample
+        /// (D161): the target of `--estimate rss` and the threshold of the
+        /// narrowings, the budget divided by it. The default solve does not
+        /// read it.
+        #[arg(long, default_value_t = 2.5)]
+        margin: f64,
+        /// With `--narrow heldout`: how many samples after the envelope's to
+        /// hold out (default: as many as the envelope's).
+        #[arg(long)]
+        heldout: Option<usize>,
         /// Solve one training step under a budget on its **update**, the
         /// envelope being `presk calibrate --step`'s (0.6.0 step 7b): every
         /// function of the step measured alone in `f32` and `bf16`, greedy
@@ -1039,9 +1083,61 @@ enum RematArg {
     Recompute,
 }
 
+/// The estimate's rounding term of `presk solve` (D155).
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum RoundingArg {
+    /// `u(d)·max|x|`: the unit roundoff times the magnitude, as every row of
+    /// record was solved until 0.16.0.
+    Unit,
+    /// The envelope's measured `max |fl_d(x) − x|`, the default (D157).
+    Measured,
+}
+
+/// Whether `presk solve` narrows by measurement after it passes (D155).
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum NarrowArg {
+    /// No narrowing after the measurement: the solver of record.
+    Off,
+    /// Each decision narrowed one step and kept while the measured gap fits
+    /// the budget over the margin.
+    Measured,
+    /// The same, then stopped early on held-out samples (D161).
+    Heldout,
+}
+
+/// The estimate of `presk solve`'s proposal (D161).
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum EstimateArg {
+    /// The sum of the first-order terms, aimed at the budget.
+    Sum,
+    /// Their root-sum-square, aimed at the budget over the margin.
+    Rss,
+}
+
 /// The policy of the command running, set once from `main` before anything
 /// differentiates; `store` when the command has no `--remat`.
 static REMAT: std::sync::OnceLock<presk_core::ad::Remat> = std::sync::OnceLock::new();
+
+/// The mode the CLI lowers in (0.16.0, D160): the inference reading for
+/// every command but `presk dump --mode training` and `presk plan --mode
+/// training` (D164); a training run lowers its own program, as written.
+static MODE: std::sync::OnceLock<presk_core::inference::Mode> = std::sync::OnceLock::new();
+
+fn set_mode(m: ModeArg) {
+    let _ = MODE.set(match m {
+        ModeArg::Inference => presk_core::inference::Mode::Inference,
+        ModeArg::Training => presk_core::inference::Mode::Training,
+    });
+}
+
+/// `presk dump --mode`.
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum ModeArg {
+    /// The inference reading: `dropout` the identity, no mask.
+    Inference,
+    /// The program as written, as a training run compiles it.
+    Training,
+}
 
 fn set_remat(r: RematArg) {
     let _ = REMAT.set(match r {
@@ -1052,6 +1148,12 @@ fn set_remat(r: RematArg) {
 
 pub(crate) fn remat() -> presk_core::ad::Remat {
     REMAT.get().copied().unwrap_or_default()
+}
+
+/// The mode the command lowers in: the inference reading unless the command
+/// set another (`presk dump --mode`, `presk plan --mode`).
+pub(crate) fn mode() -> presk_core::inference::Mode {
+    MODE.get().copied().unwrap_or(presk_core::inference::Mode::Inference)
 }
 
 /// Automatic differentiation under the command's `--remat` (the driver's
@@ -1188,8 +1290,9 @@ fn main() -> ExitCode {
             Some(env) => check_precision(&file, &env, &parse_realize(&realize), sites, &model, measure),
             None => check(&file, &consts, summary, json),
         },
-        Command::Dump { file, stage, format, level, boxed, memory, module, function, standalone, unroll_stack, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
+        Command::Dump { file, stage, format, level, boxed, memory, module, function, standalone, unroll_stack, mode, entry, dims, consts, realize, plan, profile, weights, sites, remat } => {
             set_remat(remat);
+            set_mode(mode);
             if let DumpStage::Network = stage {
                 return dump_network(&file, format, (level, boxed.as_deref(), memory), standalone, entry.as_deref(), &dims, &consts, &realize, plan.as_deref(), profile, weights);
             }
@@ -1318,7 +1421,7 @@ fn main() -> ExitCode {
             set_remat(remat);
             step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref())
         }
-        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, remat, .. } => {
+        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, rounding, narrow, estimate, margin, heldout, remat, .. } => {
             set_remat(remat);
             let scheme = match scheme.as_str() {
                 "absmax" => presk_rt::QuantScheme::Absmax,
@@ -1332,9 +1435,33 @@ fn main() -> ExitCode {
                 Some(eps) => presk_precision::solve::Budget::Absolute(eps),
                 None => presk_precision::solve::Budget::Relative(budget),
             };
-            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme))
+            let options = presk_precision::solve::Options {
+                rounding: match rounding {
+                    RoundingArg::Unit => presk_precision::solve::RoundingTerm::Unit,
+                    RoundingArg::Measured => presk_precision::solve::RoundingTerm::Measured,
+                },
+                narrow: match narrow {
+                    NarrowArg::Off => presk_precision::solve::Narrow::Off,
+                    NarrowArg::Measured => presk_precision::solve::Narrow::Measured,
+                    NarrowArg::Heldout => presk_precision::solve::Narrow::Heldout,
+                },
+                estimate: match estimate {
+                    EstimateArg::Sum => presk_precision::solve::Estimate::Sum,
+                    EstimateArg::Rss => presk_precision::solve::Estimate::Rss,
+                },
+                margin,
+                heldout,
+            };
+            if !(margin.is_finite() && margin >= 1.0) {
+                eprintln!("presk solve: --margin must be a number of at least 1, not {margin}");
+                return ExitCode::from(2);
+            }
+            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), options)
         }
-        Command::Plan { file, entry, dims, consts, realize, profile, nest, space, cost, out, seed, remat } => match ra4::Space::parse(&space).inspect(|_| set_remat(remat)) {
+        Command::Plan { file, entry, dims, consts, realize, mode, profile, nest, space, cost, out, seed, remat } => match ra4::Space::parse(&space).inspect(|_| {
+            set_remat(remat);
+            set_mode(mode);
+        }) {
             Ok(sp) => ra4::plan(&file, &entry, &dims, &consts, &presk_rt::Plan::from_realization(parse_realize(&realize)), &profile, &nest, sp, cost, out.as_deref(), seed),
             Err(m) => {
                 eprintln!("presk plan: {m}");
@@ -1480,7 +1607,9 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
         eprintln!("presk serve: {} has no `inference serve`", file.display());
         return ExitCode::from(2);
     }
-    let (mut core, diags) = presk_core::lower(&prog, &typed);
+    // An inference serve is no training run: its program is the inference
+    // reading, with no mask (0.16.0, D160).
+    let (mut core, diags) = presk_core::lower::lower_with(&prog, &typed, &presk_core::lower::Options { unroll_stack: false, mode: presk_core::inference::Mode::Inference });
     eprint!("{}", render_all(&diags, &sm, color()));
     if has_errors(&diags) {
         return ExitCode::from(1);
@@ -1537,7 +1666,7 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
 
 /// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
 #[allow(clippy::too_many_arguments)]
-fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>) -> ExitCode {
+fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, options: presk_precision::solve::Options) -> ExitCode {
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => {
@@ -1556,7 +1685,7 @@ fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve:
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
-    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant };
+    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant, options };
     let solved = match presk_driver::precision::solve(&mut core, &prog, &env, &args) {
         Ok(s) => s,
         Err(e) => {
@@ -1568,6 +1697,7 @@ fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve:
                 E::NoGradient(m) => (format!("presk solve: the objective does not differentiate: {m}"), 1),
                 E::Reference(m) => (format!("presk solve: {m}"), 1),
                 E::QuantWithoutGradient => ("presk solve: --quant needs the parameters' gradient, and the reverse sweep gave none".to_string(), 1),
+                E::NoHeldout(m) => (format!("presk solve: --narrow heldout needs samples after the envelope's: {m}"), 2),
             };
             eprintln!("{message}");
             return ExitCode::from(code);
@@ -1900,6 +2030,9 @@ fn calibrate_precision(
         }
     };
     for line in presk_driver::text::calibrate(&env, entry, bits) {
+        println!("{line}");
+    }
+    for line in presk_driver::text::rounding(&env) {
         println!("{line}");
     }
     if let Some(other) = compare {
@@ -2511,11 +2644,16 @@ fn train(file: &Path, consts: &[String], mut opts: presk_train::TrainOptions, pl
         eprintln!("presk train: {} has no `training run`", file.display());
         return ExitCode::from(2);
     }
+    // A training run's program is as written, its masks drawn (0.16.0,
+    // D160); under a realization solved outside training, which types no
+    // mask, each takes its product's operand's type.
     let (mut core, diags) = presk_core::lower(&prog, &typed);
     eprint!("{}", render_all(&diags, &sm, color()));
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
+    let typed_masks = presk_train::masks_typed(plan, &core);
+    let plan = &typed_masks;
     let diags = differentiate(&mut core, plan.realization.groups_visible());
     eprint!("{}", render_all(&diags, &sm, color()));
     if has_errors(&diags) {
@@ -2865,7 +3003,7 @@ fn check_stages(file: &Path, consts: &[String], summary: bool, quiet: bool, sm_o
 
 /// Lower to PSK-Core and verify the result ([`presk_driver::front::core`]).
 fn core(file: &Path, consts: &[String], unroll_stack: bool) -> Result<(SourceMap, elab::ElabProgram, presk_core::Program), ExitCode> {
-    presk_driver::front::core(file, consts, unroll_stack, &mut stderr()).map_err(exit)
+    presk_driver::front::typed_core_as(file, consts, unroll_stack, mode(), &mut stderr()).map(|(sm, prog, _, core)| (sm, prog, core)).map_err(exit)
 }
 
 #[allow(clippy::too_many_arguments)]

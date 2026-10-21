@@ -8,9 +8,10 @@
 -- functions, and so is its token type. Its functions are named as `presk
 -- train` names those of 05_gpt.psk (`loss`, `loss.fwd`, `GPT.apply.bwd`, …;
 -- `loss.vjp`, `GPT.apply.vjp` with `--remat recompute`), so a plan `presk
--- plan` gives for `loss_grad` holds for `presk train` too.
--- The export drops keys: its dropout is the expectation, where `presk train`
--- and train.py drop.
+-- plan --mode training` gives for `loss_grad` holds for `presk train` too
+-- (D164). Every other command, the C export among them, compiles the
+-- inference reading, which has no mask (D160); `presk train` and train.py
+-- draw theirs.
 import "../corpus/nlp/05_gpt.psk" as g
 
 dim B

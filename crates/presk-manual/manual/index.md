@@ -1,6 +1,6 @@
 # Presk compiler — user manual
 
-**Version 0.15.0** (plans 0.1.0 to 0.15.0 and the patches 0.10.1 and 0.14.1 done; [`status`]). This
+**Version 0.16.0** (plans 0.1.0 to 0.16.0 and the patches 0.10.1 and 0.14.1 done; [`status`]). This
 manual describes the `presk` tool as it is implemented, no more: every
 chapter was updated at each step of each plan, and features that exist only
 in the language specification are marked *not implemented*. The reference for the language itself is the
@@ -35,8 +35,8 @@ it may be differentiated; randomness is an explicit effect.
 - [`memory`] — `presk memory`: what a program needs in memory, counted from the program at its dimensions and types: the peak of live bytes and each call's share, the C program's arena beside it, a training step under both `--remat`s, the polynomials in the dimensions, the Network tab's overlay.
 - [`corpus`] — models from an NLP course, transcribed as a forcing function.
 - [`coverage`] — what the shape fragment can say, measured on the MLPerf architectures; BERT-large run at MLPerf's constants.
-- [`precision`] — precision as a resource: the envelope, the bound and the condition number, sensitivities, the solver, integer weights, a budget on a training step, and what a budget promises.
-- [`experiments`] — exact versus almost, the statements of 0.4.0 to 0.10.0 answered by measurement, MLPerf's rule beside a budget, the three tests of RA4, the C export's statements, a training step that pays, and what the experiments do not show.
+- [`precision`] — precision as a resource: the envelope, the bound and the condition number, sensitivities, the solver and its defaults (the measured rounding term, the cost per sample, three ways to spend the budget), integer weights, a budget on a training step, and what a budget promises.
+- [`experiments`] — exact versus almost, the statements of 0.4.0 to 0.10.0 answered by measurement, MLPerf's rule beside a budget, the three tests of RA4, the C export's statements, a training step that pays, the solver's defaults judged out of sample, the rows of record at 0.16.0, and what the experiments do not show.
 - [`diagnostics`] — error reports and codes.
 - [`dependencies`] — every tool and library, what it is and why.
 - [`status`] — what is implemented, step by step.

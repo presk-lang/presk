@@ -4,6 +4,7 @@
 /.venv-zig
 /.llvm
 /.gappa
+/.tuning
 *.snap.new
 .DS_Store
 __pycache__/

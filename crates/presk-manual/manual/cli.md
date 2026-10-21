@@ -91,7 +91,10 @@ fails.
 ## `presk dump FILE.psk --stage STAGE`
 
 Prints an intermediate representation of the file; a development aid whose
-output format is not stable.
+output format is not stable. From PSK-Core on, the program is the inference
+mode's, every command's but a training run's, in which `dropout` is the
+identity and no `dropout_mask` remains; `--mode training` prints the
+program as written, as `presk train` compiles it (0.16.0, D160).
 
 | Stage | Output | Status |
 |---|---|---|
@@ -654,6 +657,10 @@ factor — and prints the five worst condition numbers `Σ|xᵢwᵢ| / |Σxᵢw�
 checkpoint, which is refused if it is not exactly the layout's size (D48);
 the envelope records the weights and the data slice, so that a gap measured
 beside the bound, and a realization solved from it, are on the same inputs.
+With `--data` and more than one sample it also runs the entry on the first
+sample alone, for its element counts only, and records them as
+`per_sample` (since 0.16.0, D158): `presk solve` prices the activations at
+them, the same at any `--samples`.
 
 ### `presk calibrate --step`: one training step
 
@@ -731,6 +738,8 @@ the `precision` chapter, "Does the condition number rescue the bound?".
 ```sh
 presk solve FILE.psk --precision ENV.json [--budget 1e-3 | --budget-abs EPS] [--weights ckpt/final.psk.d]
     [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--no-verify] [--bits 128]
+    [--rounding unit|measured] [--narrow off|measured|heldout] [--heldout M]
+    [--estimate sum|rss] [--margin 2.5]
     [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
 ```
 
@@ -768,7 +777,30 @@ the sweep and every measurement run on that slice. `--quant` also offers every m
 (`--scheme absmax|pow2`), priced by the parameters' gradient and accepted by
 measurement, and prints the three first-order readings per parameter with
 `--sites`. A `--weights` file of other dimensions is an error, not a fallback
-to the initial parameters. See the `precision` chapter.
+to the initial parameters. The traffic is one sample's: the activations at
+the elements the envelope records for one sample (`per_sample`, since
+0.16.0, D158), the parameters once, so that the cost is the same whatever
+the number of samples the envelope was calibrated on. Two options of D155:
+`--rounding measured`, the default since 0.16.0 (D157, D158), takes the
+estimate's rounding step at each site from the envelope's measured
+`max |fl_d(x) − x|` instead of `u(d)·max|x|`, so that a value exact in a
+type costs nothing there, an envelope written before D155 keeping the unit
+term, and `--rounding unit` is the solver of 0.12.0–0.15.0;
+`--narrow measured`, off by default, adds a step after a
+passing measurement: each decision not at its narrowest is narrowed one
+step, the largest saving first, and kept while the measured gap stays inside
+the budget divided by `--margin` (inside the budget itself until 0.16.0,
+`--margin 1`), in up to three passes, and the output says how many it kept and
+how many measurements the solve made. Three more since 0.16.0 (D161), the
+ways to spend the budget the `precision` chapter describes: `--estimate
+sum|rss`, the proposal's estimate as the sum of the sites' terms (the
+default) or their root-sum-square, aimed at the budget divided by `--margin`;
+`--margin K` (2.5 by default), the factor kept between the budget and what is
+spent in sample, which `--estimate rss` and the narrowings read and the
+default solve does not; and `--narrow heldout [--heldout M]`, the narrowing
+stopped early on the `M` samples after the envelope's in its data file (as
+many as its own by default), refused (exit 2) for an envelope not calibrated
+on a slice of a data file. See the `precision` chapter.
 
 ### `presk solve --step`: a budget on the update
 
@@ -1030,7 +1062,7 @@ presk refit ~/presk-data/ra4-0.8.0-calibration/out/profile.json --recost experim
 ## `presk plan FILE.psk --entry ENTRY --profile P.json …`
 
 ```text
-presk plan FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …] [--realize R]
+presk plan FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …] [--realize R] [--mode inference|training]
            --profile P.json [--nest NEST …] [--space full|small] [--cost] [--seed S] [--out PLAN.json]
 ```
 
@@ -1073,7 +1105,13 @@ program its realization makes: since 0.10.0 step 4b a gradient keeps its
 fusion groups under `bf16` and not under `f32` or `f64` (`language`
 chapter, "Dead code after differentiation"), so a gradient's plan made
 under one of them is refused under the other (`E7002`, a nest the program
-lacks or computes inside a group). Since 0.10.0 step 7 (D97) a product
+lacks or computes inside a group). The plan is also of one mode's program
+(0.16.0, D164): by default the inference reading's, which `presk run`,
+`bench`, `serve` and the C export compile, with no `dropout_mask` (D160).
+A plan for `presk train --plan` is planned with `--mode training`, on the
+program as written. A gradient with masks numbers its nests otherwise, so
+the inference plan of a gradient that drops names nests a training run
+fuses into others, and `presk train` refuses it (`E7002`). Since 0.10.0 step 7 (D97) a product
 whose value one `add` alone reads, in the product's type, at every shape it
 is launched at, takes that `add` as its epilogue (`"epilogue": true`, the
 `realize` chapter's "The bias as an epilogue"), over the layout chosen

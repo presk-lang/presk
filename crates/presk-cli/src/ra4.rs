@@ -36,7 +36,7 @@ use presk_driver::layout::{group, shape};
 /// reported on standard error.
 #[allow(clippy::too_many_arguments)]
 pub fn capture(file: &Path, entry: &str, dims: &[String], consts: &[String], plan: &presk_rt::Plan, seed: u64, nests: &[String], mode: Capture) -> Result<Captured, ExitCode> {
-    presk_driver::layout::capture(file, entry, dims, consts, plan, seed, nests, mode, crate::remat(), &mut crate::stderr()).map_err(crate::exit)
+    presk_driver::layout::capture_as(file, entry, dims, consts, plan, seed, nests, mode, crate::remat(), crate::mode(), &mut crate::stderr()).map_err(crate::exit)
 }
 
 /// [`presk_driver::layout::load_fit`], reported on standard error.

@@ -8,132 +8,117 @@ presk dump corpus/nlp/05_gpt.psk --stage network --entry loss --const D=64 --con
 
 and held current by a test of `presk-explain`. Each box carries its function's formula in the printer's Unicode form, its parameters and the cost model's W and Q, a layer's inside the stack; each arrow is coloured by its realized type, its width by its bytes; the random keys are left out. The report's two figures (presk-specs `report/figures/network-gpt.tex` and `network-gpt-block.tex`) are level 1 and `Block` alone, by the same layout in TikZ; the page opens any set of boxes, and `--level all` every one.
 
-<svg xmlns="http://www.w3.org/2000/svg" width="755" height="1571" viewBox="-1 -1 755 1571" font-family="DejaVu Sans Mono, Menlo, monospace" font-size="11">
+<svg xmlns="http://www.w3.org/2000/svg" width="743" height="1383" viewBox="-1 -1 743 1383" font-family="DejaVu Sans Mono, Menlo, monospace" font-size="11">
 <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
-<rect x="0" y="0" width="753.2" height="1569.0" fill="#ffffff"/>
+<rect x="0" y="0" width="740.6" height="1381.0" fill="#ffffff"/>
 <text x="8.0" y="15.0" font-weight="bold">loss</text>
-<text x="8.0" y="30.0" fill="#555555" font-size="10">θ 113 k f64 · W 7.38 M · Q 3.83 MB</text>
+<text x="8.0" y="30.0" fill="#555555" font-size="10">θ 113 k f64 · W 7.37 M · Q 3.67 MB</text>
 <rect x="321.8" y="38.0" width="57.0" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
 <text x="350.3" y="53.0" text-anchor="middle" fill="#444444">batch</text>
-<rect x="12.0" y="84.0" width="729.2" height="1327.0" rx="6" fill="#f7f8fb" stroke="#3567b5" stroke-width="1.4"><title>ad:loss/%5</title></rect>
+<rect x="12.0" y="84.0" width="716.6" height="1139.0" rx="6" fill="#f7f8fb" stroke="#3567b5" stroke-width="1.4"><title>ad:loss/%5</title></rect>
 <text x="20.0" y="99.0" font-weight="bold">GPT.apply · GPT</text>
-<text x="20.0" y="114.0" fill="#555555" font-size="10">θ 113 k f64 · W 7.35 M · Q 3.81 MB</text>
-<rect x="295.4" y="1435.0" width="109.8" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%6 = cross_entropy %5, y</title></rect>
-<text x="350.3" y="1452.0" text-anchor="middle">cross_entropy</text>
-<rect x="325.1" y="1485.0" width="50.4" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%7 = mean %6</title></rect>
-<text x="350.3" y="1502.0" text-anchor="middle">mean</text>
-<rect x="318.5" y="1535.0" width="63.6" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
-<text x="350.3" y="1550.0" text-anchor="middle" fill="#444444">result</text>
-<rect x="216.5" y="122.0" width="43.8" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
-<text x="238.4" y="137.0" text-anchor="middle" fill="#444444">ids</text>
-<rect x="169.2" y="328.0" width="123.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>mask = causal_mask seq: T</title></rect>
-<text x="230.7" y="345.0" text-anchor="middle">causal_mask seq</text>
-<rect x="304.7" y="182.0" width="57.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%5 = embed tok, ids</title></rect>
-<text x="333.2" y="199.0" text-anchor="middle">embed</text>
-<rect x="387.5" y="122.0" width="109.8" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%7 = positions seq: T</title></rect>
-<text x="442.4" y="139.0" text-anchor="middle">positions seq</text>
-<rect x="373.7" y="182.0" width="57.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%8 = embed pos, %7</title></rect>
-<text x="402.2" y="199.0" text-anchor="middle">embed</text>
-<rect x="305.2" y="232.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>h0 = %5 + %8</title></rect>
-<text x="327.2" y="249.0" text-anchor="middle">add</text>
-<rect x="242.5" y="282.0" width="103.2" height="22.0" rx="11.0" fill="#f4f4f4" stroke="#9a7b4f" stroke-dasharray="2,2"><title>%14 = dropout_mask %13, ke, h0</title></rect>
-<text x="294.1" y="297.0" text-anchor="middle">dropout_mask</text>
-<rect x="304.2" y="328.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%15 = h0 × %14</title></rect>
-<text x="326.2" y="345.0" text-anchor="middle">mul</text>
-<rect x="24.0" y="378.0" width="705.2" height="808.0" rx="6" fill="#f7f8fb" stroke="#3567b5" stroke-width="1.4"><title>ad:GPT.apply/%18</title></rect>
-<text x="32.0" y="393.0" font-weight="bold">blocks ×2 · Block</text>
-<text x="32.0" y="408.0" fill="#555555" font-size="10">θ 100 k f64 · W 6.95 M · Q 3.45 MB</text>
-<rect x="100.6" y="1210.0" width="406.8" height="93.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:GPT.apply/%22</title></rect>
-<text x="108.6" y="1225.0" font-weight="bold">lnf · LayerNorm{64}</text>
-<text x="108.6" y="1240.0" fill="#555555" font-size="10">θ 128 f64 · W 18.8 k · Q 101 kB</text>
-<text x="108.6" y="1261.0">μ = mean axis model x</text>
-<text x="108.6" y="1276.0">σ2 = mean axis model (x − μ)²</text>
-<text x="108.6" y="1291.0">⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β</text>
-<rect x="415.5" y="1327.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%24 = dot %22, head</title></rect>
-<text x="437.5" y="1344.0" text-anchor="middle">dot</text>
-<rect x="272.3" y="122.0" width="103.2" height="36.0" rx="3" fill="#f3eefa" stroke="#7b52ab"/>
-<text x="278.3" y="136.0">θ.tok</text>
-<text x="278.3" y="151.0" fill="#555555" font-size="10">θ 5.89 k f64</text>
-<rect x="509.3" y="122.0" width="103.2" height="36.0" rx="3" fill="#f3eefa" stroke="#7b52ab"/>
-<text x="515.3" y="136.0">θ.pos</text>
-<text x="515.3" y="151.0" fill="#555555" font-size="10">θ 1.02 k f64</text>
-<rect x="519.4" y="1210.0" width="103.2" height="36.0" rx="3" fill="#f3eefa" stroke="#7b52ab"/>
-<text x="525.4" y="1224.0">θ.head</text>
-<text x="525.4" y="1239.0" fill="#555555" font-size="10">θ 5.89 k f64</text>
-<rect x="405.7" y="1377.0" width="63.6" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
-<text x="437.5" y="1392.0" text-anchor="middle" fill="#444444">result</text>
-<rect x="390.0" y="416.0" width="40.0" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
-<text x="410.0" y="431.0" text-anchor="middle" fill="#444444">s</text>
-<rect x="610.3" y="416.0" width="50.4" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
-<text x="635.5" y="431.0" text-anchor="middle" fill="#444444">mask</text>
-<rect x="221.7" y="462.0" width="406.8" height="93.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%16</title></rect>
-<text x="229.7" y="477.0" font-weight="bold">ln1 · LayerNorm{64}</text>
-<text x="229.7" y="492.0" fill="#555555" font-size="10">θ 128 f64 · W 18.8 k · Q 101 kB</text>
-<text x="229.7" y="513.0">μ = mean axis model x</text>
-<text x="229.7" y="528.0">σ2 = mean axis model (x − μ)²</text>
-<text x="229.7" y="543.0">⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β</text>
-<rect x="157.2" y="579.0" width="560.0" height="153.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%18</title></rect>
-<text x="165.2" y="594.0" font-weight="bold">attn · SelfAttention</text>
-<text x="165.2" y="609.0" fill="#555555" font-size="10">θ 16.6 k f64 · W 1.22 M · Q 668 kB</text>
-<text x="165.2" y="630.0" textLength="196.8" lengthAdjust="spacingAndGlyphs">q = split_heads HxHD ⟦wq.apply⟧(x)</text>
-<text x="165.2" y="645.0" textLength="196.8" lengthAdjust="spacingAndGlyphs">k = split_heads HxHD ⟦wk.apply⟧(x)</text>
-<text x="165.2" y="660.0" textLength="196.8" lengthAdjust="spacingAndGlyphs">v = split_heads HxHD ⟦wv.apply⟧(x)</text>
-<text x="165.2" y="675.0" textLength="544.0" lengthAdjust="spacingAndGlyphs">s[batch, heads, seq, seq2] = (∑_{hd} q[batch, heads, seq, hd] k[batch, heads, seq2, hd]) / √HD</text>
-<text x="165.2" y="690.0" textLength="277.8" lengthAdjust="spacingAndGlyphs">a = dropout 0.2, kd, (softmax axis seq2 s, mask)</text>
-<text x="165.2" y="705.0" textLength="509.3" lengthAdjust="spacingAndGlyphs">u[batch, heads, seq, hd] = ∑_{seq2} a[batch, heads, seq, seq2] v[batch, heads, seq2, hd]</text>
-<text x="165.2" y="720.0" textLength="405.1" lengthAdjust="spacingAndGlyphs">⟦SelfAttention.apply⟧(θ, x, mask, kd) = ⟦wo.apply⟧(merge_heads HxHD u)</text>
-<rect x="396.5" y="756.0" width="103.2" height="22.0" rx="11.0" fill="#f4f4f4" stroke="#9a7b4f" stroke-dasharray="2,2"><title>%19 = dropout_mask %14, kres, %18</title></rect>
-<text x="448.1" y="771.0" text-anchor="middle">dropout_mask</text>
-<rect x="437.7" y="802.0" width="83.4" height="26.0" rx="13.0" fill="#fff4e0" stroke="#9a7b4f"><title>h = x + %20</title></rect>
-<text x="479.4" y="819.0" text-anchor="middle">add · mul</text>
-<rect x="167.5" y="852.0" width="406.8" height="93.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%24</title></rect>
-<text x="175.5" y="867.0" font-weight="bold">ln2 · LayerNorm{64}</text>
-<text x="175.5" y="882.0" fill="#555555" font-size="10">θ 128 f64 · W 18.8 k · Q 101 kB</text>
-<text x="175.5" y="903.0">μ = mean axis model x</text>
-<text x="175.5" y="918.0">σ2 = mean axis model (x − μ)²</text>
-<text x="175.5" y="933.0">⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β</text>
-<rect x="160.9" y="969.0" width="420.0" height="63.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%26</title></rect>
-<text x="168.9" y="984.0" font-weight="bold">ff · FeedForward</text>
-<text x="168.9" y="999.0" fill="#555555" font-size="10">θ 33.1 k f64 · W 2.21 M · Q 723 kB</text>
-<text x="168.9" y="1020.0">⟦FeedForward.apply⟧(θ, x) = ⟦down.apply⟧(gelu ⟦up.apply⟧(x))</text>
-<rect x="238.1" y="1056.0" width="103.2" height="22.0" rx="11.0" fill="#f4f4f4" stroke="#9a7b4f" stroke-dasharray="2,2"><title>%27 = dropout_mask %22, kff, %26</title></rect>
-<text x="289.7" y="1071.0" text-anchor="middle">dropout_mask</text>
-<rect x="276.8" y="1102.0" width="83.4" height="26.0" rx="13.0" fill="#fff4e0" stroke="#9a7b4f"><title>%29 = h + %28</title></rect>
-<text x="318.5" y="1119.0" text-anchor="middle">add · mul</text>
-<rect x="259.3" y="1152.0" width="63.6" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
-<text x="291.1" y="1167.0" text-anchor="middle" fill="#444444">result</text>
-<path d="M350.3,60.0 C350.3,91.0 238.4,91.0 238.4,122.0" fill="none" stroke="#8e6c2a" stroke-width="1.64" marker-end="url(#a)"><title>loss/%3: idx[92][batch: 2, seq: 16], idx, 256 B</title></path>
-<path d="M437.5,1399.0 C437.5,1405.0 437.5,1405.0 437.5,1411.0 C437.5,1423.0 332.0,1423.0 332.0,1435.0" fill="none" stroke="#3567b5" stroke-width="2.33" marker-end="url(#a)"><title>loss/%5: ℝ[batch: 2, seq: 16, vocab: 92], f64, 23552 B</title></path>
-<path d="M350.3,60.0 C350.3,72.0 748.2,72.0 748.2,84.0 C748.2,747.5 748.2,747.5 748.2,1411.0 C748.2,1423.0 368.6,1423.0 368.6,1435.0" fill="none" stroke="#8e6c2a" stroke-width="1.64" marker-end="url(#a)"><title>loss/%4: idx[92][batch: 2, seq: 16], idx, 256 B</title></path>
-<path d="M350.3,1461.0 C350.3,1473.0 350.3,1473.0 350.3,1485.0" fill="none" stroke="#3567b5" stroke-width="1.64" marker-end="url(#a)"><title>loss/%6: ℝ[batch: 2, seq: 16], f64, 256 B</title></path>
-<path d="M350.3,1511.0 C350.3,1523.0 350.3,1523.0 350.3,1535.0" fill="none" stroke="#3567b5" stroke-width="1.12" marker-end="url(#a)"><title>loss/%7: ℝ[], f64, 8 B</title></path>
-<path d="M323.9,158.0 C323.9,170.0 342.7,170.0 342.7,182.0" fill="none" stroke="#3567b5" stroke-width="2.44" marker-end="url(#a)"><title>GPT.apply/%4: ℝ[vocab: 92, model: 64], f64, 47104 B</title></path>
-<path d="M238.4,144.0 C238.4,151.0 238.4,151.0 238.4,158.0 C238.4,170.0 323.7,170.0 323.7,182.0" fill="none" stroke="#8e6c2a" stroke-width="1.64" marker-end="url(#a)"><title>loss/%3: idx[92][batch: 2, seq: 16], idx, 256 B</title></path>
-<path d="M560.9,158.0 C560.9,170.0 411.7,170.0 411.7,182.0" fill="none" stroke="#3567b5" stroke-width="2.17" marker-end="url(#a)"><title>GPT.apply/%6: ℝ[16, 64], f64, 8192 B</title></path>
-<path d="M442.4,148.0 C442.4,153.0 442.4,153.0 442.4,158.0 C442.4,170.0 392.7,170.0 392.7,182.0" fill="none" stroke="#8e6c2a" stroke-width="1.54" marker-end="url(#a)"><title>GPT.apply/%7: idx[16][seq: 16], idx, 128 B</title></path>
-<path d="M333.2,208.0 C333.2,220.0 319.9,220.0 319.9,232.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%5: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M402.2,208.0 C402.2,220.0 334.5,220.0 334.5,232.0" fill="none" stroke="#3567b5" stroke-width="2.17" marker-end="url(#a)"><title>GPT.apply/%8: ℝ[seq: 16, 64], f64, 8192 B</title></path>
-<path d="M327.2,258.0 C327.2,270.0 311.3,270.0 311.3,282.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%9: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M327.2,258.0 C327.2,270.0 352.7,270.0 352.7,282.0 C352.7,293.0 352.7,293.0 352.7,304.0 C352.7,316.0 333.5,316.0 333.5,328.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%9: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M294.1,304.0 C294.1,316.0 318.9,316.0 318.9,328.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%14: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M326.2,354.0 C326.2,385.0 410.0,385.0 410.0,416.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%15: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M230.7,354.0 C230.7,385.0 635.5,385.0 635.5,416.0" fill="none" stroke="#8e6c2a" stroke-width="1.96" marker-end="url(#a)"><title>GPT.apply/%3: bool[seq: 16, seq2: 16], bool, 2048 B</title></path>
-<path d="M291.1,1174.0 C291.1,1180.0 291.1,1180.0 291.1,1186.0 C291.1,1198.0 304.0,1198.0 304.0,1210.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%19: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M304.0,1303.0 C304.0,1315.0 430.2,1315.0 430.2,1327.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%22: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M571.0,1246.0 C571.0,1274.5 571.0,1274.5 571.0,1303.0 C571.0,1315.0 444.8,1315.0 444.8,1327.0" fill="none" stroke="#3567b5" stroke-width="2.44" marker-end="url(#a)"><title>GPT.apply/%23: ℝ[64, 92], f64, 47104 B</title></path>
-<path d="M437.5,1353.0 C437.5,1365.0 437.5,1365.0 437.5,1377.0" fill="none" stroke="#3567b5" stroke-width="2.33" marker-end="url(#a)"><title>GPT.apply/%24: ℝ[batch: 2, seq: 16, 92], f64, 23552 B</title></path>
-<path d="M410.0,438.0 C410.0,450.0 425.1,450.0 425.1,462.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%3: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M425.1,555.0 C425.1,567.0 437.2,567.0 437.2,579.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%16: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M635.5,438.0 C635.5,450.0 635.5,450.0 635.5,462.0 C635.5,508.5 635.5,508.5 635.5,555.0 C635.5,567.0 577.2,567.0 577.2,579.0" fill="none" stroke="#8e6c2a" stroke-width="1.96" marker-end="url(#a)"><title>GPT.apply/%3: bool[seq: 16, seq2: 16], bool, 2048 B</title></path>
-<path d="M437.2,732.0 C437.2,744.0 465.3,744.0 465.3,756.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%18: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M437.2,732.0 C437.2,744.0 506.7,744.0 506.7,756.0 C506.7,767.0 506.7,767.0 506.7,778.0 C506.7,790.0 479.4,790.0 479.4,802.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%18: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M448.1,778.0 C448.1,790.0 500.2,790.0 500.2,802.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%19: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M410.0,438.0 C410.0,450.0 643.5,450.0 643.5,462.0 C643.5,508.5 643.5,508.5 643.5,555.0 C643.5,567.0 724.2,567.0 724.2,579.0 C724.2,655.5 724.2,655.5 724.2,732.0 C724.2,744.0 514.7,744.0 514.7,756.0 C514.7,767.0 514.7,767.0 514.7,778.0 C514.7,790.0 458.6,790.0 458.6,802.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%3: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M479.4,828.0 C479.4,840.0 370.9,840.0 370.9,852.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%21: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M370.9,945.0 C370.9,957.0 370.9,957.0 370.9,969.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%24: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M370.9,1032.0 C370.9,1044.0 306.9,1044.0 306.9,1056.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%26: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M370.9,1032.0 C370.9,1044.0 348.3,1044.0 348.3,1056.0 C348.3,1067.0 348.3,1067.0 348.3,1078.0 C348.3,1090.0 318.5,1090.0 318.5,1102.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%26: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M289.7,1078.0 C289.7,1090.0 297.7,1090.0 297.7,1102.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%27: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M479.4,828.0 C479.4,840.0 587.9,840.0 587.9,852.0 C587.9,898.5 587.9,898.5 587.9,945.0 C587.9,957.0 587.9,957.0 587.9,969.0 C587.9,1000.5 587.9,1000.5 587.9,1032.0 C587.9,1044.0 356.3,1044.0 356.3,1056.0 C356.3,1067.0 356.3,1067.0 356.3,1078.0 C356.3,1090.0 339.4,1090.0 339.4,1102.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%21: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
-<path d="M318.5,1128.0 C318.5,1140.0 301.7,1140.0 301.7,1152.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%29: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<text x="20.0" y="114.0" fill="#555555" font-size="10">θ 113 k f64 · W 7.34 M · Q 3.65 MB</text>
+<rect x="295.4" y="1247.0" width="109.8" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%6 = cross_entropy %5, y</title></rect>
+<text x="350.3" y="1264.0" text-anchor="middle">cross_entropy</text>
+<rect x="325.1" y="1297.0" width="50.4" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%7 = mean %6</title></rect>
+<text x="350.3" y="1314.0" text-anchor="middle">mean</text>
+<rect x="318.5" y="1347.0" width="63.6" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
+<text x="350.3" y="1362.0" text-anchor="middle" fill="#444444">result</text>
+<rect x="228.4" y="122.0" width="43.8" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
+<text x="250.3" y="137.0" text-anchor="middle" fill="#444444">ids</text>
+<rect x="185.2" y="232.0" width="123.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>mask = causal_mask seq: T</title></rect>
+<text x="246.7" y="249.0" text-anchor="middle">causal_mask seq</text>
+<rect x="316.6" y="182.0" width="57.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%5 = embed tok, ids</title></rect>
+<text x="345.1" y="199.0" text-anchor="middle">embed</text>
+<rect x="399.4" y="122.0" width="109.8" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%7 = positions seq: T</title></rect>
+<text x="454.3" y="139.0" text-anchor="middle">positions seq</text>
+<rect x="385.6" y="182.0" width="57.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%8 = embed pos, %7</title></rect>
+<text x="414.1" y="199.0" text-anchor="middle">embed</text>
+<rect x="328.2" y="232.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>h0 = %5 + %8</title></rect>
+<text x="350.2" y="249.0" text-anchor="middle">add</text>
+<rect x="24.0" y="282.0" width="692.6" height="716.0" rx="6" fill="#f7f8fb" stroke="#3567b5" stroke-width="1.4"><title>ad:GPT.apply/%18</title></rect>
+<text x="32.0" y="297.0" font-weight="bold">blocks ×2 · Block</text>
+<text x="32.0" y="312.0" fill="#555555" font-size="10">θ 100 k f64 · W 6.94 M · Q 3.33 MB</text>
+<rect x="100.6" y="1022.0" width="406.8" height="93.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:GPT.apply/%22</title></rect>
+<text x="108.6" y="1037.0" font-weight="bold">lnf · LayerNorm{64}</text>
+<text x="108.6" y="1052.0" fill="#555555" font-size="10">θ 128 f64 · W 18.8 k · Q 101 kB</text>
+<text x="108.6" y="1073.0">μ = mean axis model x</text>
+<text x="108.6" y="1088.0">σ2 = mean axis model (x − μ)²</text>
+<text x="108.6" y="1103.0">⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β</text>
+<rect x="415.5" y="1139.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%24 = dot %22, head</title></rect>
+<text x="437.5" y="1156.0" text-anchor="middle">dot</text>
+<rect x="284.2" y="122.0" width="103.2" height="36.0" rx="3" fill="#f3eefa" stroke="#7b52ab"/>
+<text x="290.2" y="136.0">θ.tok</text>
+<text x="290.2" y="151.0" fill="#555555" font-size="10">θ 5.89 k f64</text>
+<rect x="521.2" y="122.0" width="103.2" height="36.0" rx="3" fill="#f3eefa" stroke="#7b52ab"/>
+<text x="527.2" y="136.0">θ.pos</text>
+<text x="527.2" y="151.0" fill="#555555" font-size="10">θ 1.02 k f64</text>
+<rect x="519.4" y="1022.0" width="103.2" height="36.0" rx="3" fill="#f3eefa" stroke="#7b52ab"/>
+<text x="525.4" y="1036.0">θ.head</text>
+<text x="525.4" y="1051.0" fill="#555555" font-size="10">θ 5.89 k f64</text>
+<rect x="405.7" y="1189.0" width="63.6" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
+<text x="437.5" y="1204.0" text-anchor="middle" fill="#444444">result</text>
+<rect x="377.4" y="320.0" width="40.0" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
+<text x="397.4" y="335.0" text-anchor="middle" fill="#444444">s</text>
+<rect x="597.7" y="320.0" width="50.4" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
+<text x="622.9" y="335.0" text-anchor="middle" fill="#444444">mask</text>
+<rect x="209.1" y="366.0" width="406.8" height="93.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%16</title></rect>
+<text x="217.1" y="381.0" font-weight="bold">ln1 · LayerNorm{64}</text>
+<text x="217.1" y="396.0" fill="#555555" font-size="10">θ 128 f64 · W 18.8 k · Q 101 kB</text>
+<text x="217.1" y="417.0">μ = mean axis model x</text>
+<text x="217.1" y="432.0">σ2 = mean axis model (x − μ)²</text>
+<text x="217.1" y="447.0">⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β</text>
+<rect x="144.6" y="483.0" width="560.0" height="153.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%18</title></rect>
+<text x="152.6" y="498.0" font-weight="bold">attn · SelfAttention</text>
+<text x="152.6" y="513.0" fill="#555555" font-size="10">θ 16.6 k f64 · W 1.22 M · Q 643 kB</text>
+<text x="152.6" y="534.0" textLength="196.8" lengthAdjust="spacingAndGlyphs">q = split_heads HxHD ⟦wq.apply⟧(x)</text>
+<text x="152.6" y="549.0" textLength="196.8" lengthAdjust="spacingAndGlyphs">k = split_heads HxHD ⟦wk.apply⟧(x)</text>
+<text x="152.6" y="564.0" textLength="196.8" lengthAdjust="spacingAndGlyphs">v = split_heads HxHD ⟦wv.apply⟧(x)</text>
+<text x="152.6" y="579.0" textLength="544.0" lengthAdjust="spacingAndGlyphs">s[batch, heads, seq, seq2] = (∑_{hd} q[batch, heads, seq, hd] k[batch, heads, seq2, hd]) / √HD</text>
+<text x="152.6" y="594.0" textLength="277.8" lengthAdjust="spacingAndGlyphs">a = dropout 0.2, kd, (softmax axis seq2 s, mask)</text>
+<text x="152.6" y="609.0" textLength="509.3" lengthAdjust="spacingAndGlyphs">u[batch, heads, seq, hd] = ∑_{seq2} a[batch, heads, seq, seq2] v[batch, heads, seq2, hd]</text>
+<text x="152.6" y="624.0" textLength="405.1" lengthAdjust="spacingAndGlyphs">⟦SelfAttention.apply⟧(θ, x, mask, kd) = ⟦wo.apply⟧(merge_heads HxHD u)</text>
+<rect x="495.3" y="660.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>h = x + %18</title></rect>
+<text x="517.3" y="677.0" text-anchor="middle">add</text>
+<rect x="205.4" y="710.0" width="406.8" height="93.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%24</title></rect>
+<text x="213.4" y="725.0" font-weight="bold">ln2 · LayerNorm{64}</text>
+<text x="213.4" y="740.0" fill="#555555" font-size="10">θ 128 f64 · W 18.8 k · Q 101 kB</text>
+<text x="213.4" y="761.0">μ = mean axis model x</text>
+<text x="213.4" y="776.0">σ2 = mean axis model (x − μ)²</text>
+<text x="213.4" y="791.0">⟦LayerNorm.apply⟧(θ, x) = ((x − μ) / √(σ2 + 1e-5)) × γ + β</text>
+<rect x="198.8" y="827.0" width="420.0" height="63.0" rx="6" fill="#eef2f8" stroke="#3567b5" stroke-width="1.4"><title>ad:Block.apply/%26</title></rect>
+<text x="206.8" y="842.0" font-weight="bold">ff · FeedForward</text>
+<text x="206.8" y="857.0" fill="#555555" font-size="10">θ 33.1 k f64 · W 2.21 M · Q 723 kB</text>
+<text x="206.8" y="878.0">⟦FeedForward.apply⟧(θ, x) = ⟦down.apply⟧(gelu ⟦up.apply⟧(x))</text>
+<rect x="396.5" y="914.0" width="44.0" height="26.0" rx="13.0" fill="#fffaf0" stroke="#9a7b4f"><title>%29 = h + %26</title></rect>
+<text x="418.5" y="931.0" text-anchor="middle">add</text>
+<rect x="369.2" y="964.0" width="63.6" height="22.0" rx="11" fill="#ffffff" stroke="#888888"/>
+<text x="401.0" y="979.0" text-anchor="middle" fill="#444444">result</text>
+<path d="M350.3,60.0 C350.3,91.0 250.3,91.0 250.3,122.0" fill="none" stroke="#8e6c2a" stroke-width="1.64" marker-end="url(#a)"><title>loss/%3: idx[92][batch: 2, seq: 16], idx, 256 B</title></path>
+<path d="M437.5,1211.0 C437.5,1217.0 437.5,1217.0 437.5,1223.0 C437.5,1235.0 332.0,1235.0 332.0,1247.0" fill="none" stroke="#3567b5" stroke-width="2.33" marker-end="url(#a)"><title>loss/%5: ℝ[batch: 2, seq: 16, vocab: 92], f64, 23552 B</title></path>
+<path d="M350.3,60.0 C350.3,72.0 735.6,72.0 735.6,84.0 C735.6,653.5 735.6,653.5 735.6,1223.0 C735.6,1235.0 368.6,1235.0 368.6,1247.0" fill="none" stroke="#8e6c2a" stroke-width="1.64" marker-end="url(#a)"><title>loss/%4: idx[92][batch: 2, seq: 16], idx, 256 B</title></path>
+<path d="M350.3,1273.0 C350.3,1285.0 350.3,1285.0 350.3,1297.0" fill="none" stroke="#3567b5" stroke-width="1.64" marker-end="url(#a)"><title>loss/%6: ℝ[batch: 2, seq: 16], f64, 256 B</title></path>
+<path d="M350.3,1323.0 C350.3,1335.0 350.3,1335.0 350.3,1347.0" fill="none" stroke="#3567b5" stroke-width="1.12" marker-end="url(#a)"><title>loss/%7: ℝ[], f64, 8 B</title></path>
+<path d="M335.8,158.0 C335.8,170.0 354.6,170.0 354.6,182.0" fill="none" stroke="#3567b5" stroke-width="2.44" marker-end="url(#a)"><title>GPT.apply/%4: ℝ[vocab: 92, model: 64], f64, 47104 B</title></path>
+<path d="M250.3,144.0 C250.3,151.0 250.3,151.0 250.3,158.0 C250.3,170.0 335.6,170.0 335.6,182.0" fill="none" stroke="#8e6c2a" stroke-width="1.64" marker-end="url(#a)"><title>loss/%3: idx[92][batch: 2, seq: 16], idx, 256 B</title></path>
+<path d="M572.8,158.0 C572.8,170.0 423.6,170.0 423.6,182.0" fill="none" stroke="#3567b5" stroke-width="2.17" marker-end="url(#a)"><title>GPT.apply/%6: ℝ[16, 64], f64, 8192 B</title></path>
+<path d="M454.3,148.0 C454.3,153.0 454.3,153.0 454.3,158.0 C454.3,170.0 404.6,170.0 404.6,182.0" fill="none" stroke="#8e6c2a" stroke-width="1.54" marker-end="url(#a)"><title>GPT.apply/%7: idx[16][seq: 16], idx, 128 B</title></path>
+<path d="M345.1,208.0 C345.1,220.0 342.9,220.0 342.9,232.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%5: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M414.1,208.0 C414.1,220.0 357.5,220.0 357.5,232.0" fill="none" stroke="#3567b5" stroke-width="2.17" marker-end="url(#a)"><title>GPT.apply/%8: ℝ[seq: 16, 64], f64, 8192 B</title></path>
+<path d="M350.2,258.0 C350.2,289.0 397.4,289.0 397.4,320.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%9: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M246.7,258.0 C246.7,289.0 622.9,289.0 622.9,320.0" fill="none" stroke="#8e6c2a" stroke-width="1.96" marker-end="url(#a)"><title>GPT.apply/%3: bool[seq: 16, seq2: 16], bool, 2048 B</title></path>
+<path d="M401.0,986.0 C401.0,992.0 401.0,992.0 401.0,998.0 C401.0,1010.0 304.0,1010.0 304.0,1022.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%19: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M304.0,1115.0 C304.0,1127.0 430.2,1127.0 430.2,1139.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>GPT.apply/%22: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M571.0,1058.0 C571.0,1086.5 571.0,1086.5 571.0,1115.0 C571.0,1127.0 444.8,1127.0 444.8,1139.0" fill="none" stroke="#3567b5" stroke-width="2.44" marker-end="url(#a)"><title>GPT.apply/%23: ℝ[64, 92], f64, 47104 B</title></path>
+<path d="M437.5,1165.0 C437.5,1177.0 437.5,1177.0 437.5,1189.0" fill="none" stroke="#3567b5" stroke-width="2.33" marker-end="url(#a)"><title>GPT.apply/%24: ℝ[batch: 2, seq: 16, 92], f64, 23552 B</title></path>
+<path d="M397.4,342.0 C397.4,354.0 412.5,354.0 412.5,366.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%3: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M412.5,459.0 C412.5,471.0 424.6,471.0 424.6,483.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%16: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M622.9,342.0 C622.9,354.0 622.9,354.0 622.9,366.0 C622.9,412.5 622.9,412.5 622.9,459.0 C622.9,471.0 564.6,471.0 564.6,483.0" fill="none" stroke="#8e6c2a" stroke-width="1.96" marker-end="url(#a)"><title>GPT.apply/%3: bool[seq: 16, seq2: 16], bool, 2048 B</title></path>
+<path d="M397.4,342.0 C397.4,354.0 630.9,354.0 630.9,366.0 C630.9,412.5 630.9,412.5 630.9,459.0 C630.9,471.0 711.6,471.0 711.6,483.0 C711.6,559.5 711.6,559.5 711.6,636.0 C711.6,648.0 510.0,648.0 510.0,660.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%3: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M424.6,636.0 C424.6,648.0 524.6,648.0 524.6,660.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%18: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M517.3,686.0 C517.3,698.0 408.8,698.0 408.8,710.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%21: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M408.8,803.0 C408.8,815.0 408.8,815.0 408.8,827.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%24: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M517.3,686.0 C517.3,698.0 625.8,698.0 625.8,710.0 C625.8,756.5 625.8,756.5 625.8,803.0 C625.8,815.0 625.8,815.0 625.8,827.0 C625.8,858.5 625.8,858.5 625.8,890.0 C625.8,902.0 425.8,902.0 425.8,914.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%21: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M408.8,890.0 C408.8,902.0 411.2,902.0 411.2,914.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%26: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
+<path d="M418.5,940.0 C418.5,952.0 411.6,952.0 411.6,964.0" fill="none" stroke="#3567b5" stroke-width="2.28" marker-end="url(#a)"><title>Block.apply/%29: ℝ[batch: 2, seq: 16, model: 64], f64, 16384 B</title></path>
 </svg>

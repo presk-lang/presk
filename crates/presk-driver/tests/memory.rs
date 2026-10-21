@@ -112,11 +112,15 @@ fn lifetimes_hold_on_every_entry() {
     }
 }
 
-/// The course GPT's numbers of the plan's §2 (D147), which the scratch test
-/// that found them measured.
+/// The course GPT's numbers of plan 0.15.0's §2 (D147), which the scratch
+/// test that found them measured, as 0.16.0 has them (D160): the inference
+/// program has no dropout mask, so `GPT.apply`'s C arena beside the inputs
+/// is 328 832 bytes where it was 377 984, `loss_grad`'s peak 5 002 384 under
+/// `store` where it was 5 117 072 and its arenas 9 244 992 and 8 184 512
+/// where they were 9 425 216 and 8 298 816; the other numbers are 0.15.0's.
 #[test]
 fn the_course_gpt_as_the_plan_measured_it() {
-    let want = [("GPT.apply", Remat::Store, 149_504, 377_984), ("loss_grad", Remat::Store, 5_117_072, 9_425_216), ("loss_grad", Remat::Recompute, 4_562_944, 8_298_816), ("adamw.step", Remat::Store, 2_709_544, 3_615_616)];
+    let want = [("GPT.apply", Remat::Store, 149_504, 328_832), ("loss_grad", Remat::Store, 5_002_384, 9_244_992), ("loss_grad", Remat::Recompute, 4_562_944, 8_184_512), ("adamw.step", Remat::Store, 2_709_544, 3_615_616)];
     let all = cases();
     for (entry, remat, peak, arena) in want {
         let c = all.iter().rev().find(|c| c.entry == entry).unwrap();

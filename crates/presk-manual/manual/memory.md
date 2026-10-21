@@ -46,7 +46,8 @@ The program `presk export --target c` writes has an arena of frames
 which the export prints, is at least the peak.
 - `presk memory` prints it beside the peak, computed by the export's own
   code on the same recording, not recomputed.
-- On the course GPT at `D = 64` the arena is 1.3 to 2.5 times the peak;
+- On the course GPT at `D = 64` the arena is 1.3 to 2.2 times the peak
+  (2.5 until 0.16.0, whose inference program has no dropout mask, D160);
   on the decoder block at the 7B width, 3.06 times.
 - Placing each buffer at an offset by its life (the largest first, each at
   the lowest offset where it fits beside those live with it) takes the
@@ -70,13 +71,13 @@ presk memory corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --
 ```
 
 ```text
-presk memory: `GPT.apply` at B = 2, T = 16 in f64: 96 operations, 82 launches
+presk memory: `GPT.apply` at B = 2, T = 16 in f64: 86 operations, 79 launches
   parameters  903168 bytes: 112896 elements, 112896 in f64
   inputs      903424 bytes, the parameters among them
-  peak        149504 bytes live, at operation 43 of 96, `Linear.apply/%5` in blocks.ff.up, iteration 0
+  peak        149504 bytes live, at operation 38 of 86, `Linear.apply/%5` in blocks.ff.up, iteration 0
   outputs     23552 bytes
   needs       1052928 bytes: the inputs and the peak
-  C arena     1281408 bytes, 377984 beside the inputs, 2.53 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (2268864 released nothing)
+  C arena     1232256 bytes, 328832 beside the inputs, 2.20 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (2137792 released nothing)
   placed      149504 bytes beside the inputs: every buffer at an offset by its life, rounded to 64 (`--straight-line --placed`)
 ```
 

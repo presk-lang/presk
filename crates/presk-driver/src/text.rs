@@ -66,7 +66,8 @@ pub fn bound(env: &Envelope, env_path: &str, realize: &str, b: &Bounded, sites: 
     }
     if let Some(g) = measured {
         // Measured on the kernel interpreter, which computes the native
-        // backend's bits (U5); until 0.11.0 step 7 the line said "native".
+        // backend's bits (U5), the transcendental functions included since
+        // 0.16.0 (D159); until 0.11.0 step 7 the line said "native".
         out.push(format!("  measured             {:.4e}  ({:.2e} relative)  the kernel interpreter against the exact reference", g, if a.output.mag > 0.0 { g / a.output.mag } else { f64::NAN }));
     }
     out.push(format!("  envelope    {env_path} over {} samples, {} sites, {}", env.samples, a.sites.len(), env.weights.as_deref().map(|w| format!("weights {w}")).unwrap_or_else(|| "initial weights".into())));
@@ -122,12 +123,51 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
     let per = if solved.outputs > 1 { "first order, of a mean output element" } else { "first order" };
     out.extend([
         format!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, sol.speedup(), sol.relaxation_bytes),
+    ]);
+    // The cost per sample (D157), said where the envelope has several.
+    if !env.per_sample.is_empty() {
+        out.push("  per sample  the activations at one sample's elements and the parameters once, the same cost at any number of samples (D157)".to_string());
+    } else if !env.priced_per_sample() {
+        out.push("  per sample  no: an envelope of several samples written before 0.16.0, without their per-sample counts, prices the activations at its batch".to_string());
+    }
+    out.extend([
         format!("  proposal    {:.4e} before measurement widened anything (time when --profile is given, bytes otherwise)", sol.proposed_bytes),
         format!("  estimate    {:.3e} (sensitivity-weighted, {per}: it ranks, it does not guarantee)", sol.estimated_error),
     ]);
     match sol.measured {
         Some(g) => out.push(format!("  measured    {:.3e} against the exact reference, after {} widening round(s) — {}", g, sol.rounds, if g <= sol.budget_abs { "inside the budget" } else { "OUTSIDE the budget" })),
         None => out.push("  measured    not checked (--no-verify)".to_string()),
+    }
+    // The options of D155: the rounding term, whichever it is (the measured
+    // one the default since 0.16.0, D157), and the narrowing when it is on.
+    match sol.options.rounding {
+        presk_precision::solve::RoundingTerm::Measured => out.push(format!(
+            "  rounding    measured: each term s·max|fl_d(x) − x|, the sampled values rounded (D155), at the {} sites the envelope records it for and every parameter; s·u·|v| elsewhere",
+            env.rounding.len()
+        )),
+        presk_precision::solve::RoundingTerm::Unit => out.push("  rounding    unit: each term s·u(d)·|v|, the solver of 0.12.0–0.15.0 (--rounding unit)".to_string()),
+    }
+    // The ways to spend the budget of D161, said when they are on.
+    if sol.options.estimate == presk_precision::solve::Estimate::Rss {
+        out.push(format!(
+            "  rss         the proposal's estimate √Σ term², the roundings taken as independent, aimed at the budget over the margin {}: {:.3e} (D161)",
+            sol.options.margin,
+            sol.budget_abs / sol.options.margin
+        ));
+    }
+    if sol.options.narrow != presk_precision::solve::Narrow::Off {
+        out.push(format!(
+            "  narrowing   {} decision(s) narrowed one step by measurement in {} pass(es), each kept under the budget over the margin {}, {:.3e}; {} measurements in all (D155, D161)",
+            sol.narrowed, sol.narrow_passes, sol.options.margin, sol.budget_abs / sol.options.margin, sol.measurements
+        ));
+    }
+    if sol.options.narrow == presk_precision::solve::Narrow::Heldout {
+        let which = sol.options.heldout.map(|m| format!("{m} after the envelope's")).unwrap_or_else(|| "as many after the envelope's as its own".into());
+        match sol.heldout {
+            Some(g) if g <= sol.budget_abs / sol.options.margin => out.push(format!("  held out    {} narrowing(s) undone until the held-out samples ({which}) were inside the threshold: {:.3e} there (D161)", sol.undone, g)),
+            Some(g) => out.push(format!("  held out    every narrowing undone ({}), the held-out samples ({which}) still at {:.3e}, above the threshold (D161)", sol.undone, g)),
+            None => out.push("  held out    not measured: no narrowing ran".to_string()),
+        }
     }
     if let Some(q) = &qsol {
         let (n8, n4) = (q.chosen.values().filter(|b| **b == Some(8)).count(), q.chosen.values().filter(|b| **b == Some(4)).count());
@@ -168,6 +208,42 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
         for c in params.iter().filter(|c| sol.realization.params.contains_key(&c.name)).take(list) {
             out.push(format!("{:<30} {:>8} {:>12} {:>12.3e}", c.name, c.dtype.name(), c.elems, c.sens));
         }
+    }
+    out
+}
+
+/// `presk calibrate --precision`'s rounding (D155): beside each site's
+/// magnitude, its largest rounding error in `f32` and `bf16` and that over
+/// the unit-roundoff term `u·max|x|`, for the sites where the two differ
+/// most and those exact in `bf16`, after [`calibrate`]'s lines, by the
+/// command and by `presk explain`'s envelope section alike (X3).
+pub fn rounding(env: &Envelope) -> Vec<String> {
+    use presk_rt::Dtype;
+    if env.rounding.is_empty() {
+        return Vec::new();
+    }
+    let ratio = |site: &str| -> f64 {
+        let (m, r) = (env.get(site).unwrap_or(0.0), env.rounding(site, Dtype::Bf16).unwrap_or(0.0));
+        if m > 0.0 { r / (Dtype::Bf16.unit_roundoff() * m) } else { 1.0 }
+    };
+    let mut sites: Vec<&String> = env.rounding.keys().filter(|s| env.get(s).is_some_and(|m| m > 0.0)).collect();
+    sites.sort_by(|a, b| ratio(a).partial_cmp(&ratio(b)).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b)));
+    let exact = sites.iter().filter(|s| env.rounding(s, Dtype::Bf16) == Some(0.0)).count();
+    let under = sites.iter().filter(|s| ratio(s) < 0.1).count();
+    let mut out = vec![format!(
+        "presk calibrate: the largest rounding error of each site's values (D155): {} sites, {exact} exact in bf16, {under} below a tenth of u·max|x| there",
+        sites.len()
+    )];
+    out.push(format!("  {:<28} {:>11} {:>11} {:>11} {:>9}", "site", "max|x|", "f32", "bf16", "bf16/u|x|"));
+    for site in sites.iter().take(10) {
+        out.push(format!(
+            "  {:<28} {:>11.4e} {:>11.4e} {:>11.4e} {:>9.3}",
+            site,
+            env.get(site).unwrap_or(0.0),
+            env.rounding(site, Dtype::F32).unwrap_or(0.0),
+            env.rounding(site, Dtype::Bf16).unwrap_or(0.0),
+            ratio(site)
+        ));
     }
     out
 }

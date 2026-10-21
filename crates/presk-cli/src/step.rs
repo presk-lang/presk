@@ -82,6 +82,7 @@ impl Ctx {
         if record {
             b.interp.magnitudes = Some(Default::default());
             b.interp.minima = Some(Default::default());
+            b.interp.roundings = Some(Default::default());
             b.interp.elems = Some(Default::default());
             b.interp.ops = Some(Default::default());
             b.interp.terms = Some(Default::default());
@@ -189,6 +190,7 @@ pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: 
     env.step = Some(presk_precision::envelope::StepSpec { warmup: a.warmup, total: ctx.setup.total, seed: a.seed, remat: Some(crate::remat().name().to_string()) });
     env.observe(&interp.magnitudes.take().unwrap_or_default());
     env.observe_minima(&interp.minima.take().unwrap_or_default());
+    env.observe_rounding(&interp.roundings.take().unwrap_or_default());
     env.observe_elems(&interp.elems.take().unwrap_or_default());
     env.observe_ops(&interp.ops.take().unwrap_or_default());
     env.observe_terms(&interp.terms.take().unwrap_or_default());

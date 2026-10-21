@@ -1763,7 +1763,8 @@ memory a value holds while it is alive; and what 0.14.0 did not have.
 ## Version 0.15.0
 
 Done 2026-10-18: plan `presk-specs/implementation/presk-plan-0.15.0.md`
-(D147–D152), presk !111 to !116 and presk-specs !95, for review. `presk
+(D147–D152), presk !111 to !116 and presk-specs !95, merged and tagged
+`v0.15.0` on 2026-10-18 (presk `9e51a26`, presk-specs `c2a29bb`). `presk
 memory`: what a program needs in memory, computed from the program and
 its realization rather than estimated. That is the parameters in their
 stored types, the peak of the live bytes over the launch sequence, each
@@ -1816,3 +1817,104 @@ An executor that runs no kernel no longer draws random values.
 - An optimizer update in place.
 - Sliders for the activations' types.
 - What 0.14.1 did not have.
+
+## Since 0.15.0
+
+- **PyTorch compiled and in mixed precision, beside eager** (D153, `make
+  pytorch-modes`). Compiled, PyTorch's training step is 0.57× eager's, so
+  the C step is 1.80× it where it is 0.98× eager's, and 2.07× like for
+  like without dropout masks. AMP `bfloat16` flips 505 of 118 016
+  decisions at D = 64. A measurement; no code changes.
+- **A precision-tuning tool on the exported C** (D154, `make
+  precision-tuning`). CRAFT's variable mode on the C program of the logits at
+  D = 64 finds `double`/`float` programs within ε\*(10⁻³), at most 1.95× less
+  traffic as a realization against the solver's 1.97×. Its searches,
+  reimplemented on presk's space, find 2.17× and hold on the 461 windows;
+  at 10⁻⁶ they overfit. A measurement; no code changes.
+- **The rounding term measured, and narrowing by measurement** (D155, `make
+  solver-rounding`). `presk solve --rounding measured` charges each site the
+  largest rounding error of its sampled values, which the envelope now
+  records; `--narrow measured` narrows each decision one step after a
+  passing measurement while the gap fits. Both are off by default. On the
+  logits at ε\*(10⁻³): 2.14× in one measurement, and 2.17× with narrowing,
+  both holding on the 461 windows; at 10⁻⁶ the narrowing overfits.
+- **The certificate off-sample against the sample's size** (D156, `make
+  off-sample`). Solved on the first 1 to 32 held-out windows and judged on
+  the others, the solver of record's realization is 1.5× to 3.8× further
+  from the exact logits out of sample than in, 2.3× at four windows and
+  still 1.9× at 32, and its decisions are the same from 4 to 32 windows.
+  The narrowing fails out of sample at 10⁻⁶ from every sample size. No
+  realization inside ε\* flips a decision out of sample. A measurement; no
+  code changes.
+
+## Version 0.16.0
+
+Done 2026-10-21: plan `presk-specs/implementation/presk-plan-0.16.0.md`
+(D157–D167), presk !122 to !132 and presk-specs !97 and !98; the user
+merges and tags `v0.16.0`. The solver's defaults are now what D154–D156
+measured:
+- the rounding term measured on the values;
+- the traffic of one sample;
+- the native backend's bits as the solver's measurement.
+
+`dropout` outside a training run is the identity of the language, so an
+entry outside training has no mask to store or type. Every row of record
+was then solved and timed again by its whole protocol.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The plan, the statements R0–R6, the facts checked, the choices; question 78 answered in the reference (draft v0.22); version `0.16.0-dev`; R0's and R2's baselines | done (2026-10-19, D157): X1's harness, the tables and the tutorial on `454bb9f`; R2's logits natively and in C, `presk train`'s losses and checkpoint, the step solve and the PyTorch export |
+| 1 | `--rounding measured` the default; the cost per sample | done (2026-10-19, D158): `RoundingTerm::Measured` the default, `Envelope::per_sample` (`presk calibrate --data` counts one sample's elements), `cost_elems`; R1 (i) holds (D155's `measured / off` realization, decision for decision); R4 (i) holds, (ii) failed by LayerNorm's ε at four windows, while the masks were there |
+| 2 | One executor's bits | done (2026-10-19, D159): the kernel interpreter on the `libm` crate's `exp`, `log`, `tanh`, `sin` and `cos`; R3 holds (186 pairs of X1 equal, the margins' model bit for bit) |
+| 3 | `dropout` outside training | done (2026-10-19, D160): `presk_core::inference`, the mode in the lowering's options, the inference reading before differentiation; `presk dump --mode`; `presk_train::masks_typed`; R2 holds, `bf16` moving where a gradient passes a mask |
+| 4 | Three ways to spend the budget | done (2026-10-19, D161): `--estimate rss`, `--margin`, `--narrow heldout`, `make spend`; none passes the plan's rule, so the defaults are final |
+| 5 | The rows of record | done (2026-10-21, D162–D166): the decoder alone (D162); the rows solved and not timed (D163); `presk plan --mode training`, a defect the timings found (D164); D154–D156 run again (D165); the timings alone (D166). `docs/rows-0.16.0.md` gives every row old and new |
+| 6 | The documents and the version | done (2026-10-21, D167): R0 on the version's tree; `make test`, `check-examples`, `coverage`, `plan-check`, `c-conformance`; `cargo doc -p presk-manual` with no warning; the manual, the report, the reference's Status paragraphs, the slides, the summary, a status note, the poster; CHANGELOG `## 0.16.0`, version `0.16.0` |
+
+### What 0.16.0 was judged on
+
+| # | Statement | Asked | Verdict |
+|---|---|---|---|
+| R0 | Nothing else moves: every output of X1's harness, the tables and the tutorial that no decision of the version touches is byte-identical to `454bb9f`'s; each output that moves is named in its step's decision | every byte | **holds**: each step's decision names what moved (D158–D161). The version's tree differs from step 3's by its version and commit lines and the envelopes' dates alone, the tables byte for byte, the tutorial by its measurements and D158's line `rounding` (D167) |
+| R1 | The measured term the default: (i) D155's realization, decision for decision; (ii) every row of record inside its budget at 0.16.0 | holds | **holds**: (i) D158; (ii) every row inside its budget by measurement (D162–D166) |
+| R2 | `dropout` outside training: no mask outside a training run; the same bits under `f64` and `f32`; the training path and the PyTorch export byte-identical | holds | **holds** (D160); the step's realizations byte-identical again on the version's tree (D163) |
+| R3 | One executor's bits: the kernel interpreter computes the native bits; the solver's gap is the native one | holds | **holds** (D159); at scale, the solver's measurement and the native gap 0.0 % apart on the 36 solves of D156's protocol (D165), and the decoder's 2.544·10⁻⁵ the native gap (D162) |
+| R4 | The cost per sample: (i) the same cost from any number of windows; (ii) the same decisions at 1, 2 and 4 | (i) holds; (ii) measured | **(i) holds; (ii) failed at step 1 by one element, LayerNorm's ε, at four windows; with the masks gone (step 3) the default's realization is the same from 1 to 32 windows** (D161, D165) |
+| R5 | Three ways to spend the budget, each a default only by the plan's rule | reported | **reported**: every form holds out of sample, none keeps 1.5× at 10⁻⁶ and no new one keeps its realization from 4 to 16 windows, so none becomes a default (D161) |
+| R6 | The rows of record at 0.16.0, old and new, both decisions, the paper's sentence | reported | **reported** (D162–D166, `docs/rows-0.16.0.md`) |
+
+## What 0.16.0 has, and what it does not
+
+**Has.**
+- The measured rounding term as the default (`--rounding unit` for
+  0.12.0–0.15.0's solver), which charges nothing to a value exact in its
+  type.
+- The traffic of one sample, the same at any number of calibration
+  windows (`per sample` in `presk solve`).
+- The kernel interpreter on the native backend's `libm`, so the solver's
+  measurement is the native gap.
+- An entry's mode. Outside a training run `dropout` is the identity and the
+  program has no mask, and `presk dump --mode training` and `presk plan
+  --mode training` give the training run's program.
+- Three flags to spend the budget: `--estimate rss`, `--margin` and
+  `--narrow heldout`.
+- Every row of record at 0.16.0 (D162–D166).
+
+What the rows found:
+- *The measured term on V6.* With the masks gone it buys nothing on the
+  logits at ε\* (1.96×, as the unit term; D165).
+- *The values exact at initialization.* The norms' gains of a model at its
+  initialization go to `bf16` for nothing (D162, D166).
+- *The C program.* It is 5 % faster without masks, so T2 holds at 0.93×
+  and T4 fails at 1.63× and 1.67× (D166).
+- *V5.* The decoder block under its realization is faster than all-`f32`
+  in every process (0.73×, D166).
+
+**Does not have.**
+- A type per layer of a stack (the plan's §8).
+- A narrowing that holds out of sample at 10⁻⁶: the narrowing stays a flag.
+- A static bound that knows an exact value. The bound still charges a
+  value of ones `u·|v|`, so `cond` rises 129 times on the decoder (D162).
+- Any result beyond the data measured: one text, the windows calibrated
+  and judged (presk-project `docs/presk-data-dependence-2026-10-21.md`).
+- What 0.15.0 did not have.
