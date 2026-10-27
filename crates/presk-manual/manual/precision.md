@@ -726,6 +726,43 @@ longer count. The course GPT's curve at 10⁻³ prints 2.04× at 0.16.0 where
 D132's printed 2.12×, with fewer stored values narrowed and the same
 budget met.
 
+## Two rules: what the solver does not offer
+
+Since 0.16.1 (D169) two rules decide, before the proposal, which values the
+solver offers at all. A value not offered keeps the default type, `f64`.
+The realization names it nowhere, each nest that reads it rounds it to its
+own type at its edge, and its term of the estimate is charged there.
+
+- **Rule 1: a value of one element.** A stored value or a parameter whose
+  element count, as the solver prices it, is 1 has no traffic to save, so
+  narrowing it can only add error. LayerNorm's ε, a head's width and its
+  square root are such values. No flag turns rule 1 off. At 0.16.0 the
+  solver put ε in `bf16` on the course logits at ε\* (D163). On one window
+  of the Code pénal that decision took the gap to 1.90 ε\* (D168).
+- **Rule 2: a decision without gain.** Let B be the entry's all-`f64`
+  traffic: the figure `presk solve` prints as "all-f64" without a profile,
+  one sample's activations and the parameters once. A value is offered only
+  when its first narrowing, `f64` to `f32`, saves at least θ·B. That first
+  step saves half its `f64` traffic, the least of what its narrower types
+  save, so a value is offered its whole menu or none of it, and every
+  decision the solver takes saves at least θ·B. θ is `--min-gain`, 10⁻³ by
+  default, and 0 turns the rule off. The rule counts bytes even under
+  `--profile`. On the course logits B is 1.15·10⁸ bytes, and the rule
+  leaves at `f64` LayerNorm's mean and the twelve vector parameters (biases
+  and norms' gains). Among these is `blocks.attn.wq.b`, whose `bf16` carried
+  the course certificate's tail out of sample at 0.16.0 for 4.6 KB of
+  traffic. At 0.16.0's decisions these values saved 0.24 % of the
+  realization's traffic.
+
+`presk solve` says what the rules left out in a line `rules`: rule 1's
+values, rule 2's with the bytes their first step saves beside θ·B, and what
+the two forgo at most, those values' saving in `bf16`, as a share of the
+realization's traffic. The line `sites` counts the values offered, with the
+stored values and those not offered beside them. `presk explain` gives each
+value not offered its rule as its reason. The training step's solver,
+which decides per function, and the integer menu of `--quant`, offered on
+matrices, are outside the rules.
+
 ## Time, not traffic
 
 0.5.0's solver minimised **traffic**, because traffic is what a narrower type

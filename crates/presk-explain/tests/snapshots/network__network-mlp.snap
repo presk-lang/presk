@@ -4,7 +4,7 @@ expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
 network of `mse`, read off the stage `ad`: 24 nodes, 19 arrows, 3 boxes
 parameters: 148 (552 bytes, f32, bf16)
-work W = 969, bytes Q = 1260, over every launch of the entry
+work W = 969, bytes Q = 1264, over every launch of the entry
 default opening: [3], 405 × 584 pt
 [0] root mse  ad:mse @ 0,0 405×584
     θ 148 f32/bf16 · W 969 · Q 1.26 kB
@@ -56,10 +56,10 @@ default opening: [3], 405 × 584 pt
       W 24 · Q 96B
       members mse/%5, mse/%4
   [5] op mean  fusion:mse/%6 @ 256,500 50×26
-      W 9 · Q 36B
+      W 9 · Q 40B
   [6] result  ad:mse/%6 @ 249,550 64×22
   1 → 3 #1: ad:mse  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f64, 8 elements, 64 B
   3 → 4: ad:mse/%3  ℝ[batch: B, D] = ℝ[batch: 2, 4], f64, 8 elements, 64 B
   2 → 4: ad:mse  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f64, 8 elements, 64 B
   4 → 5: ad:mse/%5  ℝ[batch: B, model: D] = ℝ[batch: 2, model: 4], f32, 8 elements, 32 B
-  5 → 6: ad:mse/%6  ℝ[] = ℝ[], f32, 1 elements, 4 B
+  5 → 6: ad:mse/%6  ℝ[] = ℝ[], f64, 1 elements, 8 B

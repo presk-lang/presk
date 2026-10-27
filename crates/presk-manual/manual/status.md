@@ -1918,3 +1918,31 @@ What the rows found:
 - Any result beyond the data measured: one text, the windows calibrated
   and judged (presk-project `docs/presk-data-dependence-2026-10-21.md`).
 - What 0.15.0 did not have.
+
+## Since 0.16.0
+
+- **The certificate on a second text** (D168, `make second-corpus`). The
+  Code pénal goes through the Code civil's models, realizations and
+  ε\*(10⁻³), unchanged.
+  - *At D = 64* every certified realization stays inside ε\* and flips
+    nothing.
+  - *At the course constants* one stretch of one window takes four of them
+    above ε\*, the logits solved at ε\* to 1.90 ε\*. LayerNorm's ε in
+    `bf16` carries it, and two near-ties flip one or two decisions.
+
+  So "one text" in *Does not have* above is now two texts, and the
+  certificate carries to the second at D = 64 only. A measurement; no code
+  changes.
+
+## Version 0.16.1
+
+A patch of 0.16.0 (plan `presk-specs/implementation/presk-plan-0.16.1.md`,
+D169 onward). It adds two rules in the solver, solves again the rows they
+touch, and poses the certificate on two more texts.
+
+| Step | Contents | Status |
+|---|---|---|
+| 1 | The two rules (D169): a value of one element is not offered; a value whose first narrowing saves less than `--min-gain` (10⁻³) of the entry's all-`f64` traffic is not offered either. The line `rules` of `presk solve`, the reason in `presk explain`. Z0 against `v0.16.0` | done (2026-10-22) |
+| 2 | The rows the rules touch, solved again on the version's binary and judged on the Code civil and the Code pénal (D170, `docs/rows-0.16.1.md`): Z1 holds; V6 and the course logits have no `bf16` left, V6 at all-`f32`'s gap; Y1 holds on the Code pénal at both scales; Z2 holds for V6 and fails for the course logits on its out/in criterion, at `f32`'s level | done (2026-10-22) |
+| 3 | The Code du travail and the Code de procédure pénale as a third and a fourth text (D171, `docs/further-texts-2026-10-23.md`, `make further-texts`): Y1 holds on both at both scales, Y2 fails at the course constants on both at `f32`'s level, so Z3 fails on both | done (2026-10-23) |
+| 4 | The documents and version 0.16.1 (D172): Z0 on the version's tree, the checks of record, the manual's solver pages, the reference's Status, the report, the status note | done (2026-10-23) |

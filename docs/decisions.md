@@ -16488,3 +16488,513 @@ points of 2026-10-21):
 - *The poster at 0.16.0* (presk-project `docs/poster/`).
 - CHANGELOG `## 0.16.0`, `CLAUDE.md`, version `0.16.0`. The user tags
   `v0.16.0`.
+
+## D168 — The certificate on a second text, the Code pénal through the Code civil's models: at D = 64 Y1 and Y2 hold (every certified realization inside ε\*, no flip, the gaps 0.54× to 1.31×); at the course constants both fail: one stretch of the Code pénal takes four certified realizations above ε\*, the logits solved at ε\* to 1.90 ε\*, carried by LayerNorm's ε in `bf16`, and near-ties flip one or two decisions (2026-10-22)
+
+The paper session asked, on the user's word, for the first way further of
+presk-project `docs/presk-data-dependence-2026-10-21.md` §5: certify on a
+second text (`docs/prompt-second-corpus-2026-10-22.md`). Every precision
+figure of record is on the Code civil. This study keeps the models, the
+realizations and ε\* and changes the text. The record is
+`docs/second-corpus-2026-10-22.md`; the script is
+`experiments/second_corpus.sh` (`make second-corpus`). Nothing in the
+compiler changed, and nothing was calibrated, solved, trained or timed.
+
+**The statements, fixed before the measurement.**
+- *Y1.* Every realization certified at δ = 10⁻³ on the Code civil's 461
+  held-out windows has, on the Code pénal's 461, a gap at most the Code
+  civil's ε\*(10⁻³) and changes no decision of the exact model.
+- *Y2.* Every realization's largest gap on the Code pénal is within
+  [0.5×, 2×] of its largest gap on the Code civil.
+
+**The data.**
+- *The text.* `penal.md` from the course's container (876 212 characters).
+  Its six characters outside the Code civil's 92 (`/ k “ ” [ ]`) are
+  deleted, 32 occurrences.
+- *The windows.* The Code civil's vocabulary, `presk data lm-windows --seq
+  256`: 3 422 windows. The judge set is the first 461, the Code civil's
+  count, inside the Livre Ier.
+
+**The protocol.**
+- *D = 64.* `margins.sh` on the trained model of record, with every
+  realization of D163 §4.
+- *The course constants.* `margins_course.sh` on the course GPT, with every
+  realization of D163 §5. The exact logits took 2 h 21 min.
+- *The binary.* D163's binary, `out/bin/presk-22dd345`, against the Code
+  civil's rows of record.
+
+**At D = 64 both hold.**
+- *Y1.* The twelve certified realizations are inside ε\* = 4.67·10⁻⁴ on the
+  Code pénal and flip nothing. V6 is at 1.016·10⁻⁴, against 1.431·10⁻⁴.
+- *Y2.* The ratios run from 0.54× to 1.31×, median 0.85×.
+- *The bulk.* Every median window is within 5 %.
+- *The worst positions.* As on the Code civil, they are predictions after a
+  capital letter, nine of V6's ten worst.
+
+**At the course constants both fail.**
+- *Y1 fails on four of the twelve certified realizations.* They are above
+  ε\* = 4.96·10⁻⁴:
+  - the logits solved at ε\* (D163 §5): 9.41·10⁻⁴, 1.90 ε\*, against
+    4.23·10⁻⁴;
+  - `ct-1e-4`: 1.45 ε\*;
+  - `curve-1e-4` and `ct-1e-5`: 1.02 ε\*.
+- *The same four flip one or two decisions.*
+- *Y2 fails on seven of the 22 realizations,* from 2.11× to 2.82×, median
+  1.41×.
+- *The bulk does not move:* the median windows are within 17 %.
+
+**What moved.**
+- *One stretch of text.* 18 of the 22 course realizations, f64 and f32
+  included, have their worst gap in window 261. It runs from the prediction
+  after "par le J|ournal officiel" (article 131-35) to the window's end:
+  twelve of the logits realization's fifteen positions above 10⁻⁴.
+- *A stretch the window's neighbours do not share.* That realization's
+  second-worst window is 3× inside ε\*. At D = 64 the window ranks 113th of
+  461.
+- *The same kind as the Code civil's tail.* There, the second-worst position
+  is also a prediction after a capital J, with the same exact choice.
+  Step 0's enumerations after an opening parenthesis are absent from the
+  Code pénal's judge set: one parenthesis in 118 016 characters.
+- *LayerNorm's ε in `bf16` carries it.* On that chunk, step 0b's variants
+  show:
+  - `curve-1e-4` falls from 5.07·10⁻⁴ to 2.0·10⁻⁵ with ε back to `f32`;
+  - the logits realization falls to 4.6·10⁻⁴ with ε back to `f32`, and to
+    5.0·10⁻⁴ with the queries' bias back;
+  - with every `bf16` decision back, it is all-`f32`'s 1.447·10⁻⁵;
+  - D129's realization of 0.12.0, which keeps ε in `bf16`, is at 1.01 ε\*
+    there.
+- *Across the table.* The certified realizations that keep ε in `bf16` move
+  1.70× to 2.73×. Those with ε in `f32` move 0.78× to 1.26×, but for one
+  370 times inside ε\*.
+- *The logits realization is not the one that moves most* by its ratio: it
+  is fifth, at 2.23×. It moves most against ε\*.
+
+**The flips are near-ties.**
+- *Where.* At (454, 127) and (14, 233), the exact model's margins of
+  1.07·10⁻⁵ and 2.6·10⁻⁶, below the Code civil's smallest, 1.8·10⁻⁵. The
+  gaps there are about the median position's.
+- *Against the bound.* Every flip has a margin below twice its position's
+  gap, and every row flips at most its bound.
+- *Against δ.* One or two flips in 118 016 are inside δ = 10⁻³, but Y1
+  asked for none.
+
+**The Code pénal's margins.**
+- *Its own ε\*(10⁻³)* is 1.23× the Code civil's at D = 64 and 0.80× at
+  course scale.
+- *The Code civil's ε\* there.* At D = 64 80 margins are below 2ε\*
+  (6.8·10⁻⁴). At course scale 125 are (1.06·10⁻³), above δ.
+- *Statement S* holds on the Code pénal at its own ε\* at both scales.
+- *The exact model.* Its loss is 2.747 against 2.774 at D = 64, 2.313
+  against 2.331 at course scale. Its accuracy is within 0.6 point.
+
+**What is decided.**
+- *Nothing in the compiler.* No new type, solve or calibration was tried. If
+  Y1 or Y2 failed, the user decides what comes next (the prompt's §6).
+- *What the result says.* The certificate is a statement about the text it
+  was measured on. At D = 64 it carries to a second text of the same kind.
+  At the course constants it does not: one ill-conditioned stretch, which
+  the envelope's four windows never saw, is amplified by ε in `bf16`.
+- *The record.* The outputs are archived in presk-project
+  `data/second-corpus-0.16.0.tar.xz`, the exact logits left out and
+  checksummed. Y1 and Y2 enter `docs/STATEMENTS.md` under "Outside any
+  plan".
+
+## D169 — Version 0.16.1 opened, two rules in the solver: a value of one element is not offered, nor a value whose first narrowing saves less than 10⁻³ of the entry's all-`f64` traffic; Z0 holds, what moves is the solves and what reads their realizations (2026-10-22)
+
+The plan is `presk-specs/implementation/presk-plan-0.16.1.md` (presk-specs
+!100). The prompt is presk-project
+`docs/prompt-0.16.1-solver-guards-2026-10-22.md`, written by the paper
+session on the user's decisions of 2026-10-22: "Faisons ce protocole en
+trois temps", then "fait le Code du travail ET le Code de procédure
+pénale". It answers two failures found after the tag v0.16.0:
+- *The course certificate out of sample* (steps 0, 0b and 0d, presk
+  !133–!135). Its tail is `blocks.attn.wq.b` in `bf16`, a decision that
+  saves 4.6 KB of a realization that moves 5.79·10⁷ bytes.
+- *The Code pénal* (D168). One window of article 131-35 takes the course
+  logits solved at ε\* to 1.90 ε\*, carried by LayerNorm's ε in `bf16`, a
+  value of one element.
+
+In both cases the solver took a decision that saves next to nothing and
+whose error its first-order estimate misjudged. The rules below were stated
+in the plan before any solve; the paper session agreed with their form the
+same day.
+
+**Facts checked** (the plan's §2, at presk `5e49a02`, whose crates are
+`fade470`'s):
+- *The default type.* Every solve runs with the menu `f64`, `f32`, `bf16`
+  and the default `f64` (`presk-driver/src/precision.rs`), and the
+  proposal starts every decision at the menu's widest type, the default.
+  The entry's all-default traffic is what `presk solve` prints as "all-f64"
+  without a profile: one sample's activations and the parameters once
+  (D157).
+- *The course logits at ε\*.* All-`f64` is 1.1504·10⁸ bytes. Three of the
+  stored values are one element, all three in `bf16`: ε
+  (`LayerNorm.apply/%8`), the head width and its root
+  (`SelfAttention.apply/%15`, `%16`). Under rule 2, LayerNorm's mean
+  (`%2`, 1 024 elements) and the twelve vector parameters fall below θ·B =
+  1.15·10⁵ bytes, `wq.b`, `wk.b` and `ln2.β` among them. At 0.16.0's types
+  these 16 values saved 1.41·10⁵ bytes, 0.24 % of the realization's
+  traffic.
+- *V6.* The same 16 values, 0.35 % of 3.8216·10⁶ bytes.
+- *What reads the decisions:* `presk solve`'s text and realization,
+  `presk explain`'s reasons (from the moves: a value with no move read "no
+  narrower type saves anything", false for a value not offered), the
+  exhaustive search and the breakdown.
+
+**The rules** (the plan's §3):
+1. *A value of one element is not offered.* A stored value or a parameter
+   whose element count, as the solver prices it, is 1. It keeps the default
+   type, the realization names it nowhere, the nests that read it round it
+   at their edge, and its term of the estimate is charged there. No flag
+   turns it off.
+2. *A decision whose gain is below θ is not taken.* B is the entry's
+   all-default traffic, every decision's elements times the default type's
+   bytes, rule 1's included. A value is offered only when its first step
+   down the menu, `f64` to `f32`, saves at least θ·B. That step saves half
+   its traffic in `f64`, the least its narrower types save, so a value is
+   offered its whole menu or none of it, and every decision taken saves at
+   least θ·B. The prompt put the threshold on the gain of each type; that
+   form would offer `bf16` alone to a value whose `f64` traffic lies in
+   [1.33, 2)·θ·B, the riskier type only. θ = 10⁻³ (`--min-gain`; 0 turns
+   the rule off). The rule counts bytes under `--profile` too.
+
+The training step's solver (per function, D52) and the integer menu of
+`--quant` (matrices) are outside the rules. `--narrow heldout` is
+unchanged.
+
+**What changed in the compiler** (presk `0.16.1-rules`):
+- *`presk-precision`.* `Options::min_gain` (10⁻³). `Split::offer` decides
+  each decision's offer before the proposal, from the counts the solver
+  prices. The proposal, the widening, `--narrow` and the exhaustive
+  search run over the values offered; a value not offered starts and stays
+  at the default type. The cost, the estimate and the breakdown still count
+  it. `Solution::offers` (B, θ, each value left out with its rule, elements,
+  first step's gain and the most it forgoes, its saving in `bf16`) and
+  `Solution::traffic`, the realization's bytes under any machine.
+  `exhaustive_with` takes the options instead of the rounding term.
+- *`presk solve`.* `--min-gain θ`, refused outside [0, 1) (exit 2). The
+  line `sites` counts the values offered (`9 narrowable, 9 assigned away
+  from f64 (11 stored values, 2 not offered)`), so that the scripts reading
+  it parse it as before, and `parameters` the parameters offered. A line
+  `rules` names rule 1's values and rule 2's, with the bytes each one's
+  first step saves beside θ·B, and what the two forgo at most against the
+  realization's traffic.
+- *`presk explain`.* A value not offered reads "not offered: one element,
+  no traffic to save (rule 1)" or "not offered: its first narrowing saves G
+  bytes, under θ·B = … (rule 2)", and the paragraph on the solver's moves
+  says how many values the rules left out.
+- *Tests.* `presk-precision/tests/rules.rs`, seven: rule 1 on a stored
+  value and on a parameter (and at θ = 0); rule 2 on either side of θ·B;
+  no value offered `bf16` without `f32`; the measurement never widening or
+  narrowing a value not offered; the exhaustive search over the values
+  offered; with no value to leave out, the same solution at θ = 10⁻³ and
+  at 0, move for move. Every solver test of 0.16.0 passes unchanged: none of
+  their values is left out.
+- *Version `0.16.1-dev`.* The manual's `precision` ("Two rules: what the
+  solver does not offer"), `cli` and `status`; CHANGELOG `## Unreleased`.
+
+**The statements**, fixed before the work (the plan's §4):
+
+| # | Statement |
+|---|---|
+| Z0 | Nothing else moves against `v0.16.0`: X1's harness, the goldens, `check-examples`, `coverage`, `plan-check`, `c-conformance`, the quant and step tables and the tutorial; what moves is a solve of stored values and what reads its realization, each named |
+| Z1 | On every row solved again, no value of one element offered, every value rule 2 leaves out listed with its gain below θ·B, the traffic forgone reported |
+| Z2 | The course logits at 4.96·10⁻⁴ and V6 at 4.67·10⁻⁴ solved again: inside the budget on the envelope; certified on the Code civil's 461 windows; inside ε\* with no flip on the Code pénal's 461 (Y1); out/in at most 1.5× from 16 windows on both texts and the Code pénal's gap within 2× of the Code civil's (Y2) |
+| Z3 | Y1 and Y2 on the Code du travail and on the Code de procédure pénale, for Z2's realizations and every re-solved curve realization certified on the Code civil, per text |
+| Z4 | Reported: every re-solved row against 0.16.0's, D168's table redone |
+
+**Z0 holds.** The baseline is X1's harness, the quant and step tables and
+the tutorial under `v0.16.0`'s release build (`out/bin/presk-0.16.0-step6`,
+`fade470`'s tree), in `out/x1/base-0.16.1` (`out/x1/base-0.16.1.sh`). The
+same under this branch's build (`out/bin/presk-0.16.1-rules`,
+`out/x1/rules-0.16.1.sh`):
+- *X1's harness, 863 outputs:* 33 files differ, and each is named by its
+  cause (`out/x1/diff-base-0.16.1-rules-0.16.1.txt`):
+  - 14 C exports of programs no solve chose (`tut_c`, `tut_scop`,
+    `mini_serve`), by their version line alone;
+  - the four solves of stored values: the tutorial's, its `--quant` one,
+    the GPT's at small constants, and LayerNorm's (`err-solve-nonscalar`,
+    a solve since 0.12.0 under its old name). Their lines `sites` and
+    `rules` are new, and their decisions, costs and gaps move. In the
+    tutorial, rule 1 leaves RMSNorm's ε and the loss's mean at `f64`, which
+    were in `bf16` and `f32`, and the gap measured falls from 1.699·10⁻⁷ to
+    1.320·10⁻⁸ at 2.13× instead of 2.16×. In the GPT on its initial
+    weights, rule 1 leaves out four values and rule 2 fifteen (θ·B =
+    1 314 bytes on traffic counted at T = 16): 3.90× instead of 4.00×, at
+    most 2.5 % of the traffic forgone;
+  - the three realizations they write (`tut_solved.json`,
+    `tut_solved_q.json`, `gpt_solved.json`), and the twelve outputs that
+    read them: the two bounds of a solved realization, the C export of the
+    tutorial's (six files and its line), the kernel listings under the two
+    solved realizations, and `presk quantize` under the `--quant` one.
+- *`make quant-table` and `step-table`* are byte-identical to the
+  baseline's, and to 0.16.0's R0. `step_1e-3.json`, `step_1e-2.json` and
+  `step_recipe.json` are byte-identical: the training step's solver is
+  outside the rules.
+- *The tutorial* differs from the baseline's by its measurements (the
+  timings and the columns they widen) and by the solve's lines `sites` and
+  `rules`, and by nothing else.
+- *`cargo test --workspace --release`*: 109 suites pass, 0.16.0's 108 and
+  `rules`. Six snapshots of `presk explain`'s documents and two of the
+  network move. In the tutorial's and the MLP's, the values rule 1 leaves at
+  `f64` read their rule and the solver's paragraph says how many. The
+  network's outlines count those values' bytes at `f64`. The others move by
+  their version line. The manual's `explain_loss` chapter is written again
+  (`make explain-manual`).
+- *`make check-examples`, `coverage` and `plan-check`* pass. `make
+  c-conformance` runs at step 4 on the version's tree, as at 0.16.0: the C
+  export does not read the solver.
+
+**Expected beyond this step.** D170 solves again the rows the rules touch
+on this binary (`out/bin/presk-0.16.1-rules`), on 0.16.0's envelopes, and
+judges them on the Code civil and the Code pénal (the plan's §6). D171
+takes the Code du travail and the Code de procédure pénale (§7). Their
+sha256 were fixed when first fetched, on 2026-10-22: `df267bfe…148d` and
+`0937f889…a1ae`. After the mapping, the Code du travail has nothing outside
+the vocabulary in its first 461 windows, and the Code de procédure pénale
+the four `[` `]` the prompt counted (and two `“` `”` mapped).
+
+## D170 — Plan 0.16.1, step 2: the rows the rules touch solved again on 0.16.0's envelopes. Z1 holds (18 to 22 values left out per row, at most 0.96 % of the traffic, every ratio within 0.03×); the `bf16` tail is gone (V6 at all-`f32`'s gap, the course logits 49 times smaller on the Code civil); Y1 holds on the Code pénal at both scales and Y2 at D = 64; Z2 holds for V6 and fails for the course logits on (iv), out/in 1.92× from 16 windows and 2.57× between the texts, at `f32`'s level, in D168's window 261 (2026-10-22)
+
+The report is `docs/rows-0.16.1.md`, in D163's form, old beside new. The
+rows were solved on the rules' tree (`out/bin/presk-0.16.1-rules`, D169)
+from 18:47 to 21:52 by `out/step2-0.16.1/phaseA.sh`. Nothing was timed or
+calibrated but `make precision`'s own envelopes. The envelopes of record are
+0.16.0's, kept in place. 0.16.0's outputs at fixed paths were moved to
+`out/pre-0.16.1/`, and the exact logits and unmoved rows linked. The
+figures are read by `experiments/rows_0161.py` (new) and by D168's
+`second_corpus.py report`. `margins_course.sh` takes the course curve's
+path as `CURVE` (default `out/curve-course`, as before), so that 0.16.0's
+curve can be run from `out/pre-0.16.1/` on the further texts (D171).
+
+**A correction to the plan's facts.** The plan's §2 forecast 16 values left
+out on the course logits and on V6, read off 0.16.0's solve listings, whose
+elements are the envelope's four windows. The rules read one window's
+(D157). Read so, LayerNorm's two other statistics and, on the course
+logits, the logits themselves (23 552 elements a window, a first step of
+0.82 θ·B) fall under θ·B too. That makes 19 and 18. The rules are unchanged.
+
+**Z1 holds.** On every row:
+- rule 1 leaves out 3 values (4 in a loss's rows, its mean);
+- rule 2 leaves out 15 to 18, each listed with a first step below θ·B;
+- the most they forgo, those values' saving in `bf16`, is 0.29–0.96 % of
+  the traffic;
+- against 0.16.0's own types on those values the figure is smaller still.
+
+The ratios of record move by at most 0.03×:
+- V6: 1.97× → 1.96×;
+- the course logits: 1.99× → 1.98×;
+- the curve at D = 64 at 10⁻³: 2.04× → 2.03×;
+- `make precision`: 2.02× → 2.01×.
+
+**Z4, the rows** (`docs/rows-0.16.1.md` §2–§7):
+- *The curve at D = 64 (Figure 4, H2).* Every point is inside its budget,
+  with no widening round. At 10⁻³: 2.03×, 3.37·10⁻⁷ against 2.79·10⁻³. No
+  value is in `bf16` from 10⁻⁴ down, and the traffic falls monotonically,
+  3.33× to 1.30×. The last point is `f32` but for the values the rules
+  keep at `f64`, not all-`f32`. The quality axis is within 1.71·10⁻⁴ of
+  all-`f64` at 10⁻¹, and equal to seven digits from 10⁻³ down. From 10⁻⁴ to
+  10⁻⁶ the gap on the Code civil's 461 windows falls 26–112 times, to
+  all-`f32`'s 3.1·10⁻⁶.
+- *The trained course curve (Figure 5).* At 10⁻³ it is now certified:
+  8.70·10⁻⁶ with no flip, where 0.16.0's flipped 29 decisions at 13 ε\*.
+  10⁻³ and 10⁻⁴ give the same realization.
+- *D129's curve.* Certified from 10⁻² down; 0.16.0's was from 10⁻³.
+- *V6.* 0.16.0's realization with the 16 values it had narrowed and the
+  rules leave out at `f64`; every other decision the same. The two others
+  left out, LayerNorm's `%5` and `%10`, were already at `f64`. The one
+  offered value left at `f64`, here and on the course logits, is
+  `LayerNorm.apply/%4` (`pow 2 %3`), as at 0.16.0. Estimate
+  5.4·10⁻⁵ of the budget's 4.67·10⁻⁴, since no `bf16` is left that fits.
+  2.14·10⁻⁶ on the envelope, 2.88·10⁻⁶ on the Code civil's 461 windows
+  (0.16.0: 1.43·10⁻⁴), bound 0.
+- *The course logits.*
+  - No value is in `bf16`.
+  - Its traffic is 1.98×.
+  - Its gap is 3.02·10⁻⁶ on the envelope. On the Code civil's 461 windows
+    it is 8.70·10⁻⁶ (0.16.0: 4.23·10⁻⁴), half all-`f32`'s, with bound 0.
+  - On the Code pénal it is 2.24·10⁻⁵, 0.045 ε\*, where 0.16.0's was 1.90
+    ε\*.
+- *`make precision` (Figure 2):*
+  - 19 of 27 stored values are narrowed (18 `f32`, `SelfAttention.apply/%9`
+    in `bf16`), and 8 are not offered.
+  - 9 of 21 weights are offered, all in `f32`.
+  - 2.01×, the estimate 72 % of the budget, measured 3.55·10⁻⁶.
+  - The explain document gives the 20 values left out their rule.
+- *The quant and step tables* are byte-identical (D169).
+
+**Z2: V6 holds, the course logits fail on (iv).**
+- *V6:*
+  - (i) 2.14·10⁻⁶ on the envelope;
+  - (ii) 2.88·10⁻⁶ on the Code civil, no flip;
+  - (iii) 3.08·10⁻⁶ on the Code pénal, no flip;
+  - (iv) out/in at most 1.12× and 1.24× from 16 windows (`off_sample_fixed.py`), and the two texts' gaps 1.07× apart.
+- *The course logits:*
+  - (i) 3.02·10⁻⁶;
+  - (ii) 8.70·10⁻⁶, no flip;
+  - (iii) 2.24·10⁻⁵, no flip;
+  - (iv) **fails**: out/in 1.92× at 16 windows on the Code civil (1.84× at
+    32 and 64, 1.08× from 128), 7.28× on the Code pénal at 16 (window 261
+    against its first windows), and the texts' gaps 2.57× apart.
+- *For comparison:* all-`f32`'s out/in on the Code civil at the course
+  constants is 1.80× from 16 windows. A realization near `f32` has
+  `f32`'s spread of rounding across windows, at a gap 57 times inside ε\*.
+- The 1.5× was D129's level, that of a realization with `bf16` in it.
+
+**What carries window 261 now** (`out/step2-0.16.1/w261/`). D168's chunk
+was run under the realization, and under each value the rules keep at `f64`
+put back to `f32`:
+- *The twelve vector parameters, the head width and its root.* Any one of
+  them at `f32` changes no bit. Every nest that reads one is `f32` and
+  rounds it at its edge.
+- *LayerNorm's mean at `f32`* gives 1.74·10⁻⁵, ε at `f32` 2.21·10⁻⁵, and the
+  logits at `f32` 2.26·10⁻⁵.
+- *All seventeen at `f32`* give all-`f32`'s 1.447·10⁻⁵ to the digit.
+
+So rule 2 on parameters costs traffic and changes nothing else here. At this
+ill-conditioned position, LayerNorm's statistics stored wide change how
+`f32` rounds.
+
+**D168's table with 0.16.1's realizations.**
+- At D = 64 Y1 holds (12 of 12) and Y2 holds (0.54×–1.31×, median 0.97×).
+- At the course constants Y1 holds: 14 realizations are certified, and all
+  14 stay inside ε\* with no flip.
+- Y2 fails on 5 of 22: the logits, the trained curve's 10⁻³ and 10⁻⁴, and
+  D129's 10⁻² and 10⁻³. All five measure about 2.2·10⁻⁵ at window 261
+  against about 8.7·10⁻⁶ on the Code civil. Every realization's worst
+  window on the Code pénal at course scale is 261, all-`f64`'s included.
+
+**For the paper.**
+- The rows of record solved at 0.16.1 are the curves (Figures 4 and 5,
+  H2), V6 and the course logits (H5, S), and `make precision` (Figure 2).
+  The decoder, BERT's two blocks, the timed rows and J′ stay 0.16.0's
+  (the plan's §6).
+- Y1 now holds on the Code pénal at both scales.
+- Z2 fails on (iv) for the course logits, a relative criterion at `f32`'s
+  level. In absolute terms every certified realization is at least 22
+  times inside ε\* on both texts.
+
+## D171 — Plan 0.16.1, step 3: the certificate on a third and a fourth text, the Code du travail and the Code de procédure pénale. Y1 holds on both at both scales with 0.16.1's realizations, where 0.16.0's fail it; Y2 holds at D = 64 and fails at the course constants on both (0.49× and 0.495× on the Code du travail, 2.07× on the Code de procédure pénale), at `f32`'s level; Z3 fails on both texts, on Y2 at course scale; neither fails at the Code pénal's kind of position (2026-10-23)
+
+The report is `docs/further-texts-2026-10-23.md`. The script is
+`experiments/further_texts.sh` (`make further-texts`), with
+`second_corpus.py map` (the mapping of the plan's §7) and `report --name
+--short` (the text's name in the tables; the Code pénal's reports are
+byte-identical). The outputs are archived in presk-project
+`data/further-texts-0.16.1.tar.xz`.
+
+**The protocol** (the plan's §7, fixed before the measurement).
+- *The texts.* Both come from the course's container. Their sha256 were
+  fixed at the first fetch, on 2026-10-22: `travail.md` `df267bfe…`,
+  `procedure_penale.md` `0937f889…`.
+- *The mapping.* The typographic characters are mapped (`’ ‘` to `'`,
+  `“ ”` to `"`, `…` to `...`, `‒ ― −` to `-`), and the rest outside the
+  Code civil's 92 characters is deleted.
+  - Code du travail: 649 mapped and 48 521 deleted in the whole text, 0
+    and 0 in the judge set.
+  - Code de procédure pénale: 222 and 16 861 in the whole text, 2 (`“ ”`)
+    and 4 (`[ ]`) in the judge set.
+- *The judge set.* Each text's first 461 windows of 256, checked equal to
+  the whole file's.
+- *What ran.* D168's protocol on 0.16.1's realizations (D170). 0.16.0's
+  ran beside them on D163's binary, the one that wrote their Code civil
+  rows. The exact logits at the course constants took 2 h 18 and 2 h 16,
+  alone, overnight (`out/step3-0.16.1/course.sh`, after D170's phase A,
+  ending at 05:28).
+
+**The exact model** is as good on both texts as on the Code civil, within
+0.03 nats and 0.8 points of accuracy at both scales. Each text's own
+ε\*(10⁻³) relative to the Code civil's:
+
+| | D = 64 | course |
+|---|---|---|
+| Code du travail | 1.185× | 1.155× |
+| Code de procédure pénale | 1.152× | 0.981× |
+
+**Z3, per text.**
+
+| | Code du travail | Code de procédure pénale |
+|---|---|---|
+| D = 64, Y1 (12 certified) | holds; 0.16.0's fails on V6 and the curve's 10⁻⁴ to 10⁻⁶ (1–2 near-tie flips inside ε\*) | holds; 0.16.0's fails on V6 and the curve's 10⁻⁵ (1 flip each) |
+| D = 64, Y2 | holds (0.68–1.51×) | holds (0.78–1.60×) |
+| course, Y1 (14 certified) | holds; 0.16.0's holds too | holds; 0.16.0's fails on the logits at ε\* (5.757·10⁻⁴ = 1.16 ε\*) |
+| course, Y2 | **fails** on D129's 10⁻⁴ (0.49×) and the trained curve's 10⁻⁵ (0.495×) | **fails** on the logits, the trained curve's 10⁻³ and 10⁻⁴ and D129's 10⁻³ (2.07×) |
+| **Z3** | **fails** (Y2 at course scale) | **fails** (Y2 at course scale) |
+
+v0.10.0's curve at D = 64 was not re-solved and is outside Z3. Its 10⁻⁴
+keeps one flip on the Code du travail at both versions. `int4-pow2`, a row
+the rules do not move, also fails Y2 at course scale on both texts.
+
+**What carries the course tails.**
+- *Code du travail.* The two rows below 0.5× fail because of the Code
+  civil: their worst window there, 146 at position 69, after an article's
+  heading `**Art`, measures 1.23–1.29·10⁻⁵. Their worst windows on the Code
+  du travail measure 6.0–6.4·10⁻⁶, and the median windows of the two texts
+  are within 5 %.
+- *Code de procédure pénale.* Every 2.07× row has its worst in window 424,
+  position 79, `aux articles 15 (`, a prediction after an opening
+  parenthesis. All-`f32` is also worst there, at 2.333·10⁻⁵, and 0.16.1's
+  realizations measure less, 1.797·10⁻⁵. 0.16.0's logits measure
+  5.757·10⁻⁴ there.
+- *The kind of position.* Neither text's worst positions are of the Code
+  pénal's kind (window 261, a capital inside running text, D168). The four
+  worst windows after a capital, on the Code de procédure pénale, start
+  paragraphs and measure 5.2–7.2·10⁻⁶. The tails follow `(` and article
+  headings, the Code civil's own kinds.
+
+**For the paper.**
+- *Y1 holds on unseen text.* On three texts never trained on (the Code
+  pénal, D170; these two), every realization certified on the Code civil
+  stays inside ε\* and flips nothing, at both scales. 0.16.0's realizations
+  failed Y1 on all three, at one scale or both.
+- *Y2 does not.* Y2, the gap's stability within [0.5×, 2×], fails at
+  course scale on every unseen text, by 0.49× to 2.57×, with gaps at
+  `f32`'s rounding level (6·10⁻⁶ to 2.2·10⁻⁵, at least 22 times inside
+  ε\*). All-`f32`'s own ratios are 0.74×, 0.82× and 1.33×. Y2's band was
+  fixed when the tails were `bf16`'s.
+- *Z3 fails on both texts,* and the report says why.
+
+## D172 — Version 0.16.1: Z0 on the version's tree, the checks of record, the documents the rules touch (plan 0.16.1 step 4) (2026-10-23)
+
+**Z0 holds on the version's tree.** X1's harness, the quant and step
+tables and the tutorial ran under this step's release build
+(`out/bin/presk-0.16.1`, `out/x1/version-0.16.1.sh`, run by
+`out/x1/checks-0.16.1.sh`).
+- *X1.* Against the rules' tree (D169), 22 files differ, by their version
+  lines (`0.16.1-dev` → `0.16.1`) and the envelopes' `measured` dates, and
+  by nothing else. Against `v0.16.0`'s baseline (`out/x1/base-0.16.1`), 36
+  files differ: D169's 33 and three envelopes by their date.
+- *The tables.* `make quant-table` and `step-table` are byte for byte
+  `v0.16.0`'s.
+- *The tutorial.* It differs from the rules' tree by its measurements and
+  its version lines alone.
+
+**The checks of record on the version's tree.**
+- `cargo test --workspace --release --no-fail-fast` passes: 109 suites.
+- `make check-examples`, `coverage` and `plan-check` pass.
+- `make c-conformance` passes: `export_c`'s 16 tests and `export_scop`'s 5.
+- `cargo doc -p presk-manual` gives no warning.
+
+**The documents.** The plan's §5 confines them to what the solver's two
+rules touch.
+- *The manual.*
+  - `precision`: "Two rules: what the solver does not offer".
+  - `cli`: `--min-gain`, the lines `rules` and `sites`.
+  - `experiments`: §22, the rows at 0.16.1, and §23, the further texts.
+  - `status`: the section *Version 0.16.1*.
+  - `explain_loss`: its version line.
+- *In presk-specs (!101).*
+  - The plan, marked done.
+  - The reference at draft v0.24: its Status paragraphs at 0.16.1, the
+    solver's rules in chapter 4's.
+  - The report: chapter 8's paragraph on 0.16.1, the history, the foreword
+    and the roadmap's version lines.
+  - The status note `docs/status-2026-10-23-0.16.1.md`.
+- CHANGELOG `## 0.16.1`, `CLAUDE.md`, version `0.16.1`.
+
+The user tags `v0.16.1`. Not solved again, and kept at 0.16.0 with a note
+in the paper (the plan's §6):
+- the decoder;
+- BERT's two blocks;
+- the timed rows;
+- J′.

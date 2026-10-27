@@ -429,7 +429,7 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
         (Some(_), None) => return Err(SolveError::QuantWithoutGradient),
         _ => None,
     };
-    let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000, a.options.rounding).map(|(_, bytes)| bytes);
+    let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000, a.options).map(|(_, bytes)| bytes);
     let breakdown = solve::breakdown_with(env, &sens, &roles, &sol.realization, &menu, Dtype::F64, machine.as_ref(), a.options.rounding);
     Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time })
 }

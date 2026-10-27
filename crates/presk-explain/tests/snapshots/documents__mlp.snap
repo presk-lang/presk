@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.16.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.16.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -41,11 +41,11 @@ Compiler: presk 0.16.0. Each section ends with the commands that print what it s
 
 | What | Outcome | Kind | Where |
 |------------------|------------------------|------------------|------------------------|
-| Realization | 5 stored values away from `f64`: 5 in `f32`; the rest in `f64`; 4 parameters stored in their own types (§6.3) | decision | §6 |
+| Realization | 4 stored values away from `f64`: 4 in `f32`; the rest in `f64`; 4 parameters stored in their own types (§6.3) | decision | §6 |
 | Budget | 1e-3 of the output's magnitude 9.359e-1: 9.359e-4 absolute | parameter | §6.3 |
-| Measured gap | 5.952e-8 against the exact reference, inside the budget | measurement | §6.3 |
-| Solver's estimate | 5.121e-7: it ranks, it does not guarantee | estimate | §6.3 |
-| Cost | 3.5047e-4 against 3.5091e-4 all-`f64` (s, predicted by the profile's roofline): 1.00× | estimate | §6.3 |
+| Measured gap | 3.636e-8 against the exact reference, inside the budget | measurement | §6.3 |
+| Solver's estimate | 5.120e-7: it ranks, it does not guarantee | estimate | §6.3 |
+| Cost | 3.5048e-4 against 3.5091e-4 all-`f64` (s, predicted by the profile's roofline): 1.00× | estimate | §6.3 |
 | Bound, rule `cond` | 4.224e-2 (4.513e-2 relative) | bound | §6.4, conditional on the envelope's 1 sample |
 | Fusion | 8 launches without it, 5 with it: 3 saved | decision | §7 |
 | Layout plan | 5 nests, 143 points costed, 1 tiled, 0 split; predicted 0.091 µs a call over the nests it prices | decision, estimate | §8 |
@@ -315,41 +315,43 @@ The solver ranks the values the program stores by sensitivity and narrows the ch
 
 ```text
 presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.359e-1)
-  sites       5 narrowable, 5 assigned away from f64
+  sites       4 narrowable, 4 assigned away from f64 (5 stored values, 1 not offered)
   parameters  4 offered, 4 stored away from f64 (2 f32, 2 bf16): 5.5200e2 bytes at rest against 1.1840e3 in f64
-  cost        3.5047e-4 against 3.5091e-4 all-f64 (1.00x), relaxation floor 3.5028e-4
-  proposal    3.5047e-4 before measurement widened anything (time when --profile is given, bytes otherwise)
-  estimate    5.121e-7 (sensitivity-weighted, first order: it ranks, it does not guarantee)
-  measured    5.952e-8 against the exact reference, after 0 widening round(s) — inside the budget
+  rules       1 of one element not offered (rule 1): mse/%6
+              at most 6.0000e0 bytes forgone (their saving in the menu's narrowest type), 0.61 % of the realization's traffic, 9.7600e2 bytes
+  cost        3.5048e-4 against 3.5091e-4 all-f64 (1.00x), relaxation floor 3.5028e-4
+  proposal    3.5048e-4 before measurement widened anything (time when --profile is given, bytes otherwise)
+  estimate    5.120e-7 (sensitivity-weighted, first order: it ranks, it does not guarantee)
+  measured    3.636e-8 against the exact reference, after 0 widening round(s) — inside the budget
   rounding    measured: each term s·max|fl_d(x) − x|, the sampled values rounded (D155), at the 13 sites the envelope records it for and every parameter; s·u·|v| elsewhere
-  optimal     3.5047e-4 s by exhaustive search under the same estimate — the greedy proposal is 1.000x that
+  optimal     3.5048e-4 s by exhaustive search under the same estimate — the greedy proposal is 1.000x that
 ```
 
-**Why each site has its type.** The estimate is Σ s · r(type) over the sites, s the sensitivity and r the largest rounding error the site's sampled values take in the type, which the envelope records (D155; 0 for a value exact in the type, never above u(type) · |v|, u the unit roundoff: 2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`, and |v| the envelope's magnitude); a site the envelope records none for is charged u(type) · |v|. The terms below sum to 5.121e-7, the solver's 5.121e-7. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost. A **parameter** is a decision keyed by its path (since 0.12.0): its term is its rounding at the narrowest of its own type and the types of the nests that read it, s its cotangent's 1-norm and |v| its largest magnitude, and the field sites that read it carry none.
+**Why each site has its type.** The estimate is Σ s · r(type) over the sites, s the sensitivity and r the largest rounding error the site's sampled values take in the type, which the envelope records (D155; 0 for a value exact in the type, never above u(type) · |v|, u the unit roundoff: 2⁻⁵³ for `f64`, 2⁻²⁴ for `f32`, 2⁻⁸ for `bf16`, and |v| the envelope's magnitude); a site the envelope records none for is charged u(type) · |v|. The terms below sum to 5.120e-7, the solver's 5.120e-7. A **decision** is a value the program stores, whose type is the solver's choice; a value that **follows** another is rounded where that one computes it (a fused member in its group's root, a parameter's field in the nests that read it), and its term is charged at that type; a **carried** value (a call's or a fold's result, a parameter tree) is another site's value, with no term and no cost. A **parameter** is a decision keyed by its path (since 0.12.0): its term is its rounding at the narrowest of its own type and the types of the nests that read it, s its cotangent's 1-norm and |v| its largest magnitude, and the field sites that read it carry none.
 
 **The decisions**, each with its term of the estimate:
 
 | Site | Operation | Type | Elements | \|v\| | s | Term | Share |
 |-----------------------|------------------------|----------|----------|----------|----------|----------|----------|
-| `mse/%5` | `pow 2 %4` | `f32` | 8 | 2.275e0 | 1.000e0 | 9.535e-8 | 18.620 % |
-| `MLP.apply/%4` | `gelu %3` | `f32` | 32 | 6.443e-1 | 3.727e0 | 8.425e-8 | 16.452 % |
-| `l1.w` | a parameter, by its path | `f32` | 64 | 5.400e-1 | 4.664e0 | 7.847e-8 | 15.323 % |
-| `l2.w` | a parameter, by its path | `f32` | 64 | 5.334e-1 | 5.230e0 | 7.493e-8 | 14.631 % |
-| `Linear.apply/%3` | `dot x, w` | `f32` | 32 | 8.739e-1 | 2.360e0 | 4.712e-8 | 9.203 % |
-| `Linear.apply/%5` | `add %3, b` | `f32` | 32 | 8.739e-1 | 2.360e0 | 4.712e-8 | 9.203 % |
-| `mse/%6` | `mean %5` | `f32` | 1 | 9.359e-1 | 1.000e0 | 8.277e-11 | 0.016 % |
+| `mse/%5` | `pow 2 %4` | `f32` | 8 | 2.275e0 | 1.000e0 | 9.535e-8 | 18.623 % |
+| `MLP.apply/%4` | `gelu %3` | `f32` | 32 | 6.443e-1 | 3.727e0 | 8.425e-8 | 16.455 % |
+| `l1.w` | a parameter, by its path | `f32` | 64 | 5.400e-1 | 4.664e0 | 7.847e-8 | 15.326 % |
+| `l2.w` | a parameter, by its path | `f32` | 64 | 5.334e-1 | 5.230e0 | 7.493e-8 | 14.634 % |
+| `Linear.apply/%3` | `dot x, w` | `f32` | 32 | 8.739e-1 | 2.360e0 | 4.712e-8 | 9.204 % |
+| `Linear.apply/%5` | `add %3, b` | `f32` | 32 | 8.739e-1 | 2.360e0 | 4.712e-8 | 9.204 % |
+| `mse/%6` | `mean %5` | `f64` | 1 | 9.359e-1 | 1.000e0 | 1.467e-17 | 0.000 % |
 | `l1.b` | a parameter, by its path | `bf16` | 16 | 0.000e0 | 1.778e0 | 0.000e0 | 0.000 % |
 | `l2.b` | a parameter, by its path | `bf16` | 4 | 0.000e0 | 1.291e0 | 0.000e0 | 0.000 % |
 
-**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget (9.359e-4 absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in s, the profile's roofline.
+**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget (9.359e-4 absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in s, the profile's roofline. Before it, two rules leave a value at `f64`, unoffered (0.16.1): a value of one element (rule 1), and a value whose first narrowing saves less than θ = 1.000e-3 of the entry's all-`f64` traffic, θ·B = 2.024e0 bytes (rule 2). Here they leave 1.
 
-- `mse/%5`: narrowed to `f32` (move 11): saves 1.324e-8 s, adds 1.801e-7 to the estimate, then 5.121e-7.
-- `MLP.apply/%4`: narrowed to `f32` (move 9): saves 5.295e-8 s, adds 8.425e-8 to the estimate, then 2.848e-7.
-- `l1.w`: narrowed to `f32` (move 7): saves 1.059e-7 s, adds 7.847e-8 to the estimate, then 1.535e-7.
-- `l2.w`: narrowed to `f32` (move 6): saves 1.059e-7 s, adds 7.493e-8 to the estimate, then 7.501e-8.
-- `Linear.apply/%3`: narrowed to `f32` (move 10): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 3.320e-7.
-- `Linear.apply/%5`: narrowed to `f32` (move 8): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 2.006e-7.
-- `mse/%6`: narrowed to `f32` (move 5): saves 1.655e-9 s, adds 8.277e-11 to the estimate, then 8.277e-11.
+- `mse/%5`: narrowed to `f32` (move 10): saves 1.324e-8 s, adds 1.801e-7 to the estimate, then 5.120e-7.
+- `MLP.apply/%4`: narrowed to `f32` (move 8): saves 5.295e-8 s, adds 8.425e-8 to the estimate, then 2.848e-7.
+- `l1.w`: narrowed to `f32` (move 6): saves 1.059e-7 s, adds 7.847e-8 to the estimate, then 1.534e-7.
+- `l2.w`: narrowed to `f32` (move 5): saves 1.059e-7 s, adds 7.493e-8 to the estimate, then 7.493e-8.
+- `Linear.apply/%3`: narrowed to `f32` (move 9): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 3.319e-7.
+- `Linear.apply/%5`: narrowed to `f32` (move 7): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 2.005e-7.
+- `mse/%6`: not offered: one element, no traffic to save (rule 1).
 - `l1.b`: narrowed to `f32` (move 1): saves 2.648e-8 s, adds 0.000e0 to the estimate, then 6.592e-16; narrowed to `bf16` (move 2): saves 1.324e-8 s, adds 0.000e0 to the estimate, then 6.592e-16.
 - `l2.b`: narrowed to `f32` (move 3): saves 6.619e-9 s, adds 0.000e0 to the estimate, then 6.592e-16; narrowed to `bf16` (move 4): saves 3.309e-9 s, adds 0.000e0 to the estimate, then 6.592e-16.
 
@@ -357,7 +359,7 @@ presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.
 
 | Site | Operation | Role | Type | \|v\| | s | Term | Share |
 |-------------------|------------------------------------|----------------|----------|----------|----------|----------|----------|
-| `mse/%4` | `sub ŷ, y` | follows `mse/%5` | `f32` | 1.508e0 | 1.707e0 | 8.476e-8 | 16.552 % |
+| `mse/%4` | `sub ŷ, y` | follows `mse/%5` | `f32` | 1.508e0 | 1.707e0 | 8.476e-8 | 16.555 % |
 | `MLP.apply/%2` | `θ.l1` | carried | `f64` | 5.400e-1 | 6.442e0 | 0.000e0 | 0.000 % |
 | `MLP.apply/%3` | `call Linear.apply{In = D, Out = hidden}(l1, x)` | carried | `f64` | 8.602e-1 | 2.360e0 | 0.000e0 | 0.000 % |
 | `MLP.apply/%5` | `θ.l2` | carried | `f64` | 5.334e-1 | 6.521e0 | 0.000e0 | 0.000 % |
@@ -371,13 +373,13 @@ presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.
 Under the realization, each rule's bound on the output's error, beside the gap measured against the exact reference.
 
 ```text
-presk check --precision: `mse` under f64+sequential+5sites+4params
+presk check --precision: `mse` under f64+sequential+4sites+4params
   magnitude   9.3589e-1
-  bound    k         1.1975e0  (1.28e0 relative)     2.01e7× the measured gap
-  bound    normwise  4.5641e-1  (4.88e-1 relative)     7.67e6× the measured gap
-  bound    cond      4.2236e-2  (4.51e-2 relative)     7.10e5× the measured gap
-  estimate rss       8.5729e-3  (9.16e-3 relative)     1.44e5× the measured gap
-  measured             5.9522e-8  (6.36e-8 relative)  the kernel interpreter against the exact reference
+  bound    k         1.1975e0  (1.28e0 relative)     3.29e7× the measured gap
+  bound    normwise  4.5641e-1  (4.88e-1 relative)     1.26e7× the measured gap
+  bound    cond      4.2235e-2  (4.51e-2 relative)     1.16e6× the measured gap
+  estimate rss       8.5727e-3  (9.16e-3 relative)     2.36e5× the measured gap
+  measured             3.6355e-8  (3.88e-8 relative)  the kernel interpreter against the exact reference
   envelope    $DOC/artifacts/envelope.json over 1 samples, 13 sites, initial weights
 site                              magnitude            k     relative    condition
 mse/%6                             9.359e-1      1.198e0      1.280e0      1.000e0
@@ -390,7 +392,7 @@ Linear.apply/%3                    8.739e-1     3.931e-1     4.498e-1      1.664
 MLP.apply/%4                       6.443e-1     2.205e-2     3.423e-2            -
 ```
 
-The sound rule (`cond`) bounds the error by 4.224e-2, conditional on the envelope's 1 sample; the measurement is 5.952e-8, 7.1e5× under it.
+The sound rule (`cond`) bounds the error by 4.224e-2, conditional on the envelope's 1 sample; the measurement is 3.636e-8, 1.2e6× under it.
 
 *Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/mlp/mlp.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure`
 
@@ -521,7 +523,7 @@ mse/%5 [2, 4] [2, 4] — 5 points, 1 within 1 + u, 1 launch
 
 mse/%6 [2, 4] — 1 points, 1 within 1 + u, 1 launch
       predicted         λ     spawn      work     loads        L2        L3       mem  bound by
-1        0.0031    0.0000    0.0000    0.0015    0.0002    0.0009    0.0005    0.0003  work
+1        0.0031    0.0000    0.0000    0.0015    0.0001    0.0009    0.0005    0.0003  work
      lanes 1, split none
 ```
 
@@ -532,7 +534,7 @@ mse/%6 [2, 4] — 1 points, 1 within 1 + u, 1 launch
 PSK-Kernel is the loop nests the backends run: one kernel per distinct nest, under its type and its layout. The host program launches them, converting a value where a kernel reads it in another type.
 
 ```text
--- 5 kernels, 5 launches, f64+sequential+5sites+4params
+-- 5 kernels, 5 launches, f64+sequential+4sites+4params
 -- fusion: 8 launches without it, 3 saved (38%)
 ```
 
@@ -596,7 +598,7 @@ kernel fused 2 steps (%0 : f32[batch: 2, 4], %1 : f32[batch: 2, model: 4]) -> %2
   }
 }
 // k4: 1 launch at mse/%6
-kernel mean (%0 : f32[batch: 2, model: 4]) -> %1 : f32[] {
+kernel mean (%0 : f32[batch: 2, model: 4]) -> %1 : f64[] {
   s0 = 0
   for i0 in 0..2 {
     for i1 in 0..4 {
@@ -651,7 +653,7 @@ void presk_mse(presk_arena *arena, const presk_mse_in *in, presk_mse_out *out)
     const uint16_t *theta_l2_b = in->theta_l2_b;
     const double *x = in->x;
     const double *y = in->y;
-    float *result = presk_alloc(arena, 1 * sizeof(float));
+    double *result = presk_alloc(arena, 1 * sizeof(double));
     const size_t mark = presk_mark(arena);
     /* mse/%3 (ŷ) */
     float *y_hat = presk_alloc(arena, 8 * sizeof(float));
@@ -693,7 +695,7 @@ By default, the three largest shares of the solver's estimate (the three largest
 | PSK-Core (§3) | `%5 : ℝ[batch: B, model: D] = pow 2 %4` in `mse` |
 | Envelope (§6.1) | \|v\| ≤ 2.275e0, 8 elements |
 | Sensitivity (§6.2) | 1.000e0 |
-| Type (§6.3) | `f32`, decision; term 9.535e-8; narrowed to `f32` (move 11): saves 1.324e-8 s, adds 1.801e-7 to the estimate, then 5.121e-7 |
+| Type (§6.3) | `f32`, decision; term 9.535e-8; narrowed to `f32` (move 10): saves 1.324e-8 s, adds 1.801e-7 to the estimate, then 5.120e-7 |
 | Fusion (§7) | ends a group of 2: read by `%6 : ℝ[] = mean %5`: a reduction |
 | Layout (§8) | nest `mse/%5`, 5 points at `[2, 4] [2, 4]`; chosen lanes 1, split none, 0.0062 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
 | Kernel (§9) | `k3`: `kernel fused 2 steps (%0 : f32[batch: 2, 4], %1 : f32[batch: 2, model: 4]) -> %2 : f32[batch: 2, model: 4]` |
@@ -705,7 +707,7 @@ By default, the three largest shares of the solver's estimate (the three largest
 | PSK-Core (§3) | `%4 : ℝ[..., hidden] = gelu %3` in `MLP.apply` |
 | Envelope (§6.1) | \|v\| ≤ 6.443e-1, 32 elements |
 | Sensitivity (§6.2) | 3.727e0 |
-| Type (§6.3) | `f32`, decision; term 8.425e-8; narrowed to `f32` (move 9): saves 5.295e-8 s, adds 8.425e-8 to the estimate, then 2.848e-7 |
+| Type (§6.3) | `f32`, decision; term 8.425e-8; narrowed to `f32` (move 8): saves 5.295e-8 s, adds 8.425e-8 to the estimate, then 2.848e-7 |
 | Fusion (§7) | alone: read by `%6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)`: a call |
 | Layout (§8) | nest `MLP.apply/%4`, 5 points at `[2, 16]`; chosen lanes 1, split none, 0.0357 µs, bound by work; runner-up lanes 1, split (1, 5), 101.5 µs |
 | Kernel (§9) | `k1`: `kernel gelu (%0 : f32[batch: 2, 16]) -> %1 : f32[batch: 2, 16]` |
@@ -719,7 +721,7 @@ By default, the three largest shares of the solver's estimate (the three largest
 | PSK-Core (§3) | `%3 : ℝ[..., Out] = dot x, w` in `Linear.apply` |
 | Envelope (§6.1) | \|v\| ≤ 8.739e-1, 32 elements, condition number 1.664e0 |
 | Sensitivity (§6.2) | 2.360e0 |
-| Type (§6.3) | `f32`, decision; term 4.712e-8; narrowed to `f32` (move 10): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 3.320e-7 |
+| Type (§6.3) | `f32`, decision; term 4.712e-8; narrowed to `f32` (move 9): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 3.319e-7 |
 | Fusion (§7) | not an element-wise operation |
 | Layout (§8) | nest `Linear.apply/%3`, 93 points at `[2, 4] [4, 16]`; chosen tiled, tile [2, 4], kblock none, order IJ, lanes 4, split none, no pack, epilogue, 0.0115 µs, bound by loads; runner-up tiled, tile [2, 16], kblock none, order JI, lanes 4, split none, no pack, 0.0115 µs |
 | Kernel (§9) | `k2`: `kernel dot+add (%0 : f32[batch: 2, 16], %1 : f32[16, 4], %2 : bf16[4]) -> %3 : f32[batch: 2, 4]` |
@@ -731,7 +733,7 @@ By default, the three largest shares of the solver's estimate (the three largest
 | PSK-Core (§3) | `%5 : ℝ[..., Out] = add %3, b` in `Linear.apply` |
 | Envelope (§6.1) | \|v\| ≤ 8.739e-1, 32 elements |
 | Sensitivity (§6.2) | 2.360e0 |
-| Type (§6.3) | `f32`, decision; term 4.712e-8; narrowed to `f32` (move 8): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 2.006e-7 |
+| Type (§6.3) | `f32`, decision; term 4.712e-8; narrowed to `f32` (move 7): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 2.005e-7 |
 | Fusion (§7) | alone: the function's result |
 | Layout (§8) | nest `Linear.apply/%5`, 5 points at `[2, 16] [16]`; chosen lanes 1, split none, 0.0090 µs, bound by work; runner-up lanes 1, split (0, 5), 101.5 µs |
 | Kernel (§9) | `k2`, as the epilogue of `Linear.apply/%3`'s kernel: `kernel dot+add (%0 : f32[batch: 2, 16], %1 : f32[16, 4], %2 : bf16[4]) -> %3 : f32[batch: 2, 4]` |
@@ -743,11 +745,11 @@ By default, the three largest shares of the solver's estimate (the three largest
 What one call of the entry needs in memory, counted from the program at its dimensions and its realization's types, never a process's resident size. The host is recorded as the C export records it (§9); each buffer the call makes is live from its first write to its last read, and the inputs, which its caller holds, are counted apart. The calls are the network diagram's boxes, the iterations of a fold taken together: a call's share is what it made that is live at the peak, its own peak the most what it made weighs while it runs.
 
 ```text
-presk memory: `mse` at D = 4, B = 2 in f64+sequential+5sites+4params: 7 operations, 5 launches
+presk memory: `mse` at D = 4, B = 2 in f64+sequential+4sites+4params: 7 operations, 5 launches
   parameters  552 bytes: 148 elements, 128 in f32, 20 in bf16
   inputs      680 bytes, the parameters among them
   peak        256 bytes live, at operation 3 of 7, `MLP.apply/%4` in `MLP.apply`
-  outputs     4 bytes
+  outputs     8 bytes
   needs       936 bytes: the inputs and the peak
   C arena     1152 bytes, 384 beside the inputs, 1.50 times the peak: the frames of `presk export --target c`, each function's buffers held until it returns (1344 released nothing)
   placed      256 bytes beside the inputs: every buffer at an offset by its life, rounded to 64 (`--straight-line --placed`)
@@ -764,9 +766,9 @@ The C program's arena holds each function's buffers until it returns (D80), so i
 The same as polynomials in the entry's dimensions (plan 0.15.0 step 3), the `const`s as their numbers. Every axis of a buffer is a linear form in the dimensions, so a buffer's bytes are a polynomial; each is interpolated from recordings of the call on a grid of three values per dimension, the operations the same at every point, and checked at a point off the grid. The peak is the largest of the operations' live bytes that no other's dominates for dimensions of at least 1.
 
 ```text
-presk memory --symbolic: `mse` in f64+sequential+5sites+4params, in D and B: each buffer's bytes interpolated on D ∈ {4, 8, 12}, B ∈ {2, 4, 6}, checked at D = 16, B = 8
+presk memory --symbolic: `mse` in f64+sequential+4sites+4params, in D and B: each buffer's bytes interpolated on D ∈ {4, 8, 12}, B ∈ {2, 4, 6}, checked at D = 16, B = 8
   inputs      32 · D² + 16 · D · B + 10 · D
-  outputs     4
+  outputs     8
   peak        32 · D · B, at operation 3 (`MLP.apply/%4`)
   at D = 4, B = 2: the peak 256, the inputs 680, as counted
 ```

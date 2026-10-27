@@ -4,19 +4,19 @@ expression: "presk_diagram::text::outline(d.network.as_ref().unwrap())"
 ---
 network of `loss`, read off the stage `ad`: 40 nodes, 37 arrows, 5 boxes
 parameters: 76 (248 bytes, bf16, f32)
-work W = 1537, bytes Q = 3396, over every launch of the entry
+work W = 1537, bytes Q = 3408, over every launch of the entry
 default opening: [2], 468 × 549 pt
 [0] root loss  ad:loss @ 0,0 468×549
-    θ 76 bf16/f32 · W 1.54 k · Q 3.40 kB
+    θ 76 bf16/f32 · W 1.54 k · Q 3.41 kB
   [1] input batch #1  ad:loss @ 292,38 57×22
   [2] call Tower.apply · Tower  ad:loss/%4 fn ad:Tower.apply @ 12,84 444×307
       θ 76 bf16/f32 · W 1.47 k · Q 3.14 kB
     [6] input x #1  ad:loss/%2 @ 214,122 40×22
     [7] stack blocks ×3 · Block  ad:Tower.apply/%3 fn ad:Block.apply @ 24,168 420×63
-        θ 72 bf16/f32 · W 1.37 k · Q 2.74 kB
+        θ 72 bf16/f32 · W 1.37 k · Q 2.75 kB
       [10] input x #1  ad:loss/%2
       [11] call norm · RMSNorm{4}  ad:Block.apply/%4 fn ad:RMSNorm.apply
-          θ 4 bf16 · W 104 · Q 394B (per run; 3 runs)
+          θ 4 bf16 · W 104 · Q 396B (per run; 3 runs)
         [16] input x #1  ad:loss/%2
         [17] input eps #2  ad:Block.apply/%3
         [18] op pow 2  fusion:RMSNorm.apply/%3
@@ -25,7 +25,7 @@ default opening: [2], 468 × 549 pt
             W 20 · Q 80B
         [20] host real  ad:RMSNorm.apply/%5
         [21] group sqrt · add  fusion:RMSNorm.apply/%7
-            W 36 · Q 34B
+            W 36 · Q 36B
             members RMSNorm.apply/%7, RMSNorm.apply/%6
         [22] group mul · div  fusion:RMSNorm.apply/%10
             W 32 · Q 152B
@@ -37,7 +37,7 @@ default opening: [2], 468 × 549 pt
         18 → 19: ad:RMSNorm.apply/%3  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f32, 16 elements, 64 B
         17 → 20: ad:Block.apply/%3  f64 = f64, host, 0 elements, 0 B
         19 → 21: ad:RMSNorm.apply/%4  ℝ[batch: B] = ℝ[batch: 4], f32, 4 elements, 16 B
-        20 → 21: ad:RMSNorm.apply/%5  ℝ[] = ℝ[], bf16, 1 elements, 2 B
+        20 → 21: ad:RMSNorm.apply/%5  ℝ[] = ℝ[], f64, 1 elements, 8 B
         16 → 22: ad:loss/%2  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
         21 → 22: ad:RMSNorm.apply/%7  ℝ[batch: B] = ℝ[batch: 4], f32, 4 elements, 16 B
         23 → 22: ad:RMSNorm.apply/%9  ℝ[4] = ℝ[4], bf16, 4 elements, 8 B
@@ -70,7 +70,7 @@ default opening: [2], 468 × 549 pt
       13 → 14: ad:Block.apply/%7  ℝ[batch: B, 4] = ℝ[batch: 4, 4], f64, 16 elements, 128 B
       14 → 15: ad:Block.apply/%8  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f32, 16 elements, 64 B
     [8] call final · RMSNorm{4}  ad:Tower.apply/%6 fn ad:RMSNorm.apply @ 57,255 354×78
-        θ 4 bf16 · W 104 · Q 394B
+        θ 4 bf16 · W 104 · Q 396B
       [31] input x #1  ad:Tower.apply/%3
       [32] input eps #2  ad:Tower.apply/%5
       [33] op pow 2  fusion:RMSNorm.apply/%3
@@ -79,7 +79,7 @@ default opening: [2], 468 × 549 pt
           W 20 · Q 80B
       [35] host real  ad:RMSNorm.apply/%5
       [36] group sqrt · add  fusion:RMSNorm.apply/%7
-          W 36 · Q 34B
+          W 36 · Q 36B
           members RMSNorm.apply/%7, RMSNorm.apply/%6
       [37] group mul · div  fusion:RMSNorm.apply/%10
           W 32 · Q 152B
@@ -91,7 +91,7 @@ default opening: [2], 468 × 549 pt
       33 → 34: ad:RMSNorm.apply/%3  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f32, 16 elements, 64 B
       32 → 35: ad:Tower.apply/%5  f64 = f64, host, 0 elements, 0 B
       34 → 36: ad:RMSNorm.apply/%4  ℝ[batch: B] = ℝ[batch: 4], f32, 4 elements, 16 B
-      35 → 36: ad:RMSNorm.apply/%5  ℝ[] = ℝ[], bf16, 1 elements, 2 B
+      35 → 36: ad:RMSNorm.apply/%5  ℝ[] = ℝ[], f64, 1 elements, 8 B
       31 → 37: ad:Tower.apply/%3  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
       36 → 37: ad:RMSNorm.apply/%7  ℝ[batch: B] = ℝ[batch: 4], f32, 4 elements, 16 B
       38 → 37: ad:RMSNorm.apply/%9  ℝ[4] = ℝ[4], bf16, 4 elements, 8 B
@@ -104,10 +104,10 @@ default opening: [2], 468 × 549 pt
       W 48 · Q 192B
       members loss/%6, loss/%5
   [4] op mean  fusion:loss/%7 @ 295,465 50×26
-      W 17 · Q 68B
+      W 17 · Q 72B
   [5] result  ad:loss/%7 @ 289,515 64×22
   1 → 2 #1: ad:loss/%2  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
   2 → 3: ad:loss/%4  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
   1 → 3: ad:loss/%3  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f64, 16 elements, 128 B
   3 → 4: ad:loss/%6  ℝ[batch: B, model: 4] = ℝ[batch: 4, model: 4], f32, 16 elements, 64 B
-  4 → 5: ad:loss/%7  ℝ[] = ℝ[], f32, 1 elements, 4 B
+  4 → 5: ad:loss/%7  ℝ[] = ℝ[], f64, 1 elements, 8 B

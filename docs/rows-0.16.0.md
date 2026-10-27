@@ -200,8 +200,12 @@ H5 holds at course scale. Every certified realization changes no decision,
 and every row flips at most its bound. The logits' solve is still inside
 ε\* on the 461 windows, by 1.17× where D129's was inside by 2.4×. It moved
 7.6× out of sample, where D129's moved 4.8×. Its three `bf16` stored values
-are ε, the head width 32 and its square root (`SelfAttention.apply/%15`
-and `%16`).
+are ε, the head width 64 and its square root 8 (`SelfAttention.apply/%15`
+and `%16`, both exact in `bf16`), and its three `bf16` parameters the
+biases of the queries and of the keys and the second norm's β.
+*Corrected 2026-10-22: this paragraph said "the head width 32", D = 64's.
+Step 0b (`off-sample-course-step0b-2026-10-22.md`) finds that the queries'
+bias in `bf16` carries the 7.6×.*
 
 **The paper** (§4) says:
 

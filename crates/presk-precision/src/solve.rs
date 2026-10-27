@@ -32,6 +32,20 @@
 //! 4. **Report the gap** to the relaxation's lower bound — every site at its
 //!    narrowest — and, on programs small enough, to exhaustive search.
 //!
+//! Two rules decide, before step 1, which values are offered at all (plan
+//! 0.16.1, D169); a value not offered keeps the default type:
+//! - **Rule 1**: a value of one element, as the solver prices it, has no
+//!   traffic to save, so narrowing it can only add error. LayerNorm's ε in
+//!   `bf16` took the course logits solved at ε\* to 1.90 ε\* on one window
+//!   of the Code pénal (D168).
+//! - **Rule 2**: a value whose first step down the menu saves less than
+//!   [`Options::min_gain`] of the entry's all-default traffic is not offered
+//!   ([`Offers`]). The course certificate's tail out of sample was a bias in
+//!   `bf16` worth 4.6 KB of 5.79·10⁷ bytes (steps 0, 0b and 0d after
+//!   0.16.0). The first step's gain is a value's smallest, so a value is
+//!   offered its whole menu or none of it, and every decision taken saves at
+//!   least the threshold.
+//!
 //! Two options change steps 1 and 3 (D155), both off by default, since every
 //! row of record was solved without them:
 //! - **`RoundingTerm::Measured`**: the estimate's rounding step is the
@@ -184,11 +198,16 @@ pub struct Options {
     /// after the envelope's in its data file; `None`, as many as the
     /// envelope's.
     pub heldout: Option<usize>,
+    /// Rule 2's θ (plan 0.16.1, D169): a value is offered only when its
+    /// first step down the menu saves at least this fraction of the entry's
+    /// all-default traffic, in bytes whatever the machine. 10⁻³ by default;
+    /// 0 turns rule 2 off. Rule 1 has no option.
+    pub min_gain: f64,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { rounding: RoundingTerm::default(), narrow: Narrow::default(), estimate: Estimate::default(), margin: 2.5, heldout: None }
+        Options { rounding: RoundingTerm::default(), narrow: Narrow::default(), estimate: Estimate::default(), margin: 2.5, heldout: None, min_gain: 1e-3 }
     }
 }
 
@@ -233,7 +252,15 @@ pub struct Solution {
     pub options: Options,
     /// Sites the solver could narrow at all (the rest had no magnitude, no
     /// sensitivity or no element count and were left at the default).
+    /// Since 0.16.1 the values the rules do not offer are among them, at
+    /// the default type, and named in `offers`.
     pub considered: usize,
+    /// What the two rules of 0.16.1 left out, and the base of rule 2.
+    pub offers: Offers,
+    /// The bytes the realization moves, at the same counts as the cost but
+    /// in bytes under any machine: what `offers`' forgone traffic is a
+    /// share of.
+    pub traffic: f64,
     /// What the proposal and the measurement did, in order: each narrowing
     /// tried and whether the budget took it, each site widened after a
     /// measurement (plan 0.11.0 step 4, D114). A decision no move names
@@ -268,6 +295,61 @@ pub enum Move {
 impl Solution {
     pub fn speedup(&self) -> f64 {
         if self.bytes > 0.0 { self.baseline_bytes / self.bytes } else { 1.0 }
+    }
+}
+
+/// Why a value is not offered (plan 0.16.1, D169).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rule {
+    /// Rule 1: it has one element.
+    OneElement,
+    /// Rule 2: its first step down the menu saves less than θ·B.
+    MinGain,
+}
+
+/// A value the rules do not offer: it keeps the default type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Excluded {
+    /// A site's name, or a parameter's path.
+    pub name: String,
+    pub param: bool,
+    pub rule: Rule,
+    /// Its elements, as the solver prices them (one sample's, D157).
+    pub elems: f64,
+    /// The bytes its first step down the menu would save: rule 2's gain.
+    pub gain: f64,
+    /// The bytes it would save in the menu's narrowest type: the most the
+    /// rule can cost.
+    pub forgone: f64,
+}
+
+/// Which values the solver offers (plan 0.16.1, D169).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Offers {
+    /// B: the entry's all-default traffic, every decision's elements times
+    /// the default type's bytes, the values not offered included.
+    pub base: f64,
+    /// θ, the options' `min_gain`; a value is offered when its first step
+    /// saves at least θ·B.
+    pub min_gain: f64,
+    /// The values not offered, in the order of the decisions.
+    pub excluded: Vec<Excluded>,
+}
+
+impl Offers {
+    /// θ·B, in bytes.
+    pub fn threshold(&self) -> f64 {
+        self.min_gain * self.base
+    }
+
+    /// The bytes the rules forgo at most: what the values not offered would
+    /// save in the menu's narrowest type.
+    pub fn forgone(&self) -> f64 {
+        self.excluded.iter().map(|e| e.forgone).sum()
+    }
+
+    pub fn by(&self, rule: Rule) -> impl Iterator<Item = &Excluded> {
+        self.excluded.iter().filter(move |e| e.rule == rule)
     }
 }
 
@@ -527,6 +609,9 @@ struct Split {
     reads: Vec<Vec<usize>>,
     /// The estimate's rounding step (D155).
     rounding: RoundingTerm,
+    /// For each decision, whether the rules offer it ([`Split::offer`]);
+    /// every one until then.
+    offered: Vec<bool>,
 }
 
 fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTerm) -> Split {
@@ -583,10 +668,37 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTe
         }
         readers[i].1 = outside;
     }
-    Split { decisions, followers, led, readers, reads, rounding }
+    let offered = vec![true; decisions.len()];
+    Split { decisions, followers, led, readers, reads, rounding, offered }
 }
 
 impl Split {
+    /// The two rules of 0.16.1 (D169): a decision of one element is not
+    /// offered, nor one whose first step down the menu, the widest type
+    /// narrower than `default`, saves less than `min_gain` of the
+    /// all-default traffic. Both in bytes, at the elements the solver
+    /// prices.
+    fn offer(&mut self, menu: &Menu, default: Dtype, min_gain: f64) -> Offers {
+        let narrower = || menu.0.iter().copied().filter(|d| d.bytes() < default.bytes());
+        let (first, narrowest) = (narrower().max_by_key(|d| d.bytes()), narrower().min_by_key(|d| d.bytes()));
+        let base: f64 = self.decisions.iter().map(|s| bytes_at(s, default)).sum();
+        let mut excluded = Vec::new();
+        for (i, s) in self.decisions.iter().enumerate() {
+            let (Some(first), Some(narrowest)) = (first, narrowest) else { break };
+            let gain = bytes_at(s, default) - bytes_at(s, first);
+            let rule = if s.elems <= 1.0 {
+                Rule::OneElement
+            } else if gain < min_gain * base {
+                Rule::MinGain
+            } else {
+                continue;
+            };
+            self.offered[i] = false;
+            excluded.push(Excluded { name: s.name.clone(), param: s.param, rule, elems: s.elems, gain, forgone: bytes_at(s, default) - bytes_at(s, narrowest) });
+        }
+        Offers { base, min_gain, excluded }
+    }
+
     /// The type a decision's value is rounded to: a nest's own; a
     /// parameter's, or the narrowest of its readers' where that is
     /// narrower, since the value a nest reads is rounded at rest and again
@@ -651,6 +763,10 @@ impl Split {
 
     fn cost(&self, chosen: &[Dtype], machine: &dyn Machine) -> f64 {
         self.decisions.iter().zip(chosen).map(|(s, t)| cost_at(s, *t, machine)).sum()
+    }
+
+    fn traffic(&self, chosen: &[Dtype]) -> f64 {
+        self.decisions.iter().zip(chosen).map(|(s, t)| bytes_at(s, *t)).sum()
     }
 }
 
@@ -796,18 +912,21 @@ pub fn solve_with_heldout(
 ) -> Solution {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
     let budget_abs = budget.absolute(out_mag);
-    let sp = split(env, sens, roles, options.rounding);
+    let mut sp = split(env, sens, roles, options.rounding);
+    let offers = sp.offer(menu, default, options.min_gain);
+    let sp = sp;
     let sites = &sp.decisions;
+    let offered = &sp.offered;
 
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
     let narrowest = menu.0.iter().copied().min_by_key(|d| d.bytes()).unwrap_or(default);
     let baseline_bytes: f64 = sites.iter().map(|s| cost_at(s, widest, machine)).sum();
-    let relaxation_bytes: f64 = sites.iter().map(|s| cost_at(s, narrowest, machine)).sum();
+    let relaxation_bytes: f64 = sites.iter().zip(offered).map(|(s, o)| cost_at(s, if *o { narrowest } else { default }, machine)).sum();
 
-    // Propose: every site at the widest type, then narrow in order of bytes
-    // saved per unit of error added (its followers' with its own), while
-    // the estimate fits.
-    let mut chosen: Vec<Dtype> = vec![widest; sites.len()];
+    // Propose: every site offered at the widest type, the others at the
+    // default (D169), then narrow in order of bytes saved per unit of error
+    // added (its followers' with its own), while the estimate fits.
+    let mut chosen: Vec<Dtype> = offered.iter().map(|o| if *o { widest } else { default }).collect();
     // The proposal's target (D161): the budget under the sum; under the
     // root-sum-square the budget over the margin, compared on the squares,
     // which add as the sum's terms do.
@@ -815,7 +934,7 @@ pub fn solve_with_heldout(
     let target = if rss { (budget_abs / options.margin).powi(2) } else { budget_abs };
     let mut spent: f64 = if rss { sp.estimate_sq(&chosen, default) } else { sp.estimate(&chosen, default) };
     let mut moves: Vec<(f64, usize, Dtype)> = Vec::new();
-    for (i, s) in sites.iter().enumerate() {
+    for (i, s) in sites.iter().enumerate().filter(|(i, _)| offered[*i]) {
         for d in &menu.0 {
             if d.bytes() >= widest.bytes() {
                 continue;
@@ -879,7 +998,7 @@ pub fn solve_with_heldout(
             // estimate (every sensitivity zero, as happens on an untrained
             // model) it walks the whole assignment back to `f64` and reports
             // no saving at all.
-            let worst = (0..sites.len()).filter(|i| chosen[*i].bytes() < widest.bytes()).max_by(|a, b| {
+            let worst = (0..sites.len()).filter(|i| offered[*i] && chosen[*i].bytes() < widest.bytes()).max_by(|a, b| {
                 let (ea, eb) = (sp.share(*a, &chosen, default), sp.share(*b, &chosen, default));
                 ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
             });
@@ -909,6 +1028,7 @@ pub fn solve_with_heldout(
         for pass in 1..=3 {
             // Each decision one step narrower, the largest saving first.
             let mut steps: Vec<(f64, usize, Dtype)> = (0..sites.len())
+                .filter(|i| offered[*i])
                 .filter_map(|i| {
                     let cur = chosen[i];
                     let next = menu.0.iter().copied().filter(|d| d.bytes() < cur.bytes()).max_by_key(|d| d.bytes())?;
@@ -969,6 +1089,7 @@ pub fn solve_with_heldout(
     }
 
     let bytes: f64 = sp.cost(&chosen, machine);
+    let traffic: f64 = sp.traffic(&chosen);
     let estimated_error: f64 = if rss { sp.estimate_sq(&chosen, default).sqrt() } else { sp.estimate(&chosen, default) };
     Solution {
         realization: build(&chosen),
@@ -987,6 +1108,8 @@ pub fn solve_with_heldout(
         measurements,
         options,
         considered: sites.len(),
+        offers,
+        traffic,
         moves: log,
     }
 }
@@ -998,28 +1121,31 @@ pub fn solve_with_heldout(
 /// Returns `None` when the search space exceeds `max_states`.
 #[allow(clippy::too_many_arguments)]
 pub fn exhaustive(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64) -> Option<(Realization, f64)> {
-    exhaustive_with(env, sens, roles, output_site, budget, menu, default, machine, max_states, RoundingTerm::default())
+    exhaustive_with(env, sens, roles, output_site, budget, menu, default, machine, max_states, Options::default())
 }
 
-/// [`exhaustive`] under a rounding term (D155): the best assignment under the
-/// same estimate the proposal used.
+/// [`exhaustive`] under the options' rounding term (D155) and rules (D169):
+/// the best assignment under the same estimate the proposal used, over the
+/// values it offers.
 #[allow(clippy::too_many_arguments)]
-pub fn exhaustive_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64, rounding: RoundingTerm) -> Option<(Realization, f64)> {
+pub fn exhaustive_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64, options: Options) -> Option<(Realization, f64)> {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
     let budget_abs = budget.absolute(out_mag);
-    let sp = split(env, sens, roles, rounding);
+    let mut sp = split(env, sens, roles, options.rounding);
+    sp.offer(menu, default, options.min_gain);
     let sites = &sp.decisions;
+    let free: Vec<usize> = (0..sites.len()).filter(|i| sp.offered[*i]).collect();
     let m = menu.0.len() as u64;
-    let states = m.checked_pow(sites.len() as u32)?;
+    let states = m.checked_pow(free.len() as u32)?;
     if states > max_states {
         return None;
     }
     let mut best: Option<(Vec<Dtype>, f64)> = None;
     for code in 0..states {
         let mut c = code;
-        let mut pick = Vec::with_capacity(sites.len());
-        for _ in 0..sites.len() {
-            pick.push(menu.0[(c % m) as usize]);
+        let mut pick = vec![default; sites.len()];
+        for i in &free {
+            pick[*i] = menu.0[(c % m) as usize];
             c /= m;
         }
         let err: f64 = sp.estimate(&pick, default);

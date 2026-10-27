@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.16.1 — 2026-10-23
+
+A patch of the solver, after the certificate failed on a second text
+(`presk-specs/implementation/presk-plan-0.16.1.md`, D168–D172; the user's
+decisions of 2026-10-22).
+- `presk solve` no longer offers a value of one element, nor a value whose
+  first narrowing saves less than 10⁻³ of the entry's traffic
+  (`--min-gain`).
+- The rows those rules touch were solved again, and judged on three texts
+  the model never saw.
+
+- Two rules in the solver of stored values and parameters (0.16.1, D169,
+  `presk-specs/implementation/presk-plan-0.16.1.md`). A value of one element
+  is not offered. A value whose first narrowing, `f64` to `f32`, saves less
+  than θ of the entry's all-`f64` traffic is not offered either
+  (`presk solve --min-gain θ`, 10⁻³ by default). Both keep `f64`, and the
+  nests that read them round them at their edge. `presk solve` names them
+  in a line `rules`, and `presk explain` gives them their rule as their
+  reason. On the course logits at ε\* the rules keep LayerNorm's ε, the head
+  width and its root, LayerNorm's mean and the twelve vector parameters at
+  `f64`, which 0.16.0's decisions had narrowed for 0.24 % of the traffic.
+- The rows the rules touch, solved again (D170, `docs/rows-0.16.1.md`):
+  the curves, V6, the course logits and `make precision`, on 0.16.0's
+  envelopes, judged on the Code civil and the Code pénal. Every ratio of
+  record moves by at most 0.03×. The certificate rows have no `bf16` left:
+  V6 measures all-`f32`'s gap, the course logits half all-`f32`'s on the
+  Code civil and 2.24·10⁻⁵ on the Code pénal. New script
+  `experiments/rows_0161.py`; `margins_course.sh` takes `CURVE`.
+- The certificate on a third and a fourth text (D171,
+  `docs/further-texts-2026-10-23.md`, `make further-texts`): the Code du
+  travail and the Code de procédure pénale, their typographic characters
+  mapped (`second_corpus.py map`), 0.16.1's realizations and 0.16.0's
+  beside them. With 0.16.1's realizations Y1 holds on both texts at both
+  scales, where 0.16.0's fail it. Y2 fails at the course constants on both,
+  at `f32`'s level (0.49× and 0.495×, and 2.07×). New script
+  `experiments/further_texts.sh`.
+- The certificate on a second text (D168, `docs/second-corpus-2026-10-22.md`,
+  `make second-corpus`): the Code pénal from the course's container, on the
+  Code civil's vocabulary (32 characters deleted), its first 461 windows
+  through the Code civil's models, realizations and ε\*(10⁻³). At D = 64
+  every certified realization stays inside ε\* and flips nothing, and every
+  gap is within 0.54× to 1.31× (Y1 and Y2 hold). At the course constants one
+  stretch of window 261 takes four certified realizations above ε\*, the
+  logits solved at ε\* to 1.90 ε\*. LayerNorm's ε in `bf16` carries it. Two
+  near-ties flip one or two decisions, and seven gaps move more than 2× (Y1
+  and Y2 fail). New scripts `experiments/second_corpus.{sh,py}`; no code
+  changes.
+
 ## 0.16.0 — 2026-10-21
 
 The solver's defaults after D154–D156, `dropout` outside a training run as

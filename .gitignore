@@ -17,3 +17,15 @@ __pycache__/
 /corpus/nlp/data/civil_vocab.json
 /corpus/nlp/data/civil_tokens.txt
 /corpus/nlp/data/*.psk.d
+# The Code pénal, a second text (experiments/second_corpus.sh).
+/corpus/nlp/data/penal.md
+/corpus/nlp/data/penal_civil92.md
+/corpus/nlp/data/penal_tokens.txt
+# The Code du travail and the Code de procédure pénale, the third and fourth
+# texts (experiments/further_texts.sh, plan 0.16.1).
+/corpus/nlp/data/travail.md
+/corpus/nlp/data/travail_civil92.md
+/corpus/nlp/data/travail_tokens.txt
+/corpus/nlp/data/procedure_penale.md
+/corpus/nlp/data/procedure_penale_civil92.md
+/corpus/nlp/data/procedure_penale_tokens.txt

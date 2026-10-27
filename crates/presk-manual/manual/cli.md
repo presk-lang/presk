@@ -739,7 +739,7 @@ the `precision` chapter, "Does the condition number rescue the bound?".
 presk solve FILE.psk --precision ENV.json [--budget 1e-3 | --budget-abs EPS] [--weights ckpt/final.psk.d]
     [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--no-verify] [--bits 128]
     [--rounding unit|measured] [--narrow off|measured|heldout] [--heldout M]
-    [--estimate sum|rss] [--margin 2.5]
+    [--estimate sum|rss] [--margin 2.5] [--min-gain 1e-3]
     [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
 ```
 
@@ -800,7 +800,14 @@ spent in sample, which `--estimate rss` and the narrowings read and the
 default solve does not; and `--narrow heldout [--heldout M]`, the narrowing
 stopped early on the `M` samples after the envelope's in its data file (as
 many as its own by default), refused (exit 2) for an envelope not calibrated
-on a slice of a data file. See the `precision` chapter.
+on a slice of a data file. See the `precision` chapter. Since 0.16.1 (D169)
+two rules keep a value at `f64`, unoffered: a value of one element (rule
+1, no option), and a value whose first narrowing, `f64` to `f32`, saves
+less than `--min-gain θ` of the entry's all-`f64` traffic (rule 2, 10⁻³ by
+default, 0 to turn it off, in bytes even under a `--profile`; a θ outside
+[0, 1) is refused, exit 2). The line `rules` names those values, with
+rule 2's gains beside θ·B and what the two forgo at most; the line `sites`
+counts the values offered (the `precision` chapter, "Two rules").
 
 ### `presk solve --step`: a budget on the update
 

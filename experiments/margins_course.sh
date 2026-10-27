@@ -58,13 +58,17 @@ JOBS=${JOBS:-8}
 THREADS=${THREADS:-2}          # a native run's workers, JOBS runs at a time
 OUT=${OUT:-out/margins-course}
 BUDGETS=(1e-1 1e-2 1e-3 1e-4 1e-5 1e-6 1e-7)
+# The course curve's realizations, CURVE_<b>.json (plan 0.16.1: 0.16.0's
+# moved aside into out/pre-0.16.1/ are run again from there on the further
+# texts).
+CURVE=${CURVE:-out/curve-course}
 
 for f in "$W" "$VAL"; do [ -f "$f" ] || { echo "missing $f: train at the course constants first"; exit 1; }; done
 # EXACT_ONLY=1: stage 1 alone, the exact logits, which need no realization
 # and take hours here, so that they can run while curve_course.sh solves.
 if [ "${EXACT_ONLY:-0}" != 1 ]; then
 for b in "${BUDGETS[@]}"; do
-    [ -f "out/curve-course_$b.json" ] || { echo "missing out/curve-course_$b.json: run experiments/curve_course.sh first"; exit 1; }
+    [ -f "${CURVE}_$b.json" ] || { echo "missing ${CURVE}_$b.json: run experiments/curve_course.sh first"; exit 1; }
 done
 fi
 mkdir -p "$OUT/exact" "$OUT/native" "$OUT/decisions" "$OUT/json"
@@ -83,7 +87,7 @@ NAMES=(f64 f32 bf16 int8 int8-pow2 int4 int4-pow2)
 LABELS="f64|f32|bf16|int8, f32 elsewhere|int8 pow2|int4, f32 elsewhere|int4 pow2"
 SPECS=(f64 f32 bf16 "$(realization 8 absmax)" "$(realization 8 pow2)" "$(realization 4 absmax)" "$(realization 4 pow2)")
 for b in "${BUDGETS[@]}"; do
-    NAMES+=("curve-$b"); LABELS="$LABELS|solved at $b"; SPECS+=("@out/curve-course_$b.json")
+    NAMES+=("curve-$b"); LABELS="$LABELS|solved at $b"; SPECS+=("@${CURVE}_$b.json")
 done
 for nr in ${EXTRA:-}; do
     NAMES+=("${nr%%=*}"); LABELS="$LABELS|${nr%%=*}"; SPECS+=("${nr#*=}")

@@ -1632,6 +1632,89 @@ The step-5 runs found one defect. Since D160, `presk plan` had planned
 the inference reading, so `presk train` refused the plan of a training
 step (`E7002`). `presk plan --mode training` fixes it (D164).
 
+## 21. The certificate on a second text (D168)
+
+`make second-corpus` (`experiments/second_corpus.sh`, the report
+`docs/second-corpus-2026-10-22.md`) keeps the models, the realizations and
+ε\*(10⁻³) of record and changes the text to the Code pénal.
+- *The text.* It comes from the course's container and is put on the Code
+  civil's vocabulary, with 32 characters deleted.
+- *The judge set.* Its first 461 windows of 256.
+- *The runs.* Every realization of §20's margins at both scales, run
+  natively against the Code pénal's exact logits.
+
+Two statements were fixed before it ran:
+- *Y1:* every realization certified on the Code civil stays inside its ε\*
+  and flips nothing;
+- *Y2:* every gap is within 2× of its gap on the Code civil.
+
+| | D = 64 | the course constants |
+|---|---|---|
+| certified realizations above the Code civil's ε\* | none of 12 | **4 of 12**; the logits at ε\* 9.4·10⁻⁴ (1.90 ε\*) |
+| their flips | none | 1 or 2 each, at two near-ties |
+| the gaps, Code pénal ÷ Code civil | 0.54× to 1.31× | 0.78× to **2.82×**, 7 of 22 above 2× |
+| Y1, Y2 | hold | fail |
+| the exact model's loss, Code civil → Code pénal | 2.774 → 2.747 | 2.331 → 2.313 |
+
+- *One stretch moves.* At course scale 18 of the 22 realizations have their
+  worst gap in one window, from the prediction after "par le J|ournal
+  officiel" to its end. The median window moves less than 17 %.
+- *LayerNorm's ε in `bf16` carries it.* Back to `f32`, the course curve's
+  10⁻⁴ realization falls 25 times there.
+- *The flips are near-ties.* The Code pénal's two smallest margins,
+  1.1·10⁻⁵ and 2.6·10⁻⁶, are below any of the Code civil's.
+
+The certificate is a statement about the text it was measured on. At
+D = 64 it carries to a second text of the same kind. At the course
+constants it does not: one stretch, in one window of 461 and never seen by
+the envelope, breaks it.
+
+## 22. The rows of record at 0.16.1 (D170)
+
+The two rules of 0.16.1 (D169; the `precision` chapter, "Two rules") keep at
+`f64` the values without gain. The rows they touch were solved again on
+0.16.0's envelopes (`docs/rows-0.16.1.md`), and judged on the Code civil
+and on the Code pénal.
+- **The values left out.** On every row 18 to 22 values are left out. They
+  forgo at most 0.96 % of the traffic (Z1), and every ratio of record
+  moves by at most 0.03×: V6 1.96×, the course logits 1.98×, the curve at
+  10⁻³ 2.03×, `make precision` 2.01×.
+- **No `bf16` left in the certificate rows.** The certificate rows are now
+  `f32` but for the values left out.
+  - V6 measures all-`f32`'s gap on the 461 windows (2.88·10⁻⁶; 0.16.0:
+    1.43·10⁻⁴).
+  - The course logits measure half all-`f32`'s (8.70·10⁻⁶; 0.16.0:
+    4.23·10⁻⁴).
+  - On the Code pénal the course logits measure 2.24·10⁻⁵ (0.16.0: 1.90
+    ε\*).
+- **On the Code pénal.** D168's Y1 now holds at both scales and Y2 at
+  D = 64. At the course constants Y2 fails on 5 of 22 rows, all at
+  2.2·10⁻⁵ in window 261. So does Z2's out/in criterion for the course
+  logits: 1.92× from 16 windows on the Code civil, where all-`f32`'s own is
+  1.80×. Both are relative criteria at `f32`'s level. In absolute terms
+  every certified realization is at least 22 times inside ε\* on both
+  texts, and flips nothing.
+
+## 23. The certificate on a third and a fourth text (D171)
+
+The plan's §7 fixed two more texts before the measurement: the Code du
+travail and the Code de procédure pénale (`make further-texts`,
+`docs/further-texts-2026-10-23.md`). Their typographic characters are
+mapped onto the Code civil's vocabulary, and their first 461 windows go
+through the Code civil's models. Both 0.16.1's realizations and 0.16.0's
+are judged at the Code civil's ε\*.
+- **Y1 holds on both texts at both scales with 0.16.1's realizations.**
+  Every certified realization stays inside ε\* and flips nothing. 0.16.0's
+  failed it: by one or two near-tie flips inside ε\* at D = 64 on both
+  texts, and at 1.16 ε\* at the course constants on the Code de procédure
+  pénale.
+- **Y2 holds at D = 64 and fails at the course constants on both texts,**
+  at `f32`'s level: 0.49× and 0.495× on the Code du travail, 2.07× on the
+  Code de procédure pénale. So Z3 fails on both.
+- **The tails** come after an article's heading and after an opening
+  parenthesis, the Code civil's own kinds of position. They never come
+  after a capital inside running text, the Code pénal's window 261.
+
 ## What these experiments do not show
 
 - **Speed against a mature stack, beyond one model on one machine.** §3's

@@ -914,6 +914,13 @@ enum Command {
         /// hold out (default: as many as the envelope's).
         #[arg(long)]
         heldout: Option<usize>,
+        /// Rule 2 (0.16.1, D169): a value is offered only when its first
+        /// narrowing, `f64` to `f32`, saves at least this fraction of the
+        /// entry's all-`f64` traffic, in bytes even under `--profile`; 0
+        /// turns the rule off. A value of one element is never offered
+        /// (rule 1).
+        #[arg(long, value_name = "θ", default_value_t = 1e-3)]
+        min_gain: f64,
         /// Solve one training step under a budget on its **update**, the
         /// envelope being `presk calibrate --step`'s (0.6.0 step 7b): every
         /// function of the step measured alone in `f32` and `bf16`, greedy
@@ -1421,7 +1428,7 @@ fn main() -> ExitCode {
             set_remat(remat);
             step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref())
         }
-        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, rounding, narrow, estimate, margin, heldout, remat, .. } => {
+        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, rounding, narrow, estimate, margin, heldout, min_gain, remat, .. } => {
             set_remat(remat);
             let scheme = match scheme.as_str() {
                 "absmax" => presk_rt::QuantScheme::Absmax,
@@ -1451,9 +1458,14 @@ fn main() -> ExitCode {
                 },
                 margin,
                 heldout,
+                min_gain,
             };
             if !(margin.is_finite() && margin >= 1.0) {
                 eprintln!("presk solve: --margin must be a number of at least 1, not {margin}");
+                return ExitCode::from(2);
+            }
+            if !(min_gain.is_finite() && (0.0..1.0).contains(&min_gain)) {
+                eprintln!("presk solve: --min-gain is a fraction of the entry's traffic, at least 0 and below 1, not {min_gain}");
                 return ExitCode::from(2);
             }
             solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), options)

@@ -92,6 +92,38 @@ pub fn bound(env: &Envelope, env_path: &str, realize: &str, b: &Bounded, sites: 
     out
 }
 
+/// The lines `rules` of `presk solve` (0.16.1, D169): the values of one
+/// element, the values under rule 2's threshold with their first step's
+/// gain, and what the two forgo at most against the realization's traffic.
+/// Nothing when the rules leave every value offered.
+pub fn rules(sol: &presk_precision::solve::Solution) -> Vec<String> {
+    use presk_precision::solve::Rule;
+    let o = &sol.offers;
+    if o.excluded.is_empty() {
+        return Vec::new();
+    }
+    let names = |r: Rule, gain: bool| o.by(r).map(|e| if gain { format!("{} {:.3e}", e.name, e.gain) } else { e.name.clone() }).collect::<Vec<_>>().join(", ");
+    let mut out = Vec::new();
+    let one = o.by(Rule::OneElement).count();
+    if one > 0 {
+        out.push(format!("  rules       {one} of one element not offered (rule 1): {}", names(Rule::OneElement, false)));
+    }
+    let low = o.by(Rule::MinGain).count();
+    if low > 0 {
+        let lead = if one > 0 { "            " } else { "  rules     " };
+        out.push(format!(
+            "{lead}  {low} not offered whose first narrowing saves under θ·B = {:.0e} × {:.4e} = {:.4e} bytes (rule 2, --min-gain), the bytes it saves: {}",
+            o.min_gain,
+            o.base,
+            o.threshold(),
+            names(Rule::MinGain, true)
+        ));
+    }
+    let share = if sol.traffic > 0.0 { o.forgone() / sol.traffic } else { 0.0 };
+    out.push(format!("              at most {:.4e} bytes forgone (their saving in the menu's narrowest type), {:.2} % of the realization's traffic, {:.4e} bytes", o.forgone(), 100.0 * share, sol.traffic));
+    out
+}
+
 /// `presk solve`: the budget, the sites, the cost, the estimate and the
 /// measured gap, the parameter menu's with `--quant`, the exhaustive
 /// search's cost, and with `list` the sites assigned away from the default.
@@ -106,13 +138,19 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
         Budget::Absolute(b) => format!("presk solve: `{}` under budget {:.3e} absolute{over} ({:.2e} relative to |output| {:.3e})", env.entry, b, b / ref_f64.max(f64::MIN_POSITIVE), ref_f64),
     };
     let params: Vec<&presk_precision::solve::SiteCost> = solved.breakdown.iter().filter(|c| c.param).collect();
-    let mut out = vec![head, format!("  sites       {} narrowable, {} assigned away from f64", sol.considered - params.len(), sol.realization.storage.len())];
+    // The values the rules of 0.16.1 do not offer (D169) are counted apart.
+    let offers = &sol.offers;
+    let (out_sites, out_params) = (offers.excluded.iter().filter(|e| !e.param).count(), offers.excluded.iter().filter(|e| e.param).count());
+    let stored = sol.considered - params.len();
+    let of = |n: usize, out: usize, what: &str| if out > 0 { format!(" ({n} {what}, {out} not offered)") } else { String::new() };
+    let mut out = vec![head, format!("  sites       {} narrowable, {} assigned away from f64{}", stored - out_sites, sol.realization.storage.len(), of(stored, out_sites, "stored values"))];
     if !params.is_empty() {
         let typed = |d: presk_rt::Dtype| sol.realization.params.values().filter(|t| **t == d).count();
         let at_rest = |c: &&presk_precision::solve::SiteCost| c.elems * c.dtype.bytes() as f64;
         out.push(format!(
-            "  parameters  {} offered, {} stored away from f64 ({} f32, {} bf16): {:.4e} bytes at rest against {:.4e} in f64",
-            params.len(),
+            "  parameters  {} offered{}, {} stored away from f64 ({} f32, {} bf16): {:.4e} bytes at rest against {:.4e} in f64",
+            params.len() - out_params,
+            if out_params > 0 { format!(" of {}", params.len()) } else { String::new() },
             sol.realization.params.len(),
             typed(presk_rt::Dtype::F32),
             typed(presk_rt::Dtype::Bf16),
@@ -120,6 +158,7 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
             params.iter().map(|c| c.elems * 8.0).sum::<f64>()
         ));
     }
+    out.extend(rules(sol));
     let per = if solved.outputs > 1 { "first order, of a mean output element" } else { "first order" };
     out.extend([
         format!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, sol.speedup(), sol.relaxation_bytes),

@@ -40,6 +40,8 @@
 #   make gappa-dot        a contraction's bound proved in Gappa beside the compiler's bound and the measured gap: `dot` of [8, K]·[K, 8] in f32 at K = 8…128 under the sequential order and interleaved(4, 8, 16), into out/gappa-dot/summary.md (D131; needs `gappa`; minutes, nothing timed)
 #   make solver-rounding  the solver's rounding term measured on the envelope and a narrowing step by measurement (--rounding measured, --narrow measured; defaults unchanged): V6's protocol on the logits at D = 64 at 4.67e-4 and 1e-6 in four forms, each judged on the 461 held-out windows beside D154's searches, into out/solver-rounding/report.md (D155; needs make margins and make precision-tuning; about half an hour)
 #   make off-sample       the certificate off-sample against the size of the calibration sample: the envelope of the logits at D = 64 on the first 1, 2, 4, 8, 16, 32 held-out windows and on all 461, the solver in three forms at 4.67e-4 and 1e-6 on each, every realization judged on the windows it was not calibrated on, into out/off-sample/report.md (D156; needs make margins and make solver-rounding; about an hour and a half on 12 jobs)
+#   make second-corpus    the certificate on a second text: the Code pénal (the course's container) on the Code civil's vocabulary, its first 461 windows of 256 through the Code civil's models, realizations and ε*(10⁻³) unchanged, at D = 64 and at the course constants, every realization of record judged there beside its rows on the Code civil (statements Y1 and Y2), into out/second-corpus/ (D168; needs make margins' and D163's outputs and the course GPT; network once; minutes at D = 64, about three hours at the course constants)
+#   make further-texts    the certificate on a third and a fourth text: the Code du travail and the Code de procédure pénale (the course's container), their typographic characters mapped and the rest outside the Code civil's vocabulary deleted, their first 461 windows of 256 through the Code civil's models at D = 64 and at the course constants, 0.16.1's realizations and 0.16.0's beside them (statement Z3, Y1 and Y2 per text), into out/further-<text>/ (D171; needs D170's and D163's outputs; network once; minutes at D = 64, about three hours a text at the course constants)
 #   make spend            three ways to spend the budget judged out of sample: the logits at D = 64 on the envelopes of the first 4 and 16 held-out windows, seven forms (--rounding unit, the default, --estimate rss, --narrow measured, --narrow heldout and the two with rss) at 4.67e-4 and 1e-6, every realization judged on the windows no form saw, into out/spend/report.md (D161; needs make margins)
 #   make precision-tuning a precision-tuning tool on the exported C: CRAFT's variable mode on the C program of the logits at D = 64 under the paper's criterion, Precimonious's and CRAFT's searches on presk's realizations, all of it judged on the 461 held-out windows, into out/precision-tuning/report.md (D154; needs make margins; network once for the tools, about half an hour)
 #   make pytorch-modes    PyTorch compiled (torch.compile) and in mixed precision (AMP bfloat16) beside eager: the course GPT's forward pass and training step by D126's protocol, the modes' identity, their gap to the exact logits at D = 64 and their quality after 600 steps, into out/pytorch-modes/report.md (D153; needs make margins; alone, about an hour)
@@ -104,7 +106,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/minigpt/train_minigpt.psk \
            tests/examples/minigpt/serve_minigpt.psk
 
-.PHONY: network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -1021,6 +1023,25 @@ off-sample:
 spend:
 	env -u CFLAGS $(CARGO) build --release -p presk
 	experiments/spend.sh out/spend
+
+# The certificate on a second text (D168): the Code pénal from the course's
+# container, its characters outside the Code civil's vocabulary deleted, its
+# first 461 windows of 256 through the D = 64 model and the course GPT, every
+# realization of D163 §4 and §5 run natively there and judged against its
+# exact logits beside its rows on the Code civil, at the Code civil's ε*.
+# Nothing calibrated, solved, trained or timed. Needs make margins' and
+# D163's outputs (out/margins-0.16.0, out/margins-course-0.16.0 and their
+# realizations) and out/course_train_f64.
+second-corpus:
+	experiments/second_corpus.sh
+
+# The certificate on a third and a fourth text (plan 0.16.1 step 3, D171): the
+# Code du travail and the Code de procédure pénale, D168's protocol on each,
+# 0.16.1's realizations (D170) and 0.16.0's (D163, on its own binary) beside
+# them. Nothing calibrated, solved, trained or timed.
+further-texts:
+	TEXT=travail experiments/further_texts.sh
+	TEXT=procedure_penale experiments/further_texts.sh
 
 # PyTorch eager on the Llama 2 decoder block (D107): D100's protocol on one
 # block of coverage/llama.psk at the 7B width, the forward pass at 384

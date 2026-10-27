@@ -1182,7 +1182,7 @@ fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
     let decisions: Vec<Vec<String>> = decided.iter().map(|c| vec![format!("`{}`", c.name), if c.param { "a parameter, by its path".into() } else { op_of(s, &c.name) }, format!("`{}`", c.dtype.name()), format!("{}", c.elems), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
     v.prose("**The decisions**, each with its term of the estimate:");
     v.listing_table(&["Site", "Operation", "Type", "Elements", "|v|", "s", "Term", "Share"], decisions);
-    v.prose(format!("**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget ({} absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in {unit}{}.", sci(sv.solution.budget_abs), if sv.time { ", the profile's roofline" } else { "" }));
+    v.prose(format!("**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget ({} absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in {unit}{}.{}", sci(sv.solution.budget_abs), if sv.time { ", the profile's roofline" } else { "" }, rules_note(sv)));
     let reasons: Vec<String> = decided.iter().map(|c| format!("- `{}`: {}.", c.name, why(sv, &c.name, unit))).collect();
     if reasons.len() > crate::doc::LONG {
         v.prose(reasons[..crate::doc::EXCERPT].join("\n"));
@@ -1198,9 +1198,25 @@ fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
     roles_note(s, v);
 }
 
+/// The two rules of 0.16.1 (D169), said when they leave a value out.
+fn rules_note(sv: &Solved) -> String {
+    let o = &sv.solution.offers;
+    if o.excluded.is_empty() {
+        return String::new();
+    }
+    format!(" Before it, two rules leave a value at `f64`, unoffered (0.16.1): a value of one element (rule 1), and a value whose first narrowing saves less than θ = {} of the entry's all-`f64` traffic, θ·B = {} bytes (rule 2). Here they leave {}.", sci(o.min_gain), sci(o.threshold()), o.excluded.len())
+}
+
 /// The reason of a decision's type, from the solver's moves.
 fn why(sv: &Solved, site: &str, unit: &str) -> String {
-    use presk_precision::solve::Move;
+    use presk_precision::solve::{Move, Rule};
+    // A value the rules of 0.16.1 do not offer (D169) has no move.
+    if let Some(e) = sv.solution.offers.excluded.iter().find(|e| e.name == site) {
+        return match e.rule {
+            Rule::OneElement => "not offered: one element, no traffic to save (rule 1)".to_string(),
+            Rule::MinGain => format!("not offered: its first narrowing saves {} bytes, under θ·B = {} (rule 2)", sci(e.gain), sci(sv.solution.offers.threshold())),
+        };
+    }
     let moves: Vec<&Move> = sv.solution.moves.iter().filter(|m| match m {
         Move::Tried { site: x, .. } | Move::Widened { site: x, .. } | Move::Narrowed { site: x, .. } | Move::Undone { site: x, .. } => x == site,
     }).collect();
