@@ -36,7 +36,7 @@ fn run(rel: &str) -> (SourceMap, String, Vec<presk_syntax::Diagnostic>) {
 
 #[test]
 fn examples_type_check() {
-    for rel in ["mlp/mlp.psk", "layernorm/layernorm.psk", "minigpt/minigpt.psk", "minigpt/train_minigpt.psk", "minigpt/serve_minigpt.psk"] {
+    for rel in ["mlp/mlp.psk", "layernorm/layernorm.psk", "minigpt/minigpt.psk", "minigpt/train_minigpt.psk", "minigpt/serve_minigpt.psk", "concat/concat.psk", "rope/rope.psk"] {
         let (sm, summary, diags) = run(&format!("tests/examples/{rel}"));
         assert!(diags.iter().all(|d| d.code == "W0001" || d.code == "W0002"), "{rel}:\n{}", render_all(&diags, &sm, false));
         let name = format!("summary_{}", Path::new(rel).file_stem().unwrap().to_str().unwrap());

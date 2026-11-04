@@ -32,6 +32,7 @@
 #   make coverage         presk check on the MLPerf transcriptions, BERT and Llama run at tiny constants (manual, `coverage`)
 #   make plan-check       a default plan lowers every example entry to the same kernels (0.7.0 step 1)
 #   make c-conformance    the C export: every entry of the plan-check set and the course GPT exported, built, run, bit for bit, under the default layout and under plans, on GCC, Clang and for x86-64; presk serve's tokens from the exported generation loop; integer weights on the trained checkpoints; every nest in the SCoP mode against Polly (0.9.0 steps 3–8)
+#   make llvm-conformance the same C programs, each checked against the LLVM backend's run: with c-conformance, NB0 for --backend llvm (0.17.0 step 3)
 #   make c-speed          statement C4: the exported course GPT's forward at B = 16 against the native backend's, one thread and every thread (0.9.0 step 5; a quiet machine)
 #   make pytorch-baseline the course GPT's forward pass and training step on three sides, native, C and PyTorch, into out/pytorch-baseline/report.md (D87; a quiet machine, about forty minutes)
 #   make widening         where the measurement changes the solver's decision: three pairs of small programs (an unshifted softmax, the two-pass variance, a sum of equal terms, each beside the form the estimate judges right), the four rules' bounds and every solve's widening rounds at seven budgets, into out/widening/summary.md (D128; minutes, nothing timed)
@@ -104,9 +105,11 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/layernorm/layernorm.psk \
            tests/examples/minigpt/minigpt.psk \
            tests/examples/minigpt/train_minigpt.psk \
-           tests/examples/minigpt/serve_minigpt.psk
+           tests/examples/minigpt/serve_minigpt.psk \
+           tests/examples/concat/concat.psk \
+           tests/examples/rope/rope.psk
 
-.PHONY: network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: llama3 venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -122,6 +125,8 @@ run-examples: build
 	$(PRESK) run tests/examples/layernorm/layernorm.psk --entry 'LayerNorm{8}.apply' --dim batch=3
 	$(PRESK) run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply \
 	    --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
+	$(PRESK) run tests/examples/rope/rope.psk --entry attention3 --dim B=2 --dim T=8
+	$(PRESK) run tests/examples/concat/concat.psk --entry loss_grad --dim B=2 --dim T=8
 
 export-examples: build
 	$(PRESK) export tests/examples/mlp/mlp.psk --target pytorch --mode readable --conformance-entry mse_grad --dim D=4 --dim B=2 -o out/mlp_pt
@@ -136,6 +141,10 @@ export-examples: build
 	    --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/trainloop_pt
 	$(PRESK) export tests/examples/minigpt/minigpt.psk --target pytorch --mode graph \
 	    --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/graph_pt
+	$(PRESK) export tests/examples/rope/rope.psk --target pytorch --mode readable --shapes=check \
+	    --conformance-entry attention3 --dim B=2 --dim T=8 -o out/rope_pt
+	$(PRESK) export tests/examples/concat/concat.psk --target pytorch --mode readable --shapes=check \
+	    --conformance-entry loss_grad --dim B=2 --dim T=8 -o out/concat_pt
 
 venv:
 	uv venv .venv --python 3.12
@@ -417,6 +426,23 @@ bert:
 llama:
 	$(CARGO) build --release -p presk
 	./experiments/llama.sh out/llama.md
+
+# 0.17.0 step 7 (D180): Llama 3.2 1B on its published weights
+# (coverage/llama3.psk; experiments/llama/llama3.sh's stages convert,
+# prompts, rw2, rw4, rw3). The checkpoint is the user's download:
+# `hf download meta-llama/Llama-3.2-1B --local-dir ~/presk-data/llama-3.2-1b`
+# (CK= names another directory). RW2 needs `make venv-hf`.
+llama3:
+	$(CARGO) build --release -p presk
+	./experiments/llama/llama3.sh $(STAGE)
+
+# transformers in a venv of its own, for RW2 (D180): torch on the CPU and
+# transformers' Llama, which the comparison patches to compute in float64.
+venv-hf: .venv-hf/bin/python
+.venv-hf/bin/python:
+	python3 -m venv .venv-hf
+	.venv-hf/bin/pip install -q torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+	.venv-hf/bin/pip install -q transformers==5.21.0 safetensors==0.8.0
 
 # A budget on one training step's update (plan 0.6.0 step 7b, D52): the gap
 # table at D = 64 (needs `make gpt-trained` and out/gpt_prof.json), statement
@@ -914,6 +940,13 @@ plan-check: build
 c-conformance: .venv-zig/bin/python .llvm/bin/clang
 	PRESK_C3=1 RA4_FROZEN=$(RA4_FROZEN) $(CARGO) test --release -p presk --test export_c --test export_scop -- --include-ignored --nocapture
 
+# 0.17.0 step 3 (D176), NB0 for the LLVM backend: the same programs, each
+# recorded from and checked against the LLVM backend's run (`presk export
+# --llvm`); with `c-conformance` passing, the two backends' bits are the same
+# on every one. The C3 builds are `c-conformance`'s, not repeated.
+llvm-conformance: .llvm/bin/clang
+	PRESK_C1_LLVM=1 RA4_FROZEN=$(RA4_FROZEN) $(CARGO) test --release -p presk --test export_c -- --include-ignored --nocapture
+
 # 0.9.0 step 8 (D85): Polly, the polyhedral front end the SCoP mode's nests
 # are read by. LLVM's release links it into its clang (`-mllvm -polly`). It is
 # 1.8 GB, from GitHub, its checksum pinned; only clang and its headers are
@@ -971,6 +1004,17 @@ C_WAIT ?= GOMP_SPINCOUNT=8M
 pytorch-baseline:
 	env -u CFLAGS $(CARGO) build --release -p presk
 	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) CFLAGS="$(CFLAGS)" C_WAIT="$(C_WAIT)" experiments/pytorch_baseline.sh $(BASELINE_OUT)
+
+# Each kernel's share of the native backend's gap to the C program (plan
+# 0.17.0 step 1, D174, statement NB1): the course GPT's forward pass,
+# gradient and optimizer at B = 16, T = 256 in f32 under the frozen
+# profile's plans, timed launch by launch on both sides and joined by the
+# kernel's signature: on the ten X925 cores against GCC -O2 with OpenMP, and
+# on one X925 core against GCC -O2, clang -O2 and clang -O3 (make llvm), three
+# processes each. Into out/kernel-shares/report.md. A quiet machine.
+kernel-shares: .llvm/bin/clang
+	$(CARGO) build --release -p presk
+	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) C_WAIT="$(C_WAIT)" experiments/kernel_shares.sh out/kernel-shares
 
 # PyTorch compiled and in mixed precision, beside eager (D153): the exported
 # course GPT in four modes (eager, torch.compile with its defaults, AMP

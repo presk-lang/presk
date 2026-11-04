@@ -8,8 +8,10 @@ use crate::dim::DimExpr;
 use crate::ty::{Axis, Shape, Ty};
 
 const ELEMENTWISE: &[&str] = &["gelu", "relu", "exp", "tanh", "sqrt", "abs", "log", "sigmoid", "sin", "cos"];
-const NOT_IMPLEMENTED: &[&str] = &["vjp", "jvp", "concat", "clamp", "max", "min"];
-const ALL: &[&str] = &["mean", "sum", "softmax", "embed", "one_hot", "merge", "split", "dropout", "split_key", "cross_entropy", "argmax", "sample", "real", "split_heads", "merge_heads", "positions", "causal_mask", "grad", "matmul"];
+const NOT_IMPLEMENTED: &[&str] = &["vjp", "jvp"];
+const ALL: &[&str] = &[
+    "mean", "sum", "softmax", "embed", "one_hot", "merge", "split", "dropout", "split_key", "cross_entropy", "argmax", "sample", "real", "split_heads", "merge_heads", "positions", "causal_mask", "grad", "matmul", "concat", "max", "min", "clamp",
+];
 
 impl Checker<'_> {
     pub(crate) fn is_builtin(&self, name: &str) -> bool {
@@ -58,6 +60,61 @@ impl Checker<'_> {
         Some((sh, pos))
     }
 
+    /// The shape of a real tensor argument of `name`.
+    fn real_arg(&mut self, name: &str, t: &Ty, s: Span) -> Option<Shape> {
+        match self.zonk(t) {
+            Ty::Real(sh) => Some(sh),
+            other => {
+                let st = self.show(&other);
+                self.error(Diagnostic::error("E2002", format!("`{name}` expects a real tensor, found `{st}`")).label(s, "not a real tensor").help("a hyperparameter enters as a real through `real(x)` or `(x : ℝ)`"));
+                None
+            }
+        }
+    }
+
+    /// `concat(axis a, x, y)`: both operands carry `a` by name and agree on
+    /// every other axis; the result has `a` of the sum of their lengths
+    /// (reference, section "The standard library"; plan 0.17.0 step 6).
+    fn concat(&mut self, args: &[TArg], span: Span) -> Option<Ty> {
+        let [TArg::Axis(a, aspan), TArg::Pos(x, xs), TArg::Pos(y, ys)] = args else {
+            self.error(Diagnostic::error("E2004", "`concat` takes `(axis A, tensor, tensor)`").label(span, "wrong arguments"));
+            return None;
+        };
+        let xsh = self.real_arg("concat", x, *xs)?;
+        let ysh = self.real_arg("concat", y, *ys)?;
+        let (xsh, ysh) = (self.resolve_shape(&xsh), self.resolve_shape(&ysh));
+        let find = |sh: &Shape| sh.axes.iter().position(|ax| ax.name.as_deref() == Some(a.as_str()));
+        let (Some(p), Some(q)) = (find(&xsh), find(&ysh)) else {
+            let (sh, s) = if find(&xsh).is_none() { (&xsh, *xs) } else { (&ysh, *ys) };
+            let n = self.prog.names();
+            let shown = sh.display(&n);
+            self.error(
+                Diagnostic::error("E2008", format!("`concat` operand without the axis `{a}`"))
+                    .label(s, format!("this operand has shape `{shown}`"))
+                    .note("both operands of `concat` carry the axis by name; there is no implicit axis of length one")
+                    .help(format!("a slice `e[{a}: i..i+1]` keeps an axis of length one")),
+            );
+            return None;
+        };
+        if p != q || xsh.axes.len() != ysh.axes.len() || xsh.prefix.is_some() != ysh.prefix.is_some() {
+            let n = self.prog.names();
+            let (sx, sy) = (xsh.display(&n), ysh.display(&n));
+            self.error(Diagnostic::error("E2003", format!("`concat` along `{a}` of `ℝ{sx}` and `ℝ{sy}`")).label(span, "the operands' shapes differ by more than the length of the axis"));
+            return None;
+        }
+        // The second operand's shape with the first's length on `a`: the
+        // two must then be the same shape, names included.
+        let mut yy = ysh.clone();
+        yy.axes[q].len = xsh.axes[p].len.clone();
+        if !self.unify_shape(&xsh, &yy, *ys) {
+            return None;
+        }
+        self.typed.axis_pos.insert(*aspan, p);
+        let mut out = self.resolve_shape(&xsh);
+        out.axes[p] = Axis { name: Some(a.clone()), len: xsh.axes[p].len.add(&ysh.axes[q].len) };
+        Some(Ty::Real(out))
+    }
+
     fn builtin_inner(&mut self, name: &str, args: &[TArg], span: Span) -> Option<Ty> {
         if ELEMENTWISE.contains(&name) {
             return self.one_tensor(name, args, span).map(|(t, _)| t);
@@ -67,6 +124,25 @@ impl Checker<'_> {
             return None;
         }
         match name {
+            "max" | "min" => {
+                let [TArg::Pos(x, xs), TArg::Pos(y, ys)] = args else {
+                    self.error(Diagnostic::error("E2004", format!("`{name}` takes two tensors")).label(span, "wrong arguments"));
+                    return None;
+                };
+                let (a, b) = (self.real_arg(name, x, *xs)?, self.real_arg(name, y, *ys)?);
+                Some(Ty::Real(self.broadcast(&a, &b, span)?))
+            }
+            "clamp" => {
+                let [TArg::Pos(x, xs), TArg::Pos(lo, ls), TArg::Pos(hi, hs)] = args else {
+                    self.error(Diagnostic::error("E2004", "`clamp` takes `(tensor, lo, hi)`").label(span, "wrong arguments"));
+                    return None;
+                };
+                let (a, l, h) = (self.real_arg(name, x, *xs)?, self.real_arg(name, lo, *ls)?, self.real_arg(name, hi, *hs)?);
+                let al = self.broadcast(&a, &l, span)?;
+                self.typed.clamp_inner.insert(span, Ty::Real(al.clone()));
+                Some(Ty::Real(self.broadcast(&al, &h, span)?))
+            }
+            "concat" => self.concat(args, span),
             "mean" | "sum" => match args {
                 [TArg::Pos(..)] => {
                     self.one_tensor(name, args, span)?;

@@ -35,15 +35,26 @@ pub type EntryArgs = (FuncId, Dims, Vec<presk_rt::Value>);
 /// is one, the rest synthesized as `presk run` does. The same inputs for the
 /// envelope and for a gap measured beside the bound it supports.
 pub fn entry_args(core: &presk_core::Program, prog: &ElabProgram, opts: &presk_interp::RunOptions, data: Option<&DataSlice>, weights: Option<&Path>) -> std::result::Result<EntryArgs, String> {
-    let (func, fdims, mut args) = match data {
+    // With a checkpoint, the parameters are described and not drawn (D180).
+    let given = weights.is_some();
+    let (func, fdims, mut args, described) = match data {
         Some(d) => {
-            let (func, fdims, _, args) = presk_train::args_on_data(core, prog, opts, Path::new(&d.path), d.from, d.samples).map_err(|e| e.message)?;
-            (func, fdims, args)
+            let ((func, fdims, _, args), described) = if given {
+                presk_train::args_on_data_given_params(core, prog, opts, Path::new(&d.path), d.from, d.samples).map_err(|e| e.message)?
+            } else {
+                (presk_train::args_on_data(core, prog, opts, Path::new(&d.path), d.from, d.samples).map_err(|e| e.message)?, None)
+            };
+            (func, fdims, args, described)
         }
         None => {
-            let (func, fdims, inputs) = presk_interp::run::prepare_run(core, prog, opts).map_err(|e| e.message)?;
+            let (func, fdims, inputs, described) = if given {
+                presk_interp::run::prepare_run_given_params(core, prog, opts).map_err(|e| e.message)?
+            } else {
+                let (func, fdims, inputs) = presk_interp::run::prepare_run(core, prog, opts).map_err(|e| e.message)?;
+                (func, fdims, inputs, None)
+            };
             let args = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect::<presk_rt::Result<Vec<_>>>().map_err(|e| e.message)?;
-            (func, fdims, args)
+            (func, fdims, args, described)
         }
     };
     // A checkpoint that does not load is an error, never a fallback to the
@@ -53,9 +64,29 @@ pub fn entry_args(core: &presk_core::Program, prog: &ElabProgram, opts: &presk_i
     // front of every one, so that a missing file was named twice).
     if let Some(w) = weights {
         let path = w.display().to_string();
-        args[0] = presk_rt::load_params(w, &args[0]).map_err(|e| if e.message.starts_with(&path) { e.message } else { format!("{path}: {}", e.message) })?;
+        let read = match &described {
+            Some(s) => read_given_params(core, prog, s, w),
+            None => presk_rt::load_params(w, &args[0]),
+        };
+        args[0] = read.map_err(|e| if e.message.starts_with(&path) { e.message } else { format!("{path}: {}", e.message) })?;
     }
     Ok((func, fdims, args))
+}
+
+/// The parameters a checkpoint gives, read against a tree of the
+/// initializer's shape that is never drawn (0.17.0 step 7, D180). The
+/// initializer runs on the kernel backend with no executor
+/// ([`crate::layout::params_zeros`]), so the tree is zeros in `f64` and
+/// nothing is computed in exact arithmetic; the drawn parameters have the
+/// same tree and axes (the test `given_params`), so the checkpoint reads to
+/// the same values. `described` is what
+/// [`presk_interp::run::prepare_run_given_params`] gives.
+pub fn read_given_params(core: &presk_core::Program, prog: &ElabProgram, described: &presk_interp::run::Shaped, weights: &Path) -> presk_rt::Result<presk_rt::Value> {
+    let presk_interp::run::Shaped::Params { init, dims, key } = described else {
+        return presk_rt::err("E7001", "the entry's first argument is not a module's parameters");
+    };
+    let template = crate::layout::params_zeros(core, prog, *init, dims, key)?;
+    presk_rt::load_params(weights, &template)
 }
 
 /// A run's error as a diagnostic, at the binding it was evaluating; an entry

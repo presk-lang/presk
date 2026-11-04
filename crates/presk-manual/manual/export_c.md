@@ -134,8 +134,10 @@ window `T` its parameters fix, and its greedy copy, every `sample` an
 `argmax`, which `presk serve` calls at temperature 0: both are recorded on
 one backend and share their functions (`presk_MiniGPT_apply` is one), and
 `generate.c` runs `presk serve`'s loop over them. A model whose parameters
-do not fix the context's length is refused (`E8009`), since `presk serve`
-then passes a context that grows.
+do not fix the context's length, which `presk serve` passes a context that
+grows, is exported at the length `--dim T=n` gives, its context padded
+after the last token whose logits it reads, and refused without it
+(`E8009`; 0.17.0 step 7, D180, the `serve` chapter).
 
 ## Integer weights
 
@@ -195,8 +197,9 @@ no operation changed (D78).
 
 **The kernels** (step 1, `presk-export-c/tests/kernels.rs`): an executor
 over the compiled C, loaded with `dlopen`, runs inside the kernel backend,
-bit-identical to the native backend on the conformance suite's 41 primitives
-in `f64`, `f32` and `bf16`, scalar and in lanes, on the 1 491 layouts and
+bit-identical to the native backend on the conformance suite's 47 primitive
+cases (41 until 0.16.1; `max`, `min`, two slices, `slice_vjp` and `concat`
+since 0.17.0 step 6, 846 runs) in `f64`, `f32` and `bf16`, scalar and in lanes, on the 1 491 layouts and
 1 618 thread splits of the four nests of attention, and on hand-written
 kernels, every range cut three ways. Each transcendental function is
 bit-identical to the `libm` crate on 10⁶ inputs, and each `f32` one on every
@@ -231,9 +234,9 @@ test set's sizes the plans state tiles, lanes and packs but no split, so
 the course GPT at `B = 16` and those tests are what reach threads.
 
 **Integer weights.** The kernel printer's check covers integer inputs: the
-41 primitives with every real operand quantized in `int8` and `int4`, the
+47 primitive cases with every real operand quantized in `int8` and `int4`, the
 scales constant along the first axis or the last, in the three types,
-scalar and in lanes (2 880 runs), and the four nests' layouts with an
+scalar and in lanes (3 240 runs since 0.17.0 step 6, 2 880 before), and the four nests' layouts with an
 operand quantized (500 points and 568 splits in each width).
 `presk_quantize` is bit-identical to presk-rt on 4 027 392 weights of both
 widths and schemes (ties at `n + ½`, zero channels, subnormals, huge

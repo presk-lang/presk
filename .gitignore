@@ -2,6 +2,7 @@
 /out
 /.venv
 /.venv-zig
+/.venv-hf
 /.llvm
 /.gappa
 /.tuning

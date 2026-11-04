@@ -9,3 +9,7 @@ tests/examples/minigpt/train_minigpt.psk|adamw.step|--const V=64 --const D=16 --
 tests/examples/minigpt/serve_minigpt.psk|next_token|--const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 corpus/nlp/05_gpt.psk|SelfAttention.apply|--const V=92 --const D=16 --const H=2 --const L=1 --dim B=2 --dim T=8
 corpus/nlp/05_gpt.psk|GPT.apply|--const V=92 --const D=16 --const H=2 --const L=1 --dim B=2 --dim T=8
+tests/examples/rope/rope.psk|attention2|--dim B=2 --dim T=8
+tests/examples/rope/rope.psk|attention3|--dim B=2 --dim T=8
+tests/examples/concat/concat.psk|loss|--dim B=2 --dim T=8
+tests/examples/concat/concat.psk|loss_grad|--dim B=2 --dim T=8

@@ -211,6 +211,10 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 Op::Ellipsis
             }
+            ('.', Some('.')) => {
+                self.bump();
+                Op::DotDot
+            }
             ('=', Some('=')) => {
                 self.bump();
                 Op::EqEq

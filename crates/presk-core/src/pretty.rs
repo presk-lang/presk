@@ -5,7 +5,7 @@
 use presk_types::elab::ElabProgram;
 use presk_types::ty::Names;
 
-use crate::ir::{Func, Lit, Program, Rhs, VarId};
+use crate::ir::{Func, Lit, PrimOp, Program, Rhs, VarId};
 
 pub fn pretty(prog: &Program, elab: &ElabProgram) -> String {
     let mut out = String::new();
@@ -55,6 +55,11 @@ pub fn pretty_let(f: &Func, l: &crate::ir::Let, prog: &Program, elab: &ElabProgr
     let rhs = match &l.rhs {
         Rhs::Lit(Lit::Nat(k)) => format!("{k}"),
         Rhs::Lit(Lit::Float(t)) => t.clone(),
+        // A slice's bounds may be dimensions: printed with their names.
+        Rhs::Prim { op: op @ (PrimOp::Slice { axis, lo, hi } | PrimOp::SliceVjp { axis, lo, hi }), args: a } => {
+            let word = if matches!(op, PrimOp::Slice { .. }) { "slice" } else { "slice_vjp" };
+            format!("{word} {axis}: {}..{} {}", lo.display(&*n.dim), hi.display(&*n.dim), args(a))
+        }
         Rhs::Prim { op, args: a } => if a.is_empty() { op.name() } else { format!("{} {}", op.name(), args(a)) },
         Rhs::Call { f: callee, dim_args, args: a } => {
             let d: Vec<String> = dim_args.iter().map(|(k, e)| format!("{} = {}", elab.dim_name(*k), e.display(&*n.dim))).collect();

@@ -388,6 +388,137 @@ until then up to the last digits of `libm`'s functions against the
 standard library's, `loss_grad` through a stacked module in f32 giving
 9.4e-6 native and 5.3e-6 interpreted).
 
+### The code generator (0.17.0 step 2)
+
+Since 0.17.0 step 2 (D175) the code generator does six things that change
+no operation and no order, so the bits stay the same. X1's native outputs
+are `v0.16.1`'s byte for byte, and `make c-conformance` and statement H's
+tests pass.
+
+- **An output element its loop does not move lives in a variable.** If
+  every access to the output inside a loop is a scalar load or store at one
+  index the loop does not change, the element is loaded before the loop
+  and stored after it. A `bf16` output keeps its stores, since it rounds at
+  each one. Cranelift moves no memory access out of a loop, so `sum_to`
+  used to load and store its element at every step.
+- **Addresses are built from the loop structure.** They use byte strides,
+  fold the constant terms and add the terms in loop order, the innermost
+  last. The part an inner loop does not change is then one value for the
+  whole loop.
+- **A loop's header branches to the exit first.** Cranelift 0.131's
+  elaborator visits a header's children in the dominator tree in reverse
+  postorder. That order put the exit before the body when the branch named
+  the body first. Once it had visited the exit, the elaborator dropped the
+  loop from its stack, so it hoisted no value out of any loop. Branching
+  to the exit first gives the body its loops back.
+- **Innermost loops are unrolled by four, two or not at all.** The factor
+  is the largest one whose registers fit: the values the body carries,
+  plus the factor times its distinct loads, plus four, must not exceed
+  AArch64's 32 floating-point registers (16 elsewhere). Cranelift keeps the
+  loads in order and computes the arithmetic where its result is used, so
+  all the copies' loads are live together. The register tile's sixteen
+  accumulators therefore stay rolled; unrolled, they spilled at every step.
+  A body that calls `libm` is not unrolled.
+- **A one-lane kernel's lane-wise loops run over lanes** (four `f32` or two
+  `f64`). A loop qualifies when its iterations write different, contiguous
+  output elements and share nothing:
+  - its variable appears only in the last component of an index, as itself
+    plus terms without it;
+  - the output is read only at the element being stored;
+  - each real variable is assigned before it is read in each iteration;
+  - what depends on the lane is `+`, `−`, `×` or `÷`;
+  - it is not the loop a thread split divides, and its bound is a multiple
+    of the lane count.
+
+  Everything else is broadcast. Each lane does its own iteration's
+  operations in their order, which is statement H's argument; GCC does the
+  same to the exported C at `-O2`. The rewrite produces the IR's own vector
+  form statement for statement, so the kernel's text and lines are those of
+  the plan's kernel (`crates/presk-cranelift/src/lanes.rs`).
+- **Some loads of an input may move.** The load must be at an index affine
+  in loop variables whose values are themselves affine, and outside any
+  condition. Its address is then in the buffer wherever those variables
+  have a value, so it is marked `readonly`, `notrap` and `can_move`.
+  Cranelift places it at its first use, merges duplicates and hoists it
+  out of the loops it does not depend on. A kernel never writes its
+  inputs.
+
+What it bought, on the course GPT's kernels under the plan of record on
+ten X925 (`presk bench --plan-only --calibrate`, three processes; steering
+figures, the ones of record are step 8's):
+
+| | step 1 (D174) | after step 2 | GCC `-O2` |
+|---|---|---|---|
+| forward pass | 331.2 ms | 240.8 ms | 202.1 ms |
+| gradient | 1 297.0 ms | 764.4 ms | 678.0 ms |
+| optimizer | 15.2 ms | 12.1 ms | 12.5 ms |
+
+Most of what remains is in the register tile. Cranelift 0.131 has no
+multiplication by a vector element outside its fused forms. The tile
+therefore broadcasts each row's scalar with a `dup`: four vector
+instructions in thirty-six at every step, where GCC needs none.
+
+The figures of record are step 8's (D181; the `experiments` chapter, §26),
+in five processes. The kernels take 239.9 ms on the forward pass, 766.0 ms
+on the gradient and 12.3 ms on the optimizer, against GCC's 202.4, 679.9
+and 15.5 ms. As whole programs, the forward pass takes 1.19× the C
+program's time and the step 0.994× (statement NB2 holds).
+
+## The LLVM backend: `--backend llvm` (0.17.0 step 3)
+
+`--backend llvm` runs the native backend's host, worker pool, plans and
+splits with each kernel compiled by LLVM instead of Cranelift (D176, crate
+`presk-llvm`). Each kernel is processed in five steps:
+
+1. It is given the lanes the native backend would give it (above).
+2. It is printed as C by the C export's printer, with an entry of the
+   native backend's calling convention.
+3. It is compiled by the `clang` of `make llvm` with the export's flags, at
+   `-O3` and `-mcpu=native`.
+4. It is linked into a shared library and loaded with `dlopen`.
+5. It is called as a Cranelift kernel is.
+
+A kernel that calls `exp`, `log`, `tanh`, `sin`, `cos` or `erf` is compiled
+together with the export's `presk_libm.c`, so that clang may inline the
+function into the loop. The other kernels link one object of it.
+
+**The same bits.** The printer is the one whose C computes this backend's
+bits (statement C1). No flag lets the compiler reorder or fuse an
+operation: `-ffp-contract=off` stays, and no fast-math flag is given. The
+lanes change no bit (statement H). The functions are the export's,
+bit-identical to the `libm` crate (D78). Three checks hold:
+- `cargo test -p presk-llvm`: the C export's test set in four realizations,
+  with both sets of weights, on one worker and on four, and under
+  `tests/plan`'s plans;
+- `out/x1`'s native runs, repeated on LLVM;
+- `make llvm-conformance`: the C export's programs, each checked against the
+  LLVM backend's run (`presk export --llvm`), which with `make
+  c-conformance` makes the two backends' bits the same on every one.
+
+**The cache.** A kernel's library is kept under a hash of the compiler's
+version line, the target `-mcpu=native` resolves to, the flags and the C
+text. The text is stored beside the library and compared on every hit. The
+directory is `PRESK_LLVM_CACHE`, else `$XDG_CACHE_HOME/presk/llvm`, else
+`~/.cache/presk/llvm`. A cold compile takes about 40 ms a kernel: about a
+second for the course GPT's forward pass (23 kernels) and four for its
+gradient (90). A cached run compiles nothing. The compiler is `PRESK_CLANG`,
+else `.llvm/bin/clang` in the workspace the binary was built from; without
+it the backend refuses to run.
+
+On the course GPT under the plan of record on ten X925, the kernels take
+201.6 ms on the forward pass and 683.6 ms on the step. GCC's build of the
+exported C takes 202.1 and 690.5 ms (steering figures, step 8 gives those
+of record). On one core the forward pass's kernels take 1 664 ms, as clang's
+build of the exported C does (1 658), against GCC's 2 182.
+
+The figures of record are step 8's (D181; the `experiments` chapter, §26),
+in five processes. The kernels take 202.3 ms on the forward pass, 671.8 ms
+on the gradient and 11.3 ms on the optimizer, against GCC's 202.4, 679.9
+and 15.5 ms. As whole programs, the forward pass takes 0.995× the C
+program's time and the step 0.871× (statement NB3 holds); most of the
+step's difference is the C program's host. A cold compile takes 37 to
+48 ms a kernel.
+
 ## Training natively
 
 `presk train --backend native [--realize f64|f32|bf16|@R.json]` is the training loop of

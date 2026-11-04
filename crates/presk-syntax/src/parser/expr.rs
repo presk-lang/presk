@@ -304,19 +304,28 @@ impl Parser {
         Ok(Arg::Pos(self.expr()?))
     }
 
-    /// `[sel, …]` where sel is `axis: expr` or `expr`.
+    /// `[sel, …]` where sel is `axis: expr` or `expr`, either followed by
+    /// `.. expr` for a slice.
     fn index_sels(&mut self) -> PResult<Vec<IndexSel>> {
         self.free(|p| {
             p.expect_op(Op::LBracket)?;
             let mut sels = Vec::new();
             while !p.at_op(Op::RBracket) {
-                if matches!(p.peek_kind(), TokKind::Ident(_)) && p.peek_nth(1).kind == TokKind::Op(Op::Colon) {
+                let axis = if matches!(p.peek_kind(), TokKind::Ident(_)) && p.peek_nth(1).kind == TokKind::Op(Op::Colon) {
                     let axis: Ident = p.expect_ident("an axis name")?;
                     p.bump(); // `:`
-                    let value = p.expr()?;
+                    Some(axis)
+                } else {
+                    None
+                };
+                let value = p.expr()?;
+                if p.eat_op(Op::DotDot).is_some() {
+                    let hi = p.expr()?;
+                    sels.push(IndexSel::Slice { axis, lo: value, hi });
+                } else if let Some(axis) = axis {
                     sels.push(IndexSel::Named { axis, value });
                 } else {
-                    sels.push(IndexSel::Pos(p.expr()?));
+                    sels.push(IndexSel::Pos(value));
                 }
                 if p.eat_op(Op::Comma).is_none() {
                     break;

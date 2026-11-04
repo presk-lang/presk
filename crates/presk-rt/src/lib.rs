@@ -911,12 +911,34 @@ pub fn save_params(path: &Path, model: &str, theta: &Value) -> Result<()> {
 }
 
 /// Reads a checkpoint written by [`save_params`], shaped like `template`.
+/// Only the template's shape is read, and the file's numbers are moved into
+/// the tree, not copied (0.17.0 step 7, D180: Llama 3.2 1B's parameters are
+/// 9.9 GB in `f64`, and each copy was one more).
 pub fn load_params(path: &Path, template: &Value) -> Result<Value> {
-    let (layout, _) = params_to_data(template)?;
-    let mut r = Reader::open(path)?.with_layout(layout)?;
+    let mut r = Reader::open(path)?.with_layout(params_layout(template)?)?;
     if r.is_empty() {
         return err("E9003", format!("{}: no sample", path.display()));
     }
     let d = r.get(0)?;
-    params_from_data(template, &d)
+    params_from_owned(template, d)
+}
+
+/// The layout of a parameter tree, [`params_to_data`]'s without the values.
+fn params_layout(v: &Value) -> Result<DataLayout> {
+    match v {
+        Value::Record(fs) => Ok(DataLayout::Record(fs.iter().map(|(n, sub)| Ok((n.clone(), params_layout(sub)?))).collect::<Result<_>>()?)),
+        Value::Tuple(ts) => Ok(DataLayout::Tuple(ts.iter().map(params_layout).collect::<Result<_>>()?)),
+        Value::Real(t) => Ok(DataLayout::Leaf(Leaf::Real { shape: t.axes.iter().map(|a| a.len).collect() })),
+        other => err("E9005", format!("a parameter tree holds no {}", other.kind())),
+    }
+}
+
+/// [`params_from_data`] taking the sample, whose numbers become the tree's.
+fn params_from_owned(template: &Value, d: presk_data::Value) -> Result<Value> {
+    match (template, d) {
+        (Value::Record(fs), presk_data::Value::Record(ds)) if fs.len() == ds.len() => Ok(Value::Record(fs.iter().zip(ds).map(|((n, t), (_, x))| Ok((n.clone(), params_from_owned(t, x)?))).collect::<Result<_>>()?)),
+        (Value::Tuple(ts), presk_data::Value::Tuple(ds)) if ts.len() == ds.len() => Ok(Value::Tuple(ts.iter().zip(ds).map(|(t, x)| params_from_owned(t, x)).collect::<Result<_>>()?)),
+        (Value::Real(t), presk_data::Value::Real(xs)) if t.numel() == xs.len() => Ok(Value::Real(Tensor { axes: t.axes.clone(), data: Buf::F64(xs.into()) })),
+        _ => err("E9005", "the checkpoint does not have the structure of the model's parameters"),
+    }
 }

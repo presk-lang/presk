@@ -417,14 +417,22 @@ impl Prop<'_> {
                 Bound { mag: m, floor: 0.0, err: u * m }
             }
             // ----- retags and selections: the data does not change -----
-            PrimOp::MergeAxes { .. } | PrimOp::SplitAxes { .. } | PrimOp::ReshapeLike | PrimOp::SplitHeads { .. } | PrimOp::MergeHeads { .. } | PrimOp::IndexConst { .. } | PrimOp::SliceParams { .. } | PrimOp::StackParams { .. } | PrimOp::SetField { .. } | PrimOp::SetElem { .. } | PrimOp::SetSlice | PrimOp::BroadcastLike | PrimOp::Embed | PrimOp::EmbedVjp | PrimOp::ScatterParams { .. } | PrimOp::Real => {
+            PrimOp::MergeAxes { .. } | PrimOp::SplitAxes { .. } | PrimOp::ReshapeLike | PrimOp::SplitHeads { .. } | PrimOp::MergeHeads { .. } | PrimOp::IndexConst { .. } | PrimOp::SliceParams { .. } | PrimOp::StackParams { .. } | PrimOp::SetField { .. } | PrimOp::SetElem { .. } | PrimOp::SetSlice | PrimOp::BroadcastLike | PrimOp::Embed | PrimOp::EmbedVjp | PrimOp::ScatterParams { .. } | PrimOp::Real | PrimOp::Slice { .. } | PrimOp::Concat { .. } => {
                 let m = self.mag_of(site, x.mag.max(y.mag));
                 Bound { mag: m, floor: 0.0, err: a.iter().map(|b| b.err).fold(0.0, f64::max) }
+            }
+            // The cotangent placed into zeros: its error, the template read
+            // for its shape.
+            PrimOp::SliceVjp { .. } => {
+                let m = self.mag_of(site, y.mag);
+                Bound { mag: m, floor: 0.0, err: y.err }
             }
             PrimOp::ZerosLike => Bound::EXACT_ZERO,
             // ----- elementwise arithmetic -----
             PrimOp::Neg => Bound { mag: x.mag, floor: 0.0, err: x.err },
             PrimOp::Abs | PrimOp::Relu => Bound { mag: x.mag, floor: 0.0, err: x.err },
+            // A selection of one operand, exact: the larger error of the two.
+            PrimOp::Max | PrimOp::Min => Bound { mag: x.mag.max(y.mag), floor: 0.0, err: x.err.max(y.err) },
             PrimOp::Add | PrimOp::Sub => {
                 // Errors add. This is the residual's rule, and the reason
                 // depth is affordable at all.

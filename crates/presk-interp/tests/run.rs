@@ -536,6 +536,57 @@ fn ad_through_split_matches_finite_differences() {
     assert_eq!(checked, 3 * 4 + 2 + 4 * 3, "every element of the table, the per-pair scale and the head");
 }
 
+/// The derivatives of `concat`, of slices, and of `max`, `min` and `clamp`
+/// (plan 0.17.0 step 6): a `concat`'s adjoint is two slices, a slice's the
+/// cotangent placed into zeros, and `max` and `min` give it to the operand
+/// they select. Away from their kinks, which drawn parameters never meet,
+/// AD agrees with central finite differences at 512 bits; the clamp holds
+/// some elements at its bounds, where the derivative is zero.
+#[test]
+fn ad_through_concat_slice_max_min_matches_finite_differences() {
+    let bits = 512;
+    let rel = "tests/data/concat_grad.psk";
+    let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
+    let (prog, core) = prepare(rel, &[]);
+    let loss = core.find("loss").unwrap();
+    let dims: std::collections::BTreeMap<_, _> = core.func(loss).dims.iter().map(|d| (*d, match prog.dim_name(*d).as_str() { "B" => 2, _ => 1 })).collect();
+    let theta = out.inputs[0].1.clone();
+    let x = out.inputs[1].1.clone();
+    let mut interp: Interp<Float> = Interp::new(&core, &prog, bits);
+    let h = Float::with_val(bits, 2f64.powi(-120));
+    let tol = Float::with_val(bits, 2f64.powi(-100));
+    let (mut checked, mut zeros) = (0, 0);
+    for path in &leaf_paths(&theta) {
+        let Value::Real(t) = get_leaf(&theta, path) else { continue };
+        let Value::Real(g) = get_leaf(&out.result, path) else { panic!("gradient leaf missing") };
+        assert_eq!(t.axes, g.axes, "leaf {path:?} keeps its axes");
+        for i in 0..t.data.len() {
+            let plus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] + &h));
+            let minus = set_leaf_elem(&theta, path, i, Float::with_val(bits, &t.data[i] - &h));
+            let fp = scalar(&interp.call(loss, dims.clone(), vec![plus, x.clone()]).unwrap());
+            let fm = scalar(&interp.call(loss, dims.clone(), vec![minus, x.clone()]).unwrap());
+            let fd = (fp - fm) / (Float::with_val(bits, 2) * &h);
+            let err = (Float::with_val(bits, &fd - &g.data[i])).abs();
+            let scale = Float::with_val(bits, g.data[i].clone().abs()).max(&Float::with_val(bits, 1));
+            assert!(err <= Float::with_val(bits, &tol * &scale), "leaf {path:?}[{i}]: ad = {}, fd = {}, err = {err}", g.data[i], fd);
+            checked += 1;
+            zeros += usize::from(g.data[i].is_zero());
+        }
+    }
+    assert_eq!(checked, 3 * 2 + 2 * 2 + 2, "every element of a, b and w");
+    assert!(zeros > 0 && zeros < checked, "some elements unselected or clamped, others not: {zeros} of {checked}");
+}
+
+/// The specification's examples of plan 0.17.0 step 6 (presk-specs
+/// `examples/rope/`, `examples/concat/`), at the reference's precision.
+#[test]
+fn golden_rope_and_concat() {
+    snap("rope_attention2", &run("tests/examples/rope/rope.psk", &[], "attention2", &[("B", 2), ("T", 8)], 256));
+    snap("rope_attention3", &run("tests/examples/rope/rope.psk", &[], "attention3", &[("B", 2), ("T", 8)], 256));
+    snap("concat_loss", &run("tests/examples/concat/concat.psk", &[], "loss", &[("B", 2), ("T", 8)], 256));
+    snap("concat_loss_grad", &run("tests/examples/concat/concat.psk", &[], "loss_grad", &[("B", 2), ("T", 8)], 256));
+}
+
 /// A fold whose accumulator type has an open prefix (`ℝ[..., model: 4]`):
 /// the scanned accumulators keep their axis names (a regression of the
 /// tutorial's training run), and the gradient agrees with finite differences.

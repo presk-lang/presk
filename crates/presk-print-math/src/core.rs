@@ -356,6 +356,8 @@ impl Ctx<'_> {
             Cos => M::Fun(F::Cos, Box::new(x(0))),
             Sqrt => M::Fun(F::Sqrt, Box::new(x(0))),
             Abs => M::Fun(F::Abs, Box::new(x(0))),
+            Max => named("max"),
+            Min => named("min"),
             Gelu => named("gelu"),
             Relu => named("relu"),
             Sigmoid => named("sigmoid"),
@@ -379,6 +381,8 @@ impl Ctx<'_> {
             Argmax => named("argmax"),
             Sample => named("sample"),
             IndexConst { axis, index } => with("index", vec![M::AxisLen(axis.clone(), Box::new(M::num(index.to_string())))]),
+            Slice { axis, lo, hi } => with("slice", vec![M::AxisLen(axis.clone(), Box::new(M::Cat(vec![dim(lo, self.elab), M::code(".."), dim(hi, self.elab)])))]),
+            Concat { axis } => with("concat", vec![M::code(axis)]),
             MergeAxes { a: p, b: q } => with("merge", vec![M::code(p), M::code(q)]),
             SplitAxes { a: p, n1, l1, n2, l2 } => M::op("split", vec![vec![M::code(p)], vec![M::code("into")], vec![M::AxisLen(n1.clone(), Box::new(dim(l1, self.elab))), M::AxisLen(n2.clone(), Box::new(dim(l2, self.elab)))]], a.clone()),
             ReshapeLike => named("reshape_like"),
@@ -410,6 +414,7 @@ impl Ctx<'_> {
             EmbedVjp => named("embed_vjp"),
             CrossEntropyVjp => named("cross_entropy_vjp"),
             ScatterIndex { axis, index } => with("scatter_index", vec![M::AxisLen(axis.clone(), Box::new(M::num(index.to_string())))]),
+            SliceVjp { axis, lo, hi } => with("slice_vjp", vec![M::AxisLen(axis.clone(), Box::new(M::Cat(vec![dim(lo, self.elab), M::code(".."), dim(hi, self.elab)])))]),
             ScatterParams { index } => with("scatter_params", vec![M::num(index.to_string())]),
             SetSlice => named("set_slice"),
         }
@@ -453,6 +458,19 @@ pub fn adjoint_rule(rule: &str) -> Option<M> {
         "gelu" => inc(x("x"), op("mul", vec![c(), op("gelu'", vec![x("x")])])),
         "relu" => inc(x("x"), op("mul", vec![c(), op("heaviside", vec![x("x")])])),
         "abs" => inc(x("x"), op("mul", vec![c(), op("sign", vec![x("x")])])),
+        "max" | "min" => {
+            let (p, q) = if rule == "max" { ("x_1", "x_2") } else { ("x_2", "x_1") };
+            let u = op("heaviside", vec![op("sub", vec![x(p), x(q)])]);
+            M::Seq(vec![
+                inc(x("x_1"), op("sum_to", vec![op("mul", vec![c(), u.clone()]), x("x_1")])),
+                inc(x("x_2"), op("sum_to", vec![op("mul", vec![c(), op("sub", vec![M::code("1"), u])]), x("x_2")])),
+            ])
+        }
+        "slice" => inc(x("x"), M::op("slice_vjp", vec![vec![M::AxisLen("a".into(), Box::new(M::Cat(vec![x("lo"), M::code(".."), x("hi")])))]], vec![x("x"), c()])),
+        "concat" => M::Seq(vec![
+            inc(x("x_1"), M::op("slice", vec![vec![M::AxisLen("a".into(), Box::new(M::Cat(vec![M::num("0"), M::code(".."), x("M")])))]], vec![c()])),
+            inc(x("x_2"), M::op("slice", vec![vec![M::AxisLen("a".into(), Box::new(M::Cat(vec![x("M"), M::code(".."), M::bin(B::Add, x("M"), x("N"))])))]], vec![c()])),
+        ]),
         "dot" | "matmul" => M::Seq(vec![inc(x("x"), op("dot_vjp_l", vec![c(), x("w")])), inc(x("w"), op("dot_vjp_r", vec![x("x"), c()]))]),
         "sum" => inc(x("x"), op("broadcast_like", vec![c(), x("x")])),
         "mean" => inc(x("x"), op("mean_vjp", vec![c(), x("x")])),

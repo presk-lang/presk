@@ -54,13 +54,40 @@ pub type PreparedRun = (FuncId, Dims, Inputs);
 /// Resolve `--entry`, bind the dimensions and synthesize the inputs (the
 /// reference's job, whatever backend then runs the entry).
 pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<PreparedRun> {
+    prepare(prog, elab, opts, false).map(|(func, dims, inputs, _)| (func, dims, inputs))
+}
+
+/// [`prepare_run`] for an entry whose first argument, a module's parameters,
+/// a checkpoint gives (0.17.0 step 7, D180). That argument is described and
+/// not drawn: its initializer, dimensions and key ([`Shaped::Params`]), its
+/// place among the inputs holding `Value::Nat(0)` until the caller reads the
+/// checkpoint against a tree of that shape. Every other input is drawn from
+/// its own key, as [`prepare_run`] draws it. Drawn, the parameters were held
+/// in exact arithmetic only to be replaced, about 80 bytes a number at 256
+/// bits: Llama 3.2 1B's 1.2·10⁹ took `presk run` past 88 GB. When the first
+/// argument is not a module's parameters, nothing is described.
+pub fn prepare_run_given_params(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Result<(FuncId, Dims, Inputs, Option<Shaped>)> {
+    prepare(prog, elab, opts, true)
+}
+
+fn prepare(prog: &Program, elab: &ElabProgram, opts: &RunOptions, given: bool) -> Result<(FuncId, Dims, Inputs, Option<Shaped>)> {
     let (func, dims, prefix) = bind_run(prog, elab, opts)?;
     let f = prog.func(func);
     let mut interp: Interp<Float> = Interp::new(prog, elab, opts.bits);
     let master = Key::from_seed(opts.seed);
     let keys = master.split(f.params.len());
     let mut inputs = Vec::new();
+    let mut described = None;
     for (i, p) in f.params.iter().enumerate() {
+        if given
+            && i == 0
+            && let Ty::Params(r) = &p.ty
+        {
+            let (init, idims) = initializer(&interp, r, &dims).map_err(|e| RunError { code: e.code, message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
+            described = Some(Shaped::Params { init, dims: idims, key: keys[i].clone() });
+            inputs.push((p.name.clone(), Value::Nat(0)));
+            continue;
+        }
         let default = param_default(prog, elab, func, &p.name);
         let mut v = synthesize(&mut interp, &p.ty, &dims, &keys[i], default.as_ref(), &prefix).map_err(|e| RunError { code: e.code, message: format!("cannot synthesize `{}`: {}", p.name, e.message), span: e.span })?;
         if matches!(f.origin, Origin::Optimizer { .. }) {
@@ -68,7 +95,7 @@ pub fn prepare_run(prog: &Program, elab: &ElabProgram, opts: &RunOptions) -> Res
         }
         inputs.push((p.name.clone(), v));
     }
-    Ok((func, dims, inputs))
+    Ok((func, dims, inputs, described))
 }
 
 /// An input described by its shape, not drawn (0.8.0 step 1): what
@@ -239,9 +266,11 @@ fn optimizer_input<R: Real>(name: &str, v: Value<R>) -> Value<R> {
 /// `fn`, `Module.fn`, `Module{8, 4}.fn`: the Core function and the module's
 /// dimension arguments.
 pub fn resolve_entry(prog: &Program, elab: &ElabProgram, entry: &str) -> Result<(FuncId, Dims, Vec<u64>)> {
-    // Optimizer functions (`adamw.step`) are found by their exact name.
+    // Optimizer functions (`adamw.step`) are found by their exact name, and
+    // so are the copies the compiler makes of a function (a serve's
+    // `next_token.greedy` and `next_token.at`, plan 0.17.0 step 7).
     if let Some(id) = prog.find(entry)
-        && matches!(prog.func(id).origin, Origin::Optimizer { .. })
+        && matches!(prog.func(id).origin, Origin::Optimizer { .. } | Origin::Lambda { .. })
     {
         return Ok((id, Dims::new(), vec![]));
     }

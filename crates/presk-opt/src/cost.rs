@@ -30,12 +30,12 @@ pub const STRUCTURAL_SECONDS: f64 = 1e-9;
 pub fn prim_weight(op: &PrimOp) -> f64 {
     use PrimOp::*;
     match op {
-        Add | Sub | Mul | Div | Neg | Real | Pi | Relu | Abs | Sign | Heaviside => ELEMENTWISE,
+        Add | Sub | Mul | Div | Neg | Real | Pi | Relu | Abs | Max | Min | Sign | Heaviside => ELEMENTWISE,
         Pow(_) => POWER,
         Exp | Log | Tanh | Sqrt | Gelu | Sigmoid | Sin | Cos | GeluDeriv => TRANSCENDENTAL,
         Dot | Matmul | Ein { .. } | DotVjpL | DotVjpR => CONTRACTION,
-        DropoutMask | SumAll | MeanAll | Sum { .. } | Mean { .. } | Softmax { .. } | CrossEntropy | CrossEntropyVjp | Argmax | Sample | Embed | OneHot | EmbedVjp | SumTo | BroadcastLike | MeanVjp { .. } | SumSquares | ZerosLike | Zeros { .. } | Ones { .. } | Normal { .. } | XavierUniform { .. } | Positions { .. } | CausalMask { .. } | ScatterIndex { .. } | ScatterParams { .. } => REDUCTION,
-        MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SplitKey { .. } | SliceParams { .. } | StackParams { .. } | SetField { .. } | SetElem { .. } | SetSlice => STRUCTURAL,
+        DropoutMask | SumAll | MeanAll | Sum { .. } | Mean { .. } | Softmax { .. } | CrossEntropy | CrossEntropyVjp | Argmax | Sample | Embed | OneHot | EmbedVjp | SumTo | BroadcastLike | MeanVjp { .. } | SumSquares | ZerosLike | Zeros { .. } | Ones { .. } | Normal { .. } | XavierUniform { .. } | Positions { .. } | CausalMask { .. } | ScatterIndex { .. } | SliceVjp { .. } | Concat { .. } | ScatterParams { .. } => REDUCTION,
+        MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | Slice { .. } | SplitHeads { .. } | MergeHeads { .. } | SplitKey { .. } | SliceParams { .. } | StackParams { .. } | SetField { .. } | SetElem { .. } | SetSlice => STRUCTURAL,
     }
 }
 
@@ -45,11 +45,11 @@ pub fn weight_of_name(name: &str) -> f64 {
     let head = name.split_whitespace().next().unwrap_or("");
     let head = head.split('[').next().unwrap_or(head);
     match head {
-        "add" | "sub" | "mul" | "div" | "neg" | "real" | "pi" | "relu" | "abs" | "sign" | "heaviside" => ELEMENTWISE,
+        "add" | "sub" | "mul" | "div" | "neg" | "real" | "pi" | "relu" | "abs" | "max" | "min" | "sign" | "heaviside" => ELEMENTWISE,
         "pow" => POWER,
         "exp" | "log" | "tanh" | "sqrt" | "gelu" | "gelu'" | "sigmoid" | "sin" | "cos" => TRANSCENDENTAL,
         "dot" | "matmul" | "ein" | "dot_vjp_l" | "dot_vjp_r" => CONTRACTION,
-        "index" | "split_heads" | "merge_heads" | "split_key" | "slice_params" | "stack_params" | "set_field" | "set_elem" | "set_slice" => STRUCTURAL,
+        "index" | "slice" | "split_heads" | "merge_heads" | "split_key" | "slice_params" | "stack_params" | "set_field" | "set_elem" | "set_slice" => STRUCTURAL,
         _ => REDUCTION,
     }
 }

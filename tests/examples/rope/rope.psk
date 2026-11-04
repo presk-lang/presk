@@ -1,0 +1,86 @@
+-- rope.psk — Rotary position embeddings (RoPE), as the Llama models have them.
+-- Illustrates: the slice selector `e[a: lo..hi]`, which keeps its axis, and
+-- `concat` along a named axis (§3.2); the angles computed from the positions;
+-- Llama 3's scaling of the frequencies, written with `clamp`.
+--
+-- RoPE (Su et al., RoFormer, 2021) rotates each pair of channels of a query
+-- or a key head by an angle proportional to the position: the product of a
+-- query at t and a key at t' then depends on t − t' only.
+
+const H  : nat = 2         -- heads
+const HD : nat = 8         -- dimension per head, even
+const D  : nat = H * HD    -- model dimension
+static assert HD % 2 == 0
+
+dim B
+dim T <= 64
+
+type Acts = ℝ[batch: B, seq: T, model: D]
+type Mask = bool[seq: T, seq2: T]
+
+-- ω_r = base^(−2r/HD), r = 0, …, HD/2 − 1: one frequency per pair.
+fn frequencies(base : f64) -> ℝ[rot: HD/2] =
+  let r = real(positions(rot: HD/2))
+  exp(-(2 : ℝ) * r / (HD : ℝ) * log(real(base)))
+
+-- Llama 3.1 and 3.2 scale the frequencies for a context longer than the one
+-- they were trained at (`rope_scaling` of type "llama3" in their
+-- configuration). With L the context they were trained at, a wavelength 2π/ω
+-- shorter than L/hi is kept, one longer than L/lo is divided by k, and those
+-- between are interpolated:
+--   s = clamp((L·ω/2π − lo) / (hi − lo), 0, 1),   ω' = ω · ((1 − s)/k + s).
+-- The defaults are Llama 3.2's. 2π is a hyperparameter: the language has no π.
+fn llama3_scaling(ω : ℝ[rot: HD/2], k : f64 = 32.0, lo : f64 = 1.0, hi : f64 = 4.0,
+                  context : f64 = 8192.0, two_pi : f64 = 6.283185307179586)
+    -> ℝ[rot: HD/2] =
+  let s = clamp((real(context) * ω / real(two_pi) - real(lo)) / real(hi - lo), (0 : ℝ), (1 : ℝ))
+  ω * (((1 : ℝ) - s) / real(k) + s)
+
+-- φ[t, r] = t · ω_r: an outer product, written as an `ein` that sums nothing.
+fn angles(ω : ℝ[rot: HD/2]) -> ℝ[seq: T, rot: HD/2] =
+  ein[seq, rot](real(positions(seq: T)) * ω)
+
+-- The rotation of every pair (r, r + HD/2) of a head by the angle of its
+-- position. This is Hugging Face's pairing (its `rotate_half`); Meta's first
+-- code paired (2r, 2r + 1), which is `split(axis hd, rot: HD/2, pair: 2, x)`
+-- instead, the rest unchanged.
+--
+-- `p[pair: 0]` would drop the axis `pair`. The slice `p[pair: 0..1]` keeps it,
+-- at length 1, so the two rotated halves are put back by `concat` along it.
+fn rope(φ : ℝ[seq: T, rot: HD/2], x : ℝ[..., seq: T, hd: HD]) -> ℝ[..., seq: T, hd: HD] =
+  let p  = split(axis hd, pair: 2, rot: HD/2, x)   -- ℝ[..., seq: T, pair: 2, rot: HD/2]
+  let x0 = p[pair: 0..1]                           -- ℝ[..., seq: T, pair: 1, rot: HD/2]
+  let x1 = p[pair: 1..2]
+  let c  = cos(φ)                                  -- broadcast by name: seq and rot
+  let s  = sin(φ)
+  let y  = concat(axis pair, x0 * c - x1 * s, x1 * c + x0 * s)   -- ℝ[..., seq: T, pair: 2, rot: HD/2]
+  merge(axis pair, axis rot, y)                    -- ℝ[..., seq: T, HD], the axis named by the result type
+
+-- Causal attention with RoPE on the queries and the keys, at the frequencies
+-- ω. The heads are laid out before the positions ([batch, heads, seq, hd]) so
+-- that `rope` sees `seq` just before `hd`; the projections are `ein`s, and
+-- nothing is transposed.
+module Attention {
+  param wq : ℝ[model: D, heads: H, hd: HD]  init = normal(std = 0.02)
+  param wk : ℝ[model: D, heads: H, hd: HD]  init = normal(std = 0.02)
+  param wv : ℝ[model: D, heads: H, hd: HD]  init = normal(std = 0.02)
+  param wo : ℝ[heads: H, hd: HD, model: D]  init = normal(std = 0.02)
+
+  fn apply(x : Acts, mask : Mask, ω : ℝ[rot: HD/2]) -> Acts =
+    let φ = angles(ω)
+    let q = rope(φ, ein[batch, heads, seq, hd](x * wq))
+    let k = rope(φ, ein[batch, heads, seq, hd](x * wk))
+    let v = ein[batch, heads, seq, hd](x * wv)
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = softmax(axis seq2, s, where = mask)
+    let o = ein[batch, heads, seq, hd](a * v)
+    ein[batch, seq, model](o * wo)
+}
+
+-- Llama 2's frequencies, at the base 10 000.
+fn attention2(θ : params Attention, x : Acts) -> Acts =
+  Attention.apply(θ, x, causal_mask(seq: T), frequencies(1e4))
+
+-- Llama 3.2's: the base 500 000, and the scaling above.
+fn attention3(θ : params Attention, x : Acts) -> Acts =
+  Attention.apply(θ, x, causal_mask(seq: T), llama3_scaling(frequencies(5e5)))

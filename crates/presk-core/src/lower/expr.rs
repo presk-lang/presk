@@ -52,8 +52,25 @@ impl Lowerer<'_> {
                 let mut v = self.expr(base, b)?;
                 let mut cur_ty = self.ty_of(base);
                 for sel in sels {
+                    if let IndexSel::Slice { axis, lo, hi } = sel {
+                        let axis = match axis {
+                            Some(a) => a.name.clone(),
+                            None => {
+                                let Some(first) = cur_ty.shape().and_then(|s| s.axes.first()).and_then(|a| a.name.clone()) else {
+                                    self.error(Diagnostic::error("E5001", "positional slice on an unnamed axis").label(lo.span(), "use `[axis: lo..hi]`"));
+                                    return None;
+                                };
+                                first
+                            }
+                        };
+                        let (lo, hi) = (self.dim_of(lo, b), self.dim_of(hi, b));
+                        cur_ty = set_axis_len(&cur_ty, &axis, hi.sub(&lo));
+                        v = b.emit(None, cur_ty.clone(), Rhs::Prim { op: PrimOp::Slice { axis, lo, hi }, args: vec![v] }, span);
+                        continue;
+                    }
                     let (axis, index) = match sel {
                         IndexSel::Named { axis, value } => (axis.name.clone(), const_index(value)?),
+                        IndexSel::Slice { .. } => unreachable!("a slice is lowered above"),
                         IndexSel::Pos(value) => {
                             let Some(first) = cur_ty.shape().and_then(|s| s.axes.first()).and_then(|a| a.name.clone()) else {
                                 self.error(Diagnostic::error("E5001", "positional index on an unnamed axis").label(value.span(), "use `[axis: i]`"));
@@ -517,6 +534,16 @@ impl Lowerer<'_> {
             "sigmoid" => PrimOp::Sigmoid,
             "sin" => PrimOp::Sin,
             "cos" => PrimOp::Cos,
+            "max" => PrimOp::Max,
+            "min" => PrimOp::Min,
+            // `clamp(x, lo, hi)` is `min(max(x, lo), hi)`.
+            "clamp" => {
+                let (x, lo, hi) = (*vals.first()?, *vals.get(1)?, *vals.get(2)?);
+                let inner = self.typed.clamp_inner.get(&span).cloned().unwrap_or_else(|| ty.clone());
+                let m = b.emit(None, inner, Rhs::Prim { op: PrimOp::Max, args: vec![x, lo] }, span);
+                return Some(b.emit(None, ty.clone(), Rhs::Prim { op: PrimOp::Min, args: vec![m, hi] }, span));
+            }
+            "concat" => PrimOp::Concat { axis: axes_sel.first()?.clone() },
             "real" => {
                 // `real` of an index tensor is the identity on values (indices become reals).
                 PrimOp::Real
@@ -583,6 +610,23 @@ fn const_index(e: &Expr) -> Option<i64> {
         Expr::Lit { lit: Lit::Nat(n), .. } => n.parse().ok(),
         Expr::Unary { op: UnOp::Neg, expr, .. } => const_index(expr).map(|i| -i),
         _ => None,
+    }
+}
+
+/// `t` with its axis `axis` at the length `len` (a slice's result).
+fn set_axis_len(t: &Ty, axis: &str, len: DimExpr) -> Ty {
+    let set = |s: &presk_types::ty::Shape| {
+        let mut s = s.clone();
+        for a in s.axes.iter_mut().filter(|a| a.name.as_deref() == Some(axis)) {
+            a.len = len.clone();
+        }
+        s
+    };
+    match t {
+        Ty::Real(s) => Ty::Real(set(s)),
+        Ty::Idx { bound, shape } => Ty::Idx { bound: bound.clone(), shape: set(shape) },
+        Ty::Truth(s) => Ty::Truth(set(s)),
+        other => other.clone(),
     }
 }
 

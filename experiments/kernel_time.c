@@ -12,6 +12,8 @@
  * the file KERNEL_TIME names (standard error without it); the program's
  * bits do not change.
  */
+/* clock_gettime under -std=c11, where no OpenMP header brings POSIX in. */
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>

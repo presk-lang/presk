@@ -8,12 +8,17 @@
  * The .psk.d format is presk-data's (its module comment):
  *
  *   magic     "PSKD"                       4 bytes
- *   version   u16 = 1                      little-endian
+ *   version   u16 = 1 or 2                 little-endian
  *   type_len  u32, then the type, UTF-8    the sample type in Presk syntax
  *   count     u64                          number of samples
+ *   leaves    u32, version 2 only          the type's leaves
+ *   encodings u8 per leaf, version 2 only  0 f64 (and every idx), 1 f32, 2 bf16
  *   data      the samples, back to back: the leaves of the type in order,
  *             idx[N] as the smallest of u8/u16/u32/u64 holding N-1,
- *             reals as f64 little-endian
+ *             reals in their encoding (f64 in version 1), little-endian,
+ *             a bf16 as the upper sixteen bits of an f32
+ *
+ * The writer writes version 1: the program's outputs are f64 leaves.
  *
  * The file is read and written byte by byte, so that it is little-endian
  * whatever the machine's order. The reader checks the header against what
@@ -143,12 +148,20 @@ static unsigned leaf_width(const presk_leaf *l)
     return l->bound ? idx_width(l->bound) : 8;
 }
 
+/* A leaf's width under its encoding (enc NULL: version 1, every real f64). */
+static unsigned enc_width(const presk_leaf *l, const unsigned char *enc, size_t i)
+{
+    if (l->bound || !enc)
+        return leaf_width(l);
+    return enc[i] == 2 ? 2 : enc[i] == 1 ? 4 : 8;
+}
+
 /* Bytes of one sample, or UINT64_MAX when that overflows. */
-static uint64_t sample_bytes(const presk_leaf *leaves, size_t nleaves)
+static uint64_t sample_bytes(const presk_leaf *leaves, size_t nleaves, const unsigned char *enc)
 {
     uint64_t total = 0;
     for (size_t i = 0; i < nleaves; i++) {
-        uint64_t w = leaf_width(&leaves[i]);
+        uint64_t w = enc_width(&leaves[i], enc, i);
         if (leaves[i].n > (UINT64_MAX - 1 - total) / w)
             return UINT64_MAX;
         total += leaves[i].n * w;
@@ -193,11 +206,14 @@ int presk_open(presk_reader *r, const char *path, const char *type, const presk_
     long end;
     FILE *f;
 
+    unsigned version;
+
     r->f = NULL;
     r->leaves = leaves;
     r->nleaves = nleaves;
     r->count = 0;
     r->next = 0;
+    r->enc = NULL;
     f = fopen(path, "rb");
     if (!f)
         return fail(9002, "%s: %s", path, strerror(errno));
@@ -213,9 +229,10 @@ int presk_open(presk_reader *r, const char *path, const char *type, const presk_
         fclose(f);
         return fail(9003, "%s: truncated header", path);
     }
-    if (get_le(b, 2) != 1) {
+    version = (unsigned)get_le(b, 2);
+    if (version != 1 && version != 2) {
         fclose(f);
-        return fail(9002, "%s: .psk.d version %" PRIu64 ", this reader reads version 1", path, get_le(b, 2));
+        return fail(9002, "%s: .psk.d version %u, this reader reads versions 1 and 2", path, version);
     }
     if (fread(b, 1, 4, f) != 4) {
         fclose(f);
@@ -246,26 +263,62 @@ int presk_open(presk_reader *r, const char *path, const char *type, const presk_
     }
     count = get_le(b, 8);
     head = 4 + 2 + 4 + tlen + 8;
-    per = sample_bytes(leaves, nleaves);
+    if (version == 2) {
+        uint64_t n;
+        if (fread(b, 1, 4, f) != 4) {
+            fclose(f);
+            return fail(9003, "%s: truncated header", path);
+        }
+        n = get_le(b, 4);
+        if (n != nleaves) {
+            fclose(f);
+            return fail(9005, "%s: %" PRIu64 " encodings for the %zu leaves of `%s`", path, n, nleaves, type);
+        }
+        r->enc = malloc(nleaves ? nleaves : 1);
+        if (!r->enc) {
+            fclose(f);
+            return fail(9003, "%s: %zu encodings", path, nleaves);
+        }
+        if (fread(r->enc, 1, nleaves, f) != nleaves) {
+            presk_close(r);
+            fclose(f);
+            return fail(9003, "%s: truncated header", path);
+        }
+        for (size_t i = 0; i < nleaves; i++) {
+            if (r->enc[i] > 2 || (leaves[i].bound && r->enc[i] != 0)) {
+                unsigned c = r->enc[i];
+                presk_close(r);
+                fclose(f);
+                return fail(c > 2 ? 9002 : 9005, c > 2 ? "%s: leaf %zu: unknown encoding %u" : "%s: leaf %zu holds indices and has a real encoding %u", path, i, c);
+            }
+        }
+        head += 4 + nleaves;
+    }
+    per = sample_bytes(leaves, nleaves, r->enc);
     if (per == UINT64_MAX || (per > 0 && count > (UINT64_MAX - head) / per)) {
         fclose(f);
+        presk_close(r);
         return fail(9005, "%s: %" PRIu64 " samples of this type overflow a file", path, count);
     }
     need = head + count * per;
     if (fseek(f, 0, SEEK_END) != 0 || (end = ftell(f)) < 0) {
         fclose(f);
+        presk_close(r);
         return fail(9003, "%s: %s", path, strerror(errno));
     }
     if ((uint64_t)end < need) {
         fclose(f);
+        presk_close(r);
         return fail(9003, "%s: truncated: %" PRIu64 " samples of %" PRIu64 " bytes announced, %" PRIu64 " bytes of data present", path, count, per, (uint64_t)end - head);
     }
     if ((uint64_t)end > need) {
         fclose(f);
+        presk_close(r);
         return fail(9005, "%s: %" PRIu64 " bytes of data where %" PRIu64 " samples of %" PRIu64 " bytes were expected: the file holds a sample of other dimensions", path, (uint64_t)end - head, count, per);
     }
     if (fseek(f, (long)head, SEEK_SET) != 0) {
         fclose(f);
+        presk_close(r);
         return fail(9003, "%s: %s", path, strerror(errno));
     }
     r->f = f;
@@ -282,7 +335,7 @@ int presk_read(presk_reader *r, void *const *dst, const presk_dtype *dtypes)
         return fail(9003, "sample %" PRIu64 " requested, %" PRIu64 " in the file", r->next, r->count);
     for (size_t i = 0; i < r->nleaves; i++) {
         const presk_leaf *l = &r->leaves[i];
-        unsigned w = leaf_width(l);
+        unsigned w = enc_width(l, r->enc, i);
         if ((e = check_dtype(l, dtypes[i], i)) != 0)
             return e;
         for (uint64_t k = 0; k < l->n;) {
@@ -296,10 +349,16 @@ int presk_read(presk_reader *r, void *const *dst, const presk_dtype *dtypes)
                     if (x >= l->bound)
                         return fail(9004, "sample %" PRIu64 ", leaf %zu, element %" PRIu64 ": index %" PRIu64 " is not below the bound %" PRIu64, r->next, i, k + j, x, l->bound);
                     ((int64_t *)dst[i])[k + j] = (int64_t)x;
-                } else {
+                } else if (w == 8) {
                     double d;
                     memcpy(&d, &x, sizeof d);
                     store_real(dst[i], dtypes[i], k + j, d);
+                } else {
+                    /* f32, or bf16 as an f32's upper half: exact in double. */
+                    uint32_t bits = w == 4 ? (uint32_t)x : (uint32_t)x << 16;
+                    float g;
+                    memcpy(&g, &bits, sizeof g);
+                    store_real(dst[i], dtypes[i], k + j, (double)g);
                 }
             }
             k += m;
@@ -314,6 +373,8 @@ void presk_close(presk_reader *r)
     if (r->f)
         fclose(r->f);
     r->f = NULL;
+    free(r->enc);
+    r->enc = NULL;
 }
 
 int presk_load(const char *path, const char *type, const presk_leaf *leaves, size_t nleaves, void *const *dst, const presk_dtype *dtypes)

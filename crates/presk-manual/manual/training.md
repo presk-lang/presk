@@ -250,6 +250,14 @@ presk solve --step corpus/nlp/05_gpt.psk --precision out/step_env.json --budget 
 presk train corpus/nlp/05_gpt.psk --backend native --realize @out/step_1e-3.json
 ```
 
+Since 0.17.0, `presk solve --step --grain value` (D178) types each value
+the step stores instead of each function, and writes them in the
+realization's `storage` map. `presk train --realize` applies them under
+either `--remat`. The optimizer's state, the master weights and AdamW's
+moments, keeps the default type. At course scale the per-value step takes
+7.80 s, where the per-function realization's takes 6.99 s (D181; the
+`precision` chapter, "By stored value").
+
 A per-step budget does not bound a trajectory, and is not claimed to:
 `make step-train` measures where a run ends against the spread between
 seeds. The `precision` chapter, "A budget on the training step", has the

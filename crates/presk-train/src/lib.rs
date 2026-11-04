@@ -229,6 +229,31 @@ pub fn plan_for_loop(plan: &Plan, core: &Program, fns: &TrainingFns) -> Plan {
     p
 }
 
+/// The sites of the optimizer's step that are its state (plan 0.17.0 step
+/// 5, D178): the components of its result, `θ′` and the moments, followed
+/// through its tuples and records. A training step keeps them in the
+/// default type, the master weights and AdamW's moments, as
+/// [`refuse_params`] keeps the parameters (the plan's question 6), so the
+/// step's per-value solver does not offer them.
+pub fn state_sites(core: &Program, fns: &TrainingFns) -> std::collections::BTreeSet<String> {
+    use presk_core::ir::Rhs;
+    let f = core.func(fns.opt_step);
+    let rhs: std::collections::HashMap<presk_core::VarId, &Rhs> = f.body.lets.iter().map(|l| (l.var, &l.rhs)).collect();
+    let mut out = std::collections::BTreeSet::new();
+    let mut work = vec![f.body.result];
+    while let Some(v) = work.pop() {
+        match rhs.get(&v) {
+            Some(Rhs::Tuple(xs)) => work.extend(xs.iter().copied()),
+            Some(Rhs::Record(fs)) => work.extend(fs.iter().map(|(_, x)| *x)),
+            Some(_) => {
+                out.insert(format!("{}/%{}", f.name, v.0));
+            }
+            None => {}
+        }
+    }
+    out
+}
+
 /// A training step keeps its parameters in the default type: they are the
 /// master weights it updates, and a narrower type at rest loses updates
 /// (plan 0.12.0, §5). So a realization that stores parameters in their own
@@ -419,6 +444,18 @@ pub fn run_on_data_from(backend: &mut dyn Backend, core: &Program, elab: &ElabPr
 pub type DataArgs = (FuncId, Dims, presk_interp::run::Inputs, Vec<Value>);
 
 pub fn args_on_data(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<DataArgs> {
+    args_on_data_as(core, elab, opts, path, from, samples, false).map(|(args, _)| args)
+}
+
+/// [`args_on_data`] for an entry whose first argument, a module's
+/// parameters, a checkpoint gives (0.17.0 step 7, D180): that argument is
+/// described and not drawn ([`presk_interp::run::prepare_run_given_params`]),
+/// `Value::Nat(0)` in its place until the caller reads the checkpoint.
+pub fn args_on_data_given_params(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, path: &std::path::Path, from: usize, samples: Option<usize>) -> Result<(DataArgs, Option<presk_interp::run::Shaped>)> {
+    args_on_data_as(core, elab, opts, path, from, samples, true)
+}
+
+fn args_on_data_as(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunOptions, path: &std::path::Path, from: usize, samples: Option<usize>, given: bool) -> Result<(DataArgs, Option<presk_interp::run::Shaped>)> {
     let to_train = |e: presk_interp::RunError| TrainError { code: e.code.unwrap_or("E7001"), message: e.message, span: e.span };
     let (entry_fn, _, _) = presk_interp::run::resolve_entry(core, elab, &opts.entry).map_err(to_train)?;
     let Some(last) = core.func(entry_fn).params.last() else {
@@ -440,14 +477,19 @@ pub fn args_on_data(core: &Program, elab: &ElabProgram, opts: &presk_interp::Run
         dims.push((name, count as u64));
     }
     let opts = presk_interp::RunOptions { entry: opts.entry.clone(), dims, seed: opts.seed, bits: opts.bits, digits: opts.digits };
-    let (func, fdims, mut inputs) = presk_interp::run::prepare_run(core, elab, &opts).map_err(to_train)?;
+    let (func, fdims, mut inputs, described) = if given {
+        presk_interp::run::prepare_run_given_params(core, elab, &opts).map_err(to_train)?
+    } else {
+        let (func, fdims, inputs) = presk_interp::run::prepare_run(core, elab, &opts).map_err(to_train)?;
+        (func, fdims, inputs, None)
+    };
     let values: Vec<presk_data::Value> = (from..from + count).map(|i| reader.get(i)).collect::<std::result::Result<_, _>>()?;
     let refs: Vec<&presk_data::Value> = values.iter().collect();
     let batch = batch_value(&last_ty, &layout, &refs, &fdims)?;
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<std::result::Result<_, _>>()?;
     inputs.last_mut().unwrap().1 = batch.to_interp(opts.bits);
     *args.last_mut().unwrap() = batch;
-    Ok((func, fdims, inputs, args))
+    Ok(((func, fdims, inputs, args), described))
 }
 
 /// The name of the dimension that lengths the `batch` axis of `ty`, when it is

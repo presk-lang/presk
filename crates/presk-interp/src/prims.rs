@@ -199,6 +199,10 @@ impl<R: Real> Interp<'_, R> {
             PrimOp::Sin => self.unary(a(0)?, &|x| x.sin(), "sin"),
             PrimOp::Cos => self.unary(a(0)?, &|x| x.cos(), "cos"),
             PrimOp::Abs => self.unary(a(0)?, &|x| x.abs(), "abs"),
+            // At a tie the second operand (the reference: its derivative
+            // goes there too), which also fixes the sign of a zero.
+            PrimOp::Max => self.binary(a(0)?, a(1)?, &|x, y| if x.cmp(y) == std::cmp::Ordering::Greater { x.clone() } else { y.clone() }, "max"),
+            PrimOp::Min => self.binary(a(0)?, a(1)?, &|x, y| if x.cmp(y) == std::cmp::Ordering::Less { x.clone() } else { y.clone() }, "min"),
             PrimOp::Gelu => self.unary(a(0)?, &|x| self.gelu(x), "gelu"),
             PrimOp::GeluDeriv => self.unary(a(0)?, &|x| self.gelu_deriv(x), "gelu'"),
             PrimOp::Relu => self.unary(a(0)?, &|x| if x.is_negative() { self.real(0) } else { x.clone() }, "relu"),
@@ -434,6 +438,52 @@ impl<R: Real> Interp<'_, R> {
                 Value::Idx { bound, t } => Ok(Value::Idx { bound: *bound, t: self.select(t, axis, *index)? }),
                 other => err(format!("index: on a {}", other.kind())),
             },
+            PrimOp::Slice { axis, lo, hi } => {
+                let (l, h) = (self.dim(lo, dims)? as usize, self.dim(hi, dims)? as usize);
+                match a(0)? {
+                    Value::Real(t) => Ok(Value::Real(slice_tensor(t, axis, l, h)?)),
+                    Value::Idx { bound, t } => Ok(Value::Idx { bound: *bound, t: slice_tensor(t, axis, l, h)? }),
+                    other => err(format!("slice: on a {}", other.kind())),
+                }
+            }
+            PrimOp::SliceVjp { axis, lo, hi } => {
+                let (tmpl, ct) = (self.tensor(a(0)?, &name)?, self.tensor(a(1)?, &name)?);
+                let l = self.dim(lo, dims)? as usize;
+                let h = self.dim(hi, dims)? as usize;
+                let p = tmpl.axis_pos(axis).ok_or_else(|| crate::eval::RunError { code: None, message: format!("slice_vjp: no axis `{axis}`"), span: None })?;
+                if ct.axes.len() != tmpl.axes.len() || ct.axes[p].len != h - l {
+                    return err(format!("slice_vjp {axis}: {l}..{h}: a cotangent of {} into {}", show_axes(&ct.axes), show_axes(&tmpl.axes)));
+                }
+                let mut out = self.zeros_like_tensor(tmpl);
+                let od: &mut [R] = &mut out.data;
+                let strides = tmpl.strides();
+                for (flat, idx) in ct.indices().enumerate() {
+                    let off: usize = idx.iter().enumerate().map(|(k, x)| (if k == p { x + l } else { *x }) * strides[k]).sum();
+                    od[off] = ct.data[flat].clone();
+                }
+                Ok(Value::Real(out))
+            }
+            PrimOp::Concat { axis } => {
+                let (x, y) = (self.tensor(a(0)?, &name)?, self.tensor(a(1)?, &name)?);
+                let (Some(p), Some(q)) = (x.axis_pos(axis), y.axis_pos(axis)) else {
+                    return err(format!("concat: no axis `{axis}` in {} or {}", show_axes(&x.axes), show_axes(&y.axes)));
+                };
+                let same = p == q && x.axes.len() == y.axes.len() && x.axes.iter().zip(&y.axes).enumerate().all(|(k, (u, v))| k == p || u.len == v.len);
+                if !same {
+                    return err(format!("concat {axis}: {} and {}", show_axes(&x.axes), show_axes(&y.axes)));
+                }
+                let m = x.axes[p].len;
+                let mut axes = x.axes.clone();
+                axes[p].len = m + y.axes[p].len;
+                let (sx, sy) = (x.strides(), y.strides());
+                let mut data = Vec::with_capacity(x.numel() + y.numel());
+                for idx in Indices::new(axes.iter().map(|a| a.len).collect()) {
+                    let (src, s, shift) = if idx[p] < m { (x, &sx, 0) } else { (y, &sy, m) };
+                    let off: usize = idx.iter().enumerate().map(|(k, i)| (if k == p { i - shift } else { *i }) * s[k]).sum();
+                    data.push(src.data[off].clone());
+                }
+                Ok(Value::Real(Tensor { axes, data: data.into() }))
+            }
             PrimOp::ScatterIndex { axis, index } => {
                 let (tmpl, ct) = (self.tensor(a(0)?, &name)?, self.tensor(a(1)?, &name)?);
                 let p = tmpl.axis_pos(axis).ok_or_else(|| crate::eval::RunError { code: None, message: format!("scatter_index: no axis `{axis}`"), span: None })?;
@@ -1126,4 +1176,24 @@ fn _key_use(_: &Key) {}
 #[allow(dead_code)]
 fn _rng_use(r: &mut rand_chacha::ChaCha20Rng) -> u64 {
     r.next_u64()
+}
+
+/// `t[axis: lo..hi]`: the elements `lo` to `hi − 1` of the axis, which the
+/// result keeps at the length `hi − lo`.
+fn slice_tensor<T: Clone>(t: &Tensor<T>, axis: &str, lo: usize, hi: usize) -> Result<Tensor<T>> {
+    let Some(p) = t.axis_pos(axis) else {
+        return err(format!("slice: no axis `{axis}` in {}", show_axes(&t.axes)));
+    };
+    if lo > hi || hi > t.axes[p].len {
+        return err(format!("slice {lo}..{hi} outside the axis `{axis}`, of length {}", t.axes[p].len));
+    }
+    let mut axes = t.axes.clone();
+    axes[p].len = hi - lo;
+    let strides = t.strides();
+    let mut data = Vec::with_capacity(axes.iter().map(|a| a.len).product());
+    for idx in Indices::new(axes.iter().map(|a| a.len).collect()) {
+        let off: usize = idx.iter().enumerate().map(|(k, i)| (if k == p { i + lo } else { *i }) * strides[k]).sum();
+        data.push(t.data[off].clone());
+    }
+    Ok(Tensor { axes, data: data.into() })
 }

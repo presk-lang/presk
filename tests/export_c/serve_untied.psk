@@ -1,7 +1,8 @@
 -- serve_untied.psk: a generation function whose model's parameters do not fix
 -- the context's length, so that `presk serve` passes it the whole context,
 -- one token longer at every step. A C program has one shape: `presk export
--- --target c --serve` refuses it (E8009, plan 0.9.0 step 6).
+-- --target c --serve` refuses it without `--dim T=N` (E8009, plan 0.9.0
+-- step 6), and pads the context to N with it (plan 0.17.0 step 7).
 const V : nat = 16
 module Bigram {
   param w : ℝ[V, V]

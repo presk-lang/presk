@@ -387,21 +387,34 @@ fn facts(s: &State, id: &Id, math: &Math) -> Map<String, Value> {
             if let Some(x) = s.sens.as_ref().and_then(|x| x.get(site)) {
                 m.insert("sensitivity".into(), num(x));
             }
-            let ty = if id.key.starts_with("param ") { s.realization.params.get(site).copied().unwrap_or(s.realization.default) } else { s.realization.dtype_at(site) };
-            m.insert("type".into(), json!(ty.name()));
+            // A parameter in integers (`quant`) has their name for a type.
+            let ty = match s.realization.quant.get(site).filter(|_| id.key.starts_with("param ")) {
+                Some(q) => q.name(),
+                None if id.key.starts_with("param ") => s.realization.params.get(site).copied().unwrap_or(s.realization.default).name().to_string(),
+                None => s.realization.dtype_at(site).name().to_string(),
+            };
+            m.insert("type".into(), json!(ty));
             if let Some(sv) = &s.solved
                 && let Some(c) = sv.breakdown.iter().find(|c| c.name == site)
             {
                 m.insert("term".into(), num(c.err));
-                m.insert("rounded_in".into(), json!(c.dtype.name()));
+                m.insert("rounded_in".into(), json!(c.rung.name()));
                 if c.role == presk_precision::solve::Role::Decision {
                     m.insert("why".into(), json!(super::why(sv, site, if sv.time { "s" } else { "bytes" })));
                 }
                 // The site's term of the solver's estimate, chapter 4's
                 // first-order change: its sensitivity, the unit roundoff of
                 // the type it is rounded in, its magnitude.
-                if c.err > 0.0 {
-                    let t = c.dtype.name();
+                if let (true, Some(q)) = (c.err > 0.0, &c.int) {
+                    // In integers (D177): the largest move of the values
+                    // quantized, computed exactly, in place of u·|v|.
+                    m.insert(
+                        "tex".into(),
+                        json!(format!("e_v = \\Bigl\\lVert \\frac{{\\partial L}}{{\\partial v}} \\Bigr\\rVert_1 \\, \\max |\\hat v - v| = {} \\times {} = {}", tex_num(c.sens), tex_num(q.round), tex_num(c.err))),
+                    );
+                } else if c.err > 0.0 {
+                    let t = c.rung.name();
+                    let t = t.as_str();
                     m.insert(
                         "tex".into(),
                         json!(format!("e_v = \\Bigl\\lVert \\frac{{\\partial L}}{{\\partial v}} \\Bigr\\rVert_1 \\, u_{{\\code{{{t}}}}} \\, \\max |v| = {} \\times {} \\times {} = {}", tex_num(c.sens), unit(t), tex_num(c.mag), tex_num(c.err))),

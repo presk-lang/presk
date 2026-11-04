@@ -139,6 +139,8 @@ pub enum Op {
     RBrace,
     /// `...`
     Ellipsis,
+    /// `..`, between the bounds of a slice
+    DotDot,
 }
 
 impl Op {
@@ -172,6 +174,7 @@ impl Op {
             Op::LBrace => "{",
             Op::RBrace => "}",
             Op::Ellipsis => "...",
+            Op::DotDot => "..",
         }
     }
 }

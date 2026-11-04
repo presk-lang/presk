@@ -55,14 +55,14 @@ fn breakdown_sums_to_the_estimate() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, options: Default::default() };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
     use presk_precision::solve::Role;
     let sum: f64 = solved.breakdown.iter().map(|s| s.err).sum();
     assert!((sum - solved.solution.estimated_error).abs() <= 1e-15 * solved.solution.estimated_error, "{sum} against {}", solved.solution.estimated_error);
     let decisions: Vec<_> = solved.breakdown.iter().filter(|s| s.role == Role::Decision).collect();
     assert_eq!(decisions.len(), solved.solution.considered);
-    let narrowed = decisions.iter().filter(|s| s.dtype != presk_rt::Dtype::F64).count();
+    let narrowed = decisions.iter().filter(|s| s.rung != presk_rt::Dtype::F64.into()).count();
     assert_eq!(narrowed, solved.solution.realization.storage.len() + solved.solution.realization.params.len());
     // The parameters are decisions, keyed by path (plan 0.12.0 step 4).
     assert!(solved.solution.realization.params.keys().all(|k| decisions.iter().any(|d| d.param && &d.name == k)));
@@ -90,7 +90,7 @@ fn the_measured_rounding_is_at_most_the_unit_term() {
         }
     }
     let solve = |core: &mut presk_core::Program, options: Options| {
-        let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, options };
+        let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options };
         presk_driver::precision::solve(core, &prog, &env, &a).ok().expect("the tutorial's loss solves").solution
     };
     let unit = solve(&mut core, Options { rounding: RoundingTerm::Unit, narrow: Narrow::Off, ..Options::default() });
@@ -118,7 +118,7 @@ fn a_tensor_first_argument_is_no_parameter() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, options: Default::default() };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the attention row solves") };
     assert!(solved.breakdown.iter().all(|s| !s.param), "a parameter offered");
     assert!(solved.solution.realization.params.is_empty());
@@ -193,4 +193,92 @@ fn sensitivity_program_is_printable() {
     let (added, diags) = presk_driver::precision::sensitivity_program(&mut core, entry);
     assert!(!presk_syntax::diag::has_errors(&diags));
     assert!(core.func(added[0]).name.ends_with(".vjp"), "{}", core.func(added[0]).name);
+}
+
+/// One menu (plan 0.17.0 step 4, D177) on the tutorial's tower: its stacked
+/// matrix is offered its four integer rungs, scaled along −2, the axis `·`
+/// contracts through the fold that slices it; its vectors none. The solve's
+/// measurement, on the kernel interpreter with the weights quantized, is
+/// inside the budget, the terms still sum to the estimate, and the
+/// realization's `quant` map reads back as written.
+#[test]
+fn one_menu_offers_the_matrices_their_integers() {
+    use presk_precision::solve::{Menu, Rung};
+    let file = root().join("tutorial/07_train.psk");
+    let (_, prog, mut core) = program(&file, &[]);
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
+    let menu = Menu::parse("f64,f32,bf16,int8,int4").unwrap();
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(0.5), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu, options: Default::default() };
+    let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
+    let paths: Vec<(&str, usize)> = solved.params.iter().map(|p| (p.path.as_str(), p.ints.len())).collect();
+    assert!(paths.iter().any(|(p, n)| *p == "blocks.proj.w" && *n == 4), "{paths:?}");
+    assert!(paths.iter().filter(|(p, _)| *p != "blocks.proj.w").all(|(_, n)| *n == 0), "only the matrix: {paths:?}");
+    let w = solved.params.iter().find(|p| p.path == "blocks.proj.w").unwrap();
+    // Three layers of 4 × 4: int8 is 48 bytes and twelve f32 scales, as
+    // many bytes as bf16; int4 is 24 and the same scales.
+    assert!(w.ints.iter().all(|q| q.axis == -2 && q.contracted && q.round > 0.0), "{:?}", w.ints);
+    assert_eq!(w.ints.iter().map(|q| q.bytes).collect::<Vec<_>>(), [96.0, 96.0, 72.0, 72.0], "{:?}", w.ints);
+    let s = &solved.solution;
+    assert!(s.measured.is_some_and(|g| g <= s.budget_abs), "{:?} against {}", s.measured, s.budget_abs);
+    let q = s.realization.quant.get("blocks.proj.w").expect("a loose budget quantizes the matrix");
+    assert_eq!(q.over, presk_rt::AxisRef::Pos(-2));
+    assert!(!s.realization.params.contains_key("blocks.proj.w"));
+    let c = solved.breakdown.iter().find(|c| c.name == "blocks.proj.w").unwrap();
+    assert_eq!(c.rung, Rung::Int { bits: q.bits, scheme: q.scheme });
+    let sum: f64 = solved.breakdown.iter().map(|s| s.err).sum();
+    assert!((sum - s.estimated_error).abs() <= 1e-15 * s.estimated_error, "{sum} against {}", s.estimated_error);
+    let path = std::env::temp_dir().join(format!("presk-one-menu-{}.json", std::process::id()));
+    std::fs::write(&path, s.realization.to_json()).unwrap();
+    let back = presk_rt::Realization::parse(&format!("@{}", path.display()));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(back.unwrap(), s.realization);
+}
+
+/// D180: a checkpoint's parameters are read against a tree that is never
+/// drawn, the initializer on the kernel backend with no executor. That tree
+/// is the drawn parameters' own (the same records and axes), the other
+/// inputs are drawn as before, and a checkpoint reads to the same values
+/// either way, bit for bit.
+#[test]
+fn given_params_have_the_drawn_tree() {
+    let cases: [(&str, &str, &[&str], &[&str]); 5] = [
+        ("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"]),
+        ("tests/examples/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[]),
+        ("coverage/llama3.psk", "Llama3.apply", &["B=1", "T=8"], &["V=50", "D=32", "H=4", "G=2", "FF=64", "L=2"]),
+        ("coverage/llama.psk", "Llama.apply", &["B=2", "T=16"], &["V=100", "D=32", "H=2", "G=2", "FF=64", "L=2"]),
+        ("coverage/bert.psk", "BertSquad.apply", &["B=2", "T=16"], &["V=100", "D=32", "H=2", "L=2"]),
+    ];
+    for (file, entry, dims, consts) in cases {
+        let consts: Vec<String> = consts.iter().map(|c| c.to_string()).collect();
+        let (_, prog, core) = program(&root().join(file), &consts);
+        let dims: Vec<(String, u64)> = dims.iter().map(|d| d.split_once('=').map(|(n, v)| (n.to_string(), v.parse().unwrap())).unwrap()).collect();
+        let opts = presk_interp::RunOptions { entry: entry.into(), dims, seed: 7, bits: 64, digits: 12 };
+        let rt = |inputs: &presk_interp::run::Inputs| inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect::<Vec<_>>();
+        let (_, _, drawn) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+        let drawn = rt(&drawn);
+        let (_, _, given, described) = presk_interp::run::prepare_run_given_params(&core, &prog, &opts).unwrap();
+        let given = rt(&given);
+        assert_eq!(given[1..], drawn[1..], "{entry}: the other inputs");
+        let Some(s @ presk_interp::run::Shaped::Params { init, dims, key }) = &described else { panic!("{entry}: the first argument is a module's parameters") };
+        let zeros = presk_driver::layout::params_zeros(&core, &prog, *init, dims, key).unwrap();
+        // The same tree: records, names, axes; every number zero.
+        fn shape(v: &presk_rt::Value) -> String {
+            match v {
+                presk_rt::Value::Record(fs) => format!("{{{}}}", fs.iter().map(|(n, x)| format!("{n}: {}", shape(x))).collect::<Vec<_>>().join(", ")),
+                presk_rt::Value::Tuple(ts) => format!("({})", ts.iter().map(shape).collect::<Vec<_>>().join(", ")),
+                presk_rt::Value::Real(t) => format!("{:?}", t.axes),
+                other => format!("{other:?}"),
+            }
+        }
+        assert_eq!(shape(&zeros), shape(&drawn[0]), "{entry}: the tree");
+        let path = std::env::temp_dir().join(format!("presk-given-params-{}.psk.d", std::process::id()));
+        presk_rt::save_params(&path, "M", &drawn[0]).unwrap();
+        let read = presk_driver::entry::read_given_params(&core, &prog, s, &path).unwrap();
+        let before = presk_rt::load_params(&path, &drawn[0]).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(read, before, "{entry}: the checkpoint read either way");
+        // The drawn tree holds the interpreter's exact numbers; the file, f64.
+        assert_eq!(read, drawn[0].realize(presk_rt::Dtype::F64), "{entry}: the checkpoint is the drawn parameters");
+    }
 }

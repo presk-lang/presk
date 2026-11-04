@@ -106,7 +106,7 @@ fn prim_work_bytes(op: &PrimOp, ch: &[Id], elems: &dyn Fn(Id) -> f64, ty_of: &dy
     use PrimOp::*;
     let in0 = ch.first().map_or(0.0, |c| elems(*c));
     let w = match op {
-        Add | Sub | Mul | Div | Neg | Real | Pi | Relu | Abs | Sign | Heaviside | Pow(_) => n_out,
+        Add | Sub | Mul | Div | Neg | Real | Pi | Relu | Abs | Max | Min | Sign | Heaviside | Pow(_) => n_out,
         Exp | Log | Tanh | Sqrt | Sigmoid | Sin | Cos => TRANSCENDENTAL * n_out,
         Gelu | GeluDeriv => (TRANSCENDENTAL + 4.0) * n_out,
         // 2·(elements of the result)·(contraction depth).
@@ -128,12 +128,12 @@ fn prim_work_bytes(op: &PrimOp, ch: &[Id], elems: &dyn Fn(Id) -> f64, ty_of: &dy
         SumAll | MeanAll | Sum { .. } | Mean { .. } | SumTo | SumSquares => in0.max(n_out),
         Softmax { .. } => (TRANSCENDENTAL + 3.0) * n_out,
         CrossEntropy | CrossEntropyVjp => (TRANSCENDENTAL + 3.0) * in0,
-        Embed | OneHot | EmbedVjp | MeanVjp { .. } | BroadcastLike | ScatterIndex { .. } | ScatterParams { .. } | SetSlice => n_out,
+        Embed | OneHot | EmbedVjp | MeanVjp { .. } | BroadcastLike | ScatterIndex { .. } | SliceVjp { .. } | Concat { .. } | ScatterParams { .. } | SetSlice => n_out,
         Argmax => in0,
         // `(key, logits)`: the logits' elements.
         Sample => ch.get(1).map_or(0.0, |c| elems(*c)),
         Zeros { .. } | Ones { .. } | ZerosLike | Normal { .. } | XavierUniform { .. } | DropoutMask | Positions { .. } | CausalMask { .. } => n_out,
-        MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | SplitHeads { .. } | MergeHeads { .. } | SliceParams { .. } | StackParams { .. } | SplitKey { .. } | SetField { .. } | SetElem { .. } => 0.0,
+        MergeAxes { .. } | SplitAxes { .. } | ReshapeLike | IndexConst { .. } | Slice { .. } | SplitHeads { .. } | MergeHeads { .. } | SliceParams { .. } | StackParams { .. } | SplitKey { .. } | SetField { .. } | SetElem { .. } => 0.0,
     };
     (w, q)
 }

@@ -88,9 +88,14 @@ fn tree_size(members: &HashSet<VarId>, by_var: &HashMap<VarId, &Let>, root: VarI
         if !members.contains(&v) {
             return;
         }
-        let Some(Rhs::Prim { args, .. }) = by_var.get(&v).map(|c| &c.rhs) else { return };
+        let Some(Rhs::Prim { op, args }) = by_var.get(&v).map(|c| &c.rhs) else { return };
+        // `max` and `min` are a comparison and a selection: each operand is
+        // written twice in the tree.
+        let reads = if matches!(op, PrimOp::Max | PrimOp::Min) { 2 } else { 1 };
         for a in args {
-            go(*a, members, by_var, budget);
+            for _ in 0..reads {
+                go(*a, members, by_var, budget);
+            }
         }
     }
     let mut budget = MAX_TREE + 1;

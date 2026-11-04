@@ -169,3 +169,44 @@ fn character_vocabulary_round_trips() {
     let bpe = vec!["le".to_string(), "s".to_string()];
     assert_eq!(presk_data::encode("les", &bpe).unwrap_err().code, "E9004");
 }
+
+/// Version 2 (plan 0.17.0 step 7, D180): each real leaf in its encoding,
+/// read back exactly; a file of `f64` leaves stays version 1, byte for byte
+/// what `write` writes; a number that is not one of its leaf's encoding is
+/// refused.
+#[test]
+fn version_two_encodings() {
+    use presk_data::{Enc, write_encoded};
+    let ty = "(ℝ[a: 3], ℝ[b: 2], idx[5][2], ℝ[])";
+    let layout = Layout::from_type_text(ty).unwrap();
+    // 1.5, −0.25 and 3 are numbers of bf16; 0.1f32 is one of f32 only.
+    let v = Value::Tuple(vec![
+        Value::Real(vec![1.5, -0.25, 3.0]),
+        Value::Real(vec![f64::from(0.1f32), -2.0]),
+        Value::Idx(vec![4, 0]),
+        Value::Real(vec![0.1]),
+    ]);
+    let encs = [Enc::Bf16, Enc::F32, Enc::F64, Enc::F64];
+    let path = tmp("v2.psk.d");
+    write_encoded(&path, ty, &layout, &encs, std::slice::from_ref(&v)).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2, "a narrower leaf: version 2");
+    let mut r = Reader::open(&path).unwrap();
+    assert_eq!(r.header().encodings, encs.to_vec());
+    assert_eq!(r.get(0).unwrap(), v, "every value read back exactly");
+    // header (4 + 2 + 4 + type + 8 + 4 + 4 leaves) + 3·2 + 2·4 + 2·1 + 8
+    assert_eq!(bytes.len(), 4 + 2 + 4 + ty.len() + 8 + 4 + 4 + 6 + 8 + 2 + 8);
+    // All f64: version 1, the same bytes as `write`.
+    let (p1, p2) = (tmp("v1-plain.psk.d"), tmp("v1-encoded.psk.d"));
+    presk_data::write(&p1, ty, &layout, std::slice::from_ref(&v)).unwrap();
+    write_encoded(&p2, ty, &layout, &[Enc::F64; 4], std::slice::from_ref(&v)).unwrap();
+    assert_eq!(std::fs::read(&p1).unwrap(), std::fs::read(&p2).unwrap());
+    assert_eq!(Reader::open(&p1).unwrap().header().version, 1);
+    // 0.1 is no number of f32 or bf16; 0.1f32 none of bf16.
+    let bad = |encs: [Enc; 4], v: &Value| write_encoded(&tmp("v2-bad.psk.d"), ty, &layout, &encs, std::slice::from_ref(v)).unwrap_err().code;
+    let w = Value::Tuple(vec![Value::Real(vec![1.5, 0.1, 3.0]), Value::Real(vec![0.5, 1.0]), Value::Idx(vec![1, 2]), Value::Real(vec![1.0])]);
+    assert_eq!(bad([Enc::F32, Enc::F64, Enc::F64, Enc::F64], &w), "E9004");
+    assert_eq!(bad([Enc::Bf16, Enc::Bf16, Enc::F64, Enc::F64], &v), "E9004");
+    // An index leaf has no real encoding.
+    assert_eq!(bad([Enc::F64, Enc::F64, Enc::F32, Enc::F64], &v), "E9005");
+}

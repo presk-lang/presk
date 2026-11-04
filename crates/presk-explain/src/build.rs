@@ -371,7 +371,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
     let scalar = presk_driver::precision::returns_scalar(&pcore, entry);
     let (mut sens, mut sens_none, mut solved) = (None, None, None);
     if let (Some(budget), Some((e, _))) = (o.budget, &env) {
-        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None, options: Default::default() };
+        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None, menu: o.menu.clone(), options: Default::default() };
         match presk_driver::precision::solve(&mut pcore.clone(), &prog, e, &args) {
             Ok(s) => {
                 if let Err(m) = std::fs::write(art("realization.json"), s.solution.realization.to_json()) {
@@ -517,7 +517,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
         let dir = art("c");
         let _ = std::fs::remove_dir_all(&dir);
         let mut kept = Collect::default();
-        let opts = presk_driver::export_c::Options { file: &o.file, entry: Some(&o.entry), dims: &o.dims, consts: &o.consts, realize: &realize_spec, plan: plan_spec.as_deref(), weights: o.weights.clone(), seed: o.seed, no_exact: o.no_exact, straight_line: false, placed: false, serve: false, out: &dir, remat: o.remat };
+        let opts = presk_driver::export_c::Options { file: &o.file, entry: Some(&o.entry), dims: &o.dims, consts: &o.consts, realize: &realize_spec, plan: plan_spec.as_deref(), weights: o.weights.clone(), seed: o.seed, no_exact: o.no_exact, straight_line: false, placed: false, serve: false, llvm: false, out: &dir, remat: o.remat };
         let real = o.out.join("artifacts").display().to_string();
         let said = |kept: &Collect| -> String {
             kept.items
@@ -1174,12 +1174,16 @@ fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
         sci(sum),
         sci(sv.solution.estimated_error)
     ));
+    // The one menu's integers (D177), said when it decided some.
+    if sv.breakdown.iter().any(|c| c.int.is_some()) {
+        v.prose("**A parameter in integers** (`presk solve --menu`, 0.17.0) is charged s · max |ŵ − w|, the largest move of its values quantized and read back as the `f32` q·s, or the narrowest nest's rounding of it where that is larger; its bytes are the integers and one `f32` scale per index of every axis but the one its readers contract.");
+    }
     let mut rows: Vec<&presk_precision::solve::SiteCost> = sv.breakdown.iter().collect();
     rows.sort_by(|a, b| b.err.partial_cmp(&a.err).unwrap_or(std::cmp::Ordering::Equal).then_with(|| site_order(&a.name).cmp(&site_order(&b.name))));
     let share = |c: &presk_precision::solve::SiteCost| if sum > 0.0 { format!("{:.3} %", 100.0 * c.err / sum) } else { "-".into() };
     let unit = if sv.time { "s" } else { "bytes" };
     let decided: Vec<&&presk_precision::solve::SiteCost> = rows.iter().filter(|c| c.role == Role::Decision).collect();
-    let decisions: Vec<Vec<String>> = decided.iter().map(|c| vec![format!("`{}`", c.name), if c.param { "a parameter, by its path".into() } else { op_of(s, &c.name) }, format!("`{}`", c.dtype.name()), format!("{}", c.elems), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
+    let decisions: Vec<Vec<String>> = decided.iter().map(|c| vec![format!("`{}`", c.name), if c.param { "a parameter, by its path".into() } else { op_of(s, &c.name) }, format!("`{}`", c.rung.name()), format!("{}", c.elems), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
     v.prose("**The decisions**, each with its term of the estimate:");
     v.listing_table(&["Site", "Operation", "Type", "Elements", "|v|", "s", "Term", "Share"], decisions);
     v.prose(format!("**Why each decision has its type.** The solver tries every narrowing in order of what it saves per unit of error it adds, the best first, and takes one when the estimate stays under the budget ({} absolute); then it measures, and widens the largest share by one type while the measured gap exceeds the budget. Savings are in {unit}{}.{}", sci(sv.solution.budget_abs), if sv.time { ", the profile's roofline" } else { "" }, rules_note(sv)));
@@ -1190,7 +1194,7 @@ fn breakdown(s: &State, sv: &Solved, v: &mut Section) {
     } else {
         v.prose(reasons.join("\n"));
     }
-    let others: Vec<Vec<String>> = rows.iter().filter(|c| c.role != Role::Decision).map(|c| vec![format!("`{}`", c.name), op_of(s, &c.name), role_name(Some(&c.role)), format!("`{}`", c.dtype.name()), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
+    let others: Vec<Vec<String>> = rows.iter().filter(|c| c.role != Role::Decision).map(|c| vec![format!("`{}`", c.name), op_of(s, &c.name), role_name(Some(&c.role)), format!("`{}`", c.rung.name()), sci(c.mag), sci(c.sens), sci(c.err), share(c)]).collect();
     if !others.is_empty() {
         v.prose("**The values rounded elsewhere, or carried.** A follower's type is the narrowest of the types it is rounded to where it is read; a carried value's is its own, never rounded there.");
         v.listing_table(&["Site", "Operation", "Role", "Type", "|v|", "s", "Term", "Share"], others);
@@ -1235,6 +1239,11 @@ fn why(sv: &Solved, site: &str, unit: &str) -> String {
             Some((to, saved, added, spent, rank)) => parts.push(format!("kept: `{}` (move {rank}) would save {} {unit} but add {} to the estimate, which stood at {}: past the budget", to.name(), sci(*saved), sci(*added), sci(*spent))),
             None => parts.push("kept: no narrower type saves anything under the machine".into()),
         }
+    }
+    // An integer decision's rung and its scale's axis (D177).
+    if let Some(q) = sv.breakdown.iter().find(|c| c.name == site).and_then(|c| c.int.as_ref()) {
+        let axis = if q.contracted { format!("axis {}, the one its readers contract", q.axis) } else { format!("axis {}: its readers contract no single axis", q.axis) };
+        parts.push(format!("stored as `{}`, {} bytes with its scales, which are constant along {axis}; the largest move of its values {}", q.rung().name(), q.bytes, sci(q.round)));
     }
     parts.join("; ")
 }
@@ -1884,7 +1893,7 @@ fn trace(s: &State, site: &str) -> Option<Vec<Vec<String>>> {
     if let Some(sv) = &s.solved
         && let Some(c) = sv.breakdown.iter().find(|c| c.name == site)
     {
-        typed = format!("`{}`, {}; term {}", c.dtype.name(), role_name(Some(&c.role)), sci(c.err));
+        typed = format!("`{}`, {}; term {}", c.rung.name(), role_name(Some(&c.role)), sci(c.err));
         if c.role == Role::Decision {
             typed.push_str(&format!("; {}", why(sv, site, if sv.time { "s" } else { "bytes" })));
         }

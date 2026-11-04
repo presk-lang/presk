@@ -2,11 +2,11 @@
 -- that GPT-J and Mixtral share the shape of, at the 7B configuration so the
 -- constants stay readable. Transcribed to see what the shape fragment covers.
 --
--- One departure from the real model, marked below. 0.4.0 recorded two, both
+-- No departure from the real model. 0.4.0 recorded two substitutions, both
 -- blocked on splitting one axis into two; 0.5.0 step 1 added `split`, and
--- grouped-query attention is now transcribed exactly. Rotary positions are
--- not, and the split was not what they were missing: see the note above
--- `Llama` for what they need instead.
+-- grouped-query attention became exact. Rotary positions stood in for by a
+-- learned table until 0.17.0, which gives them what they were missing: a
+-- slice that keeps its axis and `concat` (plan 0.17.0 step 6, D179).
 const V  : nat = 32000
 const D  : nat = 4096
 const H  : nat = 32
@@ -48,6 +48,26 @@ module SwiGLU {
   fn apply(x : Acts) -> Acts = down.apply(silu(gate.apply(x)) * up.apply(x))
 }
 
+-- Rotary position embeddings (RoPE), in Hugging Face's pairing: dimension r
+-- of a head with r + HD/2, each pair rotated by t·ω_r, ω_r = 10000^(−2r/HD).
+-- The checkpoints of Hugging Face are in this layout, so a converter reads
+-- them as they are (plan 0.17.0 §10).
+fn frequencies() -> ℝ[rot: HD/2] =
+  exp(-(2 : ℝ) * real(positions(rot: HD/2)) / (HD : ℝ) * log(real(1e4)))
+
+fn angles() -> ℝ[seq: T, rot: HD/2] =
+  ein[seq, rot](real(positions(seq: T)) * frequencies())
+
+-- `x` has `seq` just before `hd`: the angle of each position broadcasts by
+-- name over the pair and the heads.
+fn rope(φ : ℝ[seq: T, rot: HD/2], x : ℝ[..., seq: T, hd: HD]) -> ℝ[..., seq: T, hd: HD] =
+  let p  = split(axis hd, pair: 2, rot: HD/2, x)
+  let x0 = p[pair: 0..1]
+  let x1 = p[pair: 1..2]
+  let c  = cos(φ)
+  let s  = sin(φ)
+  merge(axis pair, axis rot, concat(axis pair, x0 * c - x1 * s, x1 * c + x0 * s))
+
 -- Grouped-query attention, exactly as Llama 2 70B has it: 32 query heads
 -- share 8 key/value heads, so the keys and values project to G·HD channels
 -- rather than D and one key head serves P = 4 query heads.
@@ -67,13 +87,15 @@ module Attention {
   param wv : ℝ[model: D, kvout: G*HD]   init = normal(std = 0.02)
   param wo : ℝ[headhd: D, model: D]     init = normal(std = 0.02)
 
-  fn apply(x : Acts, mask : Mask) -> Acts =
+  fn apply(x : Acts, mask : Mask, φ : ℝ[seq: T, rot: HD/2]) -> Acts =
     -- The queries keep all D channels and are read as (groups, per, hd); the
     -- keys and values have only G·HD and are read as (groups, hd), so one key
-    -- head faces the P query heads of its group.
-    let qg = split(axis qout, groups: G, rest: P*HD, x · wq)
-    let q  = split(axis rest, per: P, hd: HD, qg)
-    let k  = split(axis kvout, groups: G, hd: HD, x · wk)
+    -- head faces the P query heads of its group. The queries and the keys are
+    -- projected by `ein` with the positions after the heads, which is where
+    -- `rope` wants them; the rotation commutes with nothing else here.
+    let wq3 = split(axis rest, per: P, hd: HD, split(axis qout, groups: G, rest: P*HD, wq))
+    let q  = rope(φ, ein[batch, groups, per, seq, hd](x * wq3))
+    let k  = rope(φ, ein[batch, groups, seq, hd](x * split(axis kvout, groups: G, hd: HD, wk)))
     let v  = split(axis kvout, groups: G, hd: HD, x · wv)
     let s  = ein[batch, groups, per, seq, seq2](q * k) / sqrt(HD : ℝ)
     let a  = softmax(axis seq2, s, where = mask)
@@ -90,29 +112,13 @@ module Block {
   use attn : Attention
   use ff   : SwiGLU
   use n1, n2 : RMSNorm{D}
-  fn apply(x : Acts, mask : Mask) -> Acts =
-    let x = x + attn.apply(n1.apply(x), mask)
+  fn apply(x : Acts, mask : Mask, φ : ℝ[seq: T, rot: HD/2]) -> Acts =
+    let x = x + attn.apply(n1.apply(x), mask, φ)
     x + ff.apply(n2.apply(x))
 }
 
--- The real model has no learned position table: it rotates queries and keys
--- by an angle that depends on the position (RoPE). `split` now gives the
--- pairing it needs — `split(axis hd, rot: HD/2, pair: 2, q)` checks — but
--- the pairing was never the hard part. The rotation reads both members of a
--- pair and writes both back:
---
---     out[…, r, 0] = x[…, r, 0]·cos θ − x[…, r, 1]·sin θ
---     out[…, r, 1] = x[…, r, 0]·sin θ + x[…, r, 1]·cos θ
---
--- Reading them is `x[pair: 0]` and `x[pair: 1]`, which this language has.
--- Writing them back is building a tensor along an axis out of two computed
--- parts, which it does not: `concat` is declared and not implemented, and
--- there is no array literal, so the rotation cannot be assembled. So this
--- transcription keeps a learned table, and what it is waiting for is not a
--- shape construct but a way to *make* a tensor from values.
 module Llama {
   param tok : ℝ[vocab: V, model: D]  init = normal(std = 0.02)
-  param pos : ℝ[T, D]                init = normal(std = 0.02)
   use blocks : stack{L}(Block)
   use norm   : RMSNorm{D}
   -- Initialized as the other matrices, as Hugging Face's LlamaPreTrainedModel
@@ -124,8 +130,7 @@ module Llama {
 
   fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
     let mask = causal_mask(seq: T)
-    let h = embed(tok, ids) + embed(pos, positions(seq: T))
-    norm.apply(blocks.apply(h, mask)) · head
+    norm.apply(blocks.apply(embed(tok, ids), mask, angles())) · head
 }
 
 -- The next-token loss, as corpus/nlp/05_gpt.psk writes its own without the

@@ -46,8 +46,8 @@
 //!   offered its whole menu or none of it, and every decision taken saves at
 //!   least the threshold.
 //!
-//! Two options change steps 1 and 3 (D155), both off by default, since every
-//! row of record was solved without them:
+//! Two options change steps 1 and 3 (D155). The first has been the default
+//! since 0.16.0 (D158); the second is off by default:
 //! - **`RoundingTerm::Measured`**: the estimate's rounding step is the
 //!   envelope's measured `max |fl_d(x) − x|` at each site instead of `u(d) ·
 //!   max|x|` ([`crate::envelope::Rounding`]). A value exact in a type, a mask
@@ -59,6 +59,22 @@
 //!   up to three passes while one changes something. The solver then takes
 //!   by its measurement a step only the proposal decided before, at one
 //!   measurement a decision a pass.
+//!
+//! # One menu (plan 0.17.0 step 4, D177)
+//!
+//! A value is assigned a [`Rung`]: a float storage type, or for a parameter
+//! of rank two or more as declared, `int8` or `int4` under `absmax` or
+//! `pow2` scales ([`Menu`]'s second list, `presk solve --menu`). A
+//! parameter's integer rung is priced at rest as its float types are
+//! ([`IntRung`]): its term `sens · max |ŵ − w|`, the largest move of its
+//! values quantized, computed exactly, D155's form; its bytes the integers
+//! and their `f32` scales, which are constant along the axis its readers
+//! contract ([`contracted_axes`]). Every move of the solver runs over one
+//! list of rungs: the proposal by saving per unit of term, the
+//! measurement's widening one rung at a time, the narrowing step, the
+//! exhaustive search. Rule 2 reads the first float step. Without integer
+//! rungs in the menu, nothing moves (QM0); `--quant` stays the two-pass
+//! solver of [`crate::quant`].
 //!
 //! # What the solver chooses
 //!
@@ -95,7 +111,7 @@
 
 use std::collections::BTreeMap;
 
-use presk_rt::{Dtype, Realization};
+use presk_rt::{AxisRef, Dtype, Quant, QuantScheme, Realization};
 
 use crate::envelope::{Envelope, Rounding};
 use crate::sensitivity::Sensitivity;
@@ -121,15 +137,151 @@ impl Budget {
     }
 }
 
-/// The machine types a site may be assigned.
-#[derive(Clone, Debug)]
-pub struct Menu(pub Vec<Dtype>);
+/// What a site may be assigned: the float storage types, and the integer
+/// rungs, `(bits, scheme)`, a parameter of rank two or more is offered
+/// besides them (plan 0.17.0 step 4, D177).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Menu(pub Vec<Dtype>, pub Vec<(u8, QuantScheme)>);
 
 impl Default for Menu {
-    /// Storage types 0.5.0 can emit. Integer quantisation is 0.6.0: it needs
-    /// per-channel scales and a calibration semantics of its own.
+    /// The float storage types, the menu since 0.5.0, and no integer rung:
+    /// `--quant` quantizes in a pass after the solve (0.6.0, D44, D49), and
+    /// `presk solve --menu` offers the integers in the solve itself (D177).
     fn default() -> Menu {
-        Menu(vec![Dtype::F64, Dtype::F32, Dtype::Bf16])
+        Menu(vec![Dtype::F64, Dtype::F32, Dtype::Bf16], Vec::new())
+    }
+}
+
+impl Menu {
+    /// `--menu`'s list, comma-separated: `f64`, `f32`, `bf16`, and `int8`
+    /// or `int4`, each under both schemes, or one of them, `int8/absmax`,
+    /// `int4/pow2`. The float types are put widest first and the integer
+    /// rungs `int8` before `int4`, `absmax` before `pow2`, in whatever order
+    /// they are written, so that one menu solves one way; it needs a float
+    /// type.
+    pub fn parse(s: &str) -> Result<Menu, String> {
+        let (mut floats, mut ints) = (Vec::new(), Vec::new());
+        for w in s.split(',').map(str::trim) {
+            let (bits, schemes): (u8, &[QuantScheme]) = match w {
+                "f64" | "f32" | "bf16" => {
+                    floats.push(match w {
+                        "f64" => Dtype::F64,
+                        "f32" => Dtype::F32,
+                        _ => Dtype::Bf16,
+                    });
+                    continue;
+                }
+                "int8" => (8, &[QuantScheme::Absmax, QuantScheme::Pow2]),
+                "int4" => (4, &[QuantScheme::Absmax, QuantScheme::Pow2]),
+                "int8/absmax" => (8, &[QuantScheme::Absmax]),
+                "int8/pow2" => (8, &[QuantScheme::Pow2]),
+                "int4/absmax" => (4, &[QuantScheme::Absmax]),
+                "int4/pow2" => (4, &[QuantScheme::Pow2]),
+                other => return Err(format!("`{other}` is not a rung: f64, f32, bf16, int8, int4, int8/absmax, int8/pow2, int4/absmax or int4/pow2")),
+            };
+            ints.extend(schemes.iter().map(|s| (bits, *s)));
+        }
+        floats.sort_by_key(|d| std::cmp::Reverse(d.bytes()));
+        floats.dedup();
+        let order = |s: &QuantScheme| matches!(s, QuantScheme::Pow2);
+        ints.sort_by_key(|(b, s)| (std::cmp::Reverse(*b), order(s)));
+        ints.dedup();
+        if floats.is_empty() {
+            return Err("a menu needs a float type: the values that are not parameters of rank two or more have no other".into());
+        }
+        Ok(Menu(floats, ints))
+    }
+
+    /// Every rung, the float types first.
+    pub fn rungs(&self) -> impl Iterator<Item = Rung> + '_ {
+        self.0.iter().map(|d| Rung::Float(*d)).chain(self.1.iter().map(|(bits, scheme)| Rung::Int { bits: *bits, scheme: *scheme }))
+    }
+
+    /// How many rungs it has.
+    pub fn len(&self) -> usize {
+        self.0.len() + self.1.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A step of a value's menu (plan 0.17.0 step 4, D177): a float storage
+/// type, or a parameter's integers of `bits` bits under a scheme, with a
+/// scale per index of every axis but the one its readers contract. The
+/// integers are dequantized to `f32(q·s)` as a nest reads them
+/// (`presk_rt::quant`): a storage type, as `bf16` is, with a scale. The
+/// rungs live here, not in `Dtype`, since no value is computed in them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rung {
+    Float(Dtype),
+    Int { bits: u8, scheme: QuantScheme },
+}
+
+impl Rung {
+    /// Its name: a float type's, or the realization's for a `quant` entry,
+    /// `int8`, `int4/pow2` ([`Quant::name`]).
+    pub fn name(self) -> String {
+        match self {
+            Rung::Float(d) => d.name().to_string(),
+            Rung::Int { bits, scheme } => Quant { bits, over: AxisRef::Pos(-2), scheme }.name(),
+        }
+    }
+
+    pub fn float(self) -> Option<Dtype> {
+        match self {
+            Rung::Float(d) => Some(d),
+            Rung::Int { .. } => None,
+        }
+    }
+
+    /// The type a nest reads the value in: a float type, or `f32` for the
+    /// integers, which it dequantizes to. A machine prices the traffic of a
+    /// rung under it.
+    pub fn read_as(self) -> Dtype {
+        self.float().unwrap_or(Dtype::F32)
+    }
+}
+
+impl From<Dtype> for Rung {
+    fn from(d: Dtype) -> Rung {
+        Rung::Float(d)
+    }
+}
+
+impl std::fmt::Display for Rung {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
+}
+
+/// A parameter's integer rung, priced at rest (D177): the scale's axis, the
+/// largest move of quantizing the values `max |ŵ − w|`, computed exactly,
+/// `ŵ` the dequantized `f32(q·s)` a nest reads, and the bytes stored, the
+/// integers and their `f32` scales. Its term of the estimate is `sens ·
+/// round`, the form of a float type's at rest (D155).
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntRung {
+    pub bits: u8,
+    pub scheme: QuantScheme,
+    /// The axis the scale is constant along, counted from the end: the one
+    /// every reader of the parameter contracts when `contracted`, else −2,
+    /// the axis of `--quant`.
+    pub axis: i64,
+    pub contracted: bool,
+    pub round: f64,
+    pub bytes: f64,
+}
+
+impl IntRung {
+    pub fn rung(&self) -> Rung {
+        Rung::Int { bits: self.bits, scheme: self.scheme }
+    }
+
+    /// The realization's `quant` entry.
+    pub fn quant(&self) -> Quant {
+        Quant { bits: self.bits, over: AxisRef::Pos(self.axis), scheme: self.scheme }
     }
 }
 
@@ -277,19 +429,19 @@ pub enum Move {
     /// stood at `spent`: taken when `spent + added` fits the budget. The
     /// moves are tried by saving per unit of error added, the best first;
     /// `rank` is this one's place (1 the first).
-    Tried { site: String, to: Dtype, saved: f64, added: f64, spent: f64, taken: bool, rank: usize },
+    Tried { site: String, to: Rung, saved: f64, added: f64, spent: f64, taken: bool, rank: usize },
     /// The measured `gap` exceeded the budget: `site`, the narrowed decision
     /// with the largest share of the estimate, widened from `from` to `to`
     /// at round `round` (1 the first).
-    Widened { round: usize, site: String, from: Dtype, to: Dtype, gap: f64 },
+    Widened { round: usize, site: String, from: Rung, to: Rung, gap: f64 },
     /// The narrowing step (D155): `site` narrowed from `from` to `to` at
     /// pass `pass` (1 the first), the realization measured at `gap`, and
     /// `kept` when that is inside the budget, else undone.
-    Narrowed { pass: usize, site: String, from: Dtype, to: Dtype, gap: f64, kept: bool },
+    Narrowed { pass: usize, site: String, from: Rung, to: Rung, gap: f64, kept: bool },
     /// Early stopping (D161): the realization measured `heldout` on the
     /// held-out samples, outside the threshold, so the last narrowing kept,
     /// `site`'s from `from` to `to`, is undone.
-    Undone { site: String, from: Dtype, to: Dtype, heldout: f64 },
+    Undone { site: String, from: Rung, to: Rung, heldout: f64 },
 }
 
 impl Solution {
@@ -366,6 +518,14 @@ struct Site {
     /// The envelope's measured rounding errors, or the parameter's own
     /// (D155): `None` keeps the unit-roundoff term.
     round: Option<Rounding>,
+    /// A parameter's integer rungs, priced at rest (D177); none for a nest.
+    ints: Vec<IntRung>,
+}
+
+impl Site {
+    fn int(&self, bits: u8, scheme: QuantScheme) -> Option<&IntRung> {
+        self.ints.iter().find(|q| q.bits == bits && q.scheme == scheme)
+    }
 }
 
 /// What a site costs in a given machine type.
@@ -403,7 +563,7 @@ fn sites(env: &Envelope, sens: &Sensitivity) -> Vec<Site> {
             let elems = env.cost_elems(name) as f64;
             let sens = sens.get(name)?;
             let work = elems * op_weight(env.op(name));
-            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false, round: env.rounding.get(name).copied() })
+            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false, round: env.rounding.get(name).copied(), ints: Vec::new() })
         })
         .collect()
 }
@@ -444,6 +604,8 @@ pub struct Roles(pub BTreeMap<String, Role>, pub Vec<ParamSite>);
 /// nests that read its field sites. Its term of the estimate is
 /// `sens · u · mag` at the narrowest of its type and its readers' types:
 /// the value a nest reads is rounded there, at rest or at the nest's edge.
+/// In integers (D177) the term is the larger of the integers' move and the
+/// narrowest reader's rounding.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamSite {
     pub path: String,
@@ -457,6 +619,9 @@ pub struct ParamSite {
     /// Its largest rounding error in each type, from its values at rest
     /// (D155); `None` keeps the unit-roundoff term.
     pub round: Option<Rounding>,
+    /// Its integer rungs, those of the menu (D177): none for a parameter of
+    /// rank under two as declared, or without `--menu`'s integers.
+    pub ints: Vec<IntRung>,
 }
 
 /// The paths of the entry's parameter tree each field or projection site
@@ -528,6 +693,79 @@ pub fn param_reads(core: &presk_core::Program, entry: presk_core::FuncId) -> BTr
         }
     }
     out
+}
+
+/// The axis each parameter's readers contract, counted from the end (plan
+/// 0.17.0 step 4, D177), which its integers' scale is constant along so
+/// that the scale factors out of the sum: a `dot`'s or `matmul`'s left
+/// operand contracts its last axis and its right operand its first, an
+/// `ein`'s operand its one label the output does not keep. A path is named
+/// only when every reader of each field site reading it is one of those,
+/// all along the same axis; a gather (`embed`), an elementwise reader, a
+/// call, a returned field or two different axes leave it out, and its
+/// integers then scale over −2, as `--quant`'s do. Counted from the end,
+/// the axis is the same whether a fold slices the leaf's `stack{n}` axis
+/// off or not.
+pub fn contracted_axes(core: &presk_core::Program, entry: presk_core::FuncId) -> BTreeMap<String, i64> {
+    use presk_core::ir::{PrimOp, Rhs};
+    let funcs: BTreeMap<&str, &presk_core::Func> = core.funcs.iter().map(|f| (f.name.as_str(), f)).collect();
+    // The axis a field site's readers contract, if one.
+    let site_axis = |site: &str| -> Option<i64> {
+        let (name, var) = site.rsplit_once("/%")?;
+        let v: u32 = var.parse().ok()?;
+        let f = funcs.get(name)?;
+        let l = f.body.lets.iter().find(|l| l.var.0 == v)?;
+        let rank = match &l.ty {
+            presk_types::ty::Ty::Real(s) if s.prefix.is_none() => s.axes.len() as i64,
+            _ => return None,
+        };
+        if f.body.result == l.var {
+            return None;
+        }
+        let mut axis = None;
+        for r in f.body.lets.iter().filter(|r| r.rhs.vars().contains(&l.var)) {
+            let here: Vec<i64> = match &r.rhs {
+                Rhs::Prim { op: PrimOp::Dot | PrimOp::Matmul, args } => args.iter().enumerate().filter(|(_, a)| **a == l.var).map(|(k, _)| if k == 0 { -1 } else { -rank }).collect(),
+                Rhs::Prim { op: PrimOp::Ein { operands, output }, args } => {
+                    let mut v = Vec::new();
+                    for (k, _) in args.iter().enumerate().filter(|(_, a)| **a == l.var) {
+                        let labels = operands.get(k)?;
+                        let summed: Vec<usize> = labels.iter().enumerate().filter(|(_, n)| !output.contains(n)).map(|(j, _)| j).collect();
+                        match summed[..] {
+                            [j] => v.push(j as i64 - labels.len() as i64),
+                            _ => return None,
+                        }
+                    }
+                    v
+                }
+                _ => return None,
+            };
+            for a in here {
+                match axis {
+                    None => axis = Some(a),
+                    Some(b) if b == a => {}
+                    Some(_) => return None,
+                }
+            }
+        }
+        axis
+    };
+    let mut sites: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (site, paths) in param_reads(core, entry) {
+        for p in paths {
+            sites.entry(p).or_default().push(site.clone());
+        }
+    }
+    sites
+        .into_iter()
+        .filter_map(|(path, ss)| {
+            let axes: Option<Vec<i64>> = ss.iter().map(|s| site_axis(s)).collect();
+            match axes?.as_slice() {
+                [a, rest @ ..] if rest.iter().all(|b| b == a) => Some((path, *a)),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 impl Roles {
@@ -628,7 +866,7 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTe
     }
     let nests = decisions.len();
     for p in &roles.1 {
-        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true, round: p.round });
+        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true, round: p.round, ints: p.ints.clone() });
     }
     let index: BTreeMap<&str, usize> = decisions[..nests].iter().enumerate().map(|(i, s)| (s.name.as_str(), i)).collect();
     let mut led = vec![Vec::new(); decisions.len()];
@@ -674,18 +912,20 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTe
 
 impl Split {
     /// The two rules of 0.16.1 (D169): a decision of one element is not
-    /// offered, nor one whose first step down the menu, the widest type
-    /// narrower than `default`, saves less than `min_gain` of the
+    /// offered, nor one whose first step down the menu, the widest float
+    /// type narrower than `default`, saves less than `min_gain` of the
     /// all-default traffic. Both in bytes, at the elements the solver
-    /// prices.
+    /// prices. The integer rungs (D177) do not change the first step, which
+    /// is `f32`.
     fn offer(&mut self, menu: &Menu, default: Dtype, min_gain: f64) -> Offers {
         let narrower = || menu.0.iter().copied().filter(|d| d.bytes() < default.bytes());
-        let (first, narrowest) = (narrower().max_by_key(|d| d.bytes()), narrower().min_by_key(|d| d.bytes()));
-        let base: f64 = self.decisions.iter().map(|s| bytes_at(s, default)).sum();
+        let first = narrower().max_by_key(|d| d.bytes());
+        let base: f64 = self.decisions.iter().map(|s| bytes_at(s, default.into())).sum();
         let mut excluded = Vec::new();
-        for (i, s) in self.decisions.iter().enumerate() {
-            let (Some(first), Some(narrowest)) = (first, narrowest) else { break };
-            let gain = bytes_at(s, default) - bytes_at(s, first);
+        for i in 0..self.decisions.len() {
+            let Some(first) = first else { break };
+            let s = &self.decisions[i];
+            let gain = bytes_at(s, default.into()) - bytes_at(s, first.into());
             let rule = if s.elems <= 1.0 {
                 Rule::OneElement
             } else if gain < min_gain * base {
@@ -693,79 +933,132 @@ impl Split {
             } else {
                 continue;
             };
+            let forgone = bytes_at(s, default.into()) - bytes_at(s, self.narrowest(i, menu));
             self.offered[i] = false;
-            excluded.push(Excluded { name: s.name.clone(), param: s.param, rule, elems: s.elems, gain, forgone: bytes_at(s, default) - bytes_at(s, narrowest) });
+            excluded.push(Excluded { name: s.name.clone(), param: s.param, rule, elems: s.elems, gain, forgone });
         }
         Offers { base, min_gain, excluded }
     }
 
-    /// The type a decision's value is rounded to: a nest's own; a
-    /// parameter's, or the narrowest of its readers' where that is
-    /// narrower, since the value a nest reads is rounded at rest and again
-    /// at the nest's edge.
-    fn rounded(&self, i: usize, chosen: &[Dtype], default: Dtype) -> Dtype {
-        if !self.decisions[i].param {
-            return chosen[i];
-        }
-        let (ids, outside) = &self.readers[i];
-        ids.iter().map(|j| chosen[*j]).chain(outside.then_some(default)).chain(std::iter::once(chosen[i])).min_by_key(|d| d.bytes()).unwrap_or(chosen[i])
+    /// The rungs decision `i` may take: the menu's float types, then for a
+    /// parameter the menu's integer rungs it is priced in (D177).
+    fn rungs(&self, i: usize, menu: &Menu) -> Vec<Rung> {
+        let s = &self.decisions[i];
+        menu.rungs().filter(|r| match r {
+            Rung::Float(_) => true,
+            Rung::Int { bits, scheme } => s.int(*bits, *scheme).is_some(),
+        }).collect()
     }
 
-    fn decision_err(&self, i: usize, chosen: &[Dtype], default: Dtype) -> f64 {
-        err_at(&self.decisions[i], self.rounded(i, chosen, default), self.rounding)
+    /// The fewest bytes decision `i` can move: its narrowest rung.
+    fn narrowest(&self, i: usize, menu: &Menu) -> Rung {
+        let s = &self.decisions[i];
+        self.rungs(i, menu).into_iter().min_by(|a, b| bytes_at(s, *a).total_cmp(&bytes_at(s, *b))).unwrap_or(Rung::Float(Dtype::F64))
+    }
+
+    /// The rung of decision `i` next to `cur` on the side `wider` says: the
+    /// fewest bytes above its own, or the most below them, and of two rungs
+    /// of the same bytes (`int8` under `absmax` and under `pow2`) the one of
+    /// the smaller term.
+    fn step(&self, i: usize, menu: &Menu, cur: Rung, wider: bool) -> Option<Rung> {
+        let s = &self.decisions[i];
+        let b = bytes_at(s, cur);
+        let key = |r: &Rung| {
+            let x = bytes_at(s, *r);
+            (if wider { x } else { -x }, err_at(s, *r, self.rounding))
+        };
+        self.rungs(i, menu).into_iter().filter(|r| if wider { bytes_at(s, *r) > b } else { bytes_at(s, *r) < b }).min_by(|x, y| {
+            let (kx, ky) = (key(x), key(y));
+            kx.0.total_cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
+        })
+    }
+
+    /// The narrowest type the nests reading parameter `i` round it to, the
+    /// default for a reader the solver does not see; `None` without one.
+    fn edge(&self, i: usize, chosen: &[Rung], default: Dtype) -> Option<Dtype> {
+        let (ids, outside) = &self.readers[i];
+        ids.iter().map(|j| chosen[*j].read_as()).chain(outside.then_some(default)).min_by_key(|d| d.bytes())
+    }
+
+    /// A decision's term. A nest's in its own type; a parameter's in the
+    /// narrowest of its type and its readers', since the value a nest reads
+    /// is rounded at rest and again at the nest's edge. In integers, the
+    /// larger of their move at rest and the narrowest reader's rounding of
+    /// the parameter (D177): the dequantized `f32` is rounded again only by
+    /// a narrower nest.
+    fn decision_err(&self, i: usize, chosen: &[Rung], default: Dtype) -> f64 {
+        let s = &self.decisions[i];
+        match chosen[i] {
+            Rung::Float(d) if s.param => {
+                let t = self.edge(i, chosen, default).into_iter().chain(std::iter::once(d)).min_by_key(|d| d.bytes()).unwrap_or(d);
+                err_at(s, t.into(), self.rounding)
+            }
+            r @ Rung::Float(_) => err_at(s, r, self.rounding),
+            r @ Rung::Int { .. } => err_at(s, r, self.rounding).max(self.edge(i, chosen, default).map_or(0.0, |d| err_at(s, d.into(), self.rounding))),
+        }
     }
 
     /// A follower's type: the narrowest of its leaders', the default for a
-    /// leader the solver does not offer.
-    fn follower_type(&self, f: usize, chosen: &[Dtype], default: Dtype) -> Dtype {
+    /// leader the solver does not offer. A leader is a nest, in a float
+    /// type.
+    fn follower_type(&self, f: usize, chosen: &[Rung], default: Dtype) -> Dtype {
         let (_, ids, outside) = &self.followers[f];
-        ids.iter().map(|i| chosen[*i]).chain(outside.then_some(default)).min_by_key(|d| d.bytes()).unwrap_or(default)
+        ids.iter().map(|i| chosen[*i].read_as()).chain(outside.then_some(default)).min_by_key(|d| d.bytes()).unwrap_or(default)
     }
 
-    fn follower_err(&self, f: usize, chosen: &[Dtype], default: Dtype) -> f64 {
-        err_at(&self.followers[f].0, self.follower_type(f, chosen, default), self.rounding)
+    fn follower_err(&self, f: usize, chosen: &[Rung], default: Dtype) -> f64 {
+        err_at(&self.followers[f].0, self.follower_type(f, chosen, default).into(), self.rounding)
     }
 
     /// The estimate: every decision's term and every follower's.
-    fn estimate(&self, chosen: &[Dtype], default: Dtype) -> f64 {
+    fn estimate(&self, chosen: &[Rung], default: Dtype) -> f64 {
         let d: f64 = (0..self.decisions.len()).map(|i| self.decision_err(i, chosen, default)).sum();
         d + (0..self.followers.len()).map(|f| self.follower_err(f, chosen, default)).sum::<f64>()
     }
 
     /// The squares of every decision's term and every follower's: the
     /// root-sum-square estimate squared (D161).
-    fn estimate_sq(&self, chosen: &[Dtype], default: Dtype) -> f64 {
+    fn estimate_sq(&self, chosen: &[Rung], default: Dtype) -> f64 {
         let d: f64 = (0..self.decisions.len()).map(|i| self.decision_err(i, chosen, default).powi(2)).sum();
         d + (0..self.followers.len()).map(|f| self.follower_err(f, chosen, default).powi(2)).sum::<f64>()
     }
 
     /// What decision `i`, the followers it leads and the parameters it
     /// reads add to the estimate.
-    fn share(&self, i: usize, chosen: &[Dtype], default: Dtype) -> f64 {
+    fn share(&self, i: usize, chosen: &[Rung], default: Dtype) -> f64 {
         self.decision_err(i, chosen, default) + self.led[i].iter().map(|f| self.follower_err(*f, chosen, default)).sum::<f64>() + self.reads[i].iter().map(|p| self.decision_err(*p, chosen, default)).sum::<f64>()
     }
 
     /// A realization of `default` with these choices: the nests' in
     /// `storage`, the parameters' in `params` (a parameter in the default
-    /// type is named nowhere).
-    fn realization(&self, chosen: &[Dtype], default: Dtype, envelope: &str) -> Realization {
+    /// type is named nowhere), a parameter's integers in `quant` (D177).
+    fn realization(&self, chosen: &[Rung], default: Dtype, envelope: &str) -> Realization {
         let mut r = Realization::uniform(default);
-        for (s, d) in self.decisions.iter().zip(chosen).filter(|(_, d)| **d != default) {
-            if s.param {
-                r.params.insert(s.name.clone(), *d);
-            } else {
-                r.storage.insert(s.name.clone(), *d);
+        for (s, rung) in self.decisions.iter().zip(chosen) {
+            match *rung {
+                Rung::Float(d) if d == default => {}
+                Rung::Float(d) if s.param => {
+                    r.params.insert(s.name.clone(), d);
+                }
+                Rung::Float(d) => {
+                    r.storage.insert(s.name.clone(), d);
+                }
+                Rung::Int { bits, scheme } => {
+                    if let Some(q) = s.int(bits, scheme) {
+                        r.quant.insert(s.name.clone(), q.quant());
+                    }
+                }
             }
         }
         r.envelope = Some(envelope.to_string());
         r
     }
 
-    fn cost(&self, chosen: &[Dtype], machine: &dyn Machine) -> f64 {
+    fn cost(&self, chosen: &[Rung], machine: &dyn Machine) -> f64 {
         self.decisions.iter().zip(chosen).map(|(s, t)| cost_at(s, *t, machine)).sum()
     }
 
-    fn traffic(&self, chosen: &[Dtype]) -> f64 {
+    fn traffic(&self, chosen: &[Rung]) -> f64 {
         self.decisions.iter().zip(chosen).map(|(s, t)| bytes_at(s, *t)).sum()
     }
 }
@@ -782,21 +1075,27 @@ pub struct SiteCost {
     pub param: bool,
     /// Its role (step 2b): a decision, a follower or a carried value.
     pub role: Role,
-    /// Its type: the realization's for a decision, the type it is rounded
+    /// Its rung: the realization's for a decision, the type it is rounded
     /// to for a follower, its own for a carried value, which is not rounded
-    /// there.
-    pub dtype: Dtype,
+    /// there. A float type but for a parameter in integers (D177).
+    pub rung: Rung,
+    /// The integer rung's pricing, its scale's axis among it, when `rung`
+    /// is integers.
+    pub int: Option<IntRung>,
     pub elems: f64,
     /// The envelope's magnitude.
     pub mag: f64,
     /// `‖∂L/∂v‖₁`.
     pub sens: f64,
     /// Its term of the estimate: `s · max|fl_d(x) − x|` under the measured
-    /// rounding term, `s · u(dtype) · |v|` under the unit one; 0 for a
-    /// carried value.
+    /// rounding term, `s · u(dtype) · |v|` under the unit one, `s · max|ŵ −
+    /// w|` in integers; 0 for a carried value.
     pub err: f64,
     /// What it costs under the machine, in its type; 0 but for a decision.
     pub cost: f64,
+    /// The bytes it stores at rest in its rung: its elements times its
+    /// type's bytes, the integers and their scales in integers.
+    pub bytes: f64,
     /// The same in the widest type of the menu.
     pub widest_err: f64,
     pub widest_cost: f64,
@@ -808,26 +1107,42 @@ pub fn breakdown(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realizat
     breakdown_with(env, sens, roles, r, menu, default, machine, RoundingTerm::default())
 }
 
-/// [`breakdown`] under a rounding term (D155).
+/// [`breakdown`] under a rounding term (D155). A parameter `r` quantizes is
+/// read in its integer rung when the solver priced it there (D177), and in
+/// its float type otherwise: a `--quant` realization's breakdown is the
+/// float solve's, as before.
 #[allow(clippy::too_many_arguments)]
 pub fn breakdown_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realization, menu: &Menu, default: Dtype, machine: &dyn Machine, rounding: RoundingTerm) -> Vec<SiteCost> {
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
     let sp = split(env, sens, roles, rounding);
-    let chosen: Vec<Dtype> = sp.decisions.iter().map(|s| if s.param { r.params.get(&s.name) } else { r.storage.get(&s.name) }.copied().unwrap_or(r.default)).collect();
+    let chosen: Vec<Rung> = sp
+        .decisions
+        .iter()
+        .map(|s| match r.quant.get(&s.name).filter(|_| s.param).and_then(|q| s.int(q.bits, q.scheme)) {
+            Some(q) => q.rung(),
+            None => Rung::Float(if s.param { r.params.get(&s.name) } else { r.storage.get(&s.name) }.copied().unwrap_or(r.default)),
+        })
+        .collect();
     let mut out: Vec<SiteCost> = sp
         .decisions
         .iter()
         .zip(&chosen)
         .enumerate()
-        .map(|(i, (s, d))| SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, dtype: *d, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), widest_err: err_at(s, widest, rounding), widest_cost: cost_at(s, widest, machine) })
+        .map(|(i, (s, d))| {
+            let int = match d {
+                Rung::Int { bits, scheme } => s.int(*bits, *scheme).cloned(),
+                Rung::Float(_) => None,
+            };
+            SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, rung: *d, int, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), bytes: bytes_at(s, *d), widest_err: err_at(s, widest.into(), rounding), widest_cost: cost_at(s, widest.into(), machine) }
+        })
         .collect();
     for (f, (s, _, _)) in sp.followers.iter().enumerate() {
         let d = sp.follower_type(f, &chosen, r.default);
-        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), dtype: d, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d, rounding), cost: 0.0, widest_err: err_at(s, widest, rounding), widest_cost: 0.0 });
+        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), rung: d.into(), int: None, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d.into(), rounding), cost: 0.0, bytes: 0.0, widest_err: err_at(s, widest.into(), rounding), widest_cost: 0.0 });
     }
     for s in sites(env, sens) {
         if roles.role(&s.name) == Role::Carried {
-            out.push(SiteCost { name: s.name.clone(), param: false, role: Role::Carried, dtype: r.default, elems: s.elems, mag: s.mag, sens: s.sens, err: 0.0, cost: 0.0, widest_err: 0.0, widest_cost: 0.0 });
+            out.push(SiteCost { name: s.name.clone(), param: false, role: Role::Carried, rung: r.default.into(), int: None, elems: s.elems, mag: s.mag, sens: s.sens, err: 0.0, cost: 0.0, bytes: 0.0, widest_err: 0.0, widest_cost: 0.0 });
         }
     }
     out
@@ -835,22 +1150,31 @@ pub fn breakdown_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Rea
 
 /// `s_v · u(d) · mag(v)`: how much the output moves, to first order, when a
 /// site is stored in `d`; under `RoundingTerm::Measured`, `s_v · max |fl_d(x)
-/// − x|`, the rounding the site's sampled values actually take (D155).
-fn err_at(s: &Site, d: Dtype, rounding: RoundingTerm) -> f64 {
-    match (rounding, s.round) {
-        (RoundingTerm::Measured, Some(r)) => s.sens * r.at(d),
-        _ => s.sens * d.unit_roundoff() * s.mag,
+/// − x|`, the rounding the site's sampled values actually take (D155). In
+/// integers, `s_v · max |ŵ − w|` under either term, the move computed
+/// exactly (D177).
+fn err_at(s: &Site, d: Rung, rounding: RoundingTerm) -> f64 {
+    match (d, rounding, s.round) {
+        // A site is offered only the integer rungs it is priced in; one it
+        // is not is charged its whole magnitude.
+        (Rung::Int { bits, scheme }, _, _) => s.sens * s.int(bits, scheme).map_or(s.mag, |q| q.round),
+        (Rung::Float(d), RoundingTerm::Measured, Some(r)) => s.sens * r.at(d),
+        (Rung::Float(d), _, _) => s.sens * d.unit_roundoff() * s.mag,
     }
 }
 
-fn bytes_at(s: &Site, d: Dtype) -> f64 {
-    s.elems * d.bytes() as f64
+fn bytes_at(s: &Site, d: Rung) -> f64 {
+    match d {
+        Rung::Float(d) => s.elems * d.bytes() as f64,
+        Rung::Int { bits, scheme } => s.int(bits, scheme).map_or(s.elems * bits as f64 / 8.0, |q| q.bytes),
+    }
 }
 
 /// What a site costs under a machine: the roofline's own prediction, with
-/// the dtype in `Q` and not in `W`.
-fn cost_at(s: &Site, d: Dtype, m: &dyn Machine) -> f64 {
-    m.seconds(d, s.work, bytes_at(s, d))
+/// the dtype in `Q` and not in `W`; integers priced as the `f32` they are
+/// read in, at their own bytes.
+fn cost_at(s: &Site, d: Rung, m: &dyn Machine) -> f64 {
+    m.seconds(d.read_as(), s.work, bytes_at(s, d))
 }
 
 /// Solve for a realization under a relative error budget.
@@ -919,27 +1243,30 @@ pub fn solve_with_heldout(
     let offered = &sp.offered;
 
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
-    let narrowest = menu.0.iter().copied().min_by_key(|d| d.bytes()).unwrap_or(default);
-    let baseline_bytes: f64 = sites.iter().map(|s| cost_at(s, widest, machine)).sum();
-    let relaxation_bytes: f64 = sites.iter().zip(offered).map(|(s, o)| cost_at(s, if *o { narrowest } else { default }, machine)).sum();
+    let top = Rung::Float(widest);
+    // Each decision's rungs: the float types, and a parameter's integers
+    // (D177).
+    let rungs: Vec<Vec<Rung>> = (0..sites.len()).map(|i| sp.rungs(i, menu)).collect();
+    let baseline_bytes: f64 = sites.iter().map(|s| cost_at(s, top, machine)).sum();
+    let relaxation_bytes: f64 = sites.iter().zip(offered).enumerate().map(|(i, (s, o))| cost_at(s, if *o { sp.narrowest(i, menu) } else { default.into() }, machine)).sum();
 
     // Propose: every site offered at the widest type, the others at the
     // default (D169), then narrow in order of bytes saved per unit of error
     // added (its followers' with its own), while the estimate fits.
-    let mut chosen: Vec<Dtype> = offered.iter().map(|o| if *o { widest } else { default }).collect();
+    let mut chosen: Vec<Rung> = offered.iter().map(|o| Rung::Float(if *o { widest } else { default })).collect();
     // The proposal's target (D161): the budget under the sum; under the
     // root-sum-square the budget over the margin, compared on the squares,
     // which add as the sum's terms do.
     let rss = options.estimate == Estimate::Rss;
     let target = if rss { (budget_abs / options.margin).powi(2) } else { budget_abs };
     let mut spent: f64 = if rss { sp.estimate_sq(&chosen, default) } else { sp.estimate(&chosen, default) };
-    let mut moves: Vec<(f64, usize, Dtype)> = Vec::new();
+    let mut moves: Vec<(f64, usize, Rung)> = Vec::new();
     for (i, s) in sites.iter().enumerate().filter(|(i, _)| offered[*i]) {
-        for d in &menu.0 {
-            if d.bytes() >= widest.bytes() {
+        for d in &rungs[i] {
+            if bytes_at(s, *d) >= bytes_at(s, top) {
                 continue;
             }
-            let saved = cost_at(s, widest, machine) - cost_at(s, *d, machine);
+            let saved = cost_at(s, top, machine) - cost_at(s, *d, machine);
             let mut moved = chosen.clone();
             moved[i] = *d;
             let added = if rss { sp.estimate_sq(&moved, default) - sp.estimate_sq(&chosen, default) } else { sp.share(i, &moved, default) - sp.share(i, &chosen, default) };
@@ -955,7 +1282,7 @@ pub fn solve_with_heldout(
     let mut log: Vec<Move> = Vec::new();
     for (rank, (_, i, d)) in moves.iter().enumerate() {
         let cur = chosen[*i];
-        if d.bytes() >= cur.bytes() {
+        if bytes_at(&sites[*i], *d) >= bytes_at(&sites[*i], cur) {
             continue;
         }
         let before = if rss { spent } else { sp.share(*i, &chosen, default) };
@@ -976,7 +1303,7 @@ pub fn solve_with_heldout(
 
     let proposed_bytes: f64 = sp.cost(&chosen, machine);
 
-    let build = |chosen: &[Dtype]| -> Realization { sp.realization(chosen, default, &env.program) };
+    let build = |chosen: &[Rung]| -> Realization { sp.realization(chosen, default, &env.program) };
 
     // Verify, and tighten while the *measured* gap exceeds the budget.
     let mut rounds = 0usize;
@@ -988,7 +1315,7 @@ pub fn solve_with_heldout(
             let gap = v(&r);
             measurements += 1;
             measured = Some(gap);
-            if gap <= budget_abs || rounds >= sites.len() * menu.0.len() {
+            if gap <= budget_abs || rounds >= sites.len() * menu.len() {
                 break;
             }
             // Widen the narrowed site whose estimated contribution, its
@@ -998,14 +1325,14 @@ pub fn solve_with_heldout(
             // estimate (every sensitivity zero, as happens on an untrained
             // model) it walks the whole assignment back to `f64` and reports
             // no saving at all.
-            let worst = (0..sites.len()).filter(|i| offered[*i] && chosen[*i].bytes() < widest.bytes()).max_by(|a, b| {
+            let worst = (0..sites.len()).filter(|i| offered[*i] && bytes_at(&sites[*i], chosen[*i]) < bytes_at(&sites[*i], top)).max_by(|a, b| {
                 let (ea, eb) = (sp.share(*a, &chosen, default), sp.share(*b, &chosen, default));
                 ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
             });
             match worst {
                 Some(i) => {
                     let cur = chosen[i];
-                    let next = menu.0.iter().copied().filter(|d| d.bytes() > cur.bytes()).min_by_key(|d| d.bytes()).unwrap_or(widest);
+                    let next = sp.step(i, menu, cur, true).unwrap_or(top);
                     chosen[i] = next;
                     rounds += 1;
                     log.push(Move::Widened { round: rounds, site: sites[i].name.clone(), from: cur, to: next, gap });
@@ -1020,18 +1347,18 @@ pub fn solve_with_heldout(
     // (D161). The steps kept, in order, for early stopping.
     let (mut narrowed, mut narrow_passes) = (0usize, 0usize);
     let limit = budget_abs / options.margin;
-    let mut kept_steps: Vec<(usize, Dtype, Dtype, Option<f64>)> = Vec::new();
+    let mut kept_steps: Vec<(usize, Rung, Rung, Option<f64>)> = Vec::new();
     if matches!(options.narrow, Narrow::Measured | Narrow::Heldout)
         && let Some(v) = verify.as_mut()
         && measured.is_some_and(|g| g <= budget_abs)
     {
         for pass in 1..=3 {
             // Each decision one step narrower, the largest saving first.
-            let mut steps: Vec<(f64, usize, Dtype)> = (0..sites.len())
+            let mut steps: Vec<(f64, usize, Rung)> = (0..sites.len())
                 .filter(|i| offered[*i])
                 .filter_map(|i| {
                     let cur = chosen[i];
-                    let next = menu.0.iter().copied().filter(|d| d.bytes() < cur.bytes()).max_by_key(|d| d.bytes())?;
+                    let next = sp.step(i, menu, cur, false)?;
                     let saved = cost_at(&sites[i], cur, machine) - cost_at(&sites[i], next, machine);
                     (saved > 0.0).then_some((saved, i, next))
                 })
@@ -1135,17 +1462,20 @@ pub fn exhaustive_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, output
     sp.offer(menu, default, options.min_gain);
     let sites = &sp.decisions;
     let free: Vec<usize> = (0..sites.len()).filter(|i| sp.offered[*i]).collect();
-    let m = menu.0.len() as u64;
-    let states = m.checked_pow(free.len() as u32)?;
+    // Each free decision's rungs, a parameter's integers among them (D177):
+    // the space is the product of their counts.
+    let rungs: Vec<Vec<Rung>> = free.iter().map(|i| sp.rungs(*i, menu)).collect();
+    let states = rungs.iter().try_fold(1u64, |n, r| n.checked_mul(r.len() as u64))?;
     if states > max_states {
         return None;
     }
-    let mut best: Option<(Vec<Dtype>, f64)> = None;
+    let mut best: Option<(Vec<Rung>, f64)> = None;
     for code in 0..states {
         let mut c = code;
-        let mut pick = vec![default; sites.len()];
-        for i in &free {
-            pick[*i] = menu.0[(c % m) as usize];
+        let mut pick = vec![Rung::Float(default); sites.len()];
+        for (i, r) in free.iter().zip(&rungs) {
+            let m = r.len() as u64;
+            pick[*i] = r[(c % m) as usize];
             c /= m;
         }
         let err: f64 = sp.estimate(&pick, default);
@@ -1217,6 +1547,77 @@ pub fn step_groups(env: &Envelope, menu: &Menu, machine: &dyn Machine) -> Vec<Gr
         .collect()
 }
 
+/// The grain a training step is solved at (plan 0.17.0 step 5, D178).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Grain {
+    /// One type per function (D52): J′'s solver, the default.
+    #[default]
+    Function,
+    /// One type per stored value of the step, each value a group of its
+    /// own, written in the realization's `storage` ([`step_value_groups`]).
+    Value,
+}
+
+/// The groups of a step's envelope at the grain of its stored values (plan
+/// 0.17.0 step 5, D178): one per site `offered` takes, of more than one
+/// element (rule 1, D169). A value is priced with the members fused into it,
+/// which are computed in its type (D112), as [`step_groups`] prices a
+/// function's sites. The caller says which sites are stored values the step
+/// may type: not a carried value or a fused member, nor the optimizer's
+/// results, the master weights and the moments, which keep the default type
+/// (the plan's question 6).
+pub fn step_value_groups(env: &Envelope, menu: &Menu, machine: &dyn Machine, roles: &Roles, offered: &dyn Fn(&str) -> bool) -> Vec<Group> {
+    // Each value's members: the sites that follow it alone.
+    let mut members: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for name in env.sites.keys() {
+        if let Role::Follows(leaders) = roles.role(name)
+            && let [one] = leaders.as_slice()
+            && let Some((k, _)) = env.sites.get_key_value(one.as_str())
+        {
+            members.entry(k.as_str()).or_default().push(name.as_str());
+        }
+    }
+    let priced = |name: &str| (env.elems(name) as f64, op_weight(env.op(name)));
+    env.sites
+        .keys()
+        .filter(|name| offered(name))
+        .filter_map(|name| {
+            let elems = env.elems(name) as f64;
+            (elems > 1.0).then(|| {
+                let sites: Vec<(f64, f64)> = std::iter::once(name.as_str()).chain(members.get(name.as_str()).into_iter().flatten().copied()).map(priced).filter(|(e, _)| *e > 0.0).collect();
+                let cost = menu.0.iter().map(|d| (*d, sites.iter().map(|(e, w)| machine.seconds(*d, e * w, e * d.bytes() as f64)).sum())).collect();
+                Group { name: name.clone(), sites: sites.len(), elems: elems as u64, cost, gap: BTreeMap::new() }
+            })
+        })
+        .collect()
+}
+
+/// The predicted time of a whole step under any realization, by role (plan
+/// 0.17.0 step 5, D178): each stored value at the type the realization gives
+/// it (`Realization::dtype_at`: its own, else its function's, else the
+/// default), each value that follows others at the narrowest of theirs, a
+/// carried value at nothing, since it is another site's. The one model both
+/// grains are compared in: [`step_cost`], D52's, prices every site of a
+/// function at its function's type, carried values included, and cannot
+/// price a realization of stored values.
+pub fn step_time(env: &Envelope, machine: &dyn Machine, roles: &Roles, r: &Realization) -> f64 {
+    env.sites
+        .keys()
+        .map(|name| {
+            let elems = env.elems(name) as f64;
+            let d = match roles.role(name) {
+                Role::Decision => Some(r.dtype_at(name)),
+                Role::Follows(leaders) => leaders.iter().map(|l| r.dtype_at(l)).min_by_key(|d| d.bytes()),
+                Role::Carried => None,
+            };
+            match d {
+                Some(d) if elems > 0.0 => machine.seconds(d, elems * op_weight(env.op(name)), elems * d.bytes() as f64),
+                _ => 0.0,
+            }
+        })
+        .sum()
+}
+
 /// What the solver over a step found.
 #[derive(Clone, Debug)]
 pub struct StepSolution {
@@ -1249,6 +1650,21 @@ pub fn by_function(default: Dtype, chosen: &BTreeMap<String, Dtype>) -> Realizat
     r
 }
 
+/// The step under a realization that gives each stored value of `chosen`
+/// its type, in `storage` (D178).
+pub fn by_value(default: Dtype, chosen: &BTreeMap<String, Dtype>) -> Realization {
+    let mut r = Realization::uniform(default);
+    r.storage = chosen.iter().filter(|(_, d)| **d != default).map(|(k, d)| (k.clone(), *d)).collect();
+    r
+}
+
+fn by_grain(grain: Grain, default: Dtype, chosen: &BTreeMap<String, Dtype>) -> Realization {
+    match grain {
+        Grain::Function => by_function(default, chosen),
+        Grain::Value => by_value(default, chosen),
+    }
+}
+
 /// Solve a training step under an update budget (§3.7):
 ///
 /// 1. every group is measured alone in every narrower type of the menu
@@ -1261,11 +1677,20 @@ pub fn by_function(default: Dtype, chosen: &BTreeMap<String, Dtype>) -> Realizat
 ///
 /// The budget is relative to the update, as the gaps are, so there is no
 /// magnitude to scale it by.
-pub fn solve_step(mut groups: Vec<Group>, budget: f64, menu: &Menu, default: Dtype, measure: &mut dyn FnMut(&Realization) -> f64, verify: bool) -> StepSolution {
+pub fn solve_step(groups: Vec<Group>, budget: f64, menu: &Menu, default: Dtype, measure: &mut dyn FnMut(&Realization) -> f64, verify: bool) -> StepSolution {
+    solve_step_with(groups, budget, menu, default, measure, verify, Grain::Function)
+}
+
+/// [`solve_step`] at a grain (plan 0.17.0 step 5, D178): its groups
+/// functions, as D52 chose, or stored values ([`step_value_groups`]), the
+/// same method at a finer grain, each value measured alone in every
+/// narrower type and its realization written in `storage`.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_step_with(mut groups: Vec<Group>, budget: f64, menu: &Menu, default: Dtype, measure: &mut dyn FnMut(&Realization) -> f64, verify: bool, grain: Grain) -> StepSolution {
     let narrower: Vec<Dtype> = menu.0.iter().copied().filter(|d| d.bytes() < default.bytes()).collect();
     for g in groups.iter_mut() {
         for d in &narrower {
-            let r = by_function(default, &BTreeMap::from([(g.name.clone(), *d)]));
+            let r = by_grain(grain, default, &BTreeMap::from([(g.name.clone(), *d)]));
             g.gap.insert(*d, measure(&r));
         }
         g.gap.insert(default, 0.0);
@@ -1300,7 +1725,7 @@ pub fn solve_step(mut groups: Vec<Group>, budget: f64, menu: &Menu, default: Dty
     let mut measured = None;
     if verify {
         loop {
-            let gap = measure(&by_function(default, &chosen));
+            let gap = measure(&by_grain(grain, default, &chosen));
             measured = Some(gap);
             if gap <= budget {
                 break;
@@ -1320,7 +1745,7 @@ pub fn solve_step(mut groups: Vec<Group>, budget: f64, menu: &Menu, default: Dty
     let cost = groups.iter().map(|g| cost_of(g, chosen[&g.name])).sum();
     let baseline = groups.iter().map(|g| cost_of(g, default)).sum();
     let estimate = rss(&chosen);
-    StepSolution { realization: by_function(default, &chosen), groups, chosen, estimate, measured, cost, baseline, rounds }
+    StepSolution { realization: by_grain(grain, default, &chosen), groups, chosen, estimate, measured, cost, baseline, rounds }
 }
 
 /// The predicted cost of any realization of the step, over the same groups:

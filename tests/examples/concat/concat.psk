@@ -1,0 +1,63 @@
+-- concat.psk — Slices and concatenation along a named axis.
+-- Illustrates: the slice selector `e[a: lo..hi]`, which keeps its axis
+-- (§3.2), on an index tensor and on a real one; `concat(axis a, x, y)`, whose
+-- axis has the length m + n of its operands'; `min`, `max` and `clamp`,
+-- element by element and of class C⁰⁺; and a gradient through all of them.
+
+const V : nat = 64          -- vocabulary
+const D : nat = 16          -- model dimension
+
+dim B
+dim T <= 128
+
+-- A window of T + 1 tokens. The inputs are its first T and the targets its
+-- last T: two slices of the axis `seq`, each of length T. Their bounds lie
+-- inside the axis for every T, which the checker proves from the facts
+-- (0 ≤ 0 ≤ T ≤ T + 1 and 0 ≤ 1 ≤ T + 1 ≤ T + 1).
+type Window = idx[V][batch: B, seq: T + 1]
+type Tokens = idx[V][batch: B, seq: T]
+
+fn inputs(w : Window) -> Tokens = w[seq: 0..T]
+fn targets(w : Window) -> Tokens = w[seq: 1..T + 1]
+
+-- One product for three projections: the weights concatenated along their
+-- output axis, x · [Wq | Wk | Wv], and the result cut back into three slices.
+-- [x·Wq | x·Wk | x·Wv] = x · [Wq | Wk | Wv] is a rule of PSK-Core
+-- (the reference, chapter 5), so a compiler may compute either side.
+module QKV {
+  param wq : ℝ[model: D, out: D]  init = normal(std = 0.02)
+  param wk : ℝ[model: D, out: D]  init = normal(std = 0.02)
+  param wv : ℝ[model: D, out: D]  init = normal(std = 0.02)
+
+  fn apply(x : ℝ[..., model: D]) -> (ℝ[..., out: D], ℝ[..., out: D], ℝ[..., out: D]) =
+    let w = concat(axis out, concat(axis out, wq, wk), wv)   -- ℝ[model: D, out: 3*D]
+    let y = x · w                                             -- ℝ[..., out: 3*D]
+    (y[out: 0..D], y[out: D..2*D], y[out: 2*D..3*D])
+}
+
+-- min, max and clamp act element by element, and broadcast as `+` does.
+-- relu(x) is max(x, 0); hardtanh is clamp(x, −1, 1), which is
+-- min(max(x, −1), 1).
+fn hardtanh(x : ℝ[...]) -> ℝ[...] = clamp(x, -(1 : ℝ), (1 : ℝ))
+fn leaky(x : ℝ[...]) -> ℝ[...] = max(x, x * real(0.01))
+
+module Toy {
+  param tok  : ℝ[vocab: V, model: D]  init = normal(std = 0.02)
+  use   qkv  : QKV
+  param head : ℝ[out: D, vocab: V]    init = normal(std = 0.02)
+
+  fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
+    let x = embed(tok, ids)                        -- ℝ[batch, seq, model: D]
+    let (q, k, v) = qkv.apply(x)
+    let g = hardtanh(q) * leaky(k) + min(v, q)     -- ℝ[batch, seq, out: D]
+    g · head
+}
+
+-- The next-token loss on a window, and its gradient: through the slices of
+-- `QKV.apply`, the `concat`s of its weights, and min, max and clamp, whose
+-- derivatives at a tie are those the reference assigns (chapter 3).
+fn loss(θ : params Toy, w : Window) -> ℝ[] =
+  mean(cross_entropy(Toy.apply(θ, inputs(w)), targets(w)))
+
+fn loss_grad(θ : params Toy, w : Window) -> params Toy =
+  grad(λ θ. loss(θ, w))(θ)

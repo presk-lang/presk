@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | on | `--opt` |
 | Targets | native (Cranelift), C | `--target native,c` |
 
-Compiler: presk 0.16.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -45,7 +45,7 @@ Compiler: presk 0.16.1. Each section ends with the commands that print what it s
 | Fusion | 39 launches without it, 30 with it: 9 saved | decision | §7 |
 | Layout plan | none: every nest at its default layout | fact | §8 |
 | Kernels | 10 distinct, 30 launches a call | fact | §9 |
-| C program | 9 files, 4316 lines with its runtime | fact | §10 |
+| C program | 9 files, 4381 lines with its runtime | fact | §10 |
 | Memory | 624 bytes a call: the inputs, 432 bytes, and the peak of live bytes, 192 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
@@ -701,8 +701,8 @@ presk export: `loss` at B = 4 in f32: 30 launches (0 dead, on one thread) of 10 
 | `model.c` | 109 |
 | `model.h` | 35 |
 | `presk_libm.c` | 2680 |
-| `presk_rt.c` | 743 |
-| `presk_rt.h` | 347 |
+| `presk_rt.c` | 804 |
+| `presk_rt.h` | 351 |
 
 The first contraction, `k5`, as C:
 

@@ -142,17 +142,26 @@ def logits(path):
 
 
 def read_pskd_reals(path):
-    """The one sample of a .psk.d file of reals, as float64 (reals are f64 in
-    the file; the leading header is magic, version, type text, count)."""
+    """The one sample of a .psk.d file of reals, as float64 (the leading
+    header is magic, version, type text, count; in version 2 the leaf's
+    encoding follows, 0 f64, 1 f32, 2 bf16, presk D180)."""
     import struct
 
     with open(path, "rb") as f:
         assert f.read(4) == b"PSKD", path
-        f.read(2)
+        (version,) = struct.unpack("<H", f.read(2))
         (n,) = struct.unpack("<I", f.read(4))
         text = f.read(n).decode()
         (count,) = struct.unpack("<Q", f.read(8))
-        data = np.frombuffer(f.read(), dtype="<f8")
+        code = 0
+        if version == 2:
+            (k,) = struct.unpack("<I", f.read(4))
+            (code,) = f.read(k)
+        body = f.read()
+        if code == 2:
+            data = (np.frombuffer(body, dtype="<u2").astype(np.uint32) << 16).view("<f4").astype(np.float64)
+        else:
+            data = np.frombuffer(body, dtype="<f8" if code == 0 else "<f4").astype(np.float64)
     assert count == 1, (path, count)
     shape = [int(s.rpartition(":")[2]) for s in text[text.index("[") + 1 : text.rindex("]")].split(",")]
     return torch.from_numpy(data.reshape(shape).copy())

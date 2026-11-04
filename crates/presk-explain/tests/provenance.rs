@@ -46,6 +46,7 @@ fn table_as(name: &str, file: &str, entry: &str, flags: &str, opt: bool, no_exac
         dims,
         consts,
         budget,
+        menu: Default::default(),
         realize: realize.map(String::from),
         plan: None,
         profile: (!opt).then(|| PathBuf::from("tests/data/x925-frozen.json")),

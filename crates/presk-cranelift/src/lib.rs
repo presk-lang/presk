@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod lanes;
 pub mod pool;
 pub use pool::Pool;
 
@@ -34,7 +35,20 @@ fn err<T>(message: impl Into<String>) -> Result<T> {
 
 /// A compiled kernel: the buffer pointers, then the half-open range of its
 /// outermost loop. A sequential call passes the whole range.
-type KernelFn = unsafe extern "C" fn(*const *mut u8, i64, i64);
+/// A compiled kernel: the table of buffers (the inputs, the output, the
+/// scales of integer inputs), then the range of the divided loop.
+pub type KernelFn = unsafe extern "C" fn(*const *mut u8, i64, i64);
+
+/// A compiler of kernels to [`KernelFn`], which the executor uses in place
+/// of Cranelift (plan 0.17.0 step 3, D176): the LLVM backend's, through the
+/// C printer and `clang`. The host, the pool, the splits and the profiling
+/// stay this executor's, so the two backends differ by their code alone.
+pub trait KernelCompiler {
+    /// The executor's name with this compiler, as the reports print it.
+    fn name(&self) -> &'static str;
+    /// Kernel `k`'s code, alive for the executor's lifetime.
+    fn compile(&mut self, k: &Kernel) -> Result<KernelFn>;
+}
 
 /// The buffer table, sent to a worker thread. Safe because the threads of one
 /// launch share read-only inputs and write disjoint elements of the output:
@@ -88,6 +102,8 @@ pub struct NativeExec {
     plain_kept: Vec<Vec<u8>>,
     /// The size of the last kernel compiled, in bytes.
     last_size: usize,
+    /// The compiler used in place of Cranelift, when there is one.
+    external: Option<Box<dyn KernelCompiler>>,
 }
 
 /// The machine code of a compiled kernel (plan 0.13.0 step 5, D138): its
@@ -170,7 +186,14 @@ impl NativeExec {
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
             .unwrap_or(1)
             .max(1);
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0 })
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0, external: None })
+    }
+
+    /// The executor with `c` compiling its kernels in place of Cranelift.
+    pub fn with_compiler(c: Box<dyn KernelCompiler>) -> Result<NativeExec> {
+        let mut x = NativeExec::new()?;
+        x.external = Some(c);
+        Ok(x)
     }
 
     /// The pool, of `threads − 1` workers: made, or made again when
@@ -196,6 +219,12 @@ impl NativeExec {
     }
 
     fn compile(&mut self, idx: usize, k: &Kernel) -> Result<KernelFn> {
+        // The loop a split divides, and a scalar kernel's lane-wise loops
+        // run over lanes ([`lanes`]): the same bits, the kernel's text and
+        // lines unchanged.
+        let split = ranged(k).map(|(d, _)| d);
+        let laned = lanes::natural(k, split);
+        let k = laned.as_ref().unwrap_or(k);
         // Cranelift's vector types are 128 bits wide, so the lane count a
         // kernel asks for has to be the one the machine type gives: four
         // `f32` or two `f64`. `bf16` is storage-only and would need a
@@ -296,13 +325,14 @@ impl NativeExec {
             };
             let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
             let wide: Vec<Option<Dtype>> = k.inputs.iter().map(|s| if let BufKind::Wide(d) = s.kind { Some(d) } else { None }).collect();
-            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, vecs, libm: refs, keep, line: 1 };
+            let affine_loops = affine_loops(&k.body, k.nloops);
+            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, out: k.inputs.len(), depth_of: vec![0; k.nloops], idepth_of: vec![0; k.nint], depth: 0, promo: None, vecs, libm: refs, keep, line: 1, affine_loops, guarded: 0 };
             // The loop a split divides — the outermost by default, the one at
             // the depth the plan states (0.7.0 step 3) — runs over the range
             // the caller gives; the loops enclosing it run in full. One
             // compiled kernel serves the sequential call and every worker.
-            match ranged(k) {
-                Some((depth, _)) => g.range_at(&k.body, depth, lo, hi),
+            match split {
+                Some(depth) => g.range_at(&k.body, depth, lo, hi),
                 None => g.stmts(&k.body),
             }
             // The return is the closing brace's, the text's last line.
@@ -480,12 +510,29 @@ struct Gen<'a> {
     loops: Vec<Variable>,
     reals: Vec<Variable>,
     ints: Vec<Variable>,
+    /// The output buffer's slot, after the inputs.
+    out: usize,
+    /// The depth of the loop each loop variable belongs to, or that assigns
+    /// it, and of the statement that assigns each integer variable; and the
+    /// depth being generated (plan 0.17.0 step 2, D175).
+    depth_of: Vec<usize>,
+    idepth_of: Vec<usize>,
+    depth: usize,
+    /// The output element a loop keeps in a variable (plan 0.17.0 step 2,
+    /// D175): its index and the variable, while that loop is generated.
+    promo: Option<(Vec<Expr>, Variable)>,
     libm: HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
     /// Whether instructions carry the line of the kernel's text they
     /// compile (plan 0.13.0 step 5), and the line reached, in the order the
     /// text prints them.
     keep: bool,
     line: u32,
+    /// The loop variables whose every value is affine in the loops' own
+    /// (a `For`'s, or a `SetL`'s of such terms), and how many conditions
+    /// enclose the code being generated: what decides whether a load may
+    /// move ([`Gen::input_flags`]).
+    affine_loops: Vec<bool>,
+    guarded: usize,
 }
 
 impl Gen<'_> {
@@ -498,15 +545,53 @@ impl Gen<'_> {
         }
     }
 
+    /// The address of element `index` of buffer `buf`: the buffer's pointer
+    /// plus each index's byte stride times it. The terms are added from the
+    /// outermost loop's to the innermost's, the constant ones folded into
+    /// the first, so that every partial sum the inner loop does not move is
+    /// computed outside it (Cranelift's loop-invariant motion), and the inner
+    /// loop's term comes last, where the target can fold it into the access
+    /// (plan 0.17.0 step 2, D175). Integer arithmetic: no bit of a value
+    /// depends on the order.
     fn addr(&mut self, buf: usize, index: &[Expr]) -> CV {
-        let mut off = self.b.ins().iconst(types::I64, 0);
-        for (e, s) in index.iter().zip(self.strides[buf].clone()) {
-            let i = self.gen_i(e);
-            let t = self.b.ins().imul_imm(i, s as i64);
-            off = self.b.ins().iadd(off, t);
+        let esize = self.esize[buf];
+        let mut konst = 0i64;
+        let mut terms: Vec<(usize, &Expr, i64)> = Vec::new();
+        for (e, s) in index.iter().zip(self.strides[buf].iter()) {
+            if *s == 0 {
+                continue;
+            }
+            match constant(e) {
+                Some(c) => konst += c * *s as i64 * esize,
+                None => terms.push((self.depth_at(e), e, *s as i64 * esize)),
+            }
         }
-        let bytes = self.b.ins().imul_imm(off, self.esize[buf]);
-        self.b.ins().iadd(self.bufs[buf], bytes)
+        terms.sort_by_key(|(d, _, _)| *d);
+        let mut a = self.bufs[buf];
+        if konst != 0 {
+            a = self.b.ins().iadd_imm(a, konst);
+        }
+        for (_, e, s) in terms {
+            let i = self.gen_i(e);
+            let t = if s == 1 { i } else { self.b.ins().imul_imm(i, s) };
+            a = self.b.ins().iadd(a, t);
+        }
+        a
+    }
+
+    /// The depth of the innermost loop expression `e` moves with: 0 for a
+    /// constant, the loop's depth for a loop variable, the assigning
+    /// statement's for an integer variable, the deepest for a load.
+    fn depth_at(&self, e: &Expr) -> usize {
+        match e {
+            Expr::F(_) | Expr::I(_) => 0,
+            Expr::Iv(v) => self.depth_of[*v],
+            Expr::Si(v) => self.idepth_of[*v],
+            Expr::Bin(_, x, y) | Expr::Cmp(_, x, y) | Expr::VBin(_, x, y) => self.depth_at(x).max(self.depth_at(y)),
+            Expr::Un(_, x) | Expr::ToF(x) | Expr::ToI(x) | Expr::VSplat(x) => self.depth_at(x),
+            Expr::Select(c, x, y) => self.depth_at(c).max(self.depth_at(x)).max(self.depth_at(y)),
+            Expr::Load(..) | Expr::LoadI(..) | Expr::VLoad(..) | Expr::Sv(_) | Expr::Vv(_) => usize::MAX,
+        }
     }
 
     /// Element `ix` of an integer input as the realization denotes it,
@@ -728,7 +813,8 @@ impl Gen<'_> {
             Expr::VLoad(buf, ix) => {
                 let a = self.addr(*buf, ix);
                 // Unaligned: the column a tile starts at need not be aligned.
-                self.b.ins().load(vty, MemFlags::new(), a, 0)
+                let flags = self.input_flags(*buf, ix, MemFlags::new());
+                self.b.ins().load(vty, flags, a, 0)
             }
             Expr::VSplat(x) => {
                 let s = self.gen_f(x);
@@ -753,6 +839,10 @@ impl Gen<'_> {
     fn gen_f(&mut self, e: &Expr) -> CV {
         match e {
             Expr::F(x) => fconst(&mut self.b, self.fty, *x),
+            Expr::Load(buf, ix) if self.promoted(*buf, ix).is_some() => {
+                let v = self.promoted(*buf, ix).expect("checked");
+                self.b.use_var(v)
+            }
             Expr::Load(buf, ix) if self.is_quant(*buf) => self.load_quant(*buf, ix, 0),
             Expr::Load(buf, ix) if self.wide(*buf).is_some() => self.load_wide(*buf, ix, 0),
             Expr::Load(buf, ix) => {
@@ -765,7 +855,8 @@ impl Gen<'_> {
                     let up = self.b.ins().ishl_imm(w, 16);
                     self.b.ins().bitcast(types::F32, MemFlags::new(), up)
                 } else {
-                    self.b.ins().load(self.fty, MemFlags::trusted(), a, 0)
+                    let flags = self.input_flags(*buf, ix, MemFlags::trusted());
+                    self.b.ins().load(self.fty, flags, a, 0)
                 }
             }
             Expr::Sv(v) => self.b.use_var(self.reals[*v]),
@@ -872,7 +963,93 @@ impl Gen<'_> {
     /// `for var in lo..hi { body }` with the bounds as values, so the caller
     /// can hand a worker its slice of the iteration space.
     fn for_range(&mut self, var: usize, lo: CV, hi: CV, body: &[Stmt]) {
-        self.loop_with(var, lo, hi, |g| g.stmts(body));
+        self.for_range_with(var, lo, hi, &mut |g: &mut Self| g.stmts(body), body);
+    }
+
+    /// [`Gen::for_range`] with the loop's body generated by `emit`, `body`
+    /// the statements it generates (to decide what the loop keeps in a
+    /// variable).
+    fn for_range_with(&mut self, var: usize, lo: CV, hi: CV, emit: &mut dyn FnMut(&mut Self), body: &[Stmt]) {
+        // An output element the loop does not move, which every access to the
+        // output inside it reads or writes, lives in a variable for the loop:
+        // loaded before it, stored after it, the same operations in the same
+        // order between (plan 0.17.0 step 2, D175). Cranelift moves no memory
+        // access out of a loop, so without this a sum into the output loads
+        // and stores it at every step. A `bf16` output rounds at every store,
+        // which the variable would skip, so it keeps its stores.
+        let promote = if self.promo.is_none() && !self.narrow { promotable(var, body, self.out) } else { None };
+        let Some(ix) = promote else {
+            return self.loop_with(var, lo, hi, |g| emit(g));
+        };
+        let a = self.addr(self.out, &ix);
+        let x = self.b.ins().load(self.fty, MemFlags::trusted(), a, 0);
+        let v = self.b.declare_var(self.fty);
+        self.b.def_var(v, x);
+        self.promo = Some((ix.clone(), v));
+        self.loop_with(var, lo, hi, |g| emit(g));
+        self.promo = None;
+        let y = self.b.use_var(v);
+        let a = self.addr(self.out, &ix);
+        self.b.ins().store(MemFlags::trusted(), y, a, 0);
+    }
+
+    /// `for var in 0..bound { body }`, innermost, unrolled by `f`
+    /// ([`unroll_factor`]): the body `f` times per iteration, `var` set to
+    /// each value in turn, then the iterations left over by the plain loop
+    /// (plan 0.17.0 step 2, D175). The same operations in the same order, so
+    /// the same bits; Cranelift does not unroll. Each copy's instructions
+    /// carry the lines of the body's text, as the loop's do.
+    fn unrolled(&mut self, var: usize, bound: usize, body: &[Stmt], f: usize) {
+        let main = bound / f * f;
+        let line = self.line;
+        let zero = self.b.ins().iconst(types::I64, 0);
+        let n = self.b.ins().iconst(types::I64, main as i64);
+        let v = self.loops[var];
+        self.for_range_with(var, zero, n, &mut |g: &mut Self| {
+            let base = g.b.use_var(v);
+            for t in 0..f {
+                if t > 0 {
+                    let at = g.b.ins().iadd_imm(base, t as i64);
+                    g.b.def_var(v, at);
+                }
+                g.line = line;
+                g.stmts(body);
+            }
+        }, body);
+        if main < bound {
+            self.line = line;
+            let lo = self.b.ins().iconst(types::I64, main as i64);
+            let hi = self.b.ins().iconst(types::I64, bound as i64);
+            self.for_range(var, lo, hi, body);
+        }
+    }
+
+    /// The flags of a load of reals from buffer `buf` at `index`, `plain`
+    /// unless the load may move (plan 0.17.0 step 2, D175): an input,
+    /// which the kernel never writes (the host lends it and allocates the
+    /// output apart), read at an index affine in loop variables whose values
+    /// are themselves affine ([`affine_loops`]), outside any condition. Such
+    /// an address is in the buffer wherever its loop variables have a
+    /// value, so the load can run
+    /// anywhere they are defined: Cranelift then treats it as pure, places
+    /// it at its first use (where a broadcast takes it as `ld1r`), merges
+    /// duplicates and hoists it out of the loops it does not depend on, as
+    /// a C compiler does with `restrict`. The values loaded are the same.
+    fn input_flags(&self, buf: usize, index: &[Expr], plain: MemFlags) -> MemFlags {
+        if buf != self.out && self.guarded == 0 && index.iter().all(|e| affine(e, &self.affine_loops)) {
+            plain.with_notrap().with_readonly().with_can_move()
+        } else {
+            plain
+        }
+    }
+
+    /// The variable that holds output element `index` of buffer `buf`, when
+    /// the loop being generated keeps it in one.
+    fn promoted(&self, buf: usize, index: &[Expr]) -> Option<Variable> {
+        match &self.promo {
+            Some((ix, v)) if buf == self.out && ix.as_slice() == index => Some(*v),
+            _ => None,
+        }
     }
 
     /// The nest down to the loop at `depth`, which runs over `lo..hi` only;
@@ -890,6 +1067,8 @@ impl Gen<'_> {
 
     /// `for var in lo..hi { body }`.
     fn loop_with(&mut self, var: usize, lo: CV, hi: CV, body: impl FnOnce(&mut Self)) {
+        self.depth += 1;
+        self.depth_of[var] = self.depth;
         let v = self.loops[var];
         self.b.def_var(v, lo);
         let header = self.b.create_block();
@@ -898,8 +1077,13 @@ impl Gen<'_> {
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let i = self.b.use_var(v);
-        let c = self.b.ins().icmp(IntCC::SignedLessThan, i, hi);
-        self.b.ins().brif(c, body_b, &[], exit, &[]);
+        // The exit is the branch's first target, so that the dominator
+        // tree's children put the body before the exit. Cranelift's
+        // elaborator (0.131) visits them in that order and forgets a loop
+        // once it has visited a block outside it: with the body second, no
+        // value is ever hoisted out of the loop (D175).
+        let c = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i, hi);
+        self.b.ins().brif(c, exit, &[], body_b, &[]);
         self.b.switch_to_block(body_b);
         self.b.seal_block(body_b);
         body(self);
@@ -912,27 +1096,33 @@ impl Gen<'_> {
         self.b.seal_block(header);
         self.b.switch_to_block(exit);
         self.b.seal_block(exit);
+        self.depth -= 1;
     }
 
     fn stmts(&mut self, stmts: &[Stmt]) {
         for s in stmts {
             self.next_line();
             match s {
-                Stmt::For { var, bound, body } => {
-                    let zero = self.b.ins().iconst(types::I64, 0);
-                    let n = self.b.ins().iconst(types::I64, *bound as i64);
-                    self.for_range(*var, zero, n, body);
-                }
+                Stmt::For { var, bound, body } => match unroll_factor(*var, *bound, body) {
+                    1 => {
+                        let zero = self.b.ins().iconst(types::I64, 0);
+                        let n = self.b.ins().iconst(types::I64, *bound as i64);
+                        self.for_range(*var, zero, n, body);
+                    }
+                    f => self.unrolled(*var, *bound, body, f),
+                },
                 Stmt::Set { var, value } => {
                     let x = self.gen_f(value);
                     self.b.def_var(self.reals[*var], x);
                 }
                 Stmt::SetI { var, value } => {
                     let x = self.gen_i(value);
+                    self.idepth_of[*var] = self.depth;
                     self.b.def_var(self.ints[*var], x);
                 }
                 Stmt::SetL { var, value } => {
                     let x = self.gen_i(value);
+                    self.depth_of[*var] = self.depth;
                     self.b.def_var(self.loops[*var], x);
                 }
                 // Vector kernels are refused before generation begins, so
@@ -947,6 +1137,11 @@ impl Gen<'_> {
                     let x = self.gen_v(value);
                     let a = self.addr(*buf, index);
                     self.b.ins().store(MemFlags::new(), x, a, 0);
+                }
+                Stmt::Store { buf, index, value } if self.promoted(*buf, index).is_some() => {
+                    let x = self.gen_f(value);
+                    let v = self.promoted(*buf, index).expect("checked");
+                    self.b.def_var(v, x);
                 }
                 Stmt::Store { buf, index, value } => {
                     let x = self.gen_f(value);
@@ -970,13 +1165,299 @@ impl Gen<'_> {
                     self.b.ins().brif(c, then_b, &[], merge, &[]);
                     self.b.switch_to_block(then_b);
                     self.b.seal_block(then_b);
+                    self.guarded += 1;
                     self.stmts(then);
+                    self.guarded -= 1;
                     self.next_line();
                     self.b.ins().jump(merge, &[]);
                     self.b.switch_to_block(merge);
                     self.b.seal_block(merge);
                 }
             }
+        }
+    }
+}
+
+/// Whether integer expression `e` is affine in the loop variables `ok`
+/// marks: constants, those variables, sums and products of them.
+fn affine(e: &Expr, ok: &[bool]) -> bool {
+    match e {
+        Expr::Iv(v) => ok[*v],
+        Expr::I(_) => true,
+        Expr::Bin(BinOp::IAdd | BinOp::IMul, x, y) => affine(x, ok) && affine(y, ok),
+        _ => false,
+    }
+}
+
+/// The loop variables whose every value is affine in the loops' own: a
+/// `For`'s that no `SetL` assigns, and one each of whose `SetL`s assigns
+/// it an affine expression of such variables (`i5 = i1·128 + i4`, how an
+/// interleaved contraction addresses its terms). A variable a `SetL` gives
+/// a value read from data is not.
+fn affine_loops(body: &[Stmt], nloops: usize) -> Vec<bool> {
+    fn collect<'a>(body: &'a [Stmt], sets: &mut Vec<Vec<&'a Expr>>) {
+        for s in body {
+            match s {
+                Stmt::SetL { var, value } => sets[*var].push(value),
+                Stmt::For { body, .. } | Stmt::If { then: body, .. } => collect(body, sets),
+                _ => {}
+            }
+        }
+    }
+    let mut sets = vec![Vec::new(); nloops];
+    collect(body, &mut sets);
+    let mut ok: Vec<bool> = sets.iter().map(|v| v.is_empty()).collect();
+    loop {
+        let next: Vec<bool> = (0..nloops).map(|v| ok[v] || sets[v].iter().all(|e| affine(e, &ok))).collect();
+        if next == ok {
+            return ok;
+        }
+        ok = next;
+    }
+}
+
+/// How many times an innermost loop's body is repeated per iteration, at
+/// most.
+const UNROLL: usize = 4;
+
+/// The floating-point registers the register allocator has: 32 on AArch64,
+/// 16 on x86-64 without AVX-512.
+const FLOAT_REGS: usize = if cfg!(target_arch = "aarch64") { 32 } else { 16 };
+
+/// How many times loop `var` of `bound` iterations over `body` is repeated
+/// per iteration: [`UNROLL`], two, or one (not unrolled). It is unrolled
+/// when it is innermost (no loop inside), its variable assigned by the loop
+/// alone, at least two unrolled iterations, and a body of at most 64
+/// statements, so that the code grows by a bounded amount. The factor is
+/// then the largest whose registers fit: Cranelift keeps the loads in their
+/// order and computes the arithmetic where its result is used, at the end
+/// of the iteration, so every copy's loads are live at once beside the
+/// values the body carries across iterations. A factor that needs more than
+/// [`FLOAT_REGS`] spills them in the loop, which costs more than the loop's
+/// own instructions save (D175: a register tile of sixteen accumulators). A
+/// body that calls `libm` is not unrolled.
+fn unroll_factor(var: usize, bound: usize, body: &[Stmt]) -> usize {
+    fn count(var: usize, body: &[Stmt]) -> Option<usize> {
+        let mut n = 0;
+        for s in body {
+            n += match s {
+                Stmt::For { .. } => return None,
+                Stmt::SetL { var: v, .. } if *v == var => return None,
+                Stmt::If { then, .. } => 1 + count(var, then)?,
+                _ => 1,
+            };
+        }
+        Some(n)
+    }
+    // A call to `libm` clobbers the registers that are not saved across
+    // it, so the copies' values would live on the stack, and the call
+    // costs more than the loop's instructions anyway.
+    let mut calls = Vec::new();
+    collect_libm(body, &mut calls);
+    if !calls.is_empty() || !count(var, body).is_some_and(|n| n <= 64) {
+        return 1;
+    }
+    let mut regs = Regs::default();
+    regs.stmts(body);
+    let carried = regs.live_in.len();
+    let loads = regs.loads.len();
+    // A few registers for the products and splats in flight.
+    let fits = |f: usize| carried + f * loads + 4 <= FLOAT_REGS;
+    [UNROLL, 2].into_iter().find(|&f| bound >= 2 * f && fits(f)).unwrap_or(1)
+}
+
+/// What [`unroll_factor`] counts over a loop's body: the real and vector
+/// variables read before the body assigns them (the values it carries, or
+/// reads from outside), and the distinct real loads.
+#[derive(Default)]
+struct Regs {
+    assigned: std::collections::HashSet<(bool, usize)>,
+    live_in: std::collections::HashSet<(bool, usize)>,
+    loads: Vec<(bool, usize, Vec<Expr>)>,
+}
+
+impl Regs {
+    fn stmts(&mut self, body: &[Stmt]) {
+        for s in body {
+            match s {
+                Stmt::For { body, .. } => self.stmts(body),
+                Stmt::Set { var, value } => {
+                    self.expr(value);
+                    self.assigned.insert((false, *var));
+                }
+                Stmt::VSet { var, value } => {
+                    self.expr(value);
+                    self.assigned.insert((true, *var));
+                }
+                Stmt::SetI { value, .. } | Stmt::SetL { value, .. } => self.expr(value),
+                Stmt::Store { index, value, .. } | Stmt::VStore { index, value, .. } | Stmt::StoreI { index, value, .. } => {
+                    index.iter().for_each(|e| self.expr(e));
+                    self.expr(value);
+                }
+                Stmt::If { cond, then } => {
+                    self.expr(cond);
+                    self.stmts(then);
+                }
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Sv(v) | Expr::Vv(v) => {
+                let key = (matches!(e, Expr::Vv(_)), *v);
+                if !self.assigned.contains(&key) {
+                    self.live_in.insert(key);
+                }
+            }
+            Expr::Load(b, ix) | Expr::VLoad(b, ix) => {
+                ix.iter().for_each(|x| self.expr(x));
+                let key = (matches!(e, Expr::VLoad(..)), *b, ix.clone());
+                if !self.loads.contains(&key) {
+                    self.loads.push(key);
+                }
+            }
+            Expr::LoadI(_, ix) => ix.iter().for_each(|x| self.expr(x)),
+            Expr::Bin(_, x, y) | Expr::Cmp(_, x, y) | Expr::VBin(_, x, y) => {
+                self.expr(x);
+                self.expr(y);
+            }
+            Expr::Un(_, x) | Expr::ToF(x) | Expr::ToI(x) | Expr::VSplat(x) => self.expr(x),
+            Expr::Select(c, x, y) => {
+                self.expr(c);
+                self.expr(x);
+                self.expr(y);
+            }
+            Expr::F(_) | Expr::I(_) | Expr::Iv(_) | Expr::Si(_) => {}
+        }
+    }
+}
+
+/// The value of an integer index expression made of constants only.
+fn constant(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::I(c) => Some(*c),
+        Expr::Bin(BinOp::IAdd, x, y) => Some(constant(x)?.checked_add(constant(y)?)?),
+        Expr::Bin(BinOp::IMul, x, y) => Some(constant(x)?.checked_mul(constant(y)?)?),
+        _ => None,
+    }
+}
+
+/// The index of the output element loop `var`'s body keeps fixed, when it
+/// can live in a variable for the loop: every access to the output `out`
+/// inside the body, at any depth, is a scalar real load or store at that
+/// one index; at least one is a store; and the index reads no variable the
+/// body assigns, the loop's own included. A kernel's inputs never share the
+/// output's memory (the host lends them and allocates the output), so no
+/// other access can reach the element.
+fn promotable(var: usize, body: &[Stmt], out: usize) -> Option<Vec<Expr>> {
+    let mut acc = Access { out, index: None, stores: 0, bad: false, loops: vec![var], ints: vec![] };
+    acc.stmts(body);
+    let ix = acc.index.take()?;
+    if acc.bad || acc.stores == 0 || ix.iter().any(|e| acc.moves(e)) {
+        return None;
+    }
+    Some(ix)
+}
+
+/// What [`promotable`] gathers over a loop's body.
+struct Access {
+    out: usize,
+    index: Option<Vec<Expr>>,
+    stores: usize,
+    bad: bool,
+    /// The loop variables the body assigns, and its integer variables.
+    loops: Vec<usize>,
+    ints: Vec<usize>,
+}
+
+impl Access {
+    fn at(&mut self, ix: &[Expr]) {
+        match &self.index {
+            None => self.index = Some(ix.to_vec()),
+            Some(i) if i.as_slice() == ix => {}
+            Some(_) => self.bad = true,
+        }
+    }
+
+    fn stmts(&mut self, body: &[Stmt]) {
+        for s in body {
+            match s {
+                Stmt::For { var, body, .. } => {
+                    self.loops.push(*var);
+                    self.stmts(body);
+                }
+                Stmt::SetL { var, value } => {
+                    self.loops.push(*var);
+                    self.expr(value);
+                }
+                Stmt::SetI { var, value } => {
+                    self.ints.push(*var);
+                    self.expr(value);
+                }
+                Stmt::Set { value, .. } | Stmt::VSet { value, .. } => self.expr(value),
+                Stmt::Store { buf, index, value } => {
+                    index.iter().for_each(|e| self.expr(e));
+                    self.expr(value);
+                    if *buf == self.out {
+                        self.stores += 1;
+                        self.at(index);
+                    }
+                }
+                Stmt::VStore { buf, index, value } | Stmt::StoreI { buf, index, value } => {
+                    index.iter().for_each(|e| self.expr(e));
+                    self.expr(value);
+                    if *buf == self.out {
+                        self.bad = true;
+                    }
+                }
+                Stmt::If { cond, then } => {
+                    self.expr(cond);
+                    self.stmts(then);
+                }
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Load(buf, ix) => {
+                ix.iter().for_each(|e| self.expr(e));
+                if *buf == self.out {
+                    self.at(ix);
+                }
+            }
+            Expr::LoadI(buf, ix) | Expr::VLoad(buf, ix) => {
+                ix.iter().for_each(|e| self.expr(e));
+                if *buf == self.out {
+                    self.bad = true;
+                }
+            }
+            Expr::Bin(_, x, y) | Expr::Cmp(_, x, y) | Expr::VBin(_, x, y) => {
+                self.expr(x);
+                self.expr(y);
+            }
+            Expr::Un(_, x) | Expr::ToF(x) | Expr::ToI(x) | Expr::VSplat(x) => self.expr(x),
+            Expr::Select(c, x, y) => {
+                self.expr(c);
+                self.expr(x);
+                self.expr(y);
+            }
+            Expr::F(_) | Expr::I(_) | Expr::Iv(_) | Expr::Sv(_) | Expr::Si(_) | Expr::Vv(_) => {}
+        }
+    }
+
+    /// Whether index expression `e` reads a variable the body assigns.
+    fn moves(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Iv(v) => self.loops.contains(v),
+            Expr::Si(v) => self.ints.contains(v),
+            Expr::F(_) | Expr::I(_) => false,
+            Expr::Bin(_, x, y) | Expr::Cmp(_, x, y) | Expr::VBin(_, x, y) => self.moves(x) || self.moves(y),
+            Expr::Un(_, x) | Expr::ToF(x) | Expr::ToI(x) | Expr::VSplat(x) => self.moves(x),
+            Expr::Select(c, x, y) => self.moves(c) || self.moves(x) || self.moves(y),
+            // A load or a real variable in an index: not a fixed position.
+            Expr::Load(..) | Expr::LoadI(..) | Expr::VLoad(..) | Expr::Sv(_) | Expr::Vv(_) => true,
         }
     }
 }
@@ -994,7 +1475,7 @@ fn buf_ptr(b: &Buf) -> Result<*mut u8> {
 
 impl KernelExec for NativeExec {
     fn name(&self) -> &'static str {
-        "native"
+        self.external.as_ref().map_or("native", |c| c.name())
     }
 
     fn workers(&self) -> Option<usize> {
@@ -1032,7 +1513,10 @@ impl KernelExec for NativeExec {
             Some(f) => f,
             None => {
                 let t = self.profiling.then(std::time::Instant::now);
-                let f = self.compile(idx, k)?;
+                let f = match &mut self.external {
+                    Some(c) => c.compile(k)?,
+                    None => self.compile(idx, k)?,
+                };
                 if let Some(t) = t {
                     compile = t.elapsed().as_secs_f64();
                 }
@@ -1117,6 +1601,13 @@ impl KernelExec for NativeExec {
         self.pool().run(workers, &piece);
         Ok(())
     }
+}
+
+/// Kernel `k` with its lane-wise loops over lanes (plan 0.17.0 step 2,
+/// D175): what this backend compiles for a one-lane kernel, and what the
+/// LLVM backend prints for `clang`. `None` when it has none.
+pub fn laned(k: &Kernel) -> Option<Kernel> {
+    lanes::natural(k, ranged(k).map(|(d, _)| d))
 }
 
 /// The loop a kernel's split divides, `(depth, iterations)`: the one at the

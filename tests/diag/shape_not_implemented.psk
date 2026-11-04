@@ -1,3 +1,4 @@
--- E2012: a builtin of the specification without an implementation in 0.1.0.
-fn f(a : ℝ[seq: 4], b : ℝ[seq: 4]) -> ℝ[seq: 8] =
-  concat(axis seq, a, b)
+-- E2012: a builtin of the specification without an implementation: `vjp`
+-- and `jvp` (until 0.16.1 also `concat`, `clamp`, `max` and `min`).
+fn f(x : ℝ[seq: 4]) -> ℝ[seq: 4] =
+  jvp(x, x, x)

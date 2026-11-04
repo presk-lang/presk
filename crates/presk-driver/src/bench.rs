@@ -78,9 +78,16 @@ impl KernelTimes {
 /// are passed as they are.
 #[allow(clippy::too_many_arguments)]
 pub fn kernel_times(core: &presk_core::Program, prog: &ElabProgram, func: FuncId, fdims: &Dims, args: &[Value], plan: &Plan, repeat: usize) -> Result<KernelTimes, String> {
-    let realize = &plan.realization;
     let native = presk_cranelift::NativeExec::new().map_err(|e| format!("native backend unavailable: {}", e.message))?;
-    let (timed, samples) = presk_kernel::cost::TimedExec::new(Box::new(native));
+    kernel_times_with(Box::new(native), core, prog, func, fdims, args, plan, repeat)
+}
+
+/// [`kernel_times`] on another executor: the LLVM backend's
+/// (`presk bench --llvm --calibrate`, plan 0.17.0 step 3).
+#[allow(clippy::too_many_arguments)]
+pub fn kernel_times_with(exec: Box<dyn presk_kernel::KernelExec>, core: &presk_core::Program, prog: &ElabProgram, func: FuncId, fdims: &Dims, args: &[Value], plan: &Plan, repeat: usize) -> Result<KernelTimes, String> {
+    let realize = &plan.realization;
+    let (timed, samples) = presk_kernel::cost::TimedExec::new(exec);
     let mut backend = presk_kernel::KernelBackend::with_exec(core, prog, realize, Box::new(timed));
     backend.set_plan(plan.clone());
     let p = Backend::prepare(&mut backend, func, fdims, realize).map_err(|e| e.message)?;

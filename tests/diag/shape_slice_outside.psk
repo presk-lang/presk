@@ -1,0 +1,4 @@
+-- E2014: a slice whose bounds the facts do not place inside its axis, for
+-- every value of its dimensions (0.17.0 step 6). Here `T + 1 ≤ T` fails.
+dim T
+fn targets(w : ℝ[seq: T]) -> ℝ[seq: T] = w[seq: 1..T + 1]

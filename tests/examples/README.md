@@ -21,6 +21,8 @@ what it shows and gives the `presk` commands that go with it.
 | [`mlp/`](mlp/) | The bare minimum: `module`, `param`, `fn apply`, composition, typed `grad`. |
 | [`layernorm/`](layernorm/) | Reductions over a named axis, vector `param`, numerical stability left to the compiler. |
 | [`minigpt/`](minigpt/) | The core: causal attention, Transformer blocks, `stack{N}`, `idx[V]`, embeddings, **training**, **inference** and **build** toward an ARM+GPU SoC. |
+| [`concat/`](concat/) | Slices that keep their axis, `concat` along a named axis, `min`, `max` and `clamp`, and a gradient through them. |
+| [`rope/`](rope/) | Rotary position embeddings as the Llama models have them: two slices, a `concat`, and Llama 3's frequency scaling with `clamp`. |
 
 ## Conventions
 

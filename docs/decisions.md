@@ -16998,3 +16998,1588 @@ in the paper (the plan's §6):
 - BERT's two blocks;
 - the timed rows;
 - J′.
+
+## D173 — Version 0.17.0 opened: the native backend at GCC to level 3 (an LLVM backend), `int8` and `int4` in the solver's menu, the training step budgeted per stored value, real weights (2026-10-28)
+
+The plan is `presk-specs/implementation/presk-plan-0.17.0.md` (presk-specs
+!102). On 2026-10-28 the user said: "Use plan-0-17-0-candidates to start
+implementing this version". That list is presk-project's memory of
+2026-10-27, and its first item is roadmap §A, decided as a direction on
+2026-10-19. Asked which candidates join the backend work and how far the
+backend goes, the user chose:
+- the backend to level 3;
+- `int8`/`int4` in the solver's menu (roadmap §J);
+- the training step budgeted per stored value (the 0.16.0 assessment's
+  item 5);
+- real weights (presk-project `docs/presk-rope-concat-2026-10-01.md`).
+
+The training run that delivers the serve realization was not chosen, and
+neither was the question of the calibration windows.
+
+**What the facts changed** (the plan's §2, read at `d30dbea`, whose crates
+are `2f5f628`'s):
+- *The integer menu.* `presk solve --quant` already quantizes, as a pass
+  after the float solve (D44, D49, D123). The item is D126's single
+  menu, in which integer rungs are weighed against the floats in one order.
+  The plan prices a rung by D155's form, `sens · max|ŵ − w|`. D126
+  recommended a root-sum-square of moves, but D126 predates D157. Since
+  D157 the float term has been the largest measured rounding times the
+  same 1-norm, so the two terms are now in one unit.
+- *H6.* It is timed on the loss's per-value realization with its `params`
+  removed, not on `solve --step`'s.
+  - The step is `.vjp` and then `adamw.step`, driven from Rust, so it is
+    not an entry.
+  - A first-order sensitivity of the update to a site of the reverse
+    sweep would need a second derivative.
+  - The step solver per value therefore measures each move alone, as D52
+    does per function. The envelope at D = 64 has 524 sites in 21
+    functions.
+- *LLVM.* `make llvm` keeps only `clang` 23.1.2. Nothing on falicon
+  provides `libLLVM` or binds it.
+  - Level 3 is an executor that compiles the kernels through `clang` into
+    a shared object, `dlopen`s it, and implements `KernelExec`, which is
+    the host's seam already.
+  - `presk-export-c/tests/cexec` is that executor, as a test.
+- *Real weights.*
+  - `concat`, `min`, `max` and `clamp` are refused (`E2012`), and no
+    selector keeps its axis.
+  - `presk export --serve` refuses a model whose parameters do not fix
+    the context (`E8009`). A RoPE model is one.
+  - Four readers besides `presk-data` hard-code `.psk.d` version 1.
+  - The checkpoint is gated and not on falicon.
+
+**The statements** (the plan's §7) are NB0–NB4, QM0–QM3, TS0–TS3 and
+RW0–RW4:
+- *Bits:* NB0, QM0, TS0, RW0, RW1.
+- *Reported:* NB1, NB4, TS3, RW3.
+- *Falsifiable thresholds:*
+  - NB2: Cranelift with level 2 at most 1.3× the C program, by D127's
+    protocol;
+  - NB3: the LLVM backend at most 1.0× it;
+  - QM2: one menu's traffic ratio at least two passes';
+  - TS2: the per-value step at least 1.3× all-`f64` and no slower than
+    J′'s;
+  - RW2: the converted checkpoint within 10⁻⁸ of `transformers` in
+    `float64`;
+  - RW4: `presk serve` and `generate.c` generating the same tokens.
+
+**Questions for the user**, in the plan's §9, with recommendations, to be
+decided on presk-specs !102:
+1. level 3 through the C printer and `clang`;
+2. the integer term in D155's form;
+3. the single menu behind `--menu`, the default unchanged;
+4. the base `Llama-3.2-1B`;
+5. the 7B decoder not solved again;
+6. the step's master weights and moments at the default type.
+
+Steps 0 to 2 need none of the answers.
+
+**This step.**
+- The version is `0.17.0-dev`, in `Cargo.toml` and the presk packages
+  of `Cargo.lock`. The version line moves in `presk explain`'s six
+  document snapshots and in the manual's `explain_loss`.
+- Two stale comments of `solve.rs` are corrected:
+  - `Menu::default` said integer quantization was 0.6.0's menu;
+  - the module's doc said D155's options were both off by default,
+    when `RoundingTerm::Measured` has been the default since D158.
+- Questions 79 (a selector that keeps its axis) and 80 (`concat`, `min`,
+  `max`, `clamp`, and whether a `concat` is a copy or a placement) are
+  opened in `docs/spec-questions.md`.
+- `CLAUDE.md`, the CHANGELOG's `Unreleased`, the manual's `status`.
+
+**The baseline.** X1's harness, `make quant-table`, `step-table` and
+`tutorial`, under `v0.16.1`'s release build (`out/bin/presk-0.16.1`, built
+on 2026-10-23 on the tree `be91ae8` of the tag), into `out/x1/base-0.17.0`
+(`out/x1/base-0.17.0.sh`).
+- *The baseline reproduces.* The same binary's X1 of 2026-10-23
+  (`out/x1/version-0.16.1`, D172) differs from it in 7 of 863 files, by
+  the three envelopes' `measured` dates and the exported READMEs' commit
+  lines. The quant and step tables are byte for byte the same, and the
+  tutorial differs by its measurements alone.
+- *This step's build* (`out/bin/presk-0.17.0-step0`): X1
+  (`out/x1/step0-0.17.0`) differs from the baseline in 19 files, by their
+  version lines (`0.16.1` → `0.17.0-dev`) and commit lines alone, as at
+  0.16.0's step 0 (D157). `presk-explain`'s tests pass with the six
+  snapshots' version lines moved.
+
+## D174 — Plan 0.17.0, step 1 (level 1): each kernel's share of the native backend's gap to the C program. On ten X925 the kernels are 1.64× GCC's on the forward pass and 1.90× on the step; the register-tiled products carry 71 % of the forward's gap, the gradient's is spread over `sum_to`, the attention's `ein` and the products' derivatives; on one core clang's build of the same C is 1.32× faster than GCC's on the forward pass and 1.12× on the gradient (NB1, reported) (2026-10-28)
+
+**What was measured** (`make kernel-shares`: `experiments/kernel_shares.sh`
+and `.py`, the report `docs/kernel-shares-2026-10-28.md`). The course GPT at
+B = 16, T = 256 in `f32` under the frozen profile's plans: the forward pass
+`GPT.apply`, the gradient `loss_grad` and the optimizer `adamw.step`. Every
+launch is timed on both sides:
+- natively by `presk bench --plan-only --calibrate`, a kernel's median
+  launch;
+- in the C program by `kernel_time.py`'s copy of `model.c`, each call or
+  OpenMP region.
+
+The two sides are joined by the kernel's signature. The C host is recorded
+from the native run under the same plan, so a signature is launched as often
+on both. There are two settings:
+- ten X925, ten threads, GCC `-O2` with OpenMP under `GOMP_SPINCOUNT=8M`,
+  which is T4's setting;
+- one X925, one thread, the plans with every split `none` and the C program
+  exported from them, built by GCC `-O2`, clang `-O2` and clang `-O3`
+  (LLVM 23.1.2, `make llvm`).
+
+Each setting ran in three processes; the spread of every total is within
+1.2 %, most within 1 %. Every timed C build's outputs are the native
+backend's, bit for bit.
+
+**Two changes this measurement needed.**
+- *`presk bench --calibrate --plan-only`* times the plan's kernels alone. A
+  calibration also timed the same kernels under the other uniform
+  realizations at their default layout, for the profile's `others`. On one
+  thread that took 174 s of a 10 s run on the forward pass and most of half
+  an hour on the gradient. Without `--plan-only` nothing changes. A test,
+  `crates/presk-cli/tests/calibrate.rs`, checks the same kernels with and
+  without the flag, and no `others` with it.
+- *`experiments/kernel_time.c`* defines `_POSIX_C_SOURCE`.
+  `clock_gettime` is hidden under `-std=c11` when no OpenMP header brings
+  POSIX in, as in a build without `-fopenmp`.
+
+**The totals, the kernels' times a call** (the median of three processes):
+
+| | native | GCC `-O2` | clang `-O2` | clang `-O3` | native ÷ GCC |
+|---|---|---|---|---|---|
+| forward pass, ten X925 | 331.2 ms | 202.1 ms | | | 1.64× |
+| gradient, ten X925 | 1 297.0 ms | 678.0 ms | | | 1.91× |
+| optimizer, ten X925 | 15.2 ms | 12.5 ms | | | 1.22× |
+| forward pass, one X925 | 3 036.3 ms | 2 181.7 ms | 1 660.7 ms | 1 657.9 ms | 1.39× |
+| gradient, one X925 | 10 100.0 ms | 6 725.0 ms | 6 003.7 ms | 5 978.5 ms | 1.50× |
+| optimizer, one X925 | 34.4 ms | 25.7 ms | 25.6 ms | 25.7 ms | 1.34× |
+
+- On ten X925 the step's kernels (gradient and optimizer) are 1 312.3 ms
+  against 690.5 ms, 1.90×.
+- D166's calls were 1.63× on the forward pass and 1.67× on the step. The
+  forward pass's host is negligible on both sides. On the step, D166's
+  calls less these kernels leave about 30 ms to the native host and about
+  110 ms to the C program's. So the kernels' gap on the step is wider than
+  the calls'.
+
+**Where the gap is** (NB1, the report's tables; four fifths of each gap named
+there):
+- *The forward pass on ten X925.*
+  - The three register-tiled products with their bias (`dot+add`, 36
+    launches) take 224.2 ms against 132.9 ms: 70.7 % of the gap, at 1.65× to
+    1.74× each.
+  - The masked softmax takes 45.2 ms against 20.5 ms: 19.1 %, at 2.20×.
+  - The attention's two `ein` take 6.0 %.
+- *The gradient on ten X925.* The gap is spread over five kinds:
+  - `sum_to`: 102 launches, 4.48×, 23.4 %. One signature is 4.87× and
+    17.3 % alone: the sum over `model` of each position's 384 elements,
+    `%2[i2, i3] = (%2[i2, i3] + %0[i2, i3, i4])` in its innermost loop.
+  - `ein`: 22.2 %, of which the attention's `ein[batch, heads, seq2, hd]`
+    is 4.35× and 19.1 %.
+  - `dot_vjp_l`: 16.0 % at 1.73×.
+  - `dot+add`: 14.9 % at 1.70×.
+  - `dot_vjp_r`: 12.0 % at 1.54×.
+  - Simple kernels are 4.4–7.5× GCC's: `zeros` 6.7×, `mean_vjp` 7.5×,
+    `embed_vjp` 4.4×.
+- *The optimizer on ten X925.* The product by the learning rate (`mul` by a
+  scalar) is 2.8× and the whole of the gap. The fused update is 1.04×.
+
+**Why, where the measurement says it.**
+- *GCC vectorizes what the plan leaves scalar.* The plans give one lane to
+  every nest that is not a tiled contraction: 19 of the forward pass's 23
+  nests, 64 of the gradient's 75, and all 11 of the optimizer's. GCC 13
+  vectorizes at `-O2` (its cheap cost model). The optimizer's `kernels.c`
+  declares no vector type, yet its GCC build holds 126 four-lane `fmul`.
+  Lanes across independent outputs change no bit (0.6.0, H8). This is the
+  candidate for the simple kernels' 2.5–7.5×, to check in step 2.
+- *A sum into the output's element in memory.* `sum_to`'s innermost loop
+  adds into `%2[i2, i3]`, which does not move in that loop. The kernel loads
+  and stores it at every step, and Cranelift moves no memory access out of a
+  loop. GCC can keep it in a register for the loop, as `-O2`'s store motion
+  does, with the same additions in the same order. That is the candidate for
+  its 4.5–4.9×.
+- *The tiled products* are 1.26× on one core and 1.65–1.74× on ten.
+  - The plan's lanes and tile are in both programs.
+  - What differs is the code generator: no unrolling, and an address
+    recomputed at every access (the plan's §2).
+  - The gap widens on ten cores, which share the memory system.
+  - clang's build of the same C is 1.40× faster than GCC's on these
+    kernels on one core (1 195 against 1 671 ms).
+- *The softmax* is 3.35× on one core and 2.20× on ten. It calls `exp`
+  per element. Natively the call goes through a function pointer to the
+  `libm` crate; in the C program it goes to `presk_libm.c`'s `expf`. Not
+  separated yet.
+- *The attention's gradient `ein`*, the softmax's cotangent against the
+  values, is 5.89× on one core. clang's build is also slow (1 275 against
+  GCC's 325 ms), so GCC does on this nest what clang does not.
+
+**What it says about levels 2 and 3.**
+- *Level 2* starts with the register-tiled contractions (`dot+add`,
+  `dot_vjp_l`, `dot_vjp_r`), which carry 71 % of the forward pass's gap and
+  43 % of the gradient's: the unrolled tile and the reduced addresses.
+  - It also keeps a sum into an output element that its loop does not move
+    in a register for the loop (`sum_to`, the norms' gradients).
+  - It also tries the natural lanes on the plan's one-lane nests where
+    every lane is an independent output, as GCC's `-O2` does on the same C.
+  - The softmax's `exp` call is looked at apart.
+- *Level 3, route (a)* (the plan's question 1): on one core clang's build
+  of the C is 1.32× faster than GCC's on the forward pass and 1.12× on the
+  gradient. It is faster on every kind of kernel but the attention's
+  gradient `ein`, `gelu`, the gradient's fused elementwise kernels and the
+  cross-entropy.
+  - So the LLVM route through the C printer is predicted at or under GCC
+    on these kernels' code.
+  - The ten-thread side of it is the native host and pool, measured in
+    step 3.
+
+NB1 is reported. Nothing of the compiler's output changes:
+- `presk bench --calibrate` without `--plan-only` is as before;
+- X1 does not call `--calibrate`.
+
+## D175 — Plan 0.17.0, step 2 (level 2): the native backend's code generator. Ten changes in `presk-cranelift`, none of which changes an operation or its order (X1 byte-identical to `v0.16.1`'s outputs); Cranelift 0.131 hoisted nothing out of a loop until the loop's header branched to the exit first; the register tile is not unrolled, since its copies spill; a one-lane kernel's lane-wise loops run over lanes, as GCC does. Steering figures on ten X925: the kernels 1.64× → 1.19× GCC's on the forward pass and 1.90× → 1.12× on the step (2026-10-28)
+
+**What changed, and what each change bought.** All in `crates/presk-cranelift`,
+the code generator only. The kernel IR, its text, the plans and the C export
+are unchanged. The figures are the course GPT's kernels under step 1's plans
+(the frozen profile's) on ten X925, by `presk bench --plan-only --calibrate`,
+in three processes, the median (`out/step2-0.17.0/quick.sh`, `quick_adam.sh`).
+They steer the work and none of them is of record: the timings of record are
+step 8's, by D127's protocol (NB2). GCC's columns are D174's.
+
+| Build | Change | Forward | Gradient |
+|---|---|---|---|
+| step 1 | D174, of record | 331.2 ms | 1 297.0 ms |
+| 2a | An output element its loop does not move lives in a variable: loaded before the loop, stored after it (`promotable`). Not for a `bf16` output, which rounds at every store | 332.1 | 1 176.1 |
+| 2b | Addresses in byte strides, the constant terms folded, the terms added in loop order with the innermost last | 317.9 | 1 130.5 |
+| 2c | Innermost loops with a constant bound unrolled by four | 283.6 | 996.9 |
+| 2d | A loop's header branches to the exit first (below) | 259.5 | 951.9 |
+| 2e | The unroll factor is four, two or one, the largest whose registers fit | 246.8 | 890.9 |
+| 2f | No unrolling of a body that calls `libm` | 243.1 | 887.0 |
+| 2g | Natural lanes: a one-lane kernel's lane-wise loops over four (`f32`) or two (`f64`) lanes (`src/lanes.rs`) | 243.3 | 785.9 |
+| 2h | Loads of an input that may move: `readonly`, `notrap`, `can_move` | 239.7 | 778.1 |
+| 2i | The same for loop variables a `SetL` gives affine values | 239.2 | 775.6 |
+| 2j | Natural lanes read the output where they store it | 240.8 | 764.4 |
+| GCC `-O2` | D174 | 202.1 | 678.0 |
+
+The optimizer `adamw.step` goes from 15.2 ms to 12.1 ms (GCC 12.5 ms). The step
+(gradient and optimizer) goes from 1 312.3 ms to 776.5 ms, against GCC's
+690.5 ms: 1.12×. The forward pass is at 1.19×. Every total's spread over its
+three processes is within 2.7 %.
+
+The commits are presk `bd14dfa` (2a–2c, committed together as work in
+progress), `332cb29` (2d), `6b16ee3` (2e), `f943efc` (2f), `8eb274b` (2g),
+`1f6a327` (2h and 2i) and `e33dc7a` (2j). `e33dc7a`'s message gives
+`sum_to` as 41.1 ms after the change. The measurement is 38.6 ms (49.7 ms
+before, GCC 41.5 ms); the message was written before the figure was read,
+and it is corrected here rather than by rewriting the pushed commit.
+
+**Cranelift 0.131 hoisted nothing out of a loop.** Its egraph elaborator
+hoists a value out of the loops whose blocks do not define its arguments. It
+knows which loops enclose a block from a stack, pushed when it reaches a
+loop header and popped when it reaches a block outside the loop. It walks the
+dominator tree, and a header's children come in reverse postorder. The
+depth-first search behind that order visits a branch's first target first.
+So with `brif c, body, exit`, the exit is the earlier child in reverse
+postorder. The elaborator then visits the exit before the body and pops the
+loop, and nothing pushes it again for the body. The stack is empty in every
+loop body, and every invariant computation stays in the innermost loop.
+- Found on the tile, whose inner loop recomputed `i0·393216 + in0` and
+  every other address term at each step.
+- Reproduced on a two-loop function in a scratch crate against
+  `cranelift-codegen` 0.131.3 with `trace-log`: the block of the inner
+  body sees the loop stack `[]`.
+- `brif c', exit, body` with the comparison inverted makes the
+  elaborator visit the body first. The egraph's `elaborate_licm_hoist`
+  goes from 0–4 a kernel to 20–50.
+- The header's two branches are `b.ge` to the exit and a fall-through,
+  as before.
+
+This is a defect of Cranelift, not of presk. Reporting it upstream would be
+an outward step, which is the user's to take.
+
+**The register tile is not unrolled.** The plan's §3 asked for the tile's
+reduction loop unrolled by a factor the plan states. Unrolled by four (2c),
+the 4 × 16 tile spilled eleven accumulators at every step. Cranelift keeps
+the loads in program order and computes the pure arithmetic where its result
+is used: the jump back, after all the copies. So every copy's four scalar and
+four vector loads are live together beside the sixteen accumulators, 48
+values for AArch64's 32 registers. Rolled, the tile needs 24.
+- 2e unrolls by the largest factor `f` of four or two for which the carried
+  values, plus `f` times the distinct loads, plus four, fit in 32 (16 off
+  AArch64); otherwise it does not unroll.
+- 2f leaves a body that calls `libm` rolled: a call clobbers the
+  registers not saved across it, so the copies' values lived on the stack
+  (the softmax's `exp` loop, 27 spill accesses).
+- No factor is stated by the plan. Which loops unroll is a property of the
+  machine's registers, decided at code generation, and changes no bit.
+
+**The addresses are not strength-reduced.** The plan's §3 also asked for a
+pointer advanced by its stride at each step. Once Cranelift hoists (2d),
+what is left in the tile's inner loop is one multiply-add for the right
+operand's row, at stride 1 536 bytes. The scalar loads use the register-offset
+form `[x, i, LSL #2]`. The change was not made.
+
+**Natural lanes** (2g, 2j). D174 found 19 of the forward pass's 23 nests and
+64 of the gradient's 75 given one lane by the plan, and GCC vectorizing them at
+`-O2`. A loop runs over lanes when its iterations write different,
+contiguous output elements and share nothing:
+- its variable appears only in an index's last component, as itself plus
+  terms without it;
+- the output is read only at the one index every store of the body uses;
+- each real variable the body assigns is assigned before it is read in each
+  iteration, and is read nowhere outside the loop;
+- what depends on the lane is `+`, `−`, `×` and `÷`, with no condition, no
+  integer variable and no assigned loop variable in the body;
+- it is not the loop a thread split divides, nor one enclosing it, and its
+  bound is a multiple of the lane count.
+
+Everything that does not depend on the lane is broadcast. Each lane does its
+own iteration's operations in their order, so the bits are the scalar
+kernel's (statement H's argument, D42). The rewrite produces the IR's own
+vector form, one statement for each, so the kernel's text and lines are the
+plan's kernel's.
+- 35 of the gradient's 90 compiled kernels take lanes this way.
+- The attention's gradient `ein[batch, heads, seq2, hd]` is the outer loop
+  of a sum over `seq`: 185.5 → 86.2 ms on ten X925, GCC 78.1. That is GCC's
+  own code, which D174 found four times faster than clang's.
+- `sum_to` into one element per column: 49.7 → 38.6 ms, under GCC's
+  41.5 ms.
+- The softmax's last loop selects on the mask, which the rule does not
+  take. It stays at 29.2 ms against GCC's 20.5 on the forward pass.
+
+**Loads that may move** (2h, 2i). A kernel never writes its inputs, and the
+host passes the output apart from them: it is a `&mut Buf` beside `&Buf`s.
+- A load of an input qualifies when its index is affine in loop variables
+  whose values are themselves affine (a `For`'s, or a `SetL`'s of such
+  terms, which is how an interleaved contraction addresses its terms) and
+  it is outside any condition.
+- Its address is then in the buffer wherever those variables have a value,
+  so it is marked `readonly`, `notrap` and `can_move`. Cranelift treats it as
+  pure: it places it at its first use, merges duplicates and hoists it out of
+  the loops it does not depend on, as a C compiler does under `restrict`.
+- A load inside a condition, or at an index read from data, keeps its
+  flags.
+- It bought 1–2 %. The tile still loads each row's scalar and broadcasts
+  it with a `dup`, because its `splat` has four uses. Cranelift sinks a
+  load into `ld1r` only when the load's single use is used once.
+
+**What remains** (2j against GCC, by kind of kernel):
+
+| | native | GCC `-O2` | |
+|---|---|---|---|
+| forward, `dot+add` | 157.4 ms | 132.9 ms | 1.18× |
+| forward, softmax | 29.2 | 20.5 | 1.42× |
+| forward, `ein` | 20.9 | 17.3 | 1.21× |
+| gradient, `dot_vjp_r` | 167.3 | 138.1 | 1.21× |
+| gradient, `dot+add` | 159.0 | 133.0 | 1.20× |
+| gradient, `dot_vjp_l` | 158.9 | 135.1 | 1.18× |
+| gradient, `ein` | 86.4 | 78.1 | 1.11× |
+| gradient, softmax | 29.2 | 21.0 | 1.39× |
+| gradient, `sum_to` | 38.6 | 41.5 | 0.93× |
+
+The tiled products carry 63 % of the forward pass's remaining gap and 91 % of
+the gradient's. Their inner loop has no spill and no address to recompute. It
+broadcasts each of the four rows' scalars with a `dup`: four vector
+instructions in thirty-six at every step. GCC multiplies by a vector element,
+`fmul v, v, v.s[0]`. Cranelift 0.131 has that form only fused, as `fmla` by
+element, and a fused multiply-add changes the bits. That is level 3's to
+close: route (a) prints the same C for clang.
+
+**NB0 on Cranelift.**
+- X1's harness on 2j (`out/x1/step2j-0.17.0`) differs from the baseline
+  (`out/x1/base-0.17.0`, `v0.16.1`'s release build) in the 19 files step
+  0's did, by their version and commit lines alone. Every one of 2a–2j was
+  checked that way.
+- `make c-conformance` passes (C1): `export_c`'s 16 tests and
+  `export_scop`'s 5.
+- `make test` passes: 111 test binaries, no failure. This includes
+  statement H's `the_emitted_vector_kernel_is_bit_identical` and the C
+  backends' bits against the native ones on every layout and split.
+- Two new tests:
+  - `tests/lanes.rs` runs four one-lane kernels natively against the kernel
+    interpreter, bit for bit, in `f32` and `f64`, on one thread and on
+    three. The kernels are the attention gradient's `ein` (also under a
+    split), an elementwise kernel with broadcast scalars, and a `sum_to`.
+    The values include both infinities, a NaN, both zeros and subnormals.
+  - `lanes.rs`'s unit tests cover the loops the rewrite takes and those it
+    refuses: a sum along the lanes' axis, a transposed read, a bound off
+    the lanes, the split loop, a value carried from the previous lane, and
+    the output read at another element.
+
+NB2 is judged at step 8. These figures say it should hold, at 1.19× and 1.12×
+against its 1.3×.
+
+## D176 — Plan 0.17.0, step 3 (level 3): the LLVM backend, `--backend llvm`. Each kernel printed as C by the C export's printer, with the native backend's lanes, compiled by `clang -O3 -mcpu=native`, cached and `dlopen`ed, run on the native backend's host. The native backend's bits everywhere they were compared. Steering figures on ten X925: the kernels 0.997× GCC's on the forward pass and 0.99× on the step (2026-10-28)
+
+**The route.** The user chose route (a) of the plan's question 1 on
+2026-10-28: the C printer through `clang`, not a PSK-Kernel → LLVM IR
+printer. There is no LLVM library on falicon; `make llvm` keeps only
+`clang` and its headers. So the backend drives `clang` as a program.
+
+**What was built.**
+- *`presk-cranelift`*:
+  - a `KernelCompiler` trait and `NativeExec::with_compiler`. The executor
+    compiles its kernels with the given compiler in place of Cranelift, and
+    keeps its host, its pool, the plans' splits and its profiling, so the two
+    backends differ by their kernels' code alone. `KernelFn` is public.
+  - `laned(k)`: D175's natural lanes, public.
+- *`presk-llvm`* (new crate): `LlvmCompiler` compiles each kernel in five
+  steps:
+  1. It takes the kernel with its natural lanes.
+  2. It prints it with `presk_export_c::kernel_fn` and an `entry_fn` of the
+     native convention, after `presk_rt.h`.
+  3. It compiles it with the export's flags at `-O3` (`-std=c11
+     -ffp-contract=off`) plus `-mcpu=native -fPIC`. A kernel that calls a
+     transcendental function is compiled with `presk_libm.c` in its unit;
+     the others link one object of it, built once.
+  4. It links it into a shared library with the system's linker.
+  5. It loads it with `dlopen`, calls `presk_kernel`, and never closes it.
+
+  The cache key is a 64-bit FNV-1a hash of the compiler's version line, the
+  target `-mcpu=native` resolves to (clang's `-###`: `cortex-x925` and its
+  40 features here), the flags and the text. The text is stored beside the
+  library and compared on every hit. A build is written under a name of its
+  own and renamed into place. The directory is `PRESK_LLVM_CACHE`, else
+  `$XDG_CACHE_HOME/presk/llvm`, else `~/.cache/presk/llvm`. The compiler is
+  `PRESK_CLANG`, else `.llvm/bin/clang` of the workspace the crate was built
+  from. `llvm_backend` is the kernel backend on that executor, with the
+  native backend's default lanes.
+- *`presk-driver`*: `BackendKind::Llvm` in `with_backend`;
+  `bench::kernel_times_with` (any executor); `export_c::Options::llvm`.
+- *`presk-cli`*:
+  - `--backend llvm` on `run`, `train` (its `--host-profile` included) and
+    `serve`. It is refused with exit code 1 when the compiler cannot be run,
+    rather than run on another backend than the one asked for.
+  - `presk bench --llvm`: the native rows and `--calibrate` on LLVM, the
+    rows named `llvm …`.
+  - `presk export --target c --llvm` (hidden): the run the C program is
+    recorded from and checked against is the LLVM backend's.
+- *`make llvm-conformance`*: `make c-conformance`'s `export_c` programs, each
+  exported with `--llvm` (`PRESK_C1_LLVM=1`), so that each checks the LLVM
+  backend's bits.
+
+**Why the bits are the native backend's.**
+- The printer is statement C1's: its C computes the native backend's bits
+  under the export's flags.
+- `-O3` and `-mcpu=native` add no licence to reorder or fuse:
+  `-ffp-contract=off` stays and no fast-math flag is given. LLVM's
+  vectorizers do not reassociate a floating-point reduction without one.
+- The natural lanes change no bit (D175).
+- The transcendental functions are the export's, and inlining one changes no
+  operation.
+
+**NB0 for the LLVM backend: the native backend's bits on every comparison.**
+- `presk-llvm/tests/bits.rs`:
+  - the C export's test set (`tests/plan/entries.txt`, 11 entries) in `f64`,
+    `f32` and `bf16`, MiniGPT's also under the mixed realization, on the
+    synthesized parameters and with their zeros drawn, on one worker and on
+    four: 152 runs;
+  - the test set under `tests/plan/default.json`;
+  - the attention under `tests/plan/attention.json`: a tile in lanes, a
+    k-block, packing and a split over ten workers.
+- X1's 188 native runs: U1's 31 entries in three realizations under both
+  `--remat`, and the two runs under a plan. Repeated with `--backend llvm`
+  (`out/x1/x1_llvm.sh`), byte for byte the native runs of `out/x1/step3d`.
+- The course GPT (`out/step3-0.17.0/course_bits.sh`), byte for byte:
+  - its forward pass at B = 16, T = 256 under step 1's plan with the
+    course weights (8.9 MB of printed outputs);
+  - three training steps under D166's step plan: the losses and the
+    checkpoint.
+- `make llvm-conformance` passes, in 4 minutes. That is `export_c`'s 16
+  tests, every program they export (D148 counts 285: 270 in the tests that
+  print a count, beside the integer weights' and the generation loop's),
+  each recorded from and checked against the LLVM backend's run.
+  `c-conformance` checks the same programs against the native backend's
+  (D175), so the two backends give the same bits on every one. The SCoP
+  mode's nests (`export_scop`), checked at point zero against the native
+  backend, are not run on LLVM.
+
+X1 on the version's tree differs from step 2's only by its commit lines,
+and `make test` passes: 114 test binaries, presk-llvm's included.
+
+**What it takes.** The course GPT under step 1's plans on ten X925, three
+processes, the median (`out/step2-0.17.0/quick_llvm.sh`,
+`quick_adam_llvm.sh`; steering figures, those of record are step 8's):
+
+| Build | Change | Forward | Gradient | Optimizer |
+|---|---|---|---|---|
+| 3a | the backend | 208.9 ms | 677.0 ms | 11.96 ms |
+| 3c | `presk_libm.c` in the unit of a kernel that calls it | 205.3 | 672.6 | |
+| 3d | `-mcpu=native` | 201.6 | 672.0 | 11.57 |
+| Cranelift, D175 | level 2 | 240.8 | 764.4 | 12.08 |
+| GCC `-O2` | D174 | 202.1 | 678.0 | 12.5 |
+
+The step's kernels take 683.6 ms on LLVM against GCC's 690.5 ms: 0.99×. The
+forward pass's take 0.997×. By kind on the forward pass:
+- the tiled products are 137.5 against 132.9 ms;
+- the softmax is 15.1 against 20.5 ms, its `expf` inlined;
+- `gelu` is 16.2 against 13.6 ms. clang's `erff` is slower than GCC's (147
+  against 131 ms on one core, D174).
+
+On one core the forward pass's kernels take 1 664 ms on LLVM, where D174
+found 1 658 ms for clang's build of the exported C and 2 182 ms for GCC's.
+Cranelift with level 2 takes 2 038 ms there, under GCC.
+
+**Compiling.** About 40 ms a kernel, serially, on the first use of each:
+- the forward pass's 23 kernels about 1.0 s;
+- the gradient's 90 about 3.9 s.
+
+A cached run compiles nothing.
+
+**Why GCC is not passed on ten cores** (a finding, nothing changed by it).
+clang's code for the 4 × 16 tile is near ideal: multiplications by an
+element, `ld1r`, paired loads, post-incremented addresses, one branch an
+iteration. It is 1.40× faster than GCC's on one core, yet 1.03× slower on
+ten. The pool and the host are not the cause:
+- The tile alone (384 × 384), launched 50 times on the same buffers through
+  `NativeExec` on ten workers, takes 1.85 ms a launch. In the course GPT's
+  forward pass it takes 1.854 ms a launch, against 1.785 ms in GCC's
+  program.
+- A call's host, by `--host-profile`, has no page fault and spends 0.27 ms
+  starting and joining threads.
+- Pinning the workers to cores made it slower (324 against 270 ms with
+  GCC's kernels).
+
+GCC's kernels compiled one by one through the backend, an experiment by
+`PRESK_CLANG`, take 270 ms on the forward pass against 202 ms in the
+exported program. On one core they take the program's time. So GCC's code
+for the tile depends on its context, as D97 found. On ten cores the tile is
+bound by the memory system more than by its instructions.
+
+**Not done.**
+- presk-specs `implementation/presk-tooling.md`'s LLVM section is to name
+  the backend among the release's uses. The plan gives presk-specs three
+  merge requests, so it goes with step 9's documents.
+- Level 4 is not in the version (plan §12).
+
+**NB3** is judged at step 8 on whole calls by D127's protocol. The kernels
+are at 0.997× on the forward pass, and the native host adds about 2.8 ms a
+forward call (`--host-profile`): the forward pass may fall short of the C
+program by about 1 %. The step has the margin of the C program's host,
+about 110 ms (D174).
+
+## D177 — Plan 0.17.0, step 4: one menu. `presk solve --menu f64,f32,bf16,int8,int4` offers a parameter of rank two or more `int8` and `int4`, under `absmax` and `pow2`, in the solve itself, priced at rest as its float types are (`s · max |ŵ − w|`, D155's form) and scaled along the axis its readers contract. Without integer rungs nothing moves (QM0 holds). On the trained GPT at 10⁻³ the default solve proposes no integer, every `int8` term being about the budget; with `--narrow measured` it reaches 4.37× (2026-10-28)
+
+**The decision.** The plan's §4, with the user's answers of 2026-10-28 to
+its questions 2 and 3: the integer rung's term in D155's form, and the one
+menu behind `--menu` with the default menu unchanged.
+
+**What was built.**
+- *`presk-precision`* (`solve.rs`):
+  - `Rung`: `Float(Dtype)` or `Int { bits, scheme }`. Its name is its
+    float type's, or the realization's `quant` name (`int8`, `int4/pow2`).
+    A machine prices an integer rung as the `f32` it is read in, at its own
+    bytes.
+  - `Menu(floats, ints)`, with `Menu::parse` for `--menu`: the floats
+    widest first and the integers `int8` before `int4`, `absmax` before
+    `pow2`, whatever the order written; a menu needs a float type.
+  - `IntRung`: a parameter's rung priced at rest, its scale's axis (and
+    whether its readers contract it), `max |ŵ − w|` and its bytes.
+    `ParamSite::ints` carries them.
+  - The decisions are `Vec<Rung>`. Each decision's rungs are the menu's
+    floats, and for a parameter the menu's integers it is priced in. The
+    proposal ranks every rung of every value in one list. The widening, the
+    narrowing step and early stopping move one rung at a time. Of two rungs
+    of the same bytes they take the one of the smaller term. The
+    exhaustive search runs over the product of the values' rung counts.
+  - A parameter's term in integers is the larger of `s · max |ŵ − w|` and
+    its narrowest reader's rounding of it, `s · r(d)`. The dequantized
+    `f32` is rounded again only by a nest narrower than `f32`.
+  - An integer decision is written in the realization's `quant` map.
+    `breakdown` reads a `quant` entry only where the solver priced it, so a
+    `--quant` realization's breakdown is the float solve's, as before.
+    `SiteCost` carries the rung, the integer pricing and the bytes at rest;
+    `Move` carries rungs.
+  - `contracted_axes(core, entry)`: the axis every reader of each
+    parameter contracts, counted from the end. A `·`'s left operand
+    contracts its last axis, its right operand its first, an `ein`
+    operand the one label the output drops. A path is named only when
+    every reader of each field site reading it is one of those, along the
+    same axis. A gather, an elementwise reader, a call, a returned field
+    or two axes leave it out, and its integers scale along −2, as
+    `--quant` scales every matrix.
+- *`presk-driver`*:
+  - `SolveArgs::menu`.
+  - The parameters' integer rungs. A parameter of rank two or more as
+    declared is quantized over its axis in each of the menu's rungs, and
+    its largest move and its bytes (`QTensor::bytes`) are taken.
+  - `Solved::menu` and `params`.
+  - The line `parameters` counts the integers. A line `menu` names the
+    rungs and how many parameters are priced, and along which axis. With
+    `--sites`, a table gives each parameter's terms at rest per rung.
+- *`presk-explain`*: `Options::menu`. An integer decision's reason gives
+  its rung, its bytes and its scale's axis, and the term's formula is `s ·
+  max |v̂ − v|`. A parameter in integers has their name for a type in
+  `explain.json`, as the table of parameters already showed.
+- *`presk-cli`*: `--menu` on `solve`, and on `explain` with `--budget`. A
+  menu without a float type or with an unknown rung is refused (exit 2),
+  and so is `--quant` with `--menu`'s integers.
+
+**Choices the plan left open.**
+1. *A parameter read by a nest narrower than `f32`*: the term is the
+   larger of the two moves, not their sum. It is the float rule's form,
+   which charges the narrowest rounding, not the sum of the rounding at
+   rest and at the edge.
+2. *Two rungs of the same bytes* (`int8` under `absmax` and under `pow2`)
+   are never both taken. The one of the smaller move is the step's, and
+   the proposal ranks both and takes the first that fits. On the
+   tutorial's tower `int4/pow2` is the smaller move (5.875·10⁻² against
+   6.01·10⁻²), so `pow2` is not dominated in general.
+3. *Rule 2's `forgone`* counts a parameter's narrowest rung, its `int4`
+   when it has one: what the rule can cost.
+4. *Small matrices*: the scales are counted. The tutorial's 4 × 4 matrix
+   in three layers stores as many bytes in `int8` as in `bf16` (48 + 48),
+   and the solver prices them so.
+
+**QM0 holds**, on step 4's release builds (`out/x1/step4-checks.sh`,
+`out/bin/presk-0.17.0-step4a` at `39e85e1`, and X1 again on `step4b` at
+`5f4463f`) against step 0's baseline (`out/x1/base-0.17.0`, `v0.16.1`'s
+build):
+- X1's 863 outputs: 19 files differ, the exported C programs' version
+  and commit lines alone, as at steps 2 and 3. X1's solves, `--quant`
+  among them, are byte for byte `v0.16.1`'s.
+- `make quant-table` and `make step-table` (`REMAT=store`): byte for byte.
+  Their logs differ by one calibration's time.
+- `make tutorial`: its measurements alone, a verdict among them (`holds`
+  against `fails` for a layout ranked by measured times).
+- `make precision`'s solve (the course GPT at D = 64 on `out/gpt_env.json`
+  at 10⁻³ with the trained weights), under `v0.16.1` and step 4: the
+  realization and the output byte for byte; so with `--quant`, and with
+  `--menu f64,f32,bf16`.
+- `make test` passes: 115 test binaries. Among them
+  `presk-precision/tests/menu.rs`, nine tests: the menu's parsing; QM0 in
+  the solver (a parameter priced in integers under the float menu solves
+  as one not priced, move for move, through widening and narrowing); the
+  proposal taking `int8` before `bf16`; the term with a reader; rule 2 on
+  either side of θ·B; the widening and the narrowing one rung at a time;
+  the exhaustive search over 21 states, which the greedy proposal matches
+  at four budgets; `contracted_axes` on a program with a right and a left
+  operand, an `ein`, a gathered table and a tied one. Also the driver's
+  `one_menu_offers_the_matrices_their_integers`, on the tutorial's
+  tower, measured inside its budget.
+
+**What the one menu does on the trained GPT** (steering, not of record:
+`make precision`'s envelope, the course GPT at D = 64 with `make
+gpt-trained`'s weights, at 10⁻³ relative, 2.805·10⁻³ absolute;
+`out/step4-0.17.0/`):
+
+| solve | the nine matrices | traffic ratio | measured |
+|---|---|---|---|
+| floats (`make precision`'s) | `f32` | 2.01× | 3.55·10⁻⁶ |
+| `--quant`, two passes | `int4` | 2.28× | 2.17·10⁻³ |
+| `--menu …,int8,int4` | `f32` | 2.01× | 3.55·10⁻⁶ |
+| floats, `--narrow measured` | `bf16` | 3.96× | 2.66·10⁻⁴ |
+| `--quant --narrow measured` | `int4` | 4.39× | 2.27·10⁻³ |
+| `--menu …,int8,int4 --narrow measured` | seven `int4`, two `int8` | 4.37× | 2.85·10⁻⁴ |
+| the same, `--margin 1` | `int4` | 4.39× | 2.27·10⁻³ |
+
+The two-pass solves' ratios are computed: the float solve's traffic, less
+the nine matrices' float bytes, plus their integers' (`presk solve` prints
+the two apart). The one menu's are printed. Of the 19 stored values
+offered, 18 are `f32` and one `bf16` in the first three rows, and all 19
+are `bf16` in the last four.
+
+The default one menu takes no integer, and the cause is the term. Each
+matrix's `int8` term at rest, `s · max |ŵ − w|`, is 2.7·10⁻³ to 7.0·10⁻³
+(`--sites`' table), about the whole budget. The floats spend 2.02·10⁻³ of
+it first, their `f32` terms being 0 on these weights (the checkpoint's
+values are `f32`'s). The nine `int4` terms sum to 0.80, 368 times the gap
+measured with all nine in `int4` (2.17·10⁻³). The plan put D155's form at
+the same order of pessimism as the float estimate's, about 700 times
+(D124). It is, so the greedy order compares like with like. But the
+proposal can only spend the budget the estimate states, and the
+measurement, under the default solve, only widens. The two-pass solve
+prices its integers with `√Σ (g·δ)²`, within a factor of two of the
+measurement (D49), against the whole budget.
+
+With the narrowing step (D155), the measurement narrows what the estimate
+left wide, one rung a pass. The one menu then passes every float solve
+(4.37× against 3.96×). It keeps two matrices in `int8`, since the
+narrowing keeps a step only under the budget over the margin, 1.12·10⁻³,
+while the two-pass solve's second pass spends the whole budget. Under
+`--margin 1` the one menu reaches its relaxation floor, 4.39×. It finds
+the two-pass solve's realization, at the same measured gap.
+
+**For QM2** (step 8: the one menu's traffic ratio at least the two-pass
+solve's on V6, the course logits at ε\* and BERT-large's two blocks): on
+this row it would fail at the defaults (2.01× against 2.28×) and under
+`--narrow measured` (4.37× against 4.39×), and hold under `--narrow
+measured --margin 1` (4.39× on both). The statement does not say under
+which options the solves run, and it was fixed before the work. Judging
+it is step 8's. Choosing the options is the user's. Step 4 changes
+neither.
+
+**Decided by the user, 2026-10-28** ("I follow your recommendation", on
+!146): QM2 is judged as fixed, under the solver's defaults. The two
+solves' traffic ratios under `--narrow measured`, and under `--narrow
+measured --margin 1`, are reported beside it at step 8, not instead of
+it. The plan says so from its draft v0.3 (presk-specs `c67e0fb`, !102).
+
+## D178 — Plan 0.17.0, step 5: the training step budgeted per stored value, `presk solve --step --grain value`. D52's method at a value's grain: inside its budget at 10⁻³ by measurement, but predicted 0.11 % slower than J′'s realization by function (TS1's second half fails), and 0.01 % slower than J′ with the optimizer's state kept wide, which is in its space. TS0 holds (2026-10-28)
+
+**The decision.** The plan's §5, with the user's answer of 2026-10-28 to
+its question 6: the step's master weights and moments keep the default
+type. The method is D52's at a stored value's grain, since a first-order
+sensitivity of the update would need a second derivative.
+
+**What was built.**
+- *`presk-precision`* (`solve.rs`):
+  - `Grain`: `Function`, D52's and the default, or `Value`.
+  - `step_value_groups(env, menu, machine, roles, offered)`: one group
+    per stored value the caller offers, of more than one element (rule 1).
+    A value is priced with the members fused into it, which are computed
+    in its type.
+  - `solve_step_with(…, grain)`. Every value is measured alone in `f32` and
+    in `bf16`. The values are narrowed greedily by predicted time saved per
+    unit of isolated gap, under the root-sum-square of the isolated gaps.
+    The combination is measured, and the largest isolated gap is widened
+    until the combination fits. `by_value` writes the values in `storage`.
+    `solve_step` is `solve_step_with(…, Grain::Function)`, unchanged.
+  - `step_time(env, machine, roles, r)`, the step's predicted time by
+    role. A stored value costs its type, a value that follows others the
+    narrowest of theirs, and a carried value nothing, since it is another
+    site's. D52's `step_cost` prices every site of a function at the
+    function's type, carried values included, and cannot price a
+    realization of stored values. `step_time` is the one model both grains
+    are compared in. On a uniform realization it is `step_cost` less the
+    carried values (a test).
+- *`presk-train`*: `state_sites(core, fns)`, the components of the
+  optimizer's result, followed through its tuples and records: `θ′`, `m′`
+  and `v′` (`adamw.step/%58`, `%31` and `%35` on the course GPT).
+- *`presk-cli`*:
+  - `presk solve --step --grain function|value` (`function` the default,
+    its output unchanged). The value grain offers the step's stored values,
+    but its state: `Roles::of` on the step's program, so neither a carried
+    value nor a fused member is offered (D112). It prints a row per function
+    (the values offered, the types chosen), the cost over the values
+    offered, and the step's predicted time by role.
+  - `presk calibrate --step --realize …`, when a realization types stored
+    values, also prints every realization asked priced by role. D52's
+    column is unchanged.
+
+**`presk train --realize` applies a reverse sweep's stored values**
+(`presk-train/tests/step.rs`, `the_step_s_sites_are_the_training_loop_s`,
+the plan's first check). Under both `--remat`, every stored value the
+step's measurement runs is a site the loop runs, directly (the callees'
+`.fwd`, `.bwd` or `.vjp`, and `adamw.step`) or as `plan_for_loop` carries
+the `.vjp`'s own sites to the `.value_vjp`. Nothing had to be added. One
+site is carried and not run, the `.vjp`'s result tuple, whose number
+`.value_vjp` gives a value it computes after the reverse sweep. As a
+carried value it is no stored value, and the solver does not offer it.
+
+**What it offers on the course GPT at D = 64** (`out/step_env.json`, 524
+sites in 21 functions): 172 stored values. The other sites are values of
+one element, carried values, fused members, and the optimizer's state. In
+`adamw.step` one value is offered, the clipped gradient (`%20`). The rest
+of its elementwise chain is fused into `θ′`, `m′` and `v′`, so keeping
+the state wide keeps the optimizer's arithmetic wide.
+
+**TS0 holds** (`out/x1/step5-checks.sh`, `out/step5-0.17.0/solve2.sh`):
+- `presk solve --step` at 10⁻³ and 10⁻² (J′'s solver), under `v0.16.1`
+  and step 5, without `--grain` and with `--grain function`: the
+  realizations and the outputs byte for byte.
+- `make step-table` (`REMAT=store`): byte for byte. Its log differs by one
+  calibration's time.
+- X1's 863 outputs, its training runs among them, on `step5a` (`5fa0094`)
+  and `step5b` (`845558c`): 19 files differ, by the exported C's version
+  and commit lines alone.
+
+**TS1** (the per-value solve at 10⁻³ on the update at D = 64,
+`out/step5-0.17.0/`; the profile `out/gpt_prof.json`, J′'s):
+
+| realization | update gap | predicted s, by role | D52's column |
+|---|---|---|---|
+| all-`f64` | 6.8·10⁻¹³ | 5.7245·10⁻³ | 2.6667·10⁻² |
+| J′, by function at 10⁻³ (all 21 functions `f32`) | 3.001·10⁻⁴ | 5.6728·10⁻³ | 2.6386·10⁻² |
+| J′ with `θ′`, `m′`, `v′` in `f64` | 2.978·10⁻⁴ | 5.6784·10⁻³ | — |
+| by value at 10⁻³ (158 `f32`, 13 `bf16`, 1 `f64`) | 9.638·10⁻⁴ | 5.6790·10⁻³ | — |
+
+The solve took 345 native steps, in 1 min 37 s.
+- *Inside by measurement*: it holds, at 9.64·10⁻⁴ against 10⁻³, without
+  widening.
+- *No slower by prediction than the per-function realization*: it fails,
+  by 0.11 %.
+  - J′ is not in the per-value space. Its `adamw.step` in `f32` narrows
+    `θ′`, `m′`, `v′` and the chain fused into them, which question 6
+    keeps wide.
+  - Against J′ with its state kept wide, which is in the space, the
+    per-value realization is still 0.01 % slower, with a measured gap
+    three times larger.
+- *Where the two differ.* The estimate is not pessimistic at this
+  grain. With every value in `f32`, the isolated gaps' root-sum-square
+  is 3.57·10⁻⁴, and the realization measures 2.98·10⁻⁴.
+  - The per-value realization differs from J′ with its state wide by 13
+    values in `bf16` and one in `f64`.
+  - Nine of the `bf16` values are exact in `bf16`: their isolated gap is
+    the `f64` floor, 6.78·10⁻¹³.
+  - Two values of `LayerNorm.apply.bwd`, of 64 elements each, take
+    `bf16` at isolated gaps of 6.7·10⁻⁴ and 6.4·10⁻⁴. After them
+    `SelfAttention.apply.bwd/%40`'s `f32` move (2.0·10⁻⁴) no longer fits,
+    and it stays in `f64`.
+  - D52's order ranks a move by time saved per unit of its gap, while
+    under the root-sum-square a move's marginal cost is its gap squared.
+    Ranking by saved time per gap squared was tried at the value grain (an
+    experiment, not kept): no value stays in `f64` and 15 take `bf16`,
+    measured 8.68·10⁻⁴, predicted 5.6793·10⁻³ s. That is no faster: by
+    role, on this profile, the `bf16` values cost about what they save.
+- *The model's resolution.* The profile predicts at most 1.01× over
+  all-`f64` for any realization at D = 64. Both differences are under
+  that, so the predicted time does not tell the two apart.
+
+  J′'s 1.75× was measured at course scale (D127). TS2, the per-value
+  realization timed at course scale by D127's protocol, is step 8's.
+
+**The conversions** (TS3, reported at step 8). The plan wrote of "the
+kernels that only convert between a narrowed value and a wider reader".
+The kernel backend has none: its host converts a launch's inputs to the
+kernel's type at the edge (`host.rs`, `Phase::Convert`). `presk train
+--host-profile` prints that phase a step, `buffers.convert`, with its time
+and count. Step 8 reads TS3 there under H6's realization, J′'s and the
+per-value one, at D = 64 and at course scale. No new code was needed.
+
+**The output.** A row per value, with its elements, its cost in `f64`,
+its isolated gaps and its type, and the estimate of every value in `f32`
+(`7df11e3`). Rerun on that build, the solve gives the same realization.
+
+**`make test` passes**, on `845558c`: 115 test binaries. Among them
+`presk-train/tests/step.rs`'s two new tests: the sites, and the value
+solver inside its budget, its realization trained by `presk train`, a
+value priced with its members, `step_time` against `step_cost`.
+
+## D179 — Plan 0.17.0, step 6: the language. A slice that keeps its axis, `e[a: lo..hi]`, `concat(axis a, x, y)`, `max`, `min` and `clamp`, through every stage, as presk-specs !103 states them (the reference at draft v0.25). RoPE runs with the same bits on the three compiled executors, and `coverage/llama.psk` takes it and checks with no substitution. Every `concat` is a copy: on the RoPE attention it is 1.6 % of the kernels' time, and the placement is not taken (2026-10-28)
+
+**The decision.** The specification's side came first, as plan §8 asks:
+presk-specs !103 (branch `language-0.17.0`, stacked on the plan's !102).
+- Reference chapters 1, 2, 3, 5 and 6 state the slice selector `e[a:
+  lo..hi]` (rule E-Slice, the token `..`), `concat`, `max`, `min` and
+  `clamp`.
+- They close the compiler's questions 79 and 80, and W1 in part.
+- The examples are `rope/` and `concat/`.
+
+The choices this step made in the reference, each recorded there:
+- **The derivative at a tie.** `max` and `min` give the whole derivative
+  to their second operand: `∂ₓ max = [x > y]`, `∂ᵧ max = [x ≤ y]`.
+  - This is the only convention under which `max(x, 0)` has `relu`'s
+    derivative everywhere, 0 at 0.
+  - It makes `clamp`'s derivative 0 at both bounds.
+  - It is in the reference's conventions table.
+- **The adjoint's term.** The adjoint of `max x1, x2` is written with
+  `heaviside(sub x1, x2)`, so no new primitive is needed. The difference
+  is read for its sign alone, and with subnormals `x ⊖ y = 0` exactly when
+  `x = y`.
+- **`clamp`** is `min(max(x, lo), hi)`, and lowers that way.
+- **`concat`** is of real tensors, as the specification signs it. A slice
+  is of real and of index tensors, as a selection is. There is no implicit
+  unit axis: the slice gives one.
+
+**What was built.**
+- **`presk-syntax`.** The token `..` (`Op::DotDot`). `IndexSel::Slice {
+  axis, lo, hi }` covers both forms, by name and by position.
+- **`presk-types`.**
+  - **Builtins.** `concat`, `max`, `min` and `clamp` leave
+    `NOT_IMPLEMENTED`, which now holds `vjp` and `jvp` alone.
+  - **`concat`'s check.** The operands must carry the axis (`E2008`, with
+    a note and a help pointing to the slice) and agree on every other axis
+    (`E2003`, then the unification).
+  - **E-Slice.** The bounds go through `dim_of_expr` (`E1007` for a bound
+    that is not a dimension), and `entails` decides `0 ≤ lo ≤ hi ≤ len` on
+    the facts. A new code, `E2014`, names the inequality that fails, with
+    its counterexample.
+  - **Lowering aid.** `TypedProgram::clamp_inner` records the type of
+    `max(x, lo)`, which `clamp` lowers through.
+- **`presk-core`.**
+  - **Primitives.** `PrimOp::Max`, `Min`, `Slice { axis, lo, hi }` (the
+    bounds a `DimExpr`), `SliceVjp` and `Concat { axis }`. `max` and `min`
+    are elementwise, so they join fusion groups. A group counts each of
+    their operands twice, since the kernel writes it twice.
+  - **Adjoints.** As above. A `concat`'s adjoint is two slices of the
+    cotangent; a slice's is `slice_vjp`. The adjoint of `slice_vjp` is not
+    stated, as `scatter_index`'s is not.
+  - **Regularity.** `max` and `min` are `C⁰⁺`.
+  - **Printing.** `pretty` prints a slice's bounds with the program's
+    names (`slice seq: 0..T`).
+- **`presk-interp`.**
+  - `max` and `min` compare (`Real::cmp`) and select, the second operand
+    at a tie.
+  - `slice`, `slice_vjp` and `concat` move elements.
+- **`presk-kernel`.**
+  - **`max` and `min`** are `select(x > y, x, y)` and `select(x < y, x,
+    y)`, in a nest of their own and in a fused group (`binary_expr`).
+    Every backend thus gives one bit pattern, a zero's sign included.
+  - **Copy kernels.** A slice is a copy kernel, of a real and of an index
+    tensor. `slice_vjp` is zeros and a copy. A `concat` is two nests, each
+    operand's elements stored once.
+  - **The bounds of a launch.** The host resolves a slice's bounds under
+    the call's dimensions before it launches (`host::prim_on`), so a
+    kernel's cache key, which prints the primitive, carries numbers. Two
+    calls whose shapes agree and whose bounds differ never share a
+    compiled kernel.
+  - **The other backends** needed nothing: the native backend, the C
+    printer and the LLVM backend compile the kernels' IR as it is, and the
+    C export's recorder consumes the host's launches.
+- **`presk-precision`.** A slice and a `concat` carry their operands'
+  error, `slice_vjp` its cotangent's, and `max` and `min` the larger of
+  their operands'.
+- **`presk-opt`.** The costs: `max` and `min` elementwise, a slice
+  structural, `concat` and `slice_vjp` a copy. The optimizer has none of
+  the rules of a slice and a concatenation that the reference's chapter 5
+  states (its Status, at step 9).
+- **`presk-export-pytorch`.**
+  - A slice is Python's, which keeps its axis. Under an open prefix the
+    index starts with `...` and keeps every selector.
+  - `concat` is `torch.cat`.
+  - `max` and `min` are `torch.where(a > b, a, b)` and `torch.where(a < b,
+    a, b)`, so that a tie and its gradient go to the second operand.
+    `torch.maximum` would split a tie's gradient in two.
+  - `clamp` is two of them, through temporaries.
+  - **Four fixes the examples needed:**
+    - A closed operand against an open one is aligned by name, its missing
+      axes inserted from the right.
+    - A dimension is bound from an axis of length `X + c`.
+    - A top-level function takes by keyword the file's dimensions its
+      arguments do not give (`angles(ω, *, T)`), and its callers pass them.
+    - A dimension written in the source prints a quotient as `//`.
+  - **A latent defect** of the conformance test: it made its tensors in
+    `float64` but left PyTorch's default type at `float32`. A tensor the
+    model makes itself, `real(positions(…))`, was then `float32`: the RoPE
+    angles missed by 10⁻⁷. The test now sets the default type.
+- **`presk-print-math`.** The slice, `concat`, `max` and `min` in chapter 3's
+  notation. `clamp` prints as `min (max x, lo), hi`. Adjoint rules are
+  written for `explain`'s page.
+
+**RW1** holds:
+- **The examples.** `examples/rope/` (`attention2`, `attention3`) and
+  `examples/concat/` (`loss`, `loss_grad`) check, and give the same bytes
+  at 17 digits on the kernel interpreter, the native backend and the LLVM
+  backend. That holds in `f64`, `f32` and `bf16`.
+  - The reference interpreter at 256 bits is within 10⁻¹⁵ of the native
+    `f64` on the rope entries, and within 1.1·10⁻¹⁹ on `loss_grad`.
+  - Their golden runs are snapshots (`presk-interp/tests/run.rs`).
+- **The test set.** The four entries join `tests/plan/entries.txt`, so
+  every test that reads it covers them: C1 and C2 in the three types,
+  with their zeros drawn and with typed parameters, the SCoP mode, the LLVM
+  backend's bits, the memory counts, the provenance and the network
+  diagrams. `make plan-check` gives the same kernels with and without the
+  default plan on all fifteen entries. `make c-conformance` passes (16
+  and 5 tests). Its matrix's 349 rows are "ok same", with the four new
+  entries' rows among them: in the three types, with and without the
+  default plan, with their zeros drawn, and with typed parameters (C1, C2
+  and M1).
+- **AD.** The harness checks the gradients of `concat`, of slices and of
+  `max`, `min` and `clamp` away from their kinks, on
+  `tests/data/concat_grad.psk`: central differences at 512 bits, `h =
+  2⁻¹²⁰`, within 2⁻¹⁰⁰.
+  - The 12 parameters' gradients agree with finite differences.
+  - Some elements are zero (unselected, or clamped) and others are not.
+- **The conformance tables** of the kernel interpreter, the native backend
+  and the C printer gain six cases: `max`, `min` with a broadcast, two
+  slices (of a real and of an index tensor), `slice_vjp` and `concat`. The
+  C printer's run gives 846 runs on 47 cases, bit-identical, and 3 240 on
+  integer weights.
+- **`coverage/llama.psk`** takes RoPE in Hugging Face's pairing (plan
+  §10) and drops its learned table, and checks with no substitution.
+  - The queries and keys are projected by `ein` with the heads before the
+    positions, where `rope` wants `seq`.
+  - The tiny decoder's loss is 4.6229402116672085 at 128 bits and
+    …089 natively and on LLVM in `f64`.
+- **The PyTorch export** of `rope.psk` (`attention3`) and `concat.psk`
+  (`loss`, `loss_grad`) passes its conformance test against the
+  interpreter at 256 bits (rtol 10⁻⁹), and so does `mlp.psk`'s, as
+  before. `make export-examples` exports both.
+
+**RW0** (its part at this step; the container's is step 7's):
+- **X1** (`out/x1/step6-checks.sh`, the release build of `32ab986` against
+  `base-0.17.0`) runs and 64 files differ:
+  - 19 by the exported C's version and commit lines, as at every step;
+  - one, the PyTorch conformance test of `mlp.psk`, by the line that sets
+    the default type (above), a fix and not a moved number;
+  - 44 are the outputs of `coverage/llama.psk`, whose program changed by
+    design (plan §6: it "takes RoPE and drops its learned positions").
+
+  Every other output is byte-identical.
+- **`make check-examples` and `make coverage`.** On the programs the
+  baseline has, they give its outputs, but for `llama.psk`'s lines. The
+  two new examples add their own.
+- **`make plan-check`.** The same kernels with and without the default
+  plan, on the fifteen entries.
+- **`make c-conformance`** passes (RW1, above).
+- **The coverage target's `| head -12`** now cuts a longer summary of
+  `llama.psk` (48 lines), and the binary reports the closed pipe on
+  stderr. The command's status is `head`'s, 0.
+
+**The concatenation, measured** (plan §6: "the choice measured once").
+Every `concat` is a copy kernel, and
+every slice one too.
+- **The measurement.** The reference allows a placement, each operand's
+  nest writing into its part of the result (chapter 6, *Concatenation*).
+  The plan asks for the choice to be measured once. `presk bench
+  --calibrate` times the kernels of the RoPE attention of
+  `examples/rope/rope.psk` at the course GPT's width (`H = 6`, `HD = 64`,
+  `D = 384`, `B = 16`, `T = 256`; `out/step6-0.17.0/concat_share.sh`) on
+  ten X925, in three processes of five calls. The median process:
+
+  | | per call | share of the kernels |
+  |---|---|---|
+  | the kernels, all | 125.2 ms | 100 % |
+  | the two `concat`s (queries, keys) | 2.02 ms | 1.61 % |
+  | the four slices | 1.35 ms | 1.08 % |
+  | RoPE whole (slices, `cos`, `sin`, the rotations' groups, `concat`s) | 4.98 ms | 3.98 % |
+
+  The three processes give 1.58, 1.61 and 1.78 % for the `concat`s.
+- **The choice.** A placement saves at most the copy, 1.6 % of an
+  attention layer's kernels, and less of a block's. It would make the two
+  operand groups write strided halves of one buffer, and the kernel model
+  has every kernel write its own whole output. So the placement is not
+  taken, and the reference's Status will say so at step 9.
+- **What would pay more.** Fusing the slices and the `concat` into the
+  rotation's elementwise groups, one kernel reading `x` at offsets and
+  writing `y`, would save the four slices too (2.7 % in all). That is a
+  group of a new kind (question 77's neighbourhood), for a later
+  version.
+
+**The examples moved no snapshot.** The diagnostics corpus changes:
+- `shape_not_implemented.psk` now uses `jvp`.
+- Four files are new: `shape_slice_outside`, `shape_slice_bound`,
+  `shape_concat_axis` and `shape_concat_shape`.
+
+`examples_type_check` gains the two examples' summaries.
+
+**`make test` passes** on `32ab986`: 115 test binaries.
+
+## D180 — Plan 0.17.0, step 7: real weights. `.psk.d` version 2 (a leaf's encoding, `bf16` read exactly), the converter of a Hugging Face checkpoint, `coverage/llama3.psk`, the padded serve export (`E8009` lifted under `--dim`). On Llama 3.2 1B's published weights presk's `f64` run agrees with `transformers` in `float64` to 6.2·10⁻¹⁵ (RW2 holds), `presk serve` and `generate.c` give the same 32 greedy tokens from four prompts in `f32` and in `int8` (RW4 holds), and RW3 reports the model's gap to the exact reference under six realizations. A checkpoint's parameters were drawn in exact arithmetic before being read: the first full-size run was OOM-killed, and they are now only described (2026-10-29)
+
+**The decision.** Step 7 of plan 0.17.0 (§6, Part D), as the plan states it:
+- **the checkpoint** is `meta-llama/Llama-3.2-1B`, the base model (the
+  plan's question 4). The user accepted its licence and downloaded it into
+  `~/presk-data/llama-3.2-1b` on 2026-10-28 at 21:35 (`hf download`); no
+  agent read a token;
+- **the program** is `coverage/llama3.psk`: 16 blocks of width 2 048, a
+  feed-forward of 8 192, a vocabulary of 128 256, 32 heads over 8
+  key-value heads, RMSNorm, SwiGLU, tied embeddings (the head is `ein`
+  over `tok`), and RoPE of base 500 000 with Llama 3's frequency scaling
+  written with `clamp`, in Hugging Face's pairing (r with r + HD/2,
+  plan §10);
+- **the container, version 2**: each real leaf's encoding in the header,
+  `f64`, `f32` or `bf16`, its numbers injected exactly into the reals. A
+  file of `f64` leaves is still version 1, the same bytes;
+- **the converter** `experiments/llama/hf_to_pskd.py` reads `safetensors`
+  by hand (the standard library and NumPy). It writes the leaves in
+  presk's order at the checkpoint's `bf16`, transposes a `Linear`'s
+  `weight`, stacks the layers, and permutes nothing;
+- **the tokenizer** stays outside (`experiments/llama/tokens.py`,
+  `tokenizers` in `.venv`);
+- **serving** a model whose parameters do not fix the context:
+  - `presk export --serve --dim T=n` exports it at length `n`;
+  - `generate.c` pads the context after its last token, reads the logits
+    there, and stops at `n` tokens;
+  - there is no KV cache.
+
+**What was built** (presk `183ce6a`, `d381703`, `49840da`; `ced194e` for the
+defect below):
+- **`presk-data`.** Version 2, an encoding per leaf (`Enc`), and every
+  reader takes both versions. `write_encoded` writes version 1 unless a
+  leaf is narrower, and `presk data info` lists the encodings.
+- **The other readers.** The C runtime (`presk_rt.c`, `.h`), `pskd.py`
+  and the experiments' readers take both versions.
+- **`presk-serve`.** A model is tied to the context's length when a leaf
+  of its parameter tree has the context's dimension in its type. Until
+  this step the test read the initializer's dimensions, which are every
+  dimension of its file, so every model was served over a window.
+  `presk_serve::at_position` makes the copies of the generation function
+  that read the logits at a given position, which the padded export calls.
+- **`presk-interp`.** A parameter takes its declared axis names, as the
+  kernel host gives them; until this step it took its argument's.
+- **`make llama3`** (`experiments/llama/llama3.sh`) runs the stages
+  `convert`, `prompts`, `rw2`, `rw4` and `rw3`. `make venv-hf` makes
+  `.venv-hf` (`transformers` 5.21.0, `safetensors` 0.8.0, PyTorch 2.14),
+  which the compiler never imports.
+
+**The conversion** (2026-10-28, 21:36): 11 leaves, 1 235 814 400
+parameters in `bf16`, 2.47 GB (`out/llama3/llama-3.2-1b.psk.d`), in 5 s.
+The four prompts are 16 tokens each, the first the beginning-of-text
+token, and decode back to their texts:
+- 0: "The capital of France is Paris, and the capital of Italy is Rome."
+- 1: "In mathematics, a prime number is a natural number greater than one
+  that has"
+- 2: "def fibonacci(n): if n < 2: return n; return fibonacci"
+- 3: "Le compilateur traduit un programme écrit dans un langage de haut
+  niveau"
+
+**A defect the first full-size run found: a checkpoint's parameters were
+drawn first.**
+- **What happened.** On 2026-10-28 at 21:39, RW2's `presk run --weights`
+  on the converted checkpoint reached 88 GB beside step 8's solves, and
+  the kernel OOM-killed it. systemd then stopped the whole scope the
+  session ran in (`tmux-spawn-….scope`, result `oom-kill`): the session,
+  step 8's solves of the course logits and of BERT, and the chain that was
+  to start step 8's timed rounds. Nothing ran that night.
+- **The cause.** Every command that reads `--weights` first synthesized
+  the entry's inputs as `presk run` does, the parameters included: the
+  module's initializer, run by the reference interpreter in `rug::Float`,
+  about 80 bytes a number at 256 bits. The checkpoint was then read
+  against that tree, which replaced it. The commands were `presk run`,
+  `export --target c`, `bench` and `quantize`, and the driver's
+  `entry_args` and `sensitivity`, which `solve` and `calibrate` use.
+  - At the course GPT's 10⁷ parameters this was 0.8 GB and went unseen;
+    at 1.2·10⁹ it is 99 GB.
+  - `presk run --json` also printed the checkpoint as the inputs,
+    converted to exact numbers first (D118's follow-up).
+- **The fix** (`ced194e`).
+  - `presk_interp::run::prepare_run_given_params` describes a module's
+    parameters (`Shaped::Params`: the initializer, its dimensions, its
+    key) instead of drawing them. Every other input is drawn from its own
+    key, as before. `presk_train::args_on_data_given_params` does the same
+    with `--data`.
+  - `presk_driver::layout::params_zeros` runs the initializer on the
+    kernel backend with no executor, as `presk plan`'s captures build
+    their inputs: zeros in `f64`, nothing computed in exact arithmetic.
+    `presk_driver::entry::read_given_params` reads the checkpoint against
+    that tree. All six call sites take it.
+  - `presk_rt::load_params` reads the template's shape only and moves the
+    file's numbers into the tree, which is two copies of the model fewer.
+  - **`presk run --result-only`** prints the result alone, `--json`
+    without `inputs`. RW2's and RW3's runs pass it.
+  - `presk serve` and `presk train` build their template on their own
+    backend, in its machine type, and were not changed.
+- **What it changes.** Memory and time only.
+  - RW2's `presk run` on the real checkpoint takes 1 min 14 s and
+    21.7 GB.
+  - A test, `given_params_have_the_drawn_tree` (presk-driver), covers five
+    programs: MiniGPT, LayerNorm, the small `llama3.psk`, `llama.psk` and
+    `bert.psk`. The zeros have the drawn parameters' tree and axes, the
+    other inputs are the same, and a checkpoint reads to the same values
+    either way.
+  - On the small `llama3.psk`, the same bytes before and after for: the
+    exact run at 128 bits with a checkpoint, its JSON inputs included; the
+    native runs in `f32`, in `bf16` and under `int8` weights; and `presk
+    quantize`.
+  - X1 under the fixed binary gives step7a's outputs byte for byte, but
+    for three envelopes' `measured` date and four READMEs' commit.
+  - The suites of the crates it touches pass: `presk-interp`,
+    `presk-train`, `presk-rt`, `presk-driver`, `presk-cli`, `presk-serve`,
+    `presk-export-c`, `presk-explain`, `presk-data`, `presk-precision`.
+- **The rule kept** (presk-project memory):
+  - every long or memory-heavy job runs in its own `systemd-run --user
+    --scope` with `MemoryMax`, so that an OOM kill stops that scope alone;
+  - a first full-size run of a new path is never run beside other jobs
+    before its peak is measured.
+
+  On 2026-10-29 the runs beside step 8's solves were also given an
+  `oom_score_adj` of 1000, so that a global OOM would take them first.
+
+**RW2 holds** (`out/llama3/rw2/rw2.json`; 2026-10-29, 8 min 32 s, at most
+21.7 GB). presk's native run in `f64` against `LlamaForCausalLM` in
+`float64` (`experiments/llama/rw2.py`, its three `float32` casts removed),
+on the four prompts:
+
+| prompt | max \|presk − HF\| | max \|logit\| | relative | argmax the same |
+|---|---|---|---|---|
+| 0 | 1.226·10⁻¹³ | 26.08 | 4.70·10⁻¹⁵ | 16 of 16 |
+| 1 | 1.847·10⁻¹³ | 29.75 | 6.21·10⁻¹⁵ | 16 of 16 |
+| 2 | 1.616·10⁻¹³ | 29.42 | 5.49·10⁻¹⁵ | 16 of 16 |
+| 3 | 1.208·10⁻¹³ | 25.27 | 4.78·10⁻¹⁵ | 16 of 16 |
+
+The worst relative gap is 6.2·10⁻¹⁵, 1.6·10⁶ times under the threshold
+10⁻⁸. That is two summation orders in `f64`, as plan §10 expected, and no
+leaf misplaced. Hugging Face's own `float32` rotary frequencies are
+2.1·10⁻⁷ from the `float64` ones, which is why the harness recomputes them.
+
+**RW4 holds** (`out/llama3/rw4.md`, `rw4_text.md`). Greedy generation of 32
+tokens from each prompt, by `presk serve --backend native` and by the C
+export's `generate.c` (exported at T = 48, the context padded). Two
+realizations: `f32`, and the seven block matrices in `int8` (absmax, the
+scale along the contraction axis; the token table and the norms in
+`f32`). The same 32 tokens in all eight cases. In `f32` the model
+continues:
+
+| prompt | 32 greedy tokens |
+|---|---|
+| 0 | " The capital of the United States is Washington, D.C. The capital of the United Kingdom is London. The capital of Canada is Ottawa. The capital of Australia" |
+| 1 | " exactly two distinct natural number divisors: 1 and itself. The first few prime numbers are 2, 3, 5, 7, " |
+| 2 | "(n-1) + fibonacci(n-2) else: return fibonacci(n-1) + fibonacci(n-2) + fibonacci(n-3)" |
+| 3 | " en un programme écrit dans un langage de bas niveau. Le compilateur peut être utilisé pour compiler un programme dans un langage de bas niveau, puis" |
+
+In `int8` the continuations are `f32`'s but for prompt 0's last token,
+"Germany" for "Australia".
+
+How it ran:
+- **One thread.** Every run took one thread. The native executor and the
+  exported program divide a kernel's outermost loop, which at batch 1 is
+  the batch, so nothing is divided ("660 launches … on one thread", the
+  export says).
+- **`presk serve`** recomputes the whole context at every token (no KV
+  cache) and compiles the kernels again at each new length. A prompt took
+  16–28 min in `f32` and 8.1–8.4 min in `int8`, whose weights are a
+  quarter of the bytes at batch 1.
+- **`generate.c`** runs every step at the export's length, 48, in 21–33
+  min.
+- **Not timings of record:** the runs went beside step 8's solves. After
+  the first prompt in `f32`, the rest ran as locked tasks, several lists
+  side by side (`out/step7-0.17.0/rw4_tasks.sh`), the same commands as
+  `llama3.sh`'s.
+- **The C programs' arenas** are 4.99 GB in `f32` and 2.08 GB in `int8`.
+
+**RW3, reported** (`out/llama3/rw3/rw3.md`, `rw3_table.md`). The logits of the four prompts against the
+exact reference at 128 bits: `presk run --backend interp --bits 128`, each
+run in a scope of 108 GB of its own, beside step 8's last solves of the
+course logits (four threads, 8 GB), one thread, 21 min 28 s to 21 min 40 s and
+96.6 GB (about 78 bytes a parameter: the model in MPFR and one tensor in
+`f64` at a time). The native runs are `llama3.sh`'s, as tasks
+(`rw4_tasks.sh native:…`). The realizations are `f32`, `bf16` (every value
+stored in `bf16`), and the seven block matrices in `int8` or `int4`,
+absmax or pow2, the scale along the contraction axis, one per output
+column (the token table and the norms in `f32`).
+
+| realization | max \|logit − exact\| / max \|exact\|, prompts 0–3 | argmax changed, of 16 a prompt |
+|---|---|---|
+| `f64` (RW2's run) | 4.8e-15, 6.1e-15, 5.1e-15, 4.8e-15 | 0, 0, 0, 0 |
+| `f32` | 2.3e-06, 4.0e-06, 2.5e-06, 3.0e-06 | 0, 0, 0, 0 |
+| `bf16` | 7.9e-03, 1.3e-02, 1.2e-02, 1.0e-02 | 1, 0, 0, 0 |
+| `int8`, absmax | 1.9e-02, 3.5e-02, 2.5e-02, 3.9e-02 | 0, 0, 0, 0 |
+| `int8`, pow2 | 2.7e-02, 5.0e-02, 5.5e-02, 4.0e-02 | 0, 0, 0, 1 |
+| `int4`, absmax | 4.9e-01, 4.8e-01, 4.0e-01, 4.9e-01 | 6, 7, 7, 9 |
+| `int4`, pow2 | 5.0e-01, 5.9e-01, 5.8e-01, 5.8e-01 | 10, 10, 11, 12 |
+
+- **`f32`** is 2–4·10⁻⁶ from the exact logits and changes no decision.
+- **`bf16` and `int8`** are 1–5·10⁻² from them. They change one argmax
+  of the 64 positions each, `bf16` at prompt 0 and `int8` pow2 at prompt 3.
+- **`int4`** with one scale per output column is 0.4–0.6 from them and
+  changes 6 to 12 of each prompt's 16 argmaxes. On this model, one scale
+  over the whole contraction axis is too coarse for four bits.
+- **presk's `f64` run** is 5–6·10⁻¹⁵ from the exact logits, as from
+  `transformers`' (RW2).
+
+**RW0** (the container's part; step 6 took the language's):
+- **X1** against `base-0.17.0` (`out/x1/step7-checks.sh` on `183ce6a`'s
+  release build, then `out/x1/step7b-checks.sh` on the fix's): 71 files
+  differ, then 74.
+  - 19 differ by the exported C's version and commit lines, as at every
+    step.
+  - 44 are `coverage/llama.psk`'s outputs, whose program changed at step 6
+    (D179).
+  - 7 are the C runtime's `presk_rt.c` and `.h`, copied into the exported
+    programs, which now read both versions.
+  - 1 is the PyTorch conformance test's default type (D179).
+  - 3, at step7b only, differ by the envelopes' `measured` date.
+
+  Every `.psk.d` that X1's runs write has `f64` leaves, and is version 1
+  and byte-identical.
+- **`make check-examples`, `coverage`, `plan-check` and
+  `c-conformance`** on the version's tree are step 9's (plan §8).
+
+**`make test` passes** on `33af1da` (branch `0.17.0-rows`, this step's fix
+merged; its Rust is `ced194e`'s): 115 test binaries, in 6 min beside step
+8's solves.
+
+## D181 — Plan 0.17.0, step 8: the rows. NB2 and NB3 hold: on ten X925, Cranelift with level 2 takes 1.19× the C program's time on the forward pass and 0.99× on the step, the LLVM backend 0.995× and 0.871×. QM1 and QM3 hold. QM2 fails on BERT-large's two blocks, where the one menu takes no integer (2.00×) and the two passes reach 4.93×. TS2 fails: the per-value step is 7.80 s against J′'s 6.99 s, most of it the optimizer's state kept in `f64`. NB4 and TS3 reported (2026-10-29)
+
+**The decision.** Step 8 of plan 0.17.0 (§8): every row the version
+measures, on the version's binary, the timed ones alone on falicon by
+D127's protocol, the paper session told before and after. No row of the
+paper is solved or timed again: the paper stays at 0.16.1 (§12). The
+binary is `out/bin/presk-0.17.0-step8a`, the tree of steps 1 to 7 (presk
+`49840da`); step 7's fix, `ced194e`, changes no bit and no timed path
+(D180). Two phases:
+- **phase A, untimed** (`out/step8-0.17.0/phaseA.sh`): the solves of QM1
+  and QM2 side by side, and the margins of QM3. The envelopes of record
+  are reused, since the version changes the solver's menu and not a
+  calibration (QM0): 0.16.1's for V6 and the course logits (D170), the
+  trained curve's (D132), BERT-large's two blocks' at 0.16.0 (`make
+  compile-times`). The exact logits and 0.16.1's rows are linked from
+  their directories of record (D163's `link_rows`), so the margins ran
+  only the new realizations;
+- **phase B, timed, alone** (`out/step8-0.17.0/phaseB.sh`): Table 4 with
+  the LLVM backend's rows (NB2, NB3), the kernels per backend and LLVM's
+  compile time (NB4), the step at course scale (TS2), QM3's time, and the
+  conversions' share (TS3).
+
+**What was built** (presk `78c90d0`), the scripts' default outputs
+unchanged:
+- `experiments/pytorch_baseline.sh` with `LLVM=1` times the LLVM
+  backend's rows beside the native backend's: the forward pass, `presk
+  train`'s step, and `loss_grad` + `adamw.step`;
+- `experiments/retime_processes.py` judges NB2 and NB3 beside T4, on the
+  same rows;
+- `experiments/kernel_shares.sh` takes `BENCH`, words added to the native
+  side's `presk bench`: `BENCH=--llvm` times the LLVM backend's kernels by
+  D174's method.
+
+**How it ran.**
+- **The first night.** Phase A started on 2026-10-28 at 20:50. At 21:39
+  step 7's first full-size run was OOM-killed beside it. systemd then
+  stopped the session's whole scope, phase A's course and BERT solves and
+  the chain that was to start phase B with it (D180).
+- **The re-run.** Those solves ran again from 2026-10-29 04:58 in a scope
+  of their own (`PARTS="course bert"`). The scope was raised from 70 to
+  95 GB at 07:51, when the six BERT-large solves reached 9.4 GB each.
+- **BERT's four `--narrow measured` solves** were stopped by hand at 08:19,
+  after 3 h 20. Each of their measurements runs on the kernel interpreter,
+  minutes at BERT-large's size, and they make up to about eighty; the
+  course logits' took 55 measurements and 6 h 25. They are reported beside
+  QM2 and not judged (the user, 2026-10-28), and ran again after phase B
+  (the addendum below).
+- **Beside phase A** ran step 7's RW4 and RW3, each heavy run in a memory
+  scope of its own.
+- **Phase B** ran from 11:42 to 15:06, alone, the paper session told
+  before and after. Every round started when the one-minute load was under
+  1.5; it was between 0.83 and 1.49 at the 29 starts
+  (`out/step8-0.17.0/phaseB.log`).
+
+**QM1 holds** (`out/step8-0.17.0/qm.py`, `qm.md`). `presk solve --menu
+f64,f32,bf16,int8,int4` (the one menu) and `presk solve --quant` (the
+floats, then the integers in a second pass) ran on the same envelopes and
+budgets. Each ran under the solver's defaults, then under `--narrow
+measured`, then with `--margin 1` as well. Every one-menu solve is inside
+its budget by measurement, with no widening round: the curve at D = 64 at
+its seven budgets, V6 at ε\* = 4.67·10⁻⁴, the course logits at
+ε\* = 4.96·10⁻⁴ and BERT-large's two blocks at 10⁻³, and every `--narrow
+measured` row that ran. Against 0.16.1's curve on the same envelope (D170):
+
+| budget | 0.16.1 | the one menu | integers taken |
+|---|---|---|---|
+| 10⁻¹ | 3.33× | **3.55×** | 7 `int8`, 2 `int4` |
+| 10⁻² | 2.51× | **2.55×** | 2 `int8` |
+| 10⁻³ to 10⁻⁷ | 2.03×, 1.99×, 1.96×, 1.67×, 1.30× | the same | none |
+
+- From 10⁻³ down, the one menu's realizations are 0.16.1's, with the same
+  measured gaps.
+- At 10⁻¹ and 10⁻² the integers buy 7 % and 2 % more traffic.
+- Neither of those two realizations is certified at 10⁻³, and neither is
+  0.16.1's: on the Code civil's 461 windows 918 and 72 decisions flip,
+  where 0.16.1's flip 475 and 78.
+
+**QM2 fails, on BERT-large's two blocks** (judged under the defaults, the
+user's decision of 2026-10-28):
+
+| row | the one menu | ratio | measured | the two passes | ratio | measured | verdict |
+|---|---|---|---|---|---|---|---|
+| V6 at ε\* | 9 `f32` | 1.96× | 2.14·10⁻⁶ | no matrix quantized | 1.96× | 2.14·10⁻⁶ | holds |
+| the course logits at ε\* | 9 `f32` | 1.98× | 3.02·10⁻⁶ | no matrix quantized | 1.98× | 3.02·10⁻⁶ | holds |
+| BERT-large, two blocks, 10⁻³ | 8 `f32` | 2.00× | 1.06·10⁻⁵ | 10 of 10 (6 `int8`, 4 `int4`) | 4.93× | 3.82·10⁻³ | fails |
+
+- **V6 and the course logits.** The one menu holds at equality. It takes
+  no integer at ε\*, and its realizations are 0.16.1's, byte for byte.
+  Under `--narrow measured` both solves reach 1.99× on both rows, after
+  55 measurements each on the course logits; `--margin 1` changes neither.
+- **BERT-large at 10⁻³.** The one menu takes no integer. The two-pass
+  solve quantizes the ten matrices and is measured 3.82·10⁻³ from the
+  exact reference, inside the budget of 6.25·10⁻³.
+- **Why.** The one menu prices a matrix's quantization as it prices a
+  float type at rest, `s · max |ŵ − w|`: the largest single move of a
+  weight times the 1-norm of the value's sensitivity. On BERT-large, as on
+  the trained GPT (D177), that is about the whole budget at 10⁻³ for every
+  matrix. The second pass prices each matrix by the root-sum-square of its
+  weights' first-order changes `g·δ` (D49), which lets independent
+  roundings cancel, and its measurement confirms the estimate with room to
+  spare. The one menu's term is a worst case and the second pass's an
+  estimate that the measurement checks; on BERT-large the worst case costs
+  a factor of 2.5 in traffic.
+
+**QM3 holds** (`margins_course.sh`; `out/qm3-time-0.17.0/`). The one menu's
+realization of the course logits at ε\* is 0.16.1's, byte for byte, so its
+certificate is 0.16.1's (D170). The margins were taken again on it, and on
+the `--narrow measured` realization beside it:
+
+| realization | the Code civil's 461: gap on the logits | flips | certified at 10⁻³ | the Code pénal's 461: gap | flips |
+|---|---|---|---|---|---|
+| 0.16.1's, at ε\* = 4.96·10⁻⁴ | 8.695·10⁻⁶ | 0 | yes | 2.238·10⁻⁵ | 0 |
+| the one menu's | 8.695·10⁻⁶ | 0 | yes | 2.238·10⁻⁵ | 0 |
+| the one menu's, `--narrow measured` | 8.871·10⁻⁶ | 0 | yes | 2.210·10⁻⁵ | 0 |
+
+- **Certified on the Code civil, Y1 on the Code pénal** (Z2's (ii) and
+  (iii)). At D = 64, V6's one-menu realization is 2.88·10⁻⁶ from the exact
+  logits on the Code civil and 3.08·10⁻⁶ on the Code pénal, with no flip,
+  as 0.16.1's.
+- **Its time** (`presk bench experiments/margins.psk --entry logits` at the
+  course constants, B = 16, T = 256, the default layout, ten X925 pinned,
+  five processes, the medians): 0.16.1's realization 875.9 ms; the one
+  menu's, the same realization, 892.8 ms (1.019×, the processes' spread);
+  its `--narrow measured` one 876.4 ms (1.001×); all-`f32` 866.3 ms
+  (0.989×).
+
+**NB2 and NB3 hold** (`out/retime-0.17.0/table4.md`). Five rounds of
+`pytorch_baseline.sh` with `LLVM=1`, each row of a round a process of its
+own. The course GPT at B = 16, T = 256 in `f32`, ten X925 pinned, ten
+threads, under the frozen profile's plans; the C program's workers wait as
+the native pool's (`GOMP_SPINCOUNT=8M`, D97's addendum). The medians of
+the five processes:
+
+| workload | C program (GCC `-O2`) | Cranelift, level 2 | ÷ C | LLVM | ÷ C |
+|---|---|---|---|---|---|
+| the forward pass `GPT.apply` | 206.5 ms | 246.4 ms | **1.19×** | 205.5 ms | **0.995×** |
+| the step, `loss_grad` + `adamw.step` | 808.1 ms | 803.4 ms | **0.994×** | 703.7 ms | **0.871×** |
+
+- **NB2 holds**, under T4's threshold of 1.3×. At 0.16.0 T4 failed at
+  1.63× and 1.67× (D166); the fastest processes give 1.20× and 1.00×.
+- **NB3 holds**: the compiler's own backend is at GCC on its kernels,
+  with C1 and H8 kept (NB0, D176). The fastest processes give 0.989× and
+  0.868×.
+- **The step's 0.871× is mostly the C program's host.** Kernel for kernel
+  (NB4 below), LLVM's step is 683 ms against GCC's 695 ms, 0.98×. The C
+  program's gradient spends about 110 ms outside its kernels, as D174
+  found, and the native host about 20 ms.
+- **What remains on Cranelift** is the forward pass's 1.19×: the register
+  tile's broadcast, which level 3 does without (D175).
+- **The LLVM backend's training run** gives `presk train`'s final
+  checkpoint byte for byte in all five rounds (`train.llvm.same`).
+- **Beside, not statements of 0.17.0.** Against PyTorch eager on the same
+  cores, `presk train`'s step, drawing its masks, takes 0.87× of
+  PyTorch's on Cranelift and 0.77× on LLVM (905.5 and 806.0 ms against
+  1 043.1 ms). The forward pass takes 1.61× and 1.34× of PyTorch's
+  153.4 ms.
+
+**NB4, reported** (`out/kernel-shares-0.17.0-rows/`). `kernel_shares.sh`,
+D174's method, five processes of each side: Cranelift as at `v0.16.1`
+(step 1's binary), Cranelift with level 2, LLVM (`BENCH=--llvm`). The C
+sides are the same programs under GCC and clang. The sums of the kernels'
+median launches, ms a call:
+
+| entry | setting | Cranelift, `v0.16.1` | Cranelift, level 2 | LLVM | C, GCC `-O2` | C, clang `-O2` | C, clang `-O3` |
+|---|---|---|---|---|---|---|---|
+| `GPT.apply` | ten X925 | 331.40 | 239.90 | 202.25 | 202.44 | — | — |
+| `loss_grad` | ten X925 | 1291.56 | 766.01 | 671.82 | 679.88 | — | — |
+| `adamw.step` | ten X925 | 15.08 | 12.32 | 11.32 | 15.51 | — | — |
+| `GPT.apply` | one X925 | 3035.59 | 2045.39 | 1616.18 | 2182.94 | 1663.95 | 1660.24 |
+| `loss_grad` | one X925 | 10099.58 | 6040.29 | 4996.54 | 6725.13 | 6002.82 | 5977.66 |
+| `adamw.step` | one X925 | 34.41 | 25.00 | 24.96 | 25.63 | 25.60 | 25.65 |
+
+- On ten cores, level 2 takes the forward pass's kernels from 331 to
+  240 ms and the gradient's from 1 292 to 766 ms. LLVM's are at GCC's on
+  the forward pass and under them on the gradient.
+- On one core, LLVM's kernels are faster than every build of the exported
+  C, clang `-O3`'s included: they are compiled with `-mcpu=native`, the C
+  program's builds without it.
+- **The LLVM backend's compile time** (`out/llvm-compile-0.17.0/`): the
+  wall time of one `presk bench … --warmup 0 --repeat 1`, five processes
+  each, cold (the cache emptied) less cached. The forward pass's 23
+  kernels take 1.10 s to compile (48 ms a kernel), the gradient's 90 take
+  3.77 s (42 ms), the optimizer's 49 take 1.80 s (37 ms). Cached, a
+  program starts as fast as on Cranelift (1.21 s against 1.22 s on the
+  forward pass).
+
+**TS2 fails, on its second half** (`out/retime-0.17.0/`, `j_step.sh`'s
+method: a round's four-step time less its one-step time, over three, each
+a `presk train` process of its own at the course constants on every core;
+five rounds):
+
+| realization | median (s) | fastest (s) | ÷ all-`f64` |
+|---|---|---|---|
+| all-`f64` | 15.01 | 14.83 | 1.00× |
+| J′, by function (`out/step_1e-3.json`) | 6.99 | 6.95 | 2.15× |
+| by value (D178, `out/step5-0.17.0/step_value_1e-3.json`) | **7.80** | 7.74 | 1.92× |
+| J′ with `θ′`, `m′`, `v′` in `f64` (beside) | 7.58 | 7.50 | 1.98× |
+
+- The per-value step is 1.92× faster than all-`f64`'s (at least 1.3×:
+  yes) but slower than J′'s (7.80 s against 6.99 s, at most: no).
+- D178 predicted it 0.11 % slower than J′ (TS1's second half); it is
+  11.6 % slower.
+- J′ with the optimizer's state kept in `f64`, which the per-value space
+  keeps by the user's decision (the plan's question 6), is already 8.4 %
+  slower than J′: 0.59 s of the 0.81 s are that state. The per-value
+  realization's extra conversions, 177 ms by TS3's count, are of the order
+  of the rest.
+- Their update gaps at course scale against a native `f64` step, once
+  (`j_step-round1.gaps.txt`, not judged): J′ 6.8·10⁻⁵, the per-value one
+  3.0·10⁻⁴, J′ with the state wide 1.3·10⁻⁶, against a gradient noise of
+  0.37 between two batches.
+
+**TS3, reported** (`out/ts3-0.17.0/`; `presk train --host-profile`, the
+sum of `buffers.convert`; four steps, the first left out, three processes
+each, the median):
+
+| scale | realization | the step (ms) | `buffers.convert` (ms) | its share |
+|---|---|---|---|---|
+| D = 64 | all-`f64` | 214.3 | 0.07 | 0.03 % |
+| D = 64 | H6's | 319.2 | 39.89 | 12.50 % |
+| D = 64 | J′'s | 133.0 | 0.92 | 0.71 % |
+| D = 64 | the per-value one | 175.3 | 22.35 | 12.75 % |
+| course | all-`f64` | 14 920.5 | 0.31 | 0.00 % |
+| course | H6's | 15 251.6 | 235.39 | 1.54 % |
+| course | J′'s | 6 931.4 | 68.66 | 0.99 % |
+| course | the per-value one | 7 879.7 | 245.60 | 3.12 % |
+
+- **H6 at D = 64 is explained in part.** Its realization's step spends
+  12.5 % of its time converting buffers (40 ms of 319 ms), where all-`f64`
+  spends none: 38 % of its 105 ms over all-`f64`, D166's 0.74×.
+- **The per-value realization** converts as much at D = 64 (12.8 %), and
+  3.1 % of its step at course scale (246 ms, J′'s 69 ms). Its conversions
+  are 177 ms of its 948 ms over J′ in these runs, the state kept wide
+  most of the rest (TS2).
+
+**The report** is `docs/rows-0.17.0.md`, in D163's form; the archive is
+presk-project `data/rows-0.17.0.tar.xz`.
+
+## D182 — Version 0.17.0: NB0, QM0, TS0 and RW0 on the version's tree, the checks of record, the documents (plan 0.17.0 step 9) (2026-10-29)
+
+**NB0, QM0, TS0 and RW0 hold on the version's tree.** This step's release
+build (`out/bin/presk-0.17.0`, presk `4ba4759`) ran X1's harness, its
+native runs again on the LLVM backend, the quant and step tables, the
+tutorial and the course GPT on both backends (`out/x1/version-0.17.0.sh`,
+run by `out/x1/checks-0.17.0.sh`, beside D181's last solves, untimed).
+- *X1, against step 7b's tree* (D180): 19 files differ, the exported C
+  programs' version lines (`0.17.0-dev` → `0.17.0`) and commit lines, and
+  nothing else.
+- *X1, against `v0.16.1`'s baseline* (`out/x1/base-0.17.0`): 74 files
+  differ, D180's 74 and for the same reasons:
+  - `coverage/llama.psk`'s 44 outputs, whose program changed at step 6
+    (D179);
+  - the exported C programs' 19 version and commit lines, and the C
+    runtime's 7 copies of `presk_rt.c` and `.h`, which read both versions
+    of the container (D180);
+  - the PyTorch conformance test's default type (D179);
+  - three envelopes, by their `measured` date.
+- *The LLVM backend* (`out/x1/x1_llvm.sh`): X1's 188 native runs again
+  with `--backend llvm`, the same bytes as the native runs, all 188 (NB0).
+- *The course GPT* (step 3's `course_bits.sh`): its forward pass at
+  B = 16, T = 256 under step 1's plan, 8.9 MB of printed outputs, and three
+  training steps under D166's step plan give the same bytes, losses and
+  checkpoint natively and on the LLVM backend (NB0).
+- *The tables.* `make quant-table` and `step-table` are byte for byte
+  `v0.16.1`'s (QM0, TS0).
+- *The tutorial* differs from the baseline by its measurements alone,
+  and by what the measurements decide: the profile it calibrates prices
+  the optimizer's extraction (131 lets where 136) and `presk autotune`'s
+  and `presk rank`'s picks. Its version lines differ as well.
+
+**The checks of record on the version's tree.**
+- `cargo test --workspace --release --no-fail-fast` passes: 115
+  suites.
+- `make check-examples`, `coverage` and `plan-check` pass.
+- `make c-conformance` passes: `export_c`'s 17 tests (16 at 0.16.1;
+  the padded serve export's, D180) and `export_scop`'s 5.
+- `make llvm-conformance` passes: the same 17 tests, every program
+  checked against the LLVM backend's run (NB0).
+- `cargo doc -p presk-manual` gives no warning.
+
+**The documents**, checked against what the version did (the user's rule
+of 2026-09-30).
+- *The manual.*
+  - `status`: the section *Version 0.17.0*, its steps, statements, what
+    it has and what it does not.
+  - `experiments`: §24 to §26, and *What these experiments do not show*,
+    whose native backend's gap is 0.17.0's.
+  - `native`: the code generator, the LLVM backend, step 8's figures of
+    record.
+  - `precision`: one menu and the step per stored value, with their rows.
+  - `training`: the step per stored value, which `presk train --realize`
+    applies.
+  - `cli`, `diagnostics`, `serve`, `export_c`, `language`, `data`,
+    `coverage` and `dependencies`, each brought up at its step (D175 to
+    D180).
+  - `explain_loss`: its version line.
+- *In presk-specs* (!104, stacked on !103):
+  - the plan, marked done with its verdicts;
+  - the reference at draft v0.26: its Status paragraphs at 0.17.0 and the
+    version's tree;
+  - the report: chapter 8's paragraph on 0.17.0, the foreword, the
+    roadmap and the history;
+  - the slides and the summary;
+  - the status note `docs/status-2026-10-29-0.17.0.md`;
+  - `implementation/presk-spec-questions-0.17.0.md`, with questions 79
+    and 80.
+- *In presk-project:* `docs/STATEMENTS.md`'s 0.17.0 section, the poster at
+  0.17.0, the archives (`kernel-shares-0.17.0`, `lowering-0.17.0`,
+  `lowering-llvm-0.17.0`, `llama3-1b-0.17.0`, `rows-0.17.0`).
+- CHANGELOG `## 0.17.0`, `CLAUDE.md`, version `0.17.0`.
+
+The user tags `v0.17.0`. BERT-large's four `--narrow measured` solves,
+reported beside QM2 and not judged, still ran at this step; their rows are
+D181's addendum, in a merge request of their own, after the tag, so the
+version's tree stays this one. No row of the paper was solved or timed
+again: the paper stays at 0.16.1.

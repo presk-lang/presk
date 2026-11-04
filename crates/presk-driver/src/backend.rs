@@ -5,7 +5,7 @@ use presk_types::elab::ElabProgram;
 
 use crate::Report;
 
-/// The three executors.
+/// The four executors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     /// The reference interpreter (MPFR at `bits`).
@@ -14,6 +14,9 @@ pub enum BackendKind {
     Kernel,
     /// PSK-Kernel v0 compiled to machine code by Cranelift (in process).
     Native,
+    /// PSK-Kernel v0 printed as C and compiled by LLVM's `clang -O3`, on the
+    /// native backend's host (plan 0.17.0 step 3, D176).
+    Llvm,
 }
 
 /// Runs `f` with the chosen backend over `core`, under `plan`. The
@@ -38,6 +41,19 @@ pub fn with_backend<R>(kind: BackendKind, core: &presk_core::Program, prog: &Ela
             }
             Err(e) => {
                 report.line(&format!("presk: the native backend is unavailable: {}", e.message));
+                f(&mut kernel())
+            }
+        },
+        // The commands check `presk_llvm::available` before they get here
+        // and refuse without the compiler; a library caller that did not is
+        // told, and runs on the kernel interpreter as for `Native`.
+        BackendKind::Llvm => match presk_llvm::llvm_backend(core, prog, realize) {
+            Ok(mut b) => {
+                b.set_plan(plan.clone());
+                f(&mut b)
+            }
+            Err(e) => {
+                report.line(&format!("presk: the LLVM backend is unavailable: {}", e.message));
                 f(&mut kernel())
             }
         },

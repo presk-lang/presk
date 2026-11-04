@@ -1483,6 +1483,13 @@ impl<'p> KernelBackend<'p> {
                     }
                 }
             }
+            // A launch takes a slice's bounds as numbers, under this call's
+            // dimensions: the key of its compiled kernel names them.
+            PrimOp::Slice { axis, lo, hi } | PrimOp::SliceVjp { axis, lo, hi } if lo.as_nat().is_none() || hi.as_nat().is_none() => {
+                let (l, h) = (DimExpr::nat(self.dim(lo, dims)?), DimExpr::nat(self.dim(hi, dims)?));
+                let concrete = if matches!(op, PrimOp::Slice { .. }) { PrimOp::Slice { axis: axis.clone(), lo: l, hi: h } } else { PrimOp::SliceVjp { axis: axis.clone(), lo: l, hi: h } };
+                self.prim_on(&concrete, args, ty, dims)
+            }
             // ----- everything else: unary on trees / hyperparameters, or a kernel -----
             _ => {
                 if args.len() == 1 {

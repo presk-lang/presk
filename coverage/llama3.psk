@@ -1,0 +1,135 @@
+-- llama3.psk — the Llama 3.2 architecture, at 1B's configuration
+-- (meta-llama/Llama-3.2-1B, its config.json), to run its published weights
+-- (plan 0.17.0 step 7, D180): `experiments/llama/hf_to_pskd.py` converts
+-- the checkpoint, its leaves in this file's declaration order, with no
+-- permutation. Nothing of the model is substituted.
+--
+-- Beside coverage/llama.psk (Llama 2): grouped-query attention with 32 query
+-- heads over 8 key-value heads; RMSNorm; SwiGLU; no biases; RoPE in Hugging
+-- Face's pairing (dimension r of a head with r + HD/2), at the base 500 000
+-- with Llama 3's frequency scaling, written with `clamp`; the head tied to
+-- the token table.
+const V  : nat = 128256    -- vocabulary
+const D  : nat = 2048      -- hidden_size
+const H  : nat = 32        -- num_attention_heads
+const HD : nat = D / H     -- head_dim, 64
+const G  : nat = 8         -- num_key_value_heads
+const P  : nat = H / G     -- query heads per key-value head
+const FF : nat = 8192      -- intermediate_size
+const L  : nat = 16        -- num_hidden_layers
+static assert D % H == 0
+static assert H % G == 0
+static assert HD % 2 == 0
+
+dim B
+dim T <= 131072            -- max_position_embeddings
+
+type Tokens = idx[V][batch: B, seq: T]
+type Acts   = ℝ[batch: B, seq: T, model: D]
+type Mask   = bool[seq: T, seq2: T]
+
+-- ω_r = base^(−2r/HD), then Llama 3's scaling (`rope_scaling`: factor 32,
+-- low_freq_factor 1, high_freq_factor 4, original_max_position_embeddings
+-- 8192). With L the original context, a wavelength 2π/ω shorter than L/hi
+-- is kept, one longer than L/lo divided by k, and those between
+-- interpolated: s = clamp((L·ω/2π − lo)/(hi − lo), 0, 1), ω' = ω·((1 − s)/k + s).
+-- 2π is binary64's 2·π, as `math.pi` is.
+fn frequencies(base : f64 = 5e5, k : f64 = 32.0, lo : f64 = 1.0, hi : f64 = 4.0,
+               context : f64 = 8192.0, two_pi : f64 = 6.283185307179586)
+    -> ℝ[rot: HD/2] =
+  let ω = exp(-(2 : ℝ) * real(positions(rot: HD/2)) / (HD : ℝ) * log(real(base)))
+  let s = clamp((real(context) * ω / real(two_pi) - real(lo)) / real(hi - lo), (0 : ℝ), (1 : ℝ))
+  ω * (((1 : ℝ) - s) / real(k) + s)
+
+-- φ[t, r] = t · ω'_r.
+fn angles() -> ℝ[seq: T, rot: HD/2] =
+  ein[seq, rot](real(positions(seq: T)) * frequencies())
+
+-- The rotation of the pairs (r, r + HD/2) of a head; `x` has `seq` just
+-- before `hd`, the angle broadcast by name over the pair and the heads.
+fn rope(φ : ℝ[seq: T, rot: HD/2], x : ℝ[..., seq: T, hd: HD]) -> ℝ[..., seq: T, hd: HD] =
+  let p  = split(axis hd, pair: 2, rot: HD/2, x)
+  let x0 = p[pair: 0..1]
+  let x1 = p[pair: 1..2]
+  let c  = cos(φ)
+  let s  = sin(φ)
+  merge(axis pair, axis rot, concat(axis pair, x0 * c - x1 * s, x1 * c + x0 * s))
+
+-- `rms_norm_eps` 1e-5. Hugging Face's LlamaRMSNorm: x / √(mean(x²) + ε) · γ.
+module RMSNorm {
+  param γ : ℝ[model: D]  init = ones
+  fn apply(x : ℝ[..., model: D]) -> ℝ[..., model: D] =
+    x / sqrt(mean(axis model, x * x) + real(1e-5)) * γ
+}
+
+fn silu(x : ℝ[...]) -> ℝ[...] = x * sigmoid(x)
+
+-- A projection is `x · w`, `w : ℝ[in, out]`: Hugging Face's `weight`
+-- transposed (its Linear stores ℝ[out, in]).
+module SwiGLU {
+  param gate : ℝ[model: D, ff: FF]  init = normal(std = 0.02)
+  param up   : ℝ[model: D, ff: FF]  init = normal(std = 0.02)
+  param down : ℝ[ff: FF, model: D]  init = normal(std = 0.02)
+  fn apply(x : Acts) -> Acts = (silu(x · gate) * (x · up)) · down
+}
+
+-- 32 query heads over 8 key-value heads: query head g·P + p reads key-value
+-- head g, as `repeat_kv` reads it. Every weight is read whole by `·`, so
+-- that a realization may store any of them as integers (the C export reads
+-- integer weights whole, D84): the projections' results are split, not the
+-- weights. `rope` wants `seq` just before `hd`, so the queries and keys are
+-- laid out with the heads first by an `ein` that sums nothing.
+module Attention {
+  param wq : ℝ[model: D, qout: D]     init = normal(std = 0.02)
+  param wk : ℝ[model: D, kvout: G*HD] init = normal(std = 0.02)
+  param wv : ℝ[model: D, kvout: G*HD] init = normal(std = 0.02)
+  param wo : ℝ[headhd: D, model: D]   init = normal(std = 0.02)
+
+  fn apply(x : Acts, mask : Mask, φ : ℝ[seq: T, rot: HD/2]) -> Acts =
+    let q4 = split(axis rest, per: P, hd: HD, split(axis qout, groups: G, rest: P*HD, x · wq))
+    let q = rope(φ, ein[batch, groups, per, seq, hd](q4))
+    let k = rope(φ, ein[batch, groups, seq, hd](split(axis kvout, groups: G, hd: HD, x · wk)))
+    let v = split(axis kvout, groups: G, hd: HD, x · wv)
+    let s = ein[batch, groups, per, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = softmax(axis seq2, s, where = mask)
+    let o = ein[batch, seq, groups, per, hd](a * v)
+    heads(merge(axis per, axis hd, o)) · wo
+}
+
+-- The heads joined back into one axis: `merge` leaves the axis it makes
+-- unnamed, and this signature names it, so that a second `merge` can select
+-- it.
+fn heads(x : ℝ[batch: B, seq: T, groups: G, rest: P*HD]) -> ℝ[batch: B, seq: T, headhd: D] =
+  merge(axis groups, axis rest, x)
+
+module Block {
+  use attn : Attention
+  use ff   : SwiGLU
+  use n1, n2 : RMSNorm
+  fn apply(x : Acts, mask : Mask, φ : ℝ[seq: T, rot: HD/2]) -> Acts =
+    let x = x + attn.apply(n1.apply(x), mask, φ)
+    x + ff.apply(n2.apply(x))
+}
+
+-- `tie_word_embeddings`: the logits are the final states against the token
+-- table, so the model has no head of its own.
+module Llama3 {
+  param tok : ℝ[vocab: V, model: D]  init = normal(std = 0.02)
+  use blocks : stack{L}(Block)
+  use norm   : RMSNorm
+
+  fn apply(ids : Tokens) -> ℝ[batch: B, seq: T, vocab: V] =
+    let h = norm.apply(blocks.apply(embed(tok, ids), causal_mask(seq: T), angles()))
+    ein[batch, seq, vocab](h * tok)
+}
+
+-- Greedy generation reads the last position; `presk serve --temperature 0`.
+fn next_token(θ : params Llama3, key : key, ctx : Tokens, temperature : f64 = 1.0)
+    -> idx[V][batch: B] uses Rand =
+  sample(key, Llama3.apply(θ, ctx)[seq: -1] / real(temperature))
+
+inference serve {
+  model    = Llama3
+  weights  = "../out/llama3/llama-3.2-1b"
+  generate = next_token
+}

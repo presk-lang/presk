@@ -21,6 +21,7 @@ presk-rt.workspace = true
 presk-kernel.workspace = true
 presk-realize.workspace = true
 presk-cranelift.workspace = true
+presk-llvm.workspace = true
 presk-serve.workspace = true
 presk-export-pytorch.workspace = true
 presk-export-c.workspace = true

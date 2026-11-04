@@ -51,7 +51,9 @@ what diagnostics print.
 | string | `"data/tokens.psk.d"` | `Str` (escapes `\"`, `\\`, `\n`, `\t`) |
 
 A leading `-` is the unary minus operator, not part of the literal
-(`logits[seq: -1]` parses as a negated `1`).
+(`logits[seq: -1]` parses as a negated `1`). `..` is the delimiter of a
+slice's bounds (0.17.0 step 6): since `1.` is no literal, `0..1` is three
+tokens, `0`, `..` and `1`, and `...` stays one.
 
 **Layout.** Line breaks are significant. A declaration, a module member or a
 configuration field ends at the end of its line. An expression ends at the
@@ -325,7 +327,16 @@ All binary operators are left-associative except `^`.
 - **`ein[axes](body)`**: Einstein summation with the result axes named:
   `ein[batch, heads, seq, seq2](q * k)`.
 - **Indexing** `t[sel, …]` with positional `t[i]` or named `logits[seq: -1]`
-  selectors.
+  selectors, which drop the axis they select along. A selector with `..` is
+  a **slice**, `p[pair: 0..1]` or `t[0..2]` on the first axis, which keeps
+  its axis at the length `hi − lo` (0.17.0 step 6; the reference's rule
+  E-Slice). The bounds are dimensions — literals, constants, dimensions of
+  the file or of the function, and their sums and differences — and
+  `presk check` proves `0 ≤ lo ≤ hi ≤` the axis's length for every value of
+  them (`E2014` with a counterexample otherwise, `E1007` for a bound that is
+  not a dimension). Selectors of both kinds mix in one index, left to
+  right, on real and on index tensors: `w[seq: 1..T + 1]` is the targets of
+  a window of `T + 1` tokens (`examples/concat/`).
 - **Ascription** `(expr : type)`.
 - **Tuples** `(a, b)`, `()`.
 - **Dimension arguments** on a name: `Linear{D, D}`.
@@ -498,8 +509,17 @@ and not with them (`coverage` chapter);
 true where `seq2 ≤ seq` (it was a real tensor of 0 and `−∞` added to the
 scores until 0.10.0 step 7b, and no tensor holds `−∞` since);
 `matmul`; `grad`; `dropout(rate, key, x)` and `split_key(key) → (key, key)`,
-below. Not implemented: `vjp`, `jvp`, `concat`,
-`clamp`, `max`, `min` (error `E2012`). Initializers are not builtins but
+below;
+`max(x, y)`, `min(x, y)` and `clamp(x, lo, hi)` (0.17.0 step 6), of real
+tensors element by element, broadcast as `+` broadcasts: at a tie `max` and
+`min` give their second operand and its derivative, and `clamp` is
+`min(max(x, lo), hi)`, so a hyperparameter bound is injected first,
+`clamp(s, (0 : ℝ), (1 : ℝ))`;
+`concat(axis a, x, y)`, which joins two real tensors along an axis both
+carry by name, their shapes equal but for its length (`E2008` for an
+operand without the axis: there is no implicit axis of length one, and the
+slice `e[a: i..i+1]` gives one; `E2003` for shapes that differ otherwise).
+Not implemented: `vjp`, `jvp` (error `E2012`). Initializers are not builtins but
 the vocabulary of the `init =` clause: see "Initializers" above.
 
 **Configuration blocks** are checked against schemas: `optimizer` fields
@@ -533,7 +553,7 @@ and `sample` are `Disc` in everything, and so is `one_hot`, whose only
 argument is an index; `embed` and `cross_entropy` are `C∞`
 in the table/logits and `Disc` in the indices, and `softmax` in its scores
 and its mask; `real(t)` of an index tensor
-is `Disc`; `relu` and `abs` are `C⁰⁺`; everything else (`+ · ein exp tanh
+is `Disc`; `relu`, `abs`, `max`, `min` and `clamp` are `C⁰⁺`; everything else (`+ · ein exp tanh
 softmax gelu sqrt mean …`) is `C∞`. Calls use the callee's summary, so
 `loss` in `train_minigpt.psk` is `C∞` in `θ` and `Disc` in `batch`, and
 `next_token` is `Disc` in all its parameters (it returns a sample). The
@@ -685,8 +705,10 @@ What lowering does:
   (`split_key n`); stacked sub-modules are initialized `L` times and
   combined with `stack_params L`.
 - **Builtins become primitives** whose axes are designated by *name*
-  (`mean axis model`, `softmax axis seq2`, `index seq: -1`), because runtime
-  tensors carry the axis names of their types; `ein` records the relabeled
+  (`mean axis model`, `softmax axis seq2`, `index seq: -1`, `slice pair:
+  0..1`, `concat pair`), because runtime tensors carry the axis names of
+  their types, and a slice's bounds are dimensions, given values where the
+  function is called; `clamp` lowers to a `max` and a `min`; `ein` records the relabeled
   axis names of each operand and of the output; `split_heads 12x64` carries
   the head constants; `real` injects a hyperparameter into `ℝ[]`.
 - **Verification.** After lowering, a structural check (`presk_core::verify`)
@@ -752,7 +774,12 @@ fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : 
   another `ein` of the cotangent with the other operands; `embed` and
   `cross_entropy` use dedicated `embed_vjp`/`cross_entropy_vjp`
   (scatter-add and `softmax − onehot`); `gelu`, `relu`, `abs` use `gelu'`,
-  `heaviside`, `sign`.
+  `heaviside`, `sign`. Since 0.17.0 step 6, `max x1, x2` gives `x1` the
+  cotangent times `heaviside(x1 − x2)` and `x2` the rest, so a tie goes to
+  the second operand (`min` likewise with `heaviside(x2 − x1)`); a `concat`'s
+  adjoint is two `slice`s of the cotangent, and a slice's is the cotangent
+  placed into zeros, `slice_vjp` (`tests/data/concat_grad.psk` checks them
+  against finite differences at 512 bits).
 - **No adjoint** flows into hyperparameters (`nat`, `f64`), indices, keys, or
   through `argmax`/`sample`; the regularity analysis has already rejected
   `grad` where that would be a mistake.

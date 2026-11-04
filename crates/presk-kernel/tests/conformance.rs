@@ -327,6 +327,14 @@ fn primitives_conform() {
         (PrimOp::Argmax, vec![logits.clone()]),
         (PrimOp::IndexConst { axis: "seq".into(), index: -1 }, vec![sm.clone()]),
         (PrimOp::ScatterIndex { axis: "seq".into(), index: 1 }, vec![sm.clone(), real(vec![ax(Some("batch"), 2), ax(Some("model"), 4)], 15)]),
+        // plan 0.17.0 step 6: max and min (with a broadcast), a slice of a
+        // real and of an index tensor, its adjoint, and a concatenation.
+        (PrimOp::Max, vec![x.clone(), y.clone()]),
+        (PrimOp::Min, vec![x.clone(), row.clone()]),
+        (PrimOp::Slice { axis: "seq".into(), lo: presk_types::dim::DimExpr::nat(1), hi: presk_types::dim::DimExpr::nat(3) }, vec![sm.clone()]),
+        (PrimOp::Slice { axis: "seq".into(), lo: presk_types::dim::DimExpr::nat(0), hi: presk_types::dim::DimExpr::nat(3) }, vec![ids.clone()]),
+        (PrimOp::SliceVjp { axis: "seq".into(), lo: presk_types::dim::DimExpr::nat(1), hi: presk_types::dim::DimExpr::nat(3) }, vec![sm.clone(), real(vec![ax(Some("batch"), 2), ax(Some("seq"), 2), ax(Some("model"), 4)], 16)]),
+        (PrimOp::Concat { axis: "seq".into() }, vec![sm.clone(), real(vec![ax(Some("batch"), 2), ax(Some("seq"), 2), ax(Some("model"), 4)], 17)]),
         (PrimOp::SplitHeads { h: 2, hd: 2 }, vec![sm.clone()]),
         (PrimOp::MergeHeads { h: 2, hd: 2 }, vec![q.clone()]),
         (PrimOp::SumTo, vec![x.clone(), row.clone()]),

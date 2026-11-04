@@ -102,13 +102,17 @@ reference interpreter (`--bits`), on the kernel interpreter or natively
 **The context length.** In the example the positional embedding is `param
 pos : ℝ[T, D]` with the file's `dim T <= 1024`: the parameters fix `T`, and a
 checkpoint trained on windows of 8 tokens only applies to contexts of 8. When
-the initializer's dimensions include the context's `seq` dimension, `presk
-serve` takes `T` from `--dim T=N` (default: the prompt's length), loads the
-weights at that shape and passes the model the **last `T` tokens** of the
-context at every step: a sliding window, reported as `context window 8`. A
-prompt shorter than `T` is refused (`E7001`), a longer one slides. When the
-parameters do not depend on `T`, the whole context is passed and grows, and
-the file's `dim T <= …` bound is checked at every step. Spec question 43
+a leaf of the model's parameter tree has the context's `seq` dimension in
+its type, `presk serve` takes `T` from `--dim T=N` (default: the prompt's
+length), loads the weights at that shape and passes the model the **last
+`T` tokens** of the context at every step: a sliding window, reported as
+`context window 8`. A prompt shorter than `T` is refused (`E7001`), a longer
+one slides. When the parameters do not depend on `T`, as a model with RoPE's
+(`coverage/llama3.psk`), the whole context is passed and grows, reported as
+`whole context`, and the file's `dim T <= …` bound is checked at every step.
+Until 0.17.0 step 7 (D180) the test read the initializer's dimensions,
+which are every dimension of its file, so every model was served over a
+window, the prompt's length by default. Spec question 43
 records the observation; `ℝ[Tmax, D]` with a slice (question 9) would let the
 same model read any context up to `Tmax`.
 
@@ -209,5 +213,54 @@ Its draws are the native backend's from the same keys, and its output is
 greedy and sampled, `--json` included (statement C5): the eight greedy tokens
 above are `33 33 33 33 0 0 0 0` again, and with `--seed` the sampled ones are
 the native backend's for that seed. A model whose parameters do not fix the
-context's length is refused (`E8009`): `presk serve` passes it a context that
-grows.
+context's length is exported at the length `--dim T=n` gives (0.17.0 step
+7, D180), and refused without it (`E8009`). The export then takes two
+copies of the generation function, `next_token.at` and its greedy
+`next_token.greedy.at`:
+- each reads the logits at a position it is given, an indicator `at :
+  ℝ[seq: T]` (1 at the position, 0 elsewhere), where the function read the
+  last one: `x[seq: -1]` becomes `sum(axis seq, x · at)`, exactly `x` at
+  that position, since a product by 0 or 1 is exact and so is adding zeros;
+- `generate.c` pads the context after its last token to `n`, reads the
+  logits at that token, and stops when the `n` positions are full;
+- by causality those logits are the context's alone, so its tokens are
+  `presk serve`'s over the whole, growing context, greedy and sampled,
+  `--json` included (`"window": null`).
+
+The function must select the last position itself, once (`E8009`
+otherwise). No KV cache comes with it: each step computes the whole padded
+context again.
+
+## On Llama 3.2 1B's published weights
+
+`make llama3`'s stage `rw4` (`experiments` chapter, §25; plan 0.17.0
+step 7, D180) serves `coverage/llama3.psk` on `meta-llama/Llama-3.2-1B`,
+converted to a `.psk.d` of `bf16` leaves (`data` chapter), from four
+prompts of 16 tokens:
+
+```sh
+presk serve coverage/llama3.psk --weights out/llama3/llama-3.2-1b.psk.d \
+     --prompt "128000 791 6864 315 9822 374 12366 11 323 279 6864 315 15704 374 22463 13" \
+     --tokens 32 --temperature 0 --backend native --realize f32
+presk export coverage/llama3.psk --target c --serve --dim T=48 \
+     --weights out/llama3/llama-3.2-1b.psk.d --realize f32 --no-exact -o out/llama3/serve_c_f32
+make -C out/llama3/serve_c_f32 generate
+```
+
+`presk serve` and `generate.c` give the same 32 greedy tokens from each
+prompt, in `f32` and with the blocks' seven matrices in `int8`: " The
+capital of the United States is Washington, D.C. The capital of the United
+Kingdom is London. …" after "The capital of France is Paris, and the
+capital of Italy is Rome." (statement RW4). Neither is fast:
+- **One thread.** Both run on one thread. A kernel's split divides its
+  outermost loop, which at batch 1 is the batch, so nothing is divided.
+- **No KV cache.** Each token computes the whole context again.
+- **`presk serve`** also compiles the kernels again at each new length:
+  16 to 28 minutes for 32 tokens in `f32`, 8 in `int8`, whose weights are
+  a quarter of the bytes.
+- **`generate.c`** computes all 48 positions at every step, in 21 to 33
+  minutes.
+- **Memory.** `presk serve` holds about 29 GB in `f32`. The C program's
+  arena is 5.0 GB in `f32` and 2.1 GB in `int8`.
+
+A KV cache, and a split over the sequence at batch 1, are later work.

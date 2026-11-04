@@ -19,6 +19,11 @@ the forward pass, the step and T4 in the baseline report's own format
 (`threads | side | layout | median ms | best ms | GFLOP/s | ÷ PyTorch`),
 the median of the processes in `median ms`, the fastest in `best ms`, so
 that what reads the report reads it unchanged.
+
+Rounds run with `LLVM=1` (plan 0.17.0 step 8, D181) carry the LLVM
+backend's rows under the plans; they are then shown beside the native
+backend's, and `--table4` adds NB2 and NB3: Cranelift and LLVM against the
+C program, the C program's workers waiting as the native pool's.
 """
 import argparse
 import glob
@@ -75,13 +80,17 @@ def baseline_rows(res):
     two = lambda g, a: Row([ms(r, g) + ms(r, a) for r in res], [(ms(r, g), ms(r, a)) for r in res])
     out = {}
     for th in ("10", "20"):
+        llvm = all(f"fwd.llvm.plan.{th}" in r for r in res)
         f = [("native", lay, one(f"fwd.native.{lay}.{th}")) for lay in ("default", "plan")]
+        f += [("LLVM", "plan", one(f"fwd.llvm.plan.{th}"))] if llvm else []
         f += [("C", lay, one(f"fwd.c.{lay}.{th}")) for lay in ("default", "plan")]
         f += [(f"C, `{WAIT}`", lay, one(f"fwd.c.{lay}.{th}.w")) for lay in ("default", "plan")]
         f += [("PyTorch", "its own", one(f"fwd.pytorch.{th}"))]
         out["fwd", th] = f
         s = [("native, `presk train`", lay, one(f"step.native.{lay}.{th}")) for lay in ("default", "plan")]
+        s += [("LLVM, `presk train`", "plan", one(f"step.llvm.plan.{th}"))] if llvm else []
         s += [("native", lay, two(f"grad.native.{lay}.{th}", f"adam.native.{lay}.{th}")) for lay in ("default", "plan")]
+        s += [("LLVM", "plan", two(f"grad.llvm.plan.{th}", f"adam.llvm.plan.{th}"))] if llvm else []
         s += [("C", lay, two(f"grad.c.{lay}.{th}", f"adam.c.{lay}.{th}")) for lay in ("default", "plan")]
         s += [(f"C, `{WAIT}`", lay, two(f"grad.c.{lay}.{th}.w", f"adam.c.{lay}.{th}.w")) for lay in ("default", "plan")]
         s += [("PyTorch, `train.py`", "its own", one(f"step.pytorch.{th}"))]
@@ -112,6 +121,18 @@ def t4_rows(b, th, wait):
         ("the step: `loss_grad` + `adamw.step`", find(b["step", th], "native", "plan"), find(b["step", th], c, "plan")),
         ("beside: `presk train`'s step, drawing its masks", find(b["step", th], "native, `presk train`", "plan"), find(b["step", th], c, "plan")),
     ]
+
+
+def nb_rows(b, th, wait):
+    """(statement, workload, backend Row, C Row, threshold) for NB2 and NB3, when the rounds have LLVM's rows."""
+    c = f"C, `{WAIT}`" if wait else "C"
+    if not any(side == "LLVM" for side, _, _ in b["fwd", th]):
+        return []
+    out = []
+    for nb, side, limit in (("NB2", "native", 1.3), ("NB3", "LLVM", 1.0)):
+        out.append((nb, "the forward pass", find(b["fwd", th], side, "plan"), find(b["fwd", th], c, "plan"), limit))
+        out.append((nb, "the step: `loss_grad` + `adamw.step`", find(b["step", th], side, "plan"), find(b["step", th], c, "plan"), limit))
+    return out
 
 
 def table4(b, n, machine, version, record, out):
@@ -147,6 +168,21 @@ def table4(b, n, machine, version, record, out):
                     if work.startswith("beside"):
                         v = "—"
                     p(f"| {WHERE[th]} | {name} | {work} | {thousands(nat.median)} | {thousands(c.median)} | {r:.2f} | {nat.fastest / c.fastest:.2f} | {v} |")
+        if nb_rows(b, "10", ".w"):
+            p()
+            p("## NB2 and NB3: Cranelift with level 2 and the LLVM backend against the C program")
+            p()
+            p("Plan 0.17.0's statements (D181), judged as T4 is: on the ten X925 cores pinned, the C program's workers waiting as the native pool's, from the medians; NB2 at most 1.3×, NB3 at most 1.0×.")
+            p()
+            p("| statement | threads | the C program's waiting | workload | backend ms | C ms | backend ÷ C | fastest ÷ fastest | verdict |")
+            p("|---|---|---|---|---|---|---|---|---|")
+            for th in ("10", "20"):
+                for wait, name in ((".w", f"`{WAIT}`"), ("", "OpenMP's default")):
+                    for nb, work, x, c, limit in nb_rows(b, th, wait):
+                        r = x.median / c.median
+                        of_record = th == "10" and wait == ".w"
+                        v = (f"holds (≤ {limit}×)" if r <= limit else f"fails (> {limit}×)") if of_record else "(reported)"
+                        p(f"| {nb} | {WHERE[th]} | {name} | {work} | {thousands(x.median)} | {thousands(c.median)} | {r:.3f} | {x.fastest / c.fastest:.3f} | {v} |")
 
 
 def jstep(d):
@@ -221,6 +257,12 @@ def main():
             for work, nat, c in t4_rows(b, th, wait):
                 per = ", ".join(f"{x / y:.2f}" for x, y in zip(nat.values, c.values))
                 pr(f"| T4: native ÷ C, {work} | {WHERE[th]} | {name} | **{nat.median / c.median:.2f}** | {nat.fastest / c.fastest:.2f} | {per} |")
+
+    for th in ("10", "20"):
+        for wait, name in ((".w", f"`{WAIT}`"), ("", "OpenMP's default")):
+            for nb, work, x, c, _ in nb_rows(b, th, wait):
+                per = ", ".join(f"{u / v:.3f}" for u, v in zip(x.values, c.values))
+                pr(f"| {nb}: {'LLVM' if nb == 'NB3' else 'native'} ÷ C, {work} | {WHERE[th]} | {name} | **{x.median / c.median:.3f}** | {x.fastest / c.fastest:.3f} | {per} |")
 
     pr()
     pr("### The linear products alone, ten threads pinned (ms, the median of the processes; max ÷ min)")

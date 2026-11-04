@@ -53,6 +53,10 @@ pub struct Options<'a> {
     pub placed: bool,
     /// Whether to export the generation loop (step 6).
     pub serve: bool,
+    /// Whether the run the program is recorded from, and checked against,
+    /// is the LLVM backend's rather than the native one's (plan 0.17.0
+    /// step 3, NB0: `make llvm-conformance`).
+    pub llvm: bool,
     pub out: &'a Path,
     /// The command's `--remat`.
     pub remat: Remat,
@@ -98,7 +102,7 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
     }
 
     // ----- with --serve, the generation function and its greedy copy --------
-    let fns = if o.serve {
+    let mut fns = if o.serve {
         match presk_serve::prepare_serve(&mut core, &prog, &typed, o.entry) {
             Ok(f) => Some(f),
             Err(e) => return Err(fail(report, &sm, e.code, e.message)),
@@ -106,17 +110,27 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
     } else {
         None
     };
-    let entry = match (&fns, o.entry) {
-        (Some(f), _) => core.func(f.generate).name.clone(),
-        (None, Some(e)) => e.to_string(),
-        (None, None) => unreachable!("--entry is checked"),
-    };
-    if let Some(f) = &fns {
+    // Whether the context is padded to the length `--dim` gives (below).
+    let mut padded = false;
+    if let Some(f) = &mut fns {
         // presk serve passes the whole context, growing, unless the
-        // parameters fix its length: a C program has one shape.
-        let init_dims: Vec<String> = core.func(f.init).dims.iter().map(|d| prog.dim_name(*d)).collect();
-        if !init_dims.contains(&f.seq_dim) {
-            return Err(fail(report, &sm, "E8009", format!("`{entry}` is served over the whole context, which grows by a token at every step: `{}`'s parameters do not fix its length `{}`, and a C program has one shape. `--serve` exports a model whose parameters fix it, served over a sliding window of that many tokens", f.model, f.seq_dim)));
+        // parameters fix its length: a C program has one shape. Without a
+        // window, the program is exported at the length `--dim` gives, on the
+        // context padded after its last token, and reads that token's logits
+        // (plan 0.17.0 step 7, D180).
+        if !f.tied {
+            let name = core.func(f.generate).name.clone();
+            if !dims.iter().any(|(n, _)| *n == f.seq_dim) {
+                return Err(fail(report, &sm, "E8009", format!("`{name}` is served over the whole context, which grows by a token at every step: `{}`'s parameters do not fix its length `{}`, and a C program has one shape. Give it with `--dim {}=N`: the program is then exported at that length, the context padded after its last token, whose logits it reads, up to N tokens", f.model, f.seq_dim, f.seq_dim)));
+            }
+            match presk_serve::at_position(&mut core, f) {
+                Ok((g, gg)) => {
+                    f.generate = g;
+                    f.greedy = gg;
+                    padded = true;
+                }
+                Err(e) => return Err(fail(report, &sm, e.code, e.message)),
+            }
         }
         match dims.iter().find(|(n, _)| *n == f.batch_dim) {
             Some((_, 1)) => {}
@@ -127,12 +141,23 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
             None => dims.push((f.batch_dim.clone(), 1)),
         }
     }
+    let entry = match (&fns, o.entry) {
+        (Some(f), _) => core.func(f.generate).name.clone(),
+        (None, Some(e)) => e.to_string(),
+        (None, None) => unreachable!("--entry is checked"),
+    };
     let realize = plan.realization.clone();
     crate::plan::check_plan(&plan, &core, &sm, report)?;
 
     // ----- the arguments, as `presk run` makes them -------------------------
     let opts = presk_interp::RunOptions { entry: entry.clone(), dims, seed: o.seed, bits: BITS, digits: 12 };
-    let (func, fdims, inputs) = match presk_interp::run::prepare_run(&core, &prog, &opts) {
+    // With a checkpoint, the parameters are described and not drawn (D180).
+    let prepared = if o.weights.is_some() {
+        presk_interp::run::prepare_run_given_params(&core, &prog, &opts)
+    } else {
+        presk_interp::run::prepare_run(&core, &prog, &opts).map(|(f, d, i)| (f, d, i, None))
+    };
+    let (func, fdims, inputs, described) = match prepared {
         Ok(x) => x,
         Err(e) if e.message.contains("unbound dimension") || e.message.contains("open prefix") => {
             return Err(fail(report, &sm, "E8003", format!("`{entry}` is exported at bound dimensions only: {}", e.message)));
@@ -158,7 +183,11 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
     });
     let weights_type = match (&o.weights, &params_module) {
         (Some(w), Some(_)) => {
-            match presk_rt::load_params(w, &args[0]) {
+            let read = match &described {
+                Some(s) => crate::entry::read_given_params(&core, &prog, s, w),
+                None => presk_rt::load_params(w, &args[0]),
+            };
+            match read {
                 Ok(v) => args[0] = v,
                 Err(e) => return Err(fail(report, &sm, e.code, format!("{}: {}", w.display(), e.message))),
             }
@@ -184,10 +213,11 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
     }
 
     // ----- the native run, recorded -----------------------------------------
-    let mut b = match presk_cranelift::native_backend(&core, &prog, &realize) {
+    let made = if o.llvm { presk_llvm::llvm_backend(&core, &prog, &realize) } else { presk_cranelift::native_backend(&core, &prog, &realize) };
+    let mut b = match made {
         Ok(b) => b,
         Err(e) => {
-            report.line(&format!("presk export: the native backend is unavailable, and the C program is its copy: {}", e.message));
+            report.line(&format!("presk export: the {} backend is unavailable, and the C program is its copy: {}", if o.llvm { "LLVM" } else { "native" }, e.message));
             return Err(Stop(2));
         }
     };
@@ -267,6 +297,7 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
         temperature: f.temperature.then_some(if f.key { 3 } else { 2 }),
         default_temperature: f.default_temperature.unwrap_or(1.0),
         greedy: core.func(f.greedy).name.clone(),
+        at: padded.then(|| names.len() - 1),
     });
     let exported = match (&serve, &greedy) {
         (Some(s), Some(g)) => presk_export_c::host::export_serve(&meta, &b.kernels, &rec, g, s, &arg_roles, weights_type.as_deref(), o.straight_line),

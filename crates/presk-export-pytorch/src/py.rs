@@ -330,6 +330,17 @@ impl<'a> Printer<'a> {
             let _ = i;
             params.push(s);
         }
+        // The file's dimensions it reads and its arguments do not give, by
+        // keyword from its callers (0.17.0 step 6: `angles()` reads `T`).
+        let passed = if method { vec![] } else { self.dims_passed(fid) };
+        if !passed.is_empty() {
+            params.push("*".into());
+            for v in &passed {
+                let n = self.elab.dim_name(*v);
+                params.push(n.clone());
+                self.bound_dims.push((*v, n));
+            }
+        }
         if sig.effects.iter().any(|e| e == "Rand") {
             // A `uses Rand` function takes the switch of `dropout`, off by
             // default and passed on to every `uses Rand` callee; `train.py`
@@ -362,11 +373,11 @@ impl<'a> Printer<'a> {
                         && shape.prefix.is_none()
                     {
                         for (k, a) in shape.axes.iter().enumerate() {
-                            if let Some(v) = single_var(&a.len)
+                            if let Some((v, c)) = affine_var(&a.len)
                                 && !self.is_named(v)
                             {
                                 let n = self.elab.dim_name(v);
-                                self.line(&format!("{n} = {}[{j}].shape[{k}]", p.name));
+                                self.line(&format!("{n} = {}", less(format!("{}[{j}].shape[{k}]", p.name), c)));
                                 self.bound_dims.push((v, n));
                             }
                         }
@@ -377,11 +388,11 @@ impl<'a> Printer<'a> {
                 && shape.prefix.is_none()
             {
                 for (k, a) in shape.axes.iter().enumerate() {
-                    if let Some(v) = single_var(&a.len)
+                    if let Some((v, c)) = affine_var(&a.len)
                         && !self.is_named(v)
                     {
                         let n = self.elab.dim_name(v);
-                        self.line(&format!("{n} = {}.shape[{k}]", p.name));
+                        self.line(&format!("{n} = {}", less(format!("{}.shape[{k}]", p.name), c)));
                         self.bound_dims.push((v, n));
                     }
                 }
@@ -397,6 +408,43 @@ impl<'a> Printer<'a> {
             self.line("");
         }
         self.fn_id = None;
+    }
+
+    /// The dimensions of its file a top-level function reads, itself or
+    /// through the top-level functions it calls, that no closed shape of its
+    /// parameters gives: its callers pass them by keyword.
+    fn dims_passed(&self, fid: FnId) -> Vec<DimVar> {
+        let sig = self.elab.function(fid);
+        if sig.owner.is_some() {
+            return vec![];
+        }
+        let file = &self.elab.units[sig.unit].dims;
+        let mut used: std::collections::BTreeSet<DimVar> = std::collections::BTreeSet::new();
+        let mut calls: Vec<Span> = Vec::new();
+        walk_names(&sig.body, &mut |n| {
+            if let Some(v) = file.get(n) {
+                used.insert(*v);
+            }
+        }, &mut |sp| calls.push(sp));
+        for sp in calls {
+            if let Some(Callee::Fn { id, module: None, .. }) = self.typed.callees.get(&sp)
+                && *id != fid
+            {
+                used.extend(self.dims_passed(*id));
+            }
+        }
+        let mut given: std::collections::BTreeSet<DimVar> = std::collections::BTreeSet::new();
+        for (i, p) in sig.params.iter().enumerate() {
+            let Some(ty) = self.typed.param_ty.get(&(fid, i)).cloned().or_else(|| p.ty.clone()) else { continue };
+            let shapes: Vec<Shape> = match &ty {
+                Ty::Tuple(ts) => ts.iter().filter_map(|t| t.shape().cloned()).collect(),
+                t => t.shape().cloned().into_iter().collect(),
+            };
+            for sh in shapes.iter().filter(|s| s.prefix.is_none()) {
+                given.extend(sh.axes.iter().filter_map(|a| affine_var(&a.len)).map(|(v, _)| v));
+            }
+        }
+        used.into_iter().filter(|v| !given.contains(v)).collect()
     }
 
     /// Is this dimension variable nameable already (a type parameter, a
@@ -512,6 +560,32 @@ impl<'a> Printer<'a> {
     fn py_shape(&mut self, s: &Shape, in_init: bool) -> String {
         let _ = in_init;
         s.axes.iter().map(|a| self.dim(&a.len)).collect::<Vec<_>>().join(", ")
+    }
+
+    /// A dimension written in the source (a named axis's length, a slice's
+    /// bound) as Python: as an expression, but a quotient, which is exact
+    /// in the fragment, as the integer quotient (`HD // 2`; `HD / 2` would
+    /// be a float).
+    fn dim_src(&mut self, e: &Expr) -> String {
+        fn has_div(e: &Expr) -> bool {
+            match e {
+                Expr::Binary { op: BinOp::Div, .. } => true,
+                Expr::Binary { lhs, rhs, .. } => has_div(lhs) || has_div(rhs),
+                _ => false,
+            }
+        }
+        match e {
+            Expr::Binary { op, lhs, rhs, .. } if has_div(e) && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) => {
+                let o = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    _ => "//",
+                };
+                format!("({} {o} {})", self.dim_src(lhs), self.dim_src(rhs))
+            }
+            other => self.expr(other),
+        }
     }
 
     /// A dimension expression as Python.
@@ -697,7 +771,22 @@ impl<'a> Printer<'a> {
                                 idx[k] = self.expr(value);
                             }
                         }
+                        // A slice keeps its axis, as Python's does.
+                        IndexSel::Slice { axis, lo, hi } => {
+                            let k = match axis {
+                                Some(axis) => s.axes.iter().position(|a| a.name.as_deref() == Some(&axis.name)),
+                                None => idx.iter().position(|x| x == ":"),
+                            };
+                            if let Some(k) = k {
+                                idx[k] = format!("{}:{}", self.dim_src(lo), self.dim_src(hi));
+                            }
+                        }
                     }
+                }
+                // Under an open prefix the selectors are of the written
+                // axes, the last ones: `...` first, and every one kept.
+                if s.prefix.is_some() {
+                    return format!("{b}[..., {}]", idx.join(", "));
                 }
                 while idx.last().is_some_and(|x| x == ":") {
                     idx.pop();
@@ -825,6 +914,10 @@ impl<'a> Printer<'a> {
                         format!("torch.func.functional_call({target}, {theta}, ({},){kwargs})", vals.join(", "))
                     }
                     (None, _) => {
+                        for v in self.dims_passed(id) {
+                            let n = self.elab.dim_name(v);
+                            vals.push(format!("{n}={n}"));
+                        }
                         vals.extend(kw);
                         format!("{fname}({})", vals.join(", "))
                     }
@@ -854,6 +947,35 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// The two operands `i` and `j` of a comparison, each aligned with the
+    /// other as an arithmetic operator's are and bound to a temporary unless
+    /// it is a name or a number, since a selection writes each twice.
+    fn compared(&mut self, pos: &[&Expr], i: usize, j: usize) -> (String, String) {
+        let (Some(ea), Some(eb)) = (pos.get(i), pos.get(j)) else { return ("None".into(), "None".into()) };
+        let (mut a, mut b) = (self.expr_at(ea, 90), self.expr_at(eb, 90));
+        if let (Some(Ty::Real(ls)), Some(Ty::Real(rs))) = (self.ty_of(ea).cloned(), self.ty_of(eb).cloned()) {
+            let (lr, rr) = (ls.axes.len(), rs.axes.len());
+            if lr < rr || (lr == rr && ls.prefix.is_none() && rs.prefix.is_some()) {
+                a = self.broadcast_fix(&ls, &rs, a);
+            } else if rr < lr || (lr == rr && rs.prefix.is_none() && ls.prefix.is_some()) {
+                b = self.broadcast_fix(&rs, &ls, b);
+            }
+        }
+        (self.named_temp(a), self.named_temp(b))
+    }
+
+    /// `text` itself when it is a name or a number, else a temporary that
+    /// holds it, written on a line before the current one.
+    fn named_temp(&mut self, text: String) -> String {
+        if text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+            return text;
+        }
+        let t = format!("_cmp{}", self.temps);
+        self.temps += 1;
+        self.line(&format!("{t} = {text}"));
+        t
+    }
+
     /// Make `short` broadcast against `long` as Presk does (leading prefix
     /// alignment, or alignment by name) where PyTorch would align from the
     /// trailing axis: insert `unsqueeze`s for the axes it lacks.
@@ -864,6 +986,27 @@ impl<'a> Printer<'a> {
             let mut t = text;
             for _ in 0..missing {
                 t = format!("{t}.unsqueeze(-1)");
+            }
+            return t;
+        }
+        if short.prefix.is_none() && long.prefix.is_some() && short.axes.len() <= long.axes.len() {
+            // A closed operand against the written axes of an open one: by
+            // name when the trailing axes do not face their names, its
+            // missing axes inserted from the right (`unsqueeze(-k)`).
+            let off = long.axes.len() - short.axes.len();
+            let trailing_ok = short.axes.iter().enumerate().all(|(i, a)| {
+                let l = &long.axes[off + i];
+                a.name.is_none() || l.name.is_none() || a.name == l.name
+            });
+            if trailing_ok || short.axes.iter().any(|a| a.name.is_none()) {
+                return text;
+            }
+            let n = long.axes.len() as i64;
+            let mut t = text;
+            for (j, l) in long.axes.iter().enumerate().rev() {
+                if !short.axes.iter().any(|a| a.name == l.name) {
+                    t = format!("{t}.unsqueeze({})", j as i64 - n);
+                }
             }
             return t;
         }
@@ -942,7 +1085,7 @@ impl<'a> Printer<'a> {
                 let lens: Vec<String> = args
                     .iter()
                     .filter_map(|a| match a {
-                        Arg::NamedAxis { value, .. } => Some(self.expr(value)),
+                        Arg::NamedAxis { value, .. } => Some(self.dim_src(value)),
                         _ => None,
                     })
                     .collect();
@@ -991,7 +1134,7 @@ impl<'a> Printer<'a> {
             "merge_heads" => format!("_merge_heads({}, H, HD)", x(self, 0)),
             "positions" | "causal_mask" => {
                 let n = args.iter().find_map(|a| match a {
-                    Arg::NamedAxis { value, .. } => Some(self.expr(value)),
+                    Arg::NamedAxis { value, .. } => Some(self.dim_src(value)),
                     _ => None,
                 }).unwrap_or_else(|| "None".into());
                 // A mask: true where j ≤ i (plan 0.10.0 step 7b).
@@ -999,6 +1142,27 @@ impl<'a> Printer<'a> {
             }
             "grad" => format!("torch.func.grad({})", x(self, 0)),
             "matmul" => format!("{} @ {}", x(self, 0), x(self, 1)),
+            // `max`, `min` and `clamp` as selections, so that a tie takes the
+            // second operand and its gradient, as the reference assigns
+            // (`torch.maximum` would split a tie's gradient in two).
+            "max" | "min" => {
+                let (a, b) = self.compared(pos, 0, 1);
+                let cmp = if name == "max" { ">" } else { "<" };
+                format!("torch.where({a} {cmp} {b}, {a}, {b})")
+            }
+            "clamp" => {
+                let (a, lo) = self.compared(pos, 0, 1);
+                let m = format!("_clamp{}", self.temps);
+                self.temps += 1;
+                self.line(&format!("{m} = torch.where({a} > {lo}, {a}, {lo})"));
+                let hi = pos.get(2).map(|e| self.expr_at(e, 90)).unwrap_or_else(|| "None".into());
+                let hi = self.named_temp(hi);
+                format!("torch.where({m} < {hi}, {m}, {hi})")
+            }
+            "concat" => {
+                let k = self.axis_pos(args, pos).unwrap_or(-1);
+                format!("torch.cat(({}, {}), dim={k})", x(self, 0), x(self, 1))
+            }
             other => {
                 self.error(span, format!("builtin `{other}` has no PyTorch export"));
                 "None".into()
@@ -1016,14 +1180,85 @@ fn lit_py(l: &Lit) -> String {
     }
 }
 
-fn single_var(e: &DimExpr) -> Option<DimVar> {
-    if e.coeffs.len() == 1 && e.constant == rat(0) {
+/// `X + c`, one dimension of coefficient 1 and an integer constant: the
+/// length of an axis from which `X` is the shape less `c` (a window's
+/// `seq: T + 1`).
+fn affine_var(e: &DimExpr) -> Option<(DimVar, i64)> {
+    if e.coeffs.len() == 1 {
         let (v, c) = e.coeffs.iter().next().unwrap();
-        if *c == rat(1) {
-            return Some(*v);
+        if *c == rat(1) && e.constant.is_integer() {
+            return e.constant.to_integer().try_into().ok().map(|k: i64| (*v, k));
         }
     }
     None
+}
+
+/// `shape` less the constant `k` of an axis's length.
+fn less(shape: String, k: i64) -> String {
+    match k {
+        0 => shape,
+        k if k > 0 => format!("{shape} - {k}"),
+        k => format!("{shape} + {}", -k),
+    }
+}
+
+/// Every name an expression reads, every call in it, every dimension a
+/// named axis or a slice writes: `f` on each name, `g` on each call's span.
+fn walk_names(e: &Expr, f: &mut dyn FnMut(&str), g: &mut dyn FnMut(Span)) {
+    let arg = |a: &Arg, f: &mut dyn FnMut(&str), g: &mut dyn FnMut(Span)| match a {
+        Arg::Pos(x) | Arg::Named { value: x, .. } | Arg::NamedAxis { value: x, .. } => walk_names(x, f, g),
+        Arg::Axis(_) => {}
+    };
+    match e {
+        Expr::Lit { .. } => {}
+        Expr::Var { path } => {
+            if path.segs.len() == 1 {
+                f(&path.segs[0].name);
+            }
+        }
+        Expr::Let { init, body, .. } => {
+            walk_names(init, f, g);
+            walk_names(body, f, g);
+        }
+        Expr::Lambda { body, .. } => walk_names(body, f, g),
+        Expr::Call { callee, args, span } => {
+            g(*span);
+            walk_names(callee, f, g);
+            for a in args {
+                arg(a, f, g);
+            }
+        }
+        Expr::Field { base, .. } => walk_names(base, f, g),
+        Expr::Index { base, sels, .. } => {
+            walk_names(base, f, g);
+            for sel in sels {
+                match sel {
+                    IndexSel::Pos(x) | IndexSel::Named { value: x, .. } => walk_names(x, f, g),
+                    IndexSel::Slice { lo, hi, .. } => {
+                        walk_names(lo, f, g);
+                        walk_names(hi, f, g);
+                    }
+                }
+            }
+        }
+        Expr::Inst { base, args, .. } => {
+            walk_names(base, f, g);
+            for a in args {
+                walk_names(a, f, g);
+            }
+        }
+        Expr::Ein { body, .. } => walk_names(body, f, g),
+        Expr::Binary { lhs, rhs, .. } => {
+            walk_names(lhs, f, g);
+            walk_names(rhs, f, g);
+        }
+        Expr::Unary { expr, .. } | Expr::Ascribe { expr, .. } => walk_names(expr, f, g),
+        Expr::Tuple { elems, .. } => {
+            for x in elems {
+                walk_names(x, f, g);
+            }
+        }
+    }
 }
 
 fn collect_product<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {

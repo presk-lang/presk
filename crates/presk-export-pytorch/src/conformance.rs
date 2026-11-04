@@ -186,6 +186,8 @@ from {module_file} import *
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DTYPE = torch.float64
+# What the model makes itself (`real(positions(…))`) is made in DTYPE too.
+torch.set_default_dtype(DTYPE)
 RTOL, ATOL = {rtol}, {atol}
 
 

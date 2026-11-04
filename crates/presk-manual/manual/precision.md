@@ -761,7 +761,9 @@ realization's traffic. The line `sites` counts the values offered, with the
 stored values and those not offered beside them. `presk explain` gives each
 value not offered its rule as its reason. The training step's solver,
 which decides per function, and the integer menu of `--quant`, offered on
-matrices, are outside the rules.
+matrices, are outside the rules. The one menu's integer rungs (0.17.0,
+below) are inside them: rule 2 reads the first float step, `f32`, so a
+parameter it leaves out is offered no integer either.
 
 ## Time, not traffic
 
@@ -1043,6 +1045,106 @@ not. Before the four-lane load was written, converting lane by lane made the
 GPT forward 1.6× *slower* than `f32` — the same lesson `bf16` taught in
 0.5.0, that a narrower type is a conversion before it is a saving.
 
+## One menu: integers in the solve
+
+`--quant` chooses the integers in a pass after the float solve, under the
+budget the float assignment left, by an estimate of its own, the
+root-sum-square of `g·δ`, and over axis −2 whatever the parameter's
+readers contract. Since 0.17.0 (plan 0.17.0 step 4, D177) `presk solve
+--menu f64,f32,bf16,int8,int4` offers them in the solve itself, as rungs of
+one menu:
+
+- **The rungs.** Every value is offered the float types of the menu. A
+  parameter of rank two or more as declared is also offered `int8` and
+  `int4`, each under `absmax` and `pow2` scales (`int8/absmax`,
+  `int4/pow2`… name one). The rungs live in the solver, not in `Dtype`:
+  integers are a storage type, which a nest dequantizes to `f32(q·s)` as
+  it reads them, and nothing is computed in them.
+- **The scale's axis** is the one every reader of the parameter contracts:
+  the last axis of a `·`'s left operand, the first of its right operand,
+  the one label of an `ein` operand the output does not keep. Counted from
+  the end, it is the same axis whether a `fold` slices the stacked layers
+  off or not. A parameter read by a gather (`embed`), by an elementwise
+  operation, by a call, or along two different axes is scaled along −2,
+  as `--quant` scales every matrix.
+- **The term** has the form of a float type's at rest (D155): `s · max |ŵ
+  − w|`, s the parameter's cotangent 1-norm and `max |ŵ − w|` the largest
+  move of its values quantized, computed exactly from the weights, `ŵ`
+  read back as the `f32` it denotes. A nest narrower than `f32` rounds
+  the value again where it reads it, so the term is the larger of that
+  move and the narrowest reader's rounding of the parameter.
+- **The bytes** are the integers and one `f32` scale per index of every
+  axis but the scale's: a 4 × 4 matrix in three layers stores 48 + 48
+  bytes in `int8`, as many as in `bf16`, and 24 + 48 in `int4`.
+- **The moves** are the solver's, over one list: the proposal by saving
+  per unit of term, the floats and the integers ranked together; the
+  measurement's widening, one rung at a time (`int4` to `int8`, `int8` to
+  `bf16`, the smaller term of two rungs of the same bytes); `--narrow`;
+  the exhaustive search, over the product of every value's rungs. Two
+  rungs of the same bytes are never both taken: `int8/pow2` saves no byte
+  over `int8`, and the solver takes it only where its move is the smaller.
+- **The decision** is written in the realization's `quant` map, as
+  `--quant` writes it, so the format does not change and every backend
+  runs it.
+
+Without an integer rung the solve is the float solve, decision for decision:
+`--menu f64,f32,bf16` prints what no `--menu` prints (QM0, which X1, `make
+quant-table` and `step-table` check against `v0.16.1`). `--quant` stays the
+two-pass solver, and is refused with `--menu`'s integers.
+
+On the tutorial's tower at a budget of 1 relative, the stacked matrix
+`blocks.proj.w` takes `int4` under `pow2`, whose move on these weights,
+5.875·10⁻², is the smaller of the two `int4` (`absmax`'s is 6.01·10⁻²):
+
+```text
+  parameters  4 offered, 4 stored away from f64 (0 f32, 3 bf16, 0 int8, 1 int4): 1.2800e2 bytes at rest against 6.0800e2 in f64
+  menu        f64, f32, bf16, int8, int8/pow2, int4, int4/pow2: 1 parameter(s) of rank two or more priced in integers, 1 scaled along the axis their readers contract, 0 along −2 (D177)
+```
+
+`presk explain --budget 1 --menu f64,f32,bf16,int8,int4` gives the
+decision its reason, its rung, its bytes and its axis:
+
+```text
+- `blocks.proj.w`: narrowed to `f32` (move 7): saves 1.920e2 bytes, adds 7.394e-8 to the estimate, then 7.394e-8; narrowed to `bf16` (move 17): saves 9.600e1 bytes, adds 5.379e-3 to the estimate, then 5.381e-3; narrowed to `int4/pow2` (move 29): saves 2.400e1 bytes, adds 1.691e-1 to the estimate, then 2.820e-1; stored as `int4/pow2`, 72 bytes with its scales, which are constant along axis -2, the one its readers contract; the largest move of its values 5.875e-2.
+```
+
+On the trained course GPT of `make precision` (D = 64, 10⁻³ relative,
+D177, steering figures), the default solve takes no integer: each
+matrix's `int8` term, `s · max |ŵ − w|`, is 2.7·10⁻³ to 7.0·10⁻³ against a
+budget of 2.8·10⁻³, and the floats spend 2.0·10⁻³ of it first. That
+term has the float estimate's pessimism: the nine `int4` terms sum to 368
+times the gap measured with all nine in `int4`. The measurement corrects
+it only where it narrows:
+
+| solve | the nine matrices | traffic ratio | measured |
+|---|---|---|---|
+| floats, the default | `f32` | 2.01× | 3.55·10⁻⁶ |
+| `--quant` | `int4` | 2.28× | 2.17·10⁻³ |
+| `--menu …,int8,int4` | `f32` | 2.01× | 3.55·10⁻⁶ |
+| `--quant --narrow measured` | `int4` | 4.39× | 2.27·10⁻³ |
+| `--menu …,int8,int4 --narrow measured` | seven `int4`, two `int8` | 4.37× | 2.85·10⁻⁴ |
+| the same, `--margin 1` | `int4` | 4.39× | 2.27·10⁻³ |
+
+With `--narrow measured` each decision goes down one rung a pass, `bf16`
+to `int8` to `int4`, while the gap stays under the budget over the
+margin; with `--margin 1` the one menu reaches its relaxation floor and
+`--quant`'s realization. `presk solve --menu … --sites N` prints each
+parameter's terms per rung beside its `f32` term.
+
+The rows of record are step 8's (D181; the `experiments` chapter, §26):
+- every one-menu solve is inside its budget by measurement, with no
+  widening round (QM1);
+- on the curve at D = 64 it takes integers at 10⁻¹ and 10⁻² only, 3.55×
+  and 2.55× against 0.16.1's 3.33× and 2.51×;
+- on V6 and the course logits at ε\* it takes none, and its realizations
+  are 0.16.1's byte for byte, certified as they are (QM3);
+- on BERT-large's two blocks at 10⁻³ it takes none either (2.00×), where
+  `--quant` quantizes all ten matrices, at 4.93× and measured 3.82·10⁻³
+  inside the budget of 6.25·10⁻³. The one menu does not reach the two
+  passes there (QM2 fails): its term is the worst case of each matrix's
+  moves, about the whole budget, where `--quant`'s root-sum-square lets
+  them cancel and is checked by its measurement.
+
 ## J at course scale
 
 A realization is keyed by function and `let`, not by shape, so one solved at
@@ -1190,6 +1292,43 @@ is what this length of training shows, and a longer run is the obvious
 next measurement, as D50 said of the quality axis. (D93's table; with the
 gradient defect 3f made wrong, D52 measured the solved step 5.0·10⁻³ from
 the `f64` run, 245 times closer than a seed, and the recipe 3.0·10⁻².)
+
+### By stored value (0.17.0)
+
+`presk solve --step --grain value` (plan 0.17.0 step 5, D178) solves the
+step by the same method at the grain of its stored values. Every value
+the step stores, of more than one element, is measured alone in `f32` and
+in `bf16` on the update's gap. They are combined greedily by predicted time
+saved per unit of isolated gap under the root-sum-square, and the
+combination is measured and widened. The realization names them in
+`storage`, and `presk train --realize` applies them: every stored value
+the step's measurement runs is one the training loop runs, under either
+`--remat`.
+
+- *What is not offered.* A carried value or a fused member has no type
+  of its own, so it is not offered. Neither is the optimizer's state, the
+  master weights and AdamW's moments (`θ′`, `m′`, `v′`), which keep the
+  default type as training keeps the parameters.
+- *What that keeps wide.* On the course GPT at D = 64, `adamw.step`'s
+  elementwise chain is fused into those three roots. Keeping the state
+  wide therefore keeps the optimizer's arithmetic wide. Of the step's
+  524 sites, 172 are offered.
+
+At 10⁻³ (steering, D178) the per-value realization is inside its budget
+by measurement, at 9.64·10⁻⁴, with 158 values in `f32`, 13 in `bf16` and
+one in `f64`. The profile predicts its step, by role, 0.11 % slower than
+J′'s all-`f32` realization by function, and 0.01 % slower than J′ with its
+state kept wide. On this profile every realization is within 1.01× of
+all-`f64` at D = 64, so the predicted time does not tell them apart. J′'s
+1.75× was measured at course scale, and the per-value realization is timed
+there by D127's protocol in the version's rows (D181; the `experiments`
+chapter, §26). There its step takes 7.80 s, 1.92× faster than all-`f64`'s
+15.01 s but slower than J′'s 6.99 s (TS2 fails). J′ with its state kept
+wide takes 7.58 s, and the conversions between types take 3.1 % of the
+per-value step against 1.0 % of J′'s. The predicted time by role
+prices each stored value and fused member at its type and a carried value
+at nothing. `presk calibrate --step` prints it beside D52's column when a
+realization types stored values.
 
 ## The reference's own gap
 

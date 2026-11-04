@@ -1715,6 +1715,156 @@ are judged at the Code civil's ε\*.
   parenthesis, the Code civil's own kinds of position. They never come
   after a capital inside running text, the Code pénal's window 261.
 
+## 24. Each kernel's share of the native backend's gap (D174)
+
+`make kernel-shares` (`docs/kernel-shares-2026-10-28.md`) times every
+launch of the course GPT's forward pass, gradient and optimizer on both
+sides and joins them by the kernel's signature. The run is at B = 16,
+T = 256 in `f32`, under the frozen profile's plans:
+- natively, by `presk bench --plan-only --calibrate`;
+- in the exported C program, by `kernel_time.py`.
+
+There are two settings: ten X925 against GCC `-O2` with OpenMP, and one
+X925 against GCC `-O2`, clang `-O2` and clang `-O3`. Each ran in three
+processes. Plan 0.17.0's level 1, statement NB1.
+- **On ten X925 the kernels are 1.64× GCC's on the forward pass and
+  1.90× on the step.** The step is wider than D166's calls (1.67×), since
+  the C program's host takes about 110 ms of its step.
+- **The forward pass's gap** is the register-tiled products with their
+  bias (71 %, 1.65–1.74× each) and the masked softmax (19 %, 2.2×).
+- **The gradient's gap** is spread over five kinds:
+  - `sum_to` (23 %, 4.5×), whose innermost loop sums into an output
+    element in memory;
+  - the attention's `ein` (22 %);
+  - the products' derivatives and the products (43 %).
+
+  Simple kernels with one lane in the plan are 4–7.5× slower, where GCC
+  vectorizes them at `-O2` anyway.
+- **On one core clang's build of the same C is 1.32× faster than GCC's on
+  the forward pass and 1.12× on the gradient.** That predicts level 3's
+  LLVM route at or under GCC on these kernels.
+
+A measurement; one change it needed: `--calibrate --plan-only` times the
+plan's kernels alone (the manual's `cli` chapter).
+
+## 25. A public model's weights: Llama 3.2 1B (D180)
+
+`make llama3` (`experiments/llama/llama3.sh`) runs `coverage/llama3.psk`
+on the published weights of `meta-llama/Llama-3.2-1B`, the base model.
+The user downloads them, the licence accepted and the token theirs. This is
+plan 0.17.0 step 7, statements RW2–RW4.
+- **The conversion**, once (`hf_to_pskd.py`): 11 leaves, 1 235 814 400
+  parameters, kept in their `bf16` in a `.psk.d` of version 2 (2.47 GB).
+- **The prompts**, four of 16 tokens, the first the beginning-of-text
+  token, made by the checkpoint's tokenizer (`tokens.py`): "The capital of
+  France is Paris, and the capital of Italy is Rome."; "In mathematics, a
+  prime number is a natural number greater than one that has"; "def
+  fibonacci(n): if n < 2: return n; return fibonacci"; "Le compilateur
+  traduit un programme écrit dans un langage de haut niveau".
+
+The statements:
+- **RW2 holds: the conversion is right.** `presk run --backend native
+  --realize f64` is compared with Hugging Face's `LlamaForCausalLM` in
+  `float64` on the same ids (`rw2.py`, in `.venv-hf`).
+  - The largest gap of the logits is 1.2–1.8·10⁻¹³, 4.7–6.2·10⁻¹⁵ of their
+    largest magnitude (25–30), against a threshold of 10⁻⁸.
+  - The argmax is the same at all 64 positions.
+  - That is two summation orders in `f64`, and no leaf misplaced.
+  - `transformers` computes in `float32` in three places whatever the
+    model's type: the rotary angles, `LlamaRMSNorm` and the eager softmax.
+    So the harness recomputes the angles in `float64` by Hugging Face's own
+    function and removes the norm's cast. Its `float32` frequencies are
+    2.1·10⁻⁷ from the `float64` ones.
+- **RW4 holds: served the same.** `presk serve --backend native` and the
+  exported `generate.c` (at T = 48, the context padded) give the same 32
+  greedy tokens from each prompt, in `f32` and with the blocks' seven
+  matrices in `int8` (absmax, the scale along the contraction axis).
+  - The `f32` model continues the first prompt with " The capital of the
+    United States is Washington, D.C. The capital of the United Kingdom is
+    London. The capital of Canada is Ottawa. The capital of Australia".
+  - The `int8` continuations are the same but for that prompt's last token,
+    "Germany".
+  - Both programs run on one thread at batch 1 (the `serve` chapter).
+- **RW3, reported: the model's gap to the exact reference.** Each
+  prompt's logits are compared with the exact reference at 128 bits
+  (`presk run --backend interp --bits 128`, 21.5 min and 96.6 GB a prompt,
+  each in a memory scope of its own). The `int8` and `int4` realizations quantize the blocks'
+  seven matrices with one scale per output column:
+
+  | realization | max \|logit − exact\| / max \|exact\|, prompts 0–3 | argmax changed, of 16 a prompt |
+  |---|---|---|
+  | `f64` (RW2's run) | 4.8e-15, 6.1e-15, 5.1e-15, 4.8e-15 | 0, 0, 0, 0 |
+  | `f32` | 2.3e-06, 4.0e-06, 2.5e-06, 3.0e-06 | 0, 0, 0, 0 |
+  | `bf16` | 7.9e-03, 1.3e-02, 1.2e-02, 1.0e-02 | 1, 0, 0, 0 |
+  | `int8`, absmax | 1.9e-02, 3.5e-02, 2.5e-02, 3.9e-02 | 0, 0, 0, 0 |
+  | `int8`, pow2 | 2.7e-02, 5.0e-02, 5.5e-02, 4.0e-02 | 0, 0, 0, 1 |
+  | `int4`, absmax | 4.9e-01, 4.8e-01, 4.0e-01, 4.9e-01 | 6, 7, 7, 9 |
+  | `int4`, pow2 | 5.0e-01, 5.9e-01, 5.8e-01, 5.8e-01 | 10, 10, 11, 12 |
+
+  - `f32` changes no decision.
+  - `bf16` and `int8` change one argmax of 64.
+  - `int4` changes 6 to 12 of each prompt's 16. One scale over the whole
+    contraction axis is too coarse for four bits on this model.
+
+One defect, found by the first full-size run. Every command that reads
+`--weights` first drew the model's initial parameters in the reference
+interpreter, in MPFR, about 80 bytes a number at 256 bits, and only then
+read the checkpoint against that tree.
+- At 1.2·10⁹ parameters the first run passed 88 GB and was OOM-killed.
+- Since D180 the parameters are described, and the checkpoint is read
+  against zeros of their shape (the `cli` chapter, `--weights`). RW2's run
+  takes 21.7 GB and 74 s.
+- `presk run --result-only` keeps a checkpoint out of `--json`'s output.
+
+## 26. The rows of record at 0.17.0 (D181)
+
+Plan 0.17.0's step 8 measured every row the version changes, on the
+version's binary (`docs/rows-0.17.0.md`). The timed rows ran alone on
+falicon by D127's protocol: five processes, ten X925, the median. No row of
+the paper was solved or timed again: the paper stays at 0.16.1.
+- **The native code (NB2, NB3 hold).** The course GPT at B = 16,
+  T = 256 in `f32`, under the frozen profile's plans, against the exported
+  C program under GCC `-O2`, its workers waiting as the native pool's:
+
+  | workload | C program | Cranelift, level 2 | ÷ C | LLVM | ÷ C |
+  |---|---|---|---|---|---|
+  | the forward pass | 206.5 ms | 246.4 ms | 1.19× | 205.5 ms | 0.995× |
+  | the step, `loss_grad` + `adamw.step` | 808.1 ms | 803.4 ms | 0.994× | 703.7 ms | 0.871× |
+
+  - At 0.16.0, T4 failed at 1.63× and 1.67× (§20). NB2's threshold is
+    T4's 1.3×, NB3's 1.0×.
+  - Kernel for kernel the LLVM backend's step is 0.98× GCC's. The rest of
+    its 0.871× is the C program's host, about 110 ms of its step (§24).
+  - What remains on Cranelift is the forward pass's register tile (the
+    `native` chapter, "The code generator").
+  - The LLVM backend compiles a kernel in 37–48 ms through `clang`, once:
+    cached, a program starts as fast as on Cranelift (NB4).
+- **One menu (QM1 and QM3 hold, QM2 fails).** `presk solve --menu
+  f64,f32,bf16,int8,int4` against `--quant`'s two passes, on the envelopes
+  of record:
+  - every one-menu solve is inside its budget by measurement, with no
+    widening round;
+  - on the curve at D = 64 it takes integers at 10⁻¹ and 10⁻² (3.55×
+    against 0.16.1's 3.33×, 2.55× against 2.51×), and none from 10⁻³ down;
+  - on V6 and the course logits at ε\* it takes none, and its realizations
+    are 0.16.1's byte for byte: certified on the Code civil, Y1 on the Code
+    pénal, the same time;
+  - **on BERT-large's two blocks at 10⁻³ it takes none (2.00×), where the
+    two passes quantize the ten matrices (4.93×, measured 3.82·10⁻³ inside
+    6.25·10⁻³).** The one menu prices an integer by its largest single
+    move, a worst case of about the whole budget. The second pass prices
+    the moves' root-sum-square, an estimate its measurement checks (the
+    `precision` chapter, "One menu").
+- **The step per stored value (TS2 fails).** At course scale the
+  per-value realization's step takes 7.80 s: 1.92× faster than
+  all-`f64`'s, but slower than J′'s per-function 6.99 s.
+  - J′ with the optimizer's state kept in `f64`, as the per-value space
+    keeps it, already takes 7.58 s.
+  - The conversions between types take 3.1 % of the per-value step and
+    1.0 % of J′'s (TS3).
+  - At D = 64 they take 12.5 % of H6's step, 38 % of its loss against
+    all-`f64` (§20).
+
 ## What these experiments do not show
 
 - **Speed against a mature stack, beyond one model on one machine.** §3's
@@ -1727,9 +1877,10 @@ are judged at the Code civil's ε\*.
   PyTorch eager on the CPU (OpenBLAS and oneDNN). Against PyTorch
   compiled by `torch.compile`, the C step is 1.80× behind, and 2.07× like
   for like without dropout masks (D153, §3); at 0.16.0, the masks gone,
-  1.70× and 1.97× (§20). A GPU, a larger model,
-  another machine, and the native backend's own kernels (1.6× GCC's) are
-  not shown.
+  1.70× and 1.97× (§20). A GPU, a larger model and
+  another machine are not shown. The native backend's own kernels, 1.6×
+  GCC's at 0.16.0, are at GCC's on the LLVM backend at 0.17.0, and 1.19×
+  on Cranelift's forward pass (§26).
 - **A static choice as good as measuring.** RA4, the programme's first
   thesis, was tested twice on the attention of one model family, on one
   machine's two kinds of core. 0.7.0's model failed it for a named cause

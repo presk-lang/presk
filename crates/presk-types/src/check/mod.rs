@@ -57,6 +57,9 @@ pub struct TypedProgram {
     pub lets: Vec<(FnId, String, Ty)>,
     /// For `axis a` arguments: the position of the axis in the tensor argument.
     pub axis_pos: HashMap<Span, usize>,
+    /// For a call of `clamp(x, lo, hi)`, by its span: the type of the
+    /// `max(x, lo)` it lowers through, before `min` with `hi`.
+    pub clamp_inner: HashMap<Span, Ty>,
     /// Type of every function parameter (declared or inferred), by (function, index).
     pub param_ty: HashMap<(FnId, usize), Ty>,
     /// For every call site: the callee's dimension variables (type parameters,

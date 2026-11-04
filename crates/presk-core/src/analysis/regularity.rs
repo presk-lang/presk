@@ -99,7 +99,7 @@ fn prim_class(op: &PrimOp, arg: usize, arg_ty: &Ty) -> Class {
         PrimOp::Embed | PrimOp::CrossEntropy | PrimOp::Softmax { .. } => {
             if arg == 1 { Class::Disc } else { Class::Smooth }
         }
-        PrimOp::Relu | PrimOp::Abs => Class::PiecewiseSmooth,
+        PrimOp::Relu | PrimOp::Abs | PrimOp::Max | PrimOp::Min => Class::PiecewiseSmooth,
         PrimOp::Real => {
             if matches!(arg_ty, Ty::Idx { .. }) { Class::Disc } else { Class::Smooth }
         }

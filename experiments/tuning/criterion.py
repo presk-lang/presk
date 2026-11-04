@@ -30,11 +30,24 @@ def reals(path):
         (count,) = struct.unpack("<Q", f.read(8))
         if not ty.startswith("ℝ") or count != 1:
             raise SystemExit(f"{path}: {count} samples of {ty}, not one real tensor")
-        a = array.array("d")
-        a.frombytes(f.read())
-        if sys.byteorder != "little":
-            a.byteswap()
-        return a
+        # Version 2 (presk D180): the leaf's encoding, 0 f64, 1 f32, 2 bf16.
+        code = 0
+        if version == 2:
+            (n,) = struct.unpack("<I", f.read(4))
+            (code,) = f.read(n)
+        elif version != 1:
+            raise SystemExit(f"{path}: .psk.d version {version}")
+        body = f.read()
+        if code == 0:
+            a = array.array("d")
+            a.frombytes(body)
+            if sys.byteorder != "little":
+                a.byteswap()
+            return a
+        if code == 1:
+            return array.array("d", (x for (x,) in struct.iter_unpack("<f", body)))
+        # A bf16 is the upper half of an f32.
+        return array.array("d", (struct.unpack("<f", struct.pack("<I", h << 16))[0] for (h,) in struct.iter_unpack("<H", body)))
 
 
 def gap(a, e):

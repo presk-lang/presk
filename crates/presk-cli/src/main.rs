@@ -92,6 +92,12 @@ enum Command {
         json: bool,
         #[arg(long)]
         verbose: bool,
+        /// Print the result alone: `--json` without `inputs`, `--verbose`
+        /// without the inputs' lines. For a checkpoint too large to print
+        /// (Llama 3.2 1B's 1.2·10⁹ parameters), which is then never held in
+        /// exact arithmetic to be printed.
+        #[arg(long)]
+        result_only: bool,
         /// Unroll `stack{L}` into L calls instead of a fold (debugging aid).
         #[arg(long)]
         unroll_stack: bool,
@@ -207,6 +213,12 @@ enum Command {
         /// `make c-conformance` runs it.
         #[arg(long, hide = true, requires = "straight_line")]
         placed: bool,
+        /// C: the run the program is recorded from and checked against on
+        /// the LLVM backend rather than the native one, so that its check
+        /// is the LLVM backend's bits (plan 0.17.0 step 3, NB0). Hidden:
+        /// `make llvm-conformance` runs it.
+        #[arg(long, hide = true)]
+        llvm: bool,
         /// What a gradient does with its forward pass's values: `store` them
         /// for its reverse sweep, or `recompute` them inside each callee's
         /// `.vjp` (0.10.0 step 4). The same bits either way.
@@ -446,6 +458,11 @@ enum Command {
         /// Solve for a realization under this relative budget, as `presk solve --budget`.
         #[arg(long, conflicts_with_all = ["realize", "plan"])]
         budget: Option<f64>,
+        /// With --budget: the solve's menu, as `presk solve --menu` (plan
+        /// 0.17.0 step 4): `f64,f32,bf16` by default, `int8` and `int4` the
+        /// integer rungs a parameter of rank two or more is offered besides.
+        #[arg(long, value_name = "RUNGS", requires = "budget")]
+        menu: Option<String>,
         /// A realization given: `f64`, `f32`, `bf16` or `@FILE.json`.
         #[arg(long, conflicts_with = "plan")]
         realize: Option<String>,
@@ -745,9 +762,16 @@ enum Command {
         native_only: bool,
         /// With --plan: time the plan's row alone, the native backend under the
         /// plan, and not the uniform realizations' rows (0.9.0 step 5: the C
-        /// export's speed against the native backend's, statement C4).
+        /// export's speed against the native backend's, statement C4). With
+        /// --calibrate: the plan's kernels alone, not the same kernels again
+        /// under the other uniform realizations (plan 0.17.0 step 1).
         #[arg(long, requires = "plan")]
         plan_only: bool,
+        /// The native rows, and --calibrate, on the LLVM backend: the native
+        /// backend's host with each kernel printed as C and compiled by
+        /// LLVM's clang -O3 (plan 0.17.0 step 3). The same bits.
+        #[arg(long)]
+        llvm: bool,
         /// Trained parameters for the entry's first argument (a `params M` file,
         /// of the dimensions the entry is timed at), as for `presk run`.
         #[arg(long, value_name = "ckpt/final.psk.d")]
@@ -882,6 +906,14 @@ enum Command {
         /// With --quant: `absmax` scales, or `pow2`.
         #[arg(long, default_value = "absmax")]
         scheme: String,
+        /// The menu the solve offers, comma-separated (plan 0.17.0 step 4,
+        /// D177): `f64`, `f32` and `bf16`, the default, and `int8` and
+        /// `int4`, which offer a parameter of rank two or more its integers
+        /// under both schemes (`int8/absmax`, `int4/pow2`… for one), scaled
+        /// along the axis its readers contract, in the solve itself rather
+        /// than in a pass after it as `--quant` does.
+        #[arg(long, value_name = "RUNGS")]
+        menu: Option<String>,
         /// The estimate's rounding term (D155): `measured`, the envelope's
         /// largest `|fl_d(x) − x|` over the sampled values, which is 0 where
         /// every value is exact in the type, the default since 0.16.0 (an
@@ -927,6 +959,12 @@ enum Command {
         /// by predicted time per unit of gap, then verified.
         #[arg(long)]
         step: bool,
+        /// With --step (plan 0.17.0 step 5): `function`, one type per
+        /// function of the step, J′'s solver and the default; or `value`,
+        /// one type per stored value, each measured alone, the master
+        /// weights and the moments kept in the default type.
+        #[arg(long, value_enum, default_value_t = GrainArg::Function, requires = "step")]
+        grain: GrainArg,
         /// What a gradient does with its forward pass's values: `store` them
         /// for its reverse sweep, or `recompute` them inside each callee's
         /// `.vjp` (0.10.0 step 4). The same bits either way.
@@ -1076,6 +1114,9 @@ enum BackendKind {
     Kernel,
     /// PSK-Kernel v0 compiled to machine code by Cranelift (in process).
     Native,
+    /// PSK-Kernel v0 printed as C and compiled by LLVM's clang -O3, on the
+    /// native backend's host (plan 0.17.0 step 3).
+    Llvm,
 }
 
 /// `--threads N`: how many workers a parallel kernel may use. Read by the
@@ -1098,6 +1139,15 @@ enum RoundingArg {
     Unit,
     /// The envelope's measured `max |fl_d(x) − x|`, the default (D157).
     Measured,
+}
+
+/// The grain `presk solve --step` decides at (plan 0.17.0 step 5, D178).
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum GrainArg {
+    /// One type per function of the step (D52), J′'s solver.
+    Function,
+    /// One type per stored value of the step.
+    Value,
 }
 
 /// Whether `presk solve` narrows by measurement after it passes (D155).
@@ -1194,6 +1244,26 @@ pub(crate) fn exit(stop: presk_driver::Stop) -> ExitCode {
     ExitCode::from(stop.0)
 }
 
+/// `--backend llvm` without its compiler: refused (plan 0.17.0 §3), rather
+/// than run on another backend than the one asked for.
+fn require_llvm() {
+    if let Err(m) = presk_llvm::available() {
+        eprintln!("presk: --backend llvm: {m}");
+        std::process::exit(1);
+    }
+}
+
+/// The native backend, or with `llvm` the LLVM backend on the native host
+/// (`presk bench --llvm`).
+fn compiled_backend<'p>(llvm: bool, core: &'p presk_core::Program, prog: &'p elab::ElabProgram, r: &presk_rt::Realization) -> presk_rt::Result<presk_kernel::KernelBackend<'p>> {
+    if llvm {
+        require_llvm();
+        presk_llvm::llvm_backend(core, prog, r)
+    } else {
+        presk_cranelift::native_backend(core, prog, r)
+    }
+}
+
 /// Runs `f` with the chosen backend (the driver's
 /// [`presk_driver::backend::with_backend`]).
 fn with_backend<R>(kind: BackendKind, core: &presk_core::Program, prog: &elab::ElabProgram, bits: u32, plan: &presk_rt::Plan, f: impl FnOnce(&mut dyn presk_rt::Backend) -> R) -> R {
@@ -1201,6 +1271,10 @@ fn with_backend<R>(kind: BackendKind, core: &presk_core::Program, prog: &elab::E
         BackendKind::Interp => presk_driver::backend::BackendKind::Interp,
         BackendKind::Kernel => presk_driver::backend::BackendKind::Kernel,
         BackendKind::Native => presk_driver::backend::BackendKind::Native,
+        BackendKind::Llvm => {
+            require_llvm();
+            presk_driver::backend::BackendKind::Llvm
+        }
     };
     presk_driver::backend::with_backend(kind, core, prog, bits, plan, &mut stderr(), f)
 }
@@ -1315,8 +1389,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads, remat } => { set_threads(threads); set_remat(remat); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, json, verbose, unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
-        Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, remat } => {
+        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, result_only, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads, remat } => { set_threads(threads); set_remat(remat); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, (json, verbose, result_only), unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
+        Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, llvm: _, remat } => {
             set_remat(remat);
             let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
             if let Some((flag, _)) = pytorch.iter().find(|(_, given)| *given) {
@@ -1342,7 +1416,7 @@ fn main() -> ExitCode {
             };
             presk_driver::export_c::export_scop(&presk_driver::export_c::ScopOptions { file: &file, entry: &entry, dims: &dims, consts: &consts, realize: realize.as_deref().unwrap_or("f64"), seed, out: &out, remat: crate::remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
         }
-        Command::Export { file, target: ExportTarget::C, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed, remat } => {
+        Command::Export { file, target: ExportTarget::C, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed, llvm, remat } => {
             set_remat(remat);
             if let Some(m) = mode {
                 eprintln!("presk export: `--mode {}` is a mode of the PyTorch export; --target c has `--mode scop`", if m == ExportMode::Graph { "graph" } else { "readable" });
@@ -1350,9 +1424,12 @@ fn main() -> ExitCode {
             }
             let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
             set_threads(threads);
-            export_c(&file, &out, entry.as_deref(), &dims, &consts, realize.as_deref().unwrap_or("f64"), plan.as_deref(), weights, seed, (no_exact, straight_line, placed, serve), &pytorch)
+            if llvm {
+                require_llvm();
+            }
+            export_c(&file, &out, entry.as_deref(), &dims, &consts, realize.as_deref().unwrap_or("f64"), plan.as_deref(), weights, seed, (no_exact, straight_line, placed, serve, llvm), &pytorch)
         }
-        Command::Export { file, target: ExportTarget::Pytorch, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, remat } => {
+        Command::Export { file, target: ExportTarget::Pytorch, mode, out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, llvm: _, remat } => {
             set_remat(remat);
             let c_only = [("--mode scop", mode == Some(ExportMode::Scop)), ("--entry", entry.is_some()), ("--realize", realize.is_some()), ("--weights", weights.is_some()), ("--plan", plan.is_some()), ("--threads", threads.is_some()), ("--no-exact", no_exact), ("--straight-line", straight_line)];
             if let Some((flag, _)) = c_only.iter().find(|(_, given)| *given) {
@@ -1391,7 +1468,7 @@ fn main() -> ExitCode {
         Command::Train { file, consts, data, steps, epochs, seed, bits, log_every, ckpt, json, backend, realize, plan, opt, profile, threads, remat, host_profile } => {
             set_remat(remat);
             set_threads(threads);
-            if host_profile && !matches!(backend, BackendKind::Native) {
+            if host_profile && !matches!(backend, BackendKind::Native | BackendKind::Llvm) {
                 eprintln!("presk train: --host-profile times the native backend's host: add --backend native");
                 return ExitCode::from(2);
             }
@@ -1424,11 +1501,15 @@ fn main() -> ExitCode {
             calibrate_precision(&file, precision, entry.as_deref(), &dims, &consts, data.as_deref(), samples, from, seed, bits, out.as_deref(), compare.as_deref(), weights.as_deref())
         }
         Command::Quantize { file, realize, list, entry, dims, consts, weights, backend, data, samples, from, bits, seed } => quantize(&file, &parse_realize(&realize), list, &entry, &dims, &consts, weights.as_deref(), backend, data.as_deref().map(|d| (d, from, samples)), bits, seed),
-        Command::Solve { file, precision, budget, no_verify, bits, out, profile, step: true, remat, .. } => {
+        Command::Solve { file, precision, budget, no_verify, bits, out, profile, step: true, grain, remat, .. } => {
             set_remat(remat);
-            step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref())
+            let grain = match grain {
+                GrainArg::Function => presk_precision::solve::Grain::Function,
+                GrainArg::Value => presk_precision::solve::Grain::Value,
+            };
+            step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref(), grain)
         }
-        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, rounding, narrow, estimate, margin, heldout, min_gain, remat, .. } => {
+        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, menu, rounding, narrow, estimate, margin, heldout, min_gain, remat, .. } => {
             set_remat(remat);
             let scheme = match scheme.as_str() {
                 "absmax" => presk_rt::QuantScheme::Absmax,
@@ -1468,7 +1549,18 @@ fn main() -> ExitCode {
                 eprintln!("presk solve: --min-gain is a fraction of the entry's traffic, at least 0 and below 1, not {min_gain}");
                 return ExitCode::from(2);
             }
-            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), options)
+            let menu = match menu.as_deref().map(presk_precision::solve::Menu::parse).transpose() {
+                Ok(m) => m.unwrap_or_default(),
+                Err(m) => {
+                    eprintln!("presk solve: --menu: {m}");
+                    return ExitCode::from(2);
+                }
+            };
+            if quant && !menu.1.is_empty() {
+                eprintln!("presk solve: --quant quantizes in a pass after the solve, and --menu's integers in the solve itself: one or the other");
+                return ExitCode::from(2);
+            }
+            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), menu, options)
         }
         Command::Plan { file, entry, dims, consts, realize, mode, profile, nest, space, cost, out, seed, remat } => match ra4::Space::parse(&space).inspect(|_| {
             set_remat(remat);
@@ -1517,7 +1609,14 @@ fn main() -> ExitCode {
                 Err(e) => exit(e),
             }
         }
-        Command::Explain { file, entry, dims, consts, budget, realize, plan, profile, threads, remat, opt, weights, seed, bits, envelope, no_exact, target, measure, sites, format, out } => {
+        Command::Explain { file, entry, dims, consts, budget, menu, realize, plan, profile, threads, remat, opt, weights, seed, bits, envelope, no_exact, target, measure, sites, format, out } => {
+            let menu = match menu.as_deref().map(presk_precision::solve::Menu::parse).transpose() {
+                Ok(m) => m.unwrap_or_default(),
+                Err(m) => {
+                    eprintln!("presk explain: --menu: {m}");
+                    return ExitCode::from(2);
+                }
+            };
             set_threads(threads);
             set_remat(remat);
             let (json, html) = match format.as_deref() {
@@ -1536,7 +1635,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            let o = presk_explain::Options { file, entry, dims, consts, budget, realize, plan, profile, threads, remat: crate::remat(), opt, weights, seed, bits, envelope, no_exact, targets, measure, sites, json, html, out };
+            let o = presk_explain::Options { file, entry, dims, consts, budget, menu, realize, plan, profile, threads, remat: crate::remat(), opt, weights, seed, bits, envelope, no_exact, targets, measure, sites, json, html, out };
             match presk_explain::explain(&o, &mut stderr()) {
                 Ok(e) => {
                     let listings = if e.listings == 0 { String::new() } else { format!(", {} listing{} under listings/", e.listings, if e.listings == 1 { "" } else { "s" }) };
@@ -1576,7 +1675,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Command::Bench { file, entry, dims, consts, bits, repeat, warmup, seed, opt, profile, calibrate, host_profile, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only, plan_only, weights, remat } => {
+        Command::Bench { file, entry, dims, consts, bits, repeat, warmup, seed, opt, profile, calibrate, host_profile, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only, plan_only, llvm, weights, remat } => {
             set_remat(remat);
             set_threads(threads);
             let rules = rules.as_deref().map(presk_kernel::cost::CostRules::parse).transpose();
@@ -1596,7 +1695,7 @@ fn main() -> ExitCode {
                 (Some(p), None) => Some((p, None)),
                 (None, _) => None,
             };
-            bench(&file, &entry, &dims, &consts, bits, (repeat, warmup), seed, Opt { on: opt, profile }, calibrate, host_profile, &parse_plan(plan.as_deref(), &realize), plan.is_some(), (native_only, plan_only), weights.as_deref())
+            bench(&file, &entry, &dims, &consts, bits, (repeat, warmup), seed, Opt { on: opt, profile }, calibrate, host_profile, &parse_plan(plan.as_deref(), &realize), plan.is_some(), (native_only, plan_only, llvm), weights.as_deref())
         }
         Command::Data { command } => match data(command) {
             Ok(()) => ExitCode::SUCCESS,
@@ -1678,7 +1777,7 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
 
 /// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
 #[allow(clippy::too_many_arguments)]
-fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, options: presk_precision::solve::Options) -> ExitCode {
+fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, menu: presk_precision::solve::Menu, options: presk_precision::solve::Options) -> ExitCode {
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => {
@@ -1697,7 +1796,7 @@ fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve:
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
-    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant, options };
+    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant, menu, options };
     let solved = match presk_driver::precision::solve(&mut core, &prog, &env, &args) {
         Ok(s) => s,
         Err(e) => {
@@ -1763,27 +1862,40 @@ fn quantize(file: &Path, realize: &presk_rt::Realization, list: bool, entry: &st
         ExitCode::from(1)
     };
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits, digits: 17 };
-    let (func, fdims, mut args) = match data {
-        Some((path, from, samples)) => match presk_train::args_on_data(&core, &prog, &opts, path, from, samples) {
-            Ok((func, fdims, _, args)) => (func, fdims, args),
-            Err(e) => return fail(presk_rt::RtError { code: e.code, message: e.message, span: e.span }),
-        },
+    // With a checkpoint, the parameters are described and not drawn (D180).
+    let given = weights.is_some();
+    let (func, fdims, mut args, described) = match data {
+        Some((path, from, samples)) => {
+            let made = if given { presk_train::args_on_data_given_params(&core, &prog, &opts, path, from, samples) } else { presk_train::args_on_data(&core, &prog, &opts, path, from, samples).map(|a| (a, None)) };
+            match made {
+                Ok(((func, fdims, _, args), described)) => (func, fdims, args, described),
+                Err(e) => return fail(presk_rt::RtError { code: e.code, message: e.message, span: e.span }),
+            }
+        }
         None => {
-            let (func, fdims, inputs) = match presk_interp::run::prepare_run(&core, &prog, &opts) {
+            let made = if given { presk_interp::run::prepare_run_given_params(&core, &prog, &opts) } else { presk_interp::run::prepare_run(&core, &prog, &opts).map(|(f, d, i)| (f, d, i, None)) };
+            let (func, fdims, inputs, described) = match made {
                 Ok(x) => x,
                 Err(e) => return fail(e.into()),
             };
             match inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect() {
-                Ok(a) => (func, fdims, a),
+                Ok(a) => (func, fdims, a, described),
                 Err(e) => return fail(e),
             }
         }
     };
+    if let (Some(path), Some(s)) = (weights, &described) {
+        match presk_driver::entry::read_given_params(&core, &prog, s, path) {
+            Ok(v) => args[0] = v,
+            Err(e) => return fail(e),
+        }
+    }
     if !matches!(args.first(), Some(presk_rt::Value::Record(_))) {
         eprintln!("presk quantize: the first argument of `{entry}` is not a parameter tree");
         return ExitCode::from(2);
     }
     match weights {
+        Some(_) if described.is_some() => {}
         Some(path) => match presk_rt::load_params(path, &args[0]) {
             Ok(v) => args[0] = v,
             Err(e) => return fail(e),
@@ -2085,7 +2197,7 @@ fn calibrate_precision(
 /// (`--space calib`) its load term, its combination and the fewest workers
 /// a layout of the space is stated on.
 #[allow(clippy::type_complexity)]
-fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, (repeat, warmup): (usize, usize), seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, host_profile: bool, plan: &presk_rt::Plan, planned: bool, (native_only, plan_only): (bool, bool), weights: Option<&Path>) -> ExitCode {
+fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, (repeat, warmup): (usize, usize), seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, host_profile: bool, plan: &presk_rt::Plan, planned: bool, (native_only, plan_only, llvm): (bool, bool, bool), weights: Option<&Path>) -> ExitCode {
     let realize = &plan.realization;
     let dims = match parse_dims(dims) {
         Ok(d) => d,
@@ -2109,7 +2221,9 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         return c;
     }
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits, digits: 12 };
-    let (func, fdims, inputs) = match presk_interp::run::prepare_run(&core, &prog, &opts) {
+    // With a checkpoint, the parameters are described and not drawn (D180).
+    let made = if weights.is_some() { presk_interp::run::prepare_run_given_params(&core, &prog, &opts) } else { presk_interp::run::prepare_run(&core, &prog, &opts).map(|(f, d, i)| (f, d, i, None)) };
+    let (func, fdims, inputs, described) = match made {
         Ok(x) => x,
         Err(e) => {
             eprint!("{}", render_all(&[interp_diag(e)], &sm, color()));
@@ -2118,7 +2232,11 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     };
     let mut args: Vec<presk_rt::Value> = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v).unwrap()).collect();
     if let Some(w) = weights {
-        match args.first().map(|a| presk_rt::load_params(w, a)) {
+        let read = match &described {
+            Some(s) => Some(presk_driver::entry::read_given_params(&core, &prog, s, w)),
+            None => args.first().map(|a| presk_rt::load_params(w, a)),
+        };
+        match read {
             Some(Ok(v)) => args[0] = v,
             Some(Err(e)) => {
                 eprint!("{}", render_all(&[presk_syntax::Diagnostic::error(e.code, format!("{}: {}", w.display(), e.message))], &sm, color()));
@@ -2134,7 +2252,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         if let Some(model) = layouts {
             return calibrate_layouts(&core, &prog, func, &fdims, &args, plan, repeat.max(3), path, model);
         }
-        return calibrate_profile(&core, &prog, func, &fdims, &args, plan, repeat.max(3), path);
+        return calibrate_profile(&core, &prog, func, &fdims, &args, plan, repeat.max(3), path, plan_only, llvm);
     }
     if host_profile {
         return bench_host_profile(&core, &prog, (entry, func, &fdims), &args, (plan, planned), (repeat, warmup));
@@ -2151,6 +2269,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     };
     let uniform = |d| presk_rt::Realization::uniform(d);
     let f64r = uniform(presk_rt::Dtype::F64);
+    let side = if llvm { "llvm" } else { "native" };
     let mut rows = Vec::new();
     if !native_only && !plan_only {
         if let Some(r) = time(&format!("interp {bits} bits"), &mut presk_rt::InterpBackend::new(&core, &prog, bits), &f64r) {
@@ -2161,12 +2280,12 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         }
     }
     let mut want: Vec<(String, presk_rt::Realization)> =
-        [presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16].iter().map(|d| (format!("native {d}"), uniform(*d))).collect();
+        [presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16].iter().map(|d| (format!("{side} {d}"), uniform(*d))).collect();
     // A realization given on the command line is timed too, whatever it is:
     // a solved assignment or a declared reduction order is exactly the thing
     // one wants a row for.
     if !realize.is_uniform() || !want.iter().any(|(_, r)| r == realize) {
-        want.push((format!("native {}", realize.label()), realize.clone()));
+        want.push((format!("{side} {}", realize.label()), realize.clone()));
     }
     if plan_only {
         want.clear();
@@ -2185,7 +2304,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
             if n == 1 && !suffix.is_empty() {
                 continue;
             }
-            match presk_cranelift::native_backend(&core, &prog, r) {
+            match compiled_backend(llvm, &core, &prog, r) {
                 Ok(mut b) => {
                     b.set_default_lanes(n);
                     if let Some(row) = time(&format!("{name}{suffix}"), &mut b, r) {
@@ -2200,10 +2319,10 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
     // row above runs the default layout, so the two rows differ by the
     // layout alone.
     if planned {
-        match presk_cranelift::native_backend(&core, &prog, realize) {
+        match compiled_backend(llvm, &core, &prog, realize) {
             Ok(mut b) => {
                 b.set_plan(plan.clone());
-                if let Some(row) = time(&format!("native {} plan", realize.label()), &mut b, realize) {
+                if let Some(row) = time(&format!("{side} {} plan", realize.label()), &mut b, realize) {
                     rows.push(row);
                 }
             }
@@ -2364,10 +2483,17 @@ fn bench_host_profile(core: &presk_core::Program, prog: &elab::ElabProgram, (ent
 }
 
 /// `presk bench --calibrate`: time every kernel of the entry natively, fit
-/// the roofline and write (or extend) the profile.
+/// the roofline and write (or extend) the profile. `plan_only`: the plan's
+/// kernels alone, the profile without the other realizations' fits.
 #[allow(clippy::too_many_arguments)]
-fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], plan: &presk_rt::Plan, repeat: usize, path: &Path) -> ExitCode {
-    let times = match presk_driver::bench::kernel_times(core, prog, func, fdims, args, plan, repeat) {
+fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func: presk_core::FuncId, fdims: &presk_interp::eval::Dims, args: &[presk_rt::Value], plan: &presk_rt::Plan, repeat: usize, path: &Path, plan_only: bool, llvm: bool) -> ExitCode {
+    let timed = if llvm {
+        require_llvm();
+        presk_llvm::LlvmCompiler::new().and_then(|c| presk_cranelift::NativeExec::with_compiler(Box::new(c))).map_err(|e| format!("the LLVM backend is unavailable: {}", e.message)).and_then(|x| presk_driver::bench::kernel_times_with(Box::new(x), core, prog, func, fdims, args, plan, repeat))
+    } else {
+        presk_driver::bench::kernel_times(core, prog, func, fdims, args, plan, repeat)
+    };
+    let times = match timed {
         Ok(t) => t,
         Err(m) => {
             eprintln!("presk bench: {m}");
@@ -2409,7 +2535,11 @@ fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func:
     // so one profile can price a mixed assignment (0.6.0 step 3). A narrow
     // type's π is not a wide type's — that is the whole reason lanes exist —
     // and a cost model meant to compare machine types cannot have one π.
-    for d in [presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16] {
+    // Under `--plan-only` the plan's kernels are all that is asked: timing
+    // them again under every other realization's default layout takes most
+    // of the run on one thread (plan 0.17.0 step 1).
+    let others: &[presk_rt::Dtype] = if plan_only { &[] } else { &[presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16] };
+    for &d in others {
         let r = presk_rt::Realization::uniform(d);
         let label = r.label();
         if label == dtype {
@@ -2712,8 +2842,9 @@ fn train(file: &Path, consts: &[String], mut opts: presk_train::TrainOptions, pl
     }
     let mut stats = (0u64, 0u64);
     let run = match &profile {
-        // The native backend built here, to be given the profile.
-        Some(p) => match presk_cranelift::native_backend(&core, &prog, &plan.realization) {
+        // The native backend (or the LLVM one) built here, to be given the
+        // profile.
+        Some(p) => match compiled_backend(backend == BackendKind::Llvm, &core, &prog, &plan.realization) {
             Ok(mut b) => {
                 b.set_plan(plan.clone());
                 b.set_host_profile(Some(p.clone()));
@@ -3200,6 +3331,7 @@ fn dump_network(file: &Path, format: DumpFormat, (level, boxed, memory): (Option
         dims: dims.to_vec(),
         consts: consts.to_vec(),
         budget: None,
+        menu: Default::default(),
         realize: plan.is_none().then(|| realize.to_string()),
         plan: plan.map(String::from),
         profile,
@@ -3309,7 +3441,7 @@ fn parse_dims(dims: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, json: bool, verbose: bool, unroll_stack: bool, backend: BackendKind, plan: &presk_rt::Plan, opt: Opt, data: Option<PathBuf>, samples: Option<usize>, from: usize, weights: Option<PathBuf>) -> ExitCode {
+fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, (json, verbose, result_only): (bool, bool, bool), unroll_stack: bool, backend: BackendKind, plan: &presk_rt::Plan, opt: Opt, data: Option<PathBuf>, samples: Option<usize>, from: usize, weights: Option<PathBuf>) -> ExitCode {
     let realize = &plan.realization;
     let dims = match parse_dims(dims) {
         Ok(d) => d,
@@ -3354,22 +3486,28 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
         // Trained parameters: the arguments built as above, the first one
         // read from the checkpoint (0.6.0 step 7, a validation loss).
         (_, Some(w)) => {
-            let (func, fdims, inputs, mut args) = match &data {
-                Some(path) => presk_train::args_on_data(&core, &prog, &opts, path, from, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span })?,
+            // The parameters are described and not drawn, then read from the
+            // checkpoint against a tree of their shape (0.17.0 step 7, D180).
+            let ((func, fdims, inputs, mut args), described) = match &data {
+                Some(path) => presk_train::args_on_data_given_params(&core, &prog, &opts, path, from, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span })?,
                 None => {
-                    let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts)?;
+                    let (func, fdims, inputs, described) = presk_interp::run::prepare_run_given_params(&core, &prog, &opts)?;
                     let args = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect::<presk_rt::Result<Vec<_>>>()?;
-                    (func, fdims, inputs, args)
+                    ((func, fdims, inputs, args), described)
                 }
             };
-            args[0] = presk_rt::load_params(w, &args[0])?;
+            args[0] = match &described {
+                Some(s) => presk_driver::entry::read_given_params(&core, &prog, s, w)?,
+                None => presk_rt::load_params(w, &args[0])?,
+            };
             // What `--json` and `--verbose` print as the parameters is the
             // checkpoint's, as it is read and before a `quant` map rounds it,
             // not the initialization synthesized above (D118's follow-up).
             // Built only to be printed: the synthesized tree is dropped
             // first, so a model's parameters are never held twice more.
+            // `--result-only` prints the result alone, and nothing is built.
             let mut inputs = inputs;
-            if json || verbose {
+            if (json || verbose) && !result_only {
                 inputs[0].1 = presk_interp::Value::Nat(0);
                 inputs[0].1 = args[0].to_interp(opts.bits);
             }
@@ -3392,8 +3530,8 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
             let f = core.func(out.func);
             let param_ty = |i: usize| f.params.get(i).map_or(&presk_types::Ty::Nat, |p| &p.ty);
             if json {
-                let inputs: serde_json::Map<String, serde_json::Value> = out.inputs.iter().enumerate().map(|(i, (n, v))| (n.clone(), presk_interp::run::to_json_typed(v, param_ty(i), digits))).collect();
-                let j = serde_json::json!({
+                let inputs: serde_json::Map<String, serde_json::Value> = if result_only { serde_json::Map::new() } else { out.inputs.iter().enumerate().map(|(i, (n, v))| (n.clone(), presk_interp::run::to_json_typed(v, param_ty(i), digits))).collect() };
+                let mut j = serde_json::json!({
                     "entry": out.entry,
                     "seed": seed,
                     "bits": bits,
@@ -3401,11 +3539,14 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
                     "inputs": inputs,
                     "result": presk_interp::run::to_json_typed(&out.result, &f.ret, digits),
                 });
+                if result_only && let Some(o) = j.as_object_mut() {
+                    o.remove("inputs");
+                }
                 println!("{}", serde_json::to_string_pretty(&j).unwrap());
             } else {
                 if verbose {
                     println!("-- entry {} with {} at {} bits, seed {}", out.entry, out.dims.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", "), bits, seed);
-                    for (i, (n, v)) in out.inputs.iter().enumerate() {
+                    for (i, (n, v)) in out.inputs.iter().enumerate().filter(|_| !result_only) {
                         println!("{n} : {} = {}", presk_interp::run::describe_typed(v, param_ty(i)), presk_interp::run::render_typed(v, param_ty(i), digits, 0));
                     }
                     println!("-- result");
@@ -3425,7 +3566,7 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
 /// `presk serve`.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, weights: Option<PathBuf>, seed: u64, (no_exact, straight_line, placed, serve): (bool, bool, bool, bool), pytorch: &[(&str, bool)]) -> ExitCode {
+fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], consts: &[String], realize: &str, plan: Option<&str>, weights: Option<PathBuf>, seed: u64, (no_exact, straight_line, placed, serve, llvm): (bool, bool, bool, bool, bool), pytorch: &[(&str, bool)]) -> ExitCode {
     if let Some((flag, _)) = pytorch.iter().find(|(_, given)| *given) {
         eprintln!("presk export: `{flag}` is an option of the PyTorch export, not of --target c");
         return ExitCode::from(2);
@@ -3434,7 +3575,7 @@ fn export_c(file: &Path, out: &Path, entry: Option<&str>, dims: &[String], const
         eprintln!("presk export --target c: --entry is required (the program is one entry at bound dimensions, as `presk run` runs it), or --serve for the file's generation function");
         return ExitCode::from(2);
     }
-    presk_driver::export_c::export(&presk_driver::export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, placed, serve, out, remat: remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
+    presk_driver::export_c::export(&presk_driver::export_c::Options { file, entry, dims, consts, realize, plan, weights, seed, no_exact, straight_line, placed, serve, llvm, out, remat: remat() }, &mut stderr()).map_or_else(exit, |()| ExitCode::SUCCESS)
 }
 
 #[allow(clippy::too_many_arguments)]

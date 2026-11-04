@@ -1,0 +1,24 @@
+-- The derivatives of `concat`, of slices, and of `max`, `min` and `clamp`
+-- (plan 0.17.0 step 6): AD against central finite differences at 512 bits
+-- (presk-interp/tests/run.rs). The parameters are drawn, so no element sits
+-- at a kink; the clamp is active at some of them and not at others.
+dim B
+
+module M {
+  param a : ℝ[k: 3, j: 2]  init = normal(std = 1.0)
+  param b : ℝ[k: 2, j: 2]  init = normal(std = 1.0)
+  param w : ℝ[j: 2]        init = normal(std = 1.0)
+
+  fn apply(x : ℝ[batch: B, j: 2]) -> ℝ[batch: B] =
+    let c = concat(axis k, a, b)                        -- ℝ[k: 5, j: 2]
+    let u = c[k: 1..4]                                  -- ℝ[k: 3, j: 2]
+    let v = max(u, c[k: 2..5]) - min(u * w, c[k: 0..3])
+    let y = ein[batch, k](x * clamp(v, -(2 : ℝ), (2 : ℝ)))
+    sum(axis k, y * y)
+}
+
+fn loss(θ : params M, x : ℝ[batch: B, j: 2]) -> ℝ[] =
+  mean(M.apply(θ, x))
+
+fn loss_grad(θ : params M, x : ℝ[batch: B, j: 2]) -> params M =
+  grad(λ θ. loss(θ, x))(θ)

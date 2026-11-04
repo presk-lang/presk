@@ -40,6 +40,7 @@ struct CReader {
     nleaves: usize,
     count: u64,
     next: u64,
+    enc: *mut u8,
 }
 
 /// `presk_arena`.
@@ -381,7 +382,7 @@ fn psk_d_files_are_presk_datas() {
         presk_data::write(&rust_file, &ty, &layout, &values).unwrap();
         for d in REALS {
             let dtypes: Vec<i32> = cleaves.iter().map(|l| if l.bound > 0 { I64 } else { d }).collect();
-            let mut r = CReader { f: std::ptr::null_mut(), leaves: std::ptr::null(), nleaves: 0, count: 0, next: 0 };
+            let mut r = CReader { f: std::ptr::null_mut(), leaves: std::ptr::null(), nleaves: 0, count: 0, next: 0, enc: std::ptr::null_mut() };
             // SAFETY: the leaves outlive the reader, which is closed below.
             let e = unsafe { (rt.open)(&mut r, cpath(&rust_file).as_ptr(), ctype.as_ptr(), cleaves.as_ptr(), cleaves.len()) };
             assert_eq!(e, 0, "{ty}: {}", rt.error());
@@ -402,6 +403,34 @@ fn psk_d_files_are_presk_datas() {
             let dummy = vec![ptr(&mut none); cleaves.len()];
             let e = unsafe { (rt.read)(&mut r, dummy.as_ptr(), dtypes.as_ptr()) };
             assert_eq!(e, 9003, "{}", rt.error());
+            unsafe { (rt.close)(&mut r) };
+            checked += 1;
+        }
+
+        // Version 2 (plan 0.17.0 step 7, D180): presk-data writes every real
+        // leaf in f32, then in bf16, the reals rounded to it first; C reads
+        // each as f64, the same numbers bit for bit.
+        for (d, enc) in [(F32, presk_data::Enc::F32), (BF16, presk_data::Enc::Bf16)] {
+            let narrow: Vec<Value> = values.iter().map(|v| with_reals(v, &mut sample_bufs(v).iter().map(|b| native_convert(b, d).to_f64()))).collect();
+            let encs: Vec<presk_data::Enc> = cleaves.iter().map(|l| if l.bound > 0 { presk_data::Enc::F64 } else { enc }).collect();
+            let file = rt.dir.join(format!("rust{k}-v2-{}.psk.d", dtype(d).name()));
+            presk_data::write_encoded(&file, &ty, &layout, &encs, &narrow).unwrap();
+            let dtypes: Vec<i32> = cleaves.iter().map(|l| if l.bound > 0 { I64 } else { F64 }).collect();
+            let mut r = CReader { f: std::ptr::null_mut(), leaves: std::ptr::null(), nleaves: 0, count: 0, next: 0, enc: std::ptr::null_mut() };
+            // SAFETY: the leaves outlive the reader, which is closed below.
+            let e = unsafe { (rt.open)(&mut r, cpath(&file).as_ptr(), ctype.as_ptr(), cleaves.as_ptr(), cleaves.len()) };
+            assert_eq!(e, 0, "{ty} in {}: {}", dtype(d).name(), rt.error());
+            for (s, v) in narrow.iter().enumerate() {
+                let want = sample_bufs(v);
+                let mut got: Vec<Buf> = cleaves.iter().zip(&dtypes).map(|(l, t)| buf(*t, l.n as usize)).collect();
+                let ptrs: Vec<*mut c_void> = got.iter_mut().map(ptr).collect();
+                // SAFETY: each pointer holds its leaf's elements in its type.
+                let e = unsafe { (rt.read)(&mut r, ptrs.as_ptr(), dtypes.as_ptr()) };
+                assert_eq!(e, 0, "{ty}, sample {s}: {}", rt.error());
+                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert!(bits(g) == bits(w), "{ty} in {}: sample {s}, leaf {i} read differently", dtype(d).name());
+                }
+            }
             unsafe { (rt.close)(&mut r) };
             checked += 1;
         }
@@ -445,7 +474,7 @@ fn psk_d_errors_are_presk_datas() {
     let head = 4 + 2 + 4 + ty.len() + 8;
 
     let open = |path: &Path, ty: &str, leaves: &[CLeaf]| -> (i32, String) {
-        let mut r = CReader { f: std::ptr::null_mut(), leaves: std::ptr::null(), nleaves: 0, count: 0, next: 0 };
+        let mut r = CReader { f: std::ptr::null_mut(), leaves: std::ptr::null(), nleaves: 0, count: 0, next: 0, enc: std::ptr::null_mut() };
         let t = CString::new(ty).unwrap();
         // SAFETY: as in the round trips.
         let e = unsafe { (rt.open)(&mut r, cpath(path).as_ptr(), t.as_ptr(), leaves.as_ptr(), leaves.len()) };
@@ -463,7 +492,8 @@ fn psk_d_errors_are_presk_datas() {
         ("missing", 9002, open(&rt.dir.join("none.psk.d"), ty, &cleaves)),
         ("short", 9002, open(&variant("short.psk.d", &|b| b.truncate(3)), ty, &cleaves)),
         ("magic", 9002, open(&variant("magic.psk.d", &|b| b[0] = b'Q'), ty, &cleaves)),
-        ("version", 9002, open(&variant("version.psk.d", &|b| b[4] = 2), ty, &cleaves)),
+        // Version 3 is no version (2 is, since plan 0.17.0 step 7).
+        ("version", 9002, open(&variant("version.psk.d", &|b| b[4] = 3), ty, &cleaves)),
         ("header", 9003, open(&variant("header.psk.d", &|b| b.truncate(head - 3)), ty, &cleaves)),
         ("type", 9005, open(&good, "(ℝ[3], idx[6][2])", &cleaves)),
         ("truncated", 9003, open(&variant("trunc.psk.d", &|b| b.truncate(b.len() - 1)), ty, &cleaves)),

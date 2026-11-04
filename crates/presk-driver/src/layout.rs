@@ -64,7 +64,7 @@ pub enum Capture {
 
 /// An executor that runs nothing ([`Capture::Shapes`]): every output stays
 /// the zeros it was allocated as.
-struct NoRun;
+pub(crate) struct NoRun;
 
 impl KernelExec for NoRun {
     fn name(&self) -> &'static str {
@@ -95,6 +95,18 @@ fn zeros(b: &mut presk_kernel::KernelBackend, realize: &presk_rt::Realization, s
             presk_rt::Backend::call(b, &p, vec![Value::Key(key.clone())])?
         }
     })
+}
+
+/// A module's parameters as zeros of their shapes, in `f64`: its initializer
+/// on the kernel backend with no executor, as [`Capture::Shapes`] builds a
+/// capture's (0.17.0 step 7, D180: the tree a checkpoint is read against,
+/// [`crate::entry::read_given_params`]).
+pub fn params_zeros(core: &presk_core::Program, prog: &presk_types::elab::ElabProgram, init: presk_core::FuncId, dims: &presk_interp::eval::Dims, key: &presk_interp::key::Key) -> presk_rt::Result<presk_rt::Value> {
+    let realize = presk_rt::Realization::uniform(presk_rt::Dtype::F64);
+    let mut b = presk_kernel::KernelBackend::with_exec(core, prog, &realize, Box::new(NoRun));
+    b.default_layout.lanes = None;
+    let p = presk_rt::Backend::prepare(&mut b, init, dims, &realize)?;
+    presk_rt::Backend::call(&mut b, &p, vec![presk_rt::Value::Key(key.clone())])
 }
 
 /// Runs `entry` once with the kernel backend capturing, natively or on the

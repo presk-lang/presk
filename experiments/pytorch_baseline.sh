@@ -57,6 +57,11 @@
 # counter's; the model's three linear products timed alone on each side;
 # and where the C program's time goes, kernel by kernel (kernel_time.c).
 # Writes OUT/report.md.
+#
+# LLVM=1 (plan 0.17.0 step 8, D181; statement NB3) also times the LLVM
+# backend (`presk bench --llvm`, `presk train --backend llvm`) under the
+# plans: the forward pass, the step's two entries and `presk train`'s step,
+# keyed `….llvm.plan.…`. The other rows are the same either way.
 set -eu -o pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -70,6 +75,7 @@ CORES=${CORES:-5-9,15-19}
 CFLAGS=${CFLAGS:-}
 C_WAIT=${C_WAIT:-GOMP_SPINCOUNT=8M}
 REPEAT=${REPEAT:-7}
+LLVM=${LLVM:-0}
 OUT=${1:?usage: experiments/pytorch_baseline.sh OUT}
 FILE=corpus/nlp/05_gpt.psk
 GRAD=experiments/gpt_grad.psk
@@ -224,6 +230,9 @@ for th in "${THREADS[@]}"; do
         native_bench "fwd.native.$layout.$th" "$th" "$FILE" --entry GPT.apply "${DIMS[@]}" --plan "@$plan" --weights "$CKPT"
         c_run "fwd.c.$layout.$th" "$th" "$C/$th/fwd-$layout"
     done
+    if [ "$LLVM" = 1 ]; then
+        native_bench "fwd.llvm.plan.$th" "$th" "$FILE" --entry GPT.apply "${DIMS[@]}" --plan "@$P/forward.json" --weights "$CKPT" --llvm
+    fi
     py_run "fwd.pytorch.$th" "$th" forward --export "$OUT/pt" --weights "$CKPT" --inputs "$INPUTS" --repeat "$REPEAT" --out "$OUT/pytorch-$th.npy"
     say "training step, $th threads"
     (cd "$OUT/pt" && $(pin "$th") "$PY" train.py --steps $((REPEAT + 1)) --log-every 1 --threads "$th" --ckpt "$OUT/train/pytorch-$th") > "$OUT/log/step.pytorch.$th.log" 2>&1
@@ -240,12 +249,20 @@ for th in "${THREADS[@]}"; do
         native_bench "grad.native.$layout.$th" "$th" "$GRAD" --entry loss_grad "${DIMS[@]}" --plan "@$P/$g.json" --weights "$CKPT"
         native_bench "adam.native.$layout.$th" "$th" "$FILE" --entry adamw.step "${DIMS[@]}" --plan "@$P/$a.json" --weights "$CKPT"
     done
+    if [ "$LLVM" = 1 ]; then
+        native_bench "grad.llvm.plan.$th" "$th" "$GRAD" --entry loss_grad "${DIMS[@]}" --plan "@$P/grad.json" --weights "$CKPT" --llvm
+        native_bench "adam.llvm.plan.$th" "$th" "$FILE" --entry adamw.step "${DIMS[@]}" --plan "@$P/adam.json" --weights "$CKPT" --llvm
+    fi
     for layout in default plan; do
         how=(--realize f32)
         [ "$layout" = plan ] && how=(--plan "@$P/step.json")
         $(pin "$th") "$PRESK" train "$FILE" --steps $((REPEAT + 1)) --log-every 1 --backend native "${how[@]}" --threads "$th" --ckpt "$OUT/train/native-$layout-$th" > "$OUT/log/step.native.$layout.$th.log" 2>&1
         echo "step.native.$layout.$th $(sed -n 's/^presk train: \([0-9.]*\) ms a step.*/\1/p' "$OUT/log/step.native.$layout.$th.log") -" >> "$RES"
     done
+    if [ "$LLVM" = 1 ]; then
+        $(pin "$th") "$PRESK" train "$FILE" --steps $((REPEAT + 1)) --log-every 1 --backend llvm --plan "@$P/step.json" --threads "$th" --ckpt "$OUT/train/llvm-plan-$th" > "$OUT/log/step.llvm.plan.$th.log" 2>&1
+        echo "step.llvm.plan.$th $(sed -n 's/^presk train: \([0-9.]*\) ms a step.*/\1/p' "$OUT/log/step.llvm.plan.$th.log") -" >> "$RES"
+    fi
 done
 say "the linear products alone, 10 threads"
 for io in "${PRODUCTS[@]}"; do
@@ -311,6 +328,13 @@ say "distances to the native backend's f64 logits"
     done
     echo "layouts.same $same -"
     cmp -s "$OUT/train/native-default-10/final.psk.d" "$OUT/train/native-plan-10/final.psk.d" && echo "train.same yes -" || echo "train.same no -"
+    if [ "$LLVM" = 1 ]; then
+        same=yes
+        for th in "${THREADS[@]}"; do
+            cmp -s "$OUT/train/native-plan-$th/final.psk.d" "$OUT/train/llvm-plan-$th/final.psk.d" || same=no
+        done
+        echo "train.llvm.same $same -"
+    fi
 } >> "$RES"
 "$PY" experiments/pytorch_baseline.py flops --export "$OUT/pt" --inputs "$INPUTS" > "$OUT/flops.txt"
 # What PyTorch's forward pass hands to oneDNN, primitive by primitive (the

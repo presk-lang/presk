@@ -154,7 +154,9 @@ fn an_entry_the_c_program_cannot_run_is_refused_with_its_code() {
         (vec![quant, "--entry", "L.same", "--realize", &q8], "[E8007] Error: the entry's result holds integer weights"),
         (vec![quant, "--entry", "L.flat", "--realize", &q8], "[E8007] Error: `merge r, c` reshapes integer weights"),
         (vec!["tests/diag/export_c_scalar.psk", "--entry", "next"], "[E8008] Error: the entry's result holds a nat"),
-        (vec!["tests/export_c/serve_untied.psk", "--serve", "--dim", "T=4"], "[E8009] Error: `next` is served over the whole context"),
+        // Without `--dim T` (0.17.0 step 7: with it the context is padded,
+        // `a_context_the_parameters_do_not_fix_is_padded`).
+        (vec!["tests/export_c/serve_untied.psk", "--serve"], "[E8009] Error: `next` is served over the whole context"),
     ];
     for (args, expected) in cases {
         let out = scratch("refused");
@@ -418,6 +420,13 @@ fn export_line(what: &str, file: &str, entry: &str, args: &[String], under: &Und
     all.push(out.display().to_string());
     all.extend(args.iter().cloned());
     all.extend(extra.iter().map(|s| s.to_string()));
+    // `make llvm-conformance` (plan 0.17.0 step 3, NB0): the program is
+    // recorded from and checked against the LLVM backend's run, so that C1
+    // holding here and under `make c-conformance` makes the two backends'
+    // bits the same on every program.
+    if std::env::var_os("PRESK_C1_LLVM").is_some() {
+        all.push("--llvm".into());
+    }
     let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
     let r = presk(&refs);
     assert!(r.status.success(), "{what}: presk export failed:\n{}", stderr(&r));
@@ -596,7 +605,7 @@ fn every_entry_of_the_test_set_computes_the_native_backends_bits() {
                 continue;
             }
             let label = if realize == MIXED { "mixed" } else { realize };
-            let dir = base.join(format!("{}-{label}", case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
+            let dir = base.join(format!("{}-{}-{label}", Path::new(&case.file).file_stem().unwrap().to_string_lossy(), case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
             let case = Case { file: case.file.clone(), entry: case.entry.clone(), args: case.args.clone() };
             jobs.push(Box::new(move || both_weights(&format!("{} {label}", case.entry), &case, &realized(realize), &[], &dir)));
         }
@@ -814,7 +823,7 @@ fn every_entry_under_its_plan_computes_the_native_backends_bits() {
                 continue;
             }
             let label = if realize == MIXED { "mixed" } else { realize };
-            let dir = base.join(format!("{}-{label}", case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
+            let dir = base.join(format!("{}-{}-{label}", Path::new(&case.file).file_stem().unwrap().to_string_lossy(), case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
             let case = Case { file: case.file.clone(), entry: case.entry.clone(), args: case.args.clone() };
             jobs.push(Box::new(move || {
                 let plan = dir.with_extension("plan.json");
@@ -1446,7 +1455,9 @@ fn typed_parameters_compute_the_native_backends_bits() {
         if paths.is_empty() {
             continue;
         }
-        let name = case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        // The file's stem too: two programs of the set have an entry `loss`.
+        let stem = Path::new(&case.file).file_stem().unwrap().to_string_lossy().to_string();
+        let name = format!("{stem}-{}", case.entry).replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_");
         for (default, own) in [("f64", "f32"), ("f32", "bf16")] {
             let realize = typing(&r, &format!("{name}-{default}-{own}.json"), default, own, &paths);
             let dir = base.join(format!("{name}-{default}-{own}"));
@@ -1508,4 +1519,47 @@ fn generate_on_typed_parameters_gives_presk_serves_tokens() {
     let docs = parallel(jobs);
     eprintln!("C5 on typed parameters: {} programs, {} documents in {:.1} s", docs.len(), docs.iter().map(|d| d.len()).sum::<usize>(), t0.elapsed().as_secs_f64());
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A model whose parameters do not fix the context's length (plan 0.17.0
+/// step 7, D180): `coverage/llama3.psk`, RoPE and no position table, at
+/// small constants. Without `--dim T` the export is refused (`E8009`); with
+/// it the program is exported at that length, the context padded after its
+/// last token, and `generate.c` gives presk serve's tokens over the whole,
+/// growing context, greedy and sampled, `--json` included, in `f32` and in
+/// `bf16`. Generation stops when the positions are full.
+#[test]
+fn a_context_the_parameters_do_not_fix_is_padded() {
+    let base = scratch("padded");
+    std::fs::create_dir_all(&base).unwrap();
+    let consts = ["--const", "V=50", "--const", "D=32", "--const", "H=4", "--const", "G=2", "--const", "FF=64", "--const", "L=2"];
+    let refused = presk(&[&["export", "coverage/llama3.psk", "--target", "c", "--serve", "--no-exact", "-o", base.join("refused").to_str().unwrap()][..], &consts[..]].concat());
+    assert!(!refused.status.success() && stderr(&refused).contains("E8009") && stderr(&refused).contains("--dim T=N"), "{}", stderr(&refused));
+    let prompt = "1 7 3 49 0 12";
+    for realize in ["f32", "bf16"] {
+        let dir = base.join(realize);
+        let o = presk(&[&["export", "coverage/llama3.psk", "--target", "c", "--serve", "--dim", "T=10", "--realize", realize, "-o", dir.to_str().unwrap()][..], &consts[..]].concat());
+        assert!(o.status.success(), "{realize}: {}", stderr(&o));
+        let check = Command::new("sh").arg(dir.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
+        assert!(String::from_utf8_lossy(&check.stdout).contains("C1 holds"), "{realize}: {}", String::from_utf8_lossy(&check.stderr));
+        let built = Command::new("make").args(["-s", "-C", dir.to_str().unwrap(), "generate"]).output().unwrap();
+        assert!(built.status.success(), "{realize}: {}", String::from_utf8_lossy(&built.stderr));
+        let weights = dir.join("conformance/weights.psk.d");
+        for (temperature, tokens) in [("0", "4"), ("0.8", "4"), ("0", "9")] {
+            let c = Command::new(dir.join("generate")).args(["--weights", weights.to_str().unwrap(), "--prompt", prompt, "--tokens", tokens, "--temperature", temperature, "--seed", "3", "--json"]).output().unwrap();
+            assert!(c.status.success(), "{realize}: {}", String::from_utf8_lossy(&c.stderr));
+            let c = String::from_utf8_lossy(&c.stdout).into_owned();
+            let ours = generated(&c);
+            if tokens == "9" {
+                // Six tokens and ten positions: the last token is read at
+                // position 10, so five are generated.
+                assert_eq!(ours.len(), 5, "{realize}: the positions full, generation stops: {c}");
+                continue;
+            }
+            let s = presk(&[&["serve", "coverage/llama3.psk", "--weights", weights.to_str().unwrap(), "--prompt", prompt, "--tokens", tokens, "--temperature", temperature, "--seed", "3", "--backend", "native", "--realize", realize, "--json"][..], &consts[..]].concat());
+            assert!(s.status.success(), "{realize}: {}", stderr(&s));
+            assert_eq!(c, String::from_utf8_lossy(&s.stdout), "{realize} at temperature {temperature}: generate.c is not presk serve");
+            assert!(c.contains("\"window\": null"), "{c}");
+        }
+    }
 }

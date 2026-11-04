@@ -215,6 +215,11 @@ pub enum PrimOp {
     Sigmoid,
     Sin,
     Cos,
+    /// `max(x, y)`, `min(x, y)`: element by element, with broadcasting. At
+    /// a tie the second operand, whose derivative it is too (the reference's
+    /// definition "Derivative of an operation"; plan 0.17.0 step 6).
+    Max,
+    Min,
     /// Injection of a hyperparameter (`nat`, `f64`) into the real scalar.
     Real,
     /// The constant π, correctly rounded at the evaluator's precision.
@@ -247,6 +252,13 @@ pub enum PrimOp {
     Sample,
     /// `t[axis: index]` (negative indices count from the end).
     IndexConst { axis: String, index: i64 },
+    /// `t[axis: lo..hi]`: the elements `lo` to `hi − 1` of the axis, which
+    /// the result keeps at the length `hi − lo` (rule E-Slice), of a real or
+    /// an index tensor. The bounds are dimensions the facts place inside the
+    /// axis.
+    Slice { axis: String, lo: DimExpr, hi: DimExpr },
+    /// `concat(axis a, x, y)`: `x`, then `y`, along the axis both carry.
+    Concat { axis: String },
     /// `merge(axis a, axis b, x)`: two adjacent axes become one, row-major
     /// (`(i, j) ↦ i·|b| + j`). The new axis is unnamed, as `embed`'s is. A
     /// pure retag: row-major buffers make this metadata-only.
@@ -314,10 +326,19 @@ pub enum PrimOp {
     CrossEntropyVjp,
     /// `(template, ct)`: zeros like the template with the slice `axis: index` set to `ct`.
     ScatterIndex { axis: String, index: i64 },
+    /// `(template, ct)`: zeros like the template with its elements `lo` to
+    /// `hi − 1` along `axis` set to `ct`: the adjoint of `Slice`.
+    SliceVjp { axis: String, lo: DimExpr, hi: DimExpr },
     /// `(stacked, ct)`: zeros like the stacked tree with slice `index` set to `ct`.
     ScatterParams { index: u64 },
     /// `(stacked, i : nat, value)`: the stacked value with slice `i` replaced.
     SetSlice,
+}
+
+/// A dimension in a primitive's name, without the program's names: a
+/// constant as its value, a symbol by its number (`pretty` prints names).
+fn show_dim(d: &DimExpr) -> String {
+    d.display(&|v: DimVar| format!("#{}", v.0))
 }
 
 impl PrimOp {
@@ -339,6 +360,8 @@ impl PrimOp {
             PrimOp::Sigmoid => "sigmoid".into(),
             PrimOp::Sin => "sin".into(),
             PrimOp::Cos => "cos".into(),
+            PrimOp::Max => "max".into(),
+            PrimOp::Min => "min".into(),
             PrimOp::Real => "real".into(),
             PrimOp::Pi => "pi".into(),
             PrimOp::Dot => "dot".into(),
@@ -357,6 +380,8 @@ impl PrimOp {
             PrimOp::Argmax => "argmax".into(),
             PrimOp::Sample => "sample".into(),
             PrimOp::IndexConst { axis, index } => format!("index {axis}: {index}"),
+            PrimOp::Slice { axis, lo, hi } => format!("slice {axis}: {}..{}", show_dim(lo), show_dim(hi)),
+            PrimOp::Concat { axis } => format!("concat {axis}"),
             PrimOp::MergeAxes { a, b } => format!("merge {a}, {b}"),
             PrimOp::SplitAxes { a, n1, n2, .. } => format!("split {a} into {n1}, {n2}"),
             PrimOp::ReshapeLike => "reshape_like".into(),
@@ -389,6 +414,7 @@ impl PrimOp {
             PrimOp::EmbedVjp => "embed_vjp".into(),
             PrimOp::CrossEntropyVjp => "cross_entropy_vjp".into(),
             PrimOp::ScatterIndex { axis, index } => format!("scatter_index {axis}: {index}"),
+            PrimOp::SliceVjp { axis, lo, hi } => format!("slice_vjp {axis}: {}..{}", show_dim(lo), show_dim(hi)),
             PrimOp::ScatterParams { index } => format!("scatter_params {index}"),
         }
     }
@@ -401,7 +427,7 @@ impl PrimOp {
     /// subtree; those stay kernels of their own.
     pub fn elementwise(&self) -> bool {
         use PrimOp::*;
-        matches!(self, Add | Sub | Mul | Div | Neg | Exp | Log | Tanh | Sqrt | Gelu | Relu | Abs | Sigmoid | Sin | Cos | GeluDeriv | Heaviside | Sign) || matches!(self, Pow(n) if *n <= 2)
+        matches!(self, Add | Sub | Mul | Div | Neg | Exp | Log | Tanh | Sqrt | Gelu | Relu | Abs | Sigmoid | Sin | Cos | Max | Min | GeluDeriv | Heaviside | Sign) || matches!(self, Pow(n) if *n <= 2)
     }
 
     /// Whether the primitive draws randomness.

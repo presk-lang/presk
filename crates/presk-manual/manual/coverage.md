@@ -22,7 +22,7 @@ both at tiny constants, `make bert` runs BERT at MLPerf's constants and
 | Family | MLPerf benchmarks | Status | What is missing |
 |---|---|---|---|
 | Transformer encoder | BERT-large (training and inference) | **expressible**, `coverage/bert.psk`; inference **runs** at MLPerf's constants, natively and exactly | — |
-| Transformer decoder | GPT-3, GPT-J 6B, Llama 2 70B, Llama 3.1 405B | **expressible** with one substitution, `coverage/llama.psk`; one block **runs** at Llama 2 7B's width, natively and exactly (D104), and a budget is **solved** on it (D106) | building a tensor along an axis (`concat`) |
+| Transformer decoder | GPT-3, GPT-J 6B, Llama 2 70B, Llama 3.1 405B | **expressible** exactly, rotary positions included, `coverage/llama.psk` (since 0.17.0 step 6, D179); one block **runs** at Llama 2 7B's width, natively and exactly (D104, with a learned position table then), and a budget is **solved** on it (D106) | — |
 | Mixture of experts | Mixtral 8×7B | not expressible | top-*k*; indexing a stacked parameter tree by a runtime value |
 | Convolutional vision | ResNet-50, RetinaNet, 3D U-Net, Stable Diffusion | not expressible | convolution, pooling, batch and instance normalization; transposed convolution |
 | Detection post-processing | RetinaNet | outside the language | non-maximum suppression is data-dependent control flow |
@@ -49,7 +49,9 @@ and a head drawn as the other matrices (zero-initialized until D104, see
 0.4.0 it checked with *two* substitutions, both attributed to the same
 missing construct — splitting one axis into two. 0.5.0 step 1 added the
 split. One substitution went away and the other did not, and the reason it
-did not is the more useful of the two results.
+did not is the more useful of the two results. Since 0.17.0 step 6 it checks
+with none: the second waited for a slice that keeps its axis and for
+`concat` (D179), below.
 
 **Grouped-query attention is now transcribed exactly.** Llama 2 70B gives the
 keys and values eight heads shared by thirty-two query heads, so the queries
@@ -74,130 +76,36 @@ axis unnamed (D28) while a split names both halves, **splits chain and merges
 do not**, which is why the output projection reads `wo` under the same three
 axes instead of flattening the attention result back.
 
-**Rotary positions are still not expressible, and the split was not what they
-were missing.** The pairing they need now checks:
+**Rotary positions, since 0.17.0.** Until then they were not expressible,
+and the split was not what they were missing. The pairing they need checked
+since 0.5.0, `split(axis hd, pair: 2, rot: HD/2, q)`, and so did reading one
+member, `q[pair: 0]`. But the rotation reads both members of a pair and
+writes both back, `out₀ = x₀·cos θ − x₁·sin θ` and `out₁ = x₁·cos θ + x₀·sin
+θ`, and writing them back is building a tensor along an axis out of two
+computed parts: `concat` was refused (`E2012`), and `q[pair: 0]` drops its
+axis, so there was nothing to concatenate along. The 0.4.0 chapter
+attributing both substitutions to the split was wrong about this one, and
+the finding moved `concat` from a convenience to the last thing between the
+language and an exact Llama. Plan 0.17.0 step 6 brings both constructs, and
+the transcription takes RoPE in Hugging Face's pairing (dimension `r` of a
+head with `r + HD/2`) and drops its learned table:
 
 ```text
-split(axis hd, rot: R, pair: 2, q)               -- ℝ[…, rot: R, pair: 2]
-split(axis hd, rot: R, pair: 2, q)[pair: 0]      -- reading one member
+fn rope(φ : ℝ[seq: T, rot: HD/2], x : ℝ[..., seq: T, hd: HD]) -> ℝ[..., seq: T, hd: HD] =
+  let p  = split(axis hd, pair: 2, rot: HD/2, x)
+  let x0 = p[pair: 0..1]                     -- a slice: the axis `pair` kept, at length 1
+  let x1 = p[pair: 1..2]
+  let c  = cos(φ)                            -- ℝ[seq: T, rot: HD/2], broadcast by name
+  let s  = sin(φ)
+  merge(axis pair, axis rot, concat(axis pair, x0 * c - x1 * s, x1 * c + x0 * s))
 ```
 
-The rotation reads both members of a pair and writes both back,
-`out[…, r, 0] = x₀·cos θ − x₁·sin θ` and `out[…, r, 1] = x₀·sin θ + x₁·cos
-θ`. Reading is `x[pair: 0]` and `x[pair: 1]`, which the language has. Writing
-them back is building a tensor along an axis out of two computed parts, which
-it does not:
-
-```text
-concat(a, b)          [E2012] `concat` is not implemented
-x[hd: 0..HALF]        [E0010] expected `]`, found `.`
-```
-
-So what the decoder family is waiting for is not a shape construct at all but
-a way to *make* a tensor from values, and the 0.4.0 chapter attributing both
-substitutions to the split was wrong about one of them. That is the finding,
-and it moves `concat` from a convenience to the last thing between this
-language and an exact Llama.
-
-## BERT-large, run
-
-0.6.0 step 8 runs the transcription the way the one MLPerf benchmark within
-reach runs it: inference, at MLPerf's constants — 24 blocks, width 1024, 16
-heads, context 384, vocabulary 30 522 — on SQuAD-shaped features built as
-MLPerf's harness builds them: `[CLS]`, the question, `[SEP]`, the context,
-`[SEP]`, then padding to 384, which the additive mask sets to −10 000
-(`experiments/bert_features.py`; the feature measured has 18 question tokens,
-320 of context and 43 of padding). The file gained one entry, `squad`, which
-takes a feature as one tuple so that a data file can supply it. A second,
-`squad_loss`, is BERT's SQuAD fine-tuning loss as Google's `run_squad.py`
-computes it, the mean of the start and end cross-entropies against an answer's
-span (`bert_features.py --span`): a scalar, which `presk solve` needs to rank
-its sites, and on which `make compile-times` times BERT (D101).
-
-What it is not, before any number. The weights are the program's own
-initialization, not the fine-tuned checkpoint MLPerf distributes, and the
-token ids are random over WordPiece's range. There is no tokenizer, no SQuAD
-and no F1 here. So nothing below is about answering questions, or about a
-*trained* BERT, whose activations carry outlier features an initialization
-does not have. What it measures is the compiler's reach, and what each
-acceptance rule costs on the benchmark's own model.
-
-**It runs, exactly and natively.** The reference interpreter computes the
-exact logits of one feature at 128 bits in 1 h 57 min and 44 GB: the
-denotation of an MLPerf model at its own constants, against which every
-realization below is measured. That needed a change to the interpreter (D53). It
-cloned a value at every use, a field of the parameter tree was a clone of the
-whole tree, and BERT-large's 335M parameters would have been held about eight
-times, some 180 GB. Tuples and records are now shared rather than copied, which
-changes no output — four blocks run byte-identically before and after, and so
-does every golden — and four blocks went from 40 GB to 13.5.
-
-**The gaps**, over the 768 logits, `max|ŷ − y| / max|y|` — what a budget on
-an entry binds (spec §6.1):
-
-| realization | gap to the exact logits | inside 10⁻² |
-|---|---|---|
-| `f64` | 1.5·10⁻¹⁴ | yes |
-| `f32` | 1.1·10⁻⁵ | yes |
-| `bf16` | 5.3·10⁻² (1.1·10⁻¹ in D53) | no |
-| `int8` weights, `f32` arithmetic | 5.7·10⁻² | no |
-| `int4` weights, `f32` arithmetic | 2.0 | no |
-
-The largest exact logit is 0.477, so `int4`'s error is twice the signal: its
-logits say nothing. The `bf16` row is measured again at the tag `v0.10.0`
-(D103) against the same exact logits: D53's run predates 0.7.0's step 2
-(D58), since which a `bf16` product whose output width is not a multiple of
-eight, as the SQuAD head's two logits, accumulates each element in `f32`,
-and the gap halved; every other row is D53's to every digit. `f32` is the one narrowed realization inside 10⁻², by a
-factor of nine hundred.
-
-Split on two of the 24 blocks at full width and context (`presk quantize`: at
-24, an exact run on the dequantised weights would cost two more hours per
-scheme), relative to the largest exact logit:
-
-| realization | the weights' rounding | the arithmetic | total |
-|---|---|---|---|
-| `int8` weights | 1.09·10⁻² | 9.6·10⁻⁷ | 1.09·10⁻² |
-| `int4` weights | 2.17·10⁻¹ | 8.7·10⁻⁷ | 2.17·10⁻¹ |
-
-On two blocks the weights' rounding is the whole of a quantised gap, and the
-kernels add less than 10⁻⁶. The same `int8` scheme that statement K measured at
-2.73·10⁻⁵ on the GPT's loss (D93; 3.23·10⁻⁶ in D49) is 5.7·10⁻² here,
-outside a 10⁻² budget. A loss
-averages its errors over 512 positions and ends in one number, where each of
-768 logits is an output in its own right; and this model is sixteen times
-wider.
-
-**The time**, per sequence of 384 tokens, natively (`presk bench`, the median
-of two runs, and for each type the better of its scalar and four-lane code):
-
-| realization | batch 1, one core | batch 20, per sequence |
-|---|---|---|
-| `f64` | 80.6 s | 13.1 s |
-| `f32` | 52.3 s | 6.92 s |
-| `bf16` | 66.5 s | 5.28 s |
-| `int8` weights, `f32` arithmetic | **23.4 s** | **3.10 s** |
-
-`int8` weights are 2.2× faster than `f32` at both batch sizes: the first time
-in this project that a type narrower than `f32` buys time on a model, and it
-happens on the one MLPerf benchmark within reach. It happens because at this
-width the contraction waits for memory. The blocked kernel reads the whole
-weight matrix again for every row of the result, and a 16 MB matrix does not
-stay in cache where its 4 MB `int8` copy does. `bf16`, which only halves the
-bytes, is faster than `f32` at batch 20 too, and there `f32`'s four-lane code is
-slower than its scalar code. That is a property of this kernel, which has no
-packed panels or cache blocking, rather than of `int8`
-(`docs/kernels-roadmap.md`). `int4` is level with `int8` (on two blocks at batch
-20, 5.87 s against 5.62 s): unpacking costs what the halved bytes save. At
-batch 1 a whole pass runs on one core, because threads split a kernel's
-outermost loop, which is then the batch axis.
-
-**What each rule costs on it.** MLPerf's accuracy rule is a pass over the
-10 833 features per realization: at batch 20 on this machine, 9.3 h in `int8`,
-20.8 h in `f32` and 39.5 h in `f64`. A budget's check is one native run of
-the envelope's inputs per realization, here one feature: 2 to 3 min, most of
-it drawing the initial parameters exactly. It is measured against an exact
-reference computed once in 1 h 57 min, a tenth of one pass in `f32`.
+The angles are `ein[seq, rot](real(positions(seq: T)) * frequencies())`, an
+outer product written as an `ein` that sums nothing. `rope` wants `seq` just
+before `hd`, so the queries and keys are projected by `ein` with the heads
+before the positions (`ein[batch, groups, per, seq, hd](x * wq3)`), and still
+nothing transposes. The specification's example `examples/rope/` is the same
+rotation with Llama 3's frequency scaling, written with `clamp`.
 
 ## The decoder, run
 
@@ -208,7 +116,8 @@ the heads (32 of 128), SwiGLU's width (11 008) and the vocabulary (32 000)
 are Llama 2 7B's published configuration; at its 32 blocks the file counts
 6 738 415 616 parameters besides its position table, the 7B's count exactly.
 What it is: the Llama 2 decoder at the 7B configuration's width, **one** of
-its 32 blocks, a learned position table in place of RoPE (above), on its
+its 32 blocks, a learned position table in place of RoPE (the file before
+0.17.0; since then it has RoPE and no table, and `make llama` runs that), on its
 initialization and one sequence of 384 random token ids
 (`experiments/llama_ids.py`). What it is not: MLPerf's constants (MLPerf's
 Llama 2 is the 70B), a trained Llama, text, or a perplexity. For the run the
@@ -451,9 +360,9 @@ or weights.
 The honest summary is that the language covers the transformer, which is one
 family of models described completely. Of the two things 0.4.0 named as next,
 the axis split is done and bought more than expected — it replaced the head
-primitives rather than complementing them. What is left is `concat`, small
-and now the only thing between this language and an exact Llama, and
-convolution, which is large and opens another four benchmarks.
+primitives rather than complementing them. `concat` and the slice came in
+0.17.0 step 6, and the decoder is exact since. What is left is convolution,
+which is large and opens another four benchmarks.
 
 
 ## The foil: what a budget offers that an accuracy target does not

@@ -182,7 +182,13 @@ pub fn sensitivity(core: &mut presk_core::Program, prog: &ElabProgram, sm: &Sour
         return Err(SensitivityError::Diagnostics);
     }
     let opts = RunOptions { entry: entry.into(), dims, seed, bits, digits: 17 };
-    let Ok((_, fdims, inputs)) = presk_interp::run::prepare_run(core, prog, &opts) else {
+    // With a checkpoint, the parameters are described and not drawn (D180).
+    let prepared = if weights.is_some() {
+        presk_interp::run::prepare_run_given_params(core, prog, &opts)
+    } else {
+        presk_interp::run::prepare_run(core, prog, &opts).map(|(f, d, i)| (f, d, i, None))
+    };
+    let Ok((_, fdims, inputs, described)) = prepared else {
         return Err(SensitivityError::Inputs);
     };
     let mut backend = InterpBackend::new(core, prog, bits);
@@ -191,7 +197,11 @@ pub fn sensitivity(core: &mut presk_core::Program, prog: &ElabProgram, sm: &Sour
     // is what makes the adjoints `∂L/∂v` rather than a scaled multiple.
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
     if let Some(path) = weights {
-        args[0] = presk_rt::load_params(path, &args[0]).map_err(|e| SensitivityError::Run(e.message))?;
+        let read = match &described {
+            Some(s) => crate::entry::read_given_params(core, prog, s, path),
+            None => presk_rt::load_params(path, &args[0]),
+        };
+        args[0] = read.map_err(|e| SensitivityError::Run(e.message))?;
     }
     args.push(seed_one());
     let one = Realization::uniform(Dtype::F64);
@@ -213,8 +223,13 @@ pub struct SolveArgs<'a> {
     pub seed: u64,
     /// A machine profile: the objective is then time, and traffic without.
     pub profile: Option<&'a Path>,
-    /// Also offer the matrix parameters as `int8` or `int4`.
+    /// Also offer the matrix parameters as `int8` or `int4`, in a pass
+    /// after the solve.
     pub quant: Option<QuantScheme>,
+    /// The menu: the float types, and with `--menu`'s integers the rungs
+    /// a parameter of rank two or more is offered in the solve itself (plan
+    /// 0.17.0 step 4, D177).
+    pub menu: Menu,
     /// The estimate's rounding term and the narrowing step (D155): the
     /// default is the solver of record.
     pub options: solve::Options,
@@ -243,6 +258,10 @@ pub struct Solved {
     /// Whether the costs are times, a profile's roofline pricing them, or
     /// bytes.
     pub time: bool,
+    /// The menu it was solved over, and the parameters it offered, their
+    /// integer rungs among them (D177).
+    pub menu: Menu,
+    pub params: Vec<solve::ParamSite>,
 }
 
 /// Why `presk solve` gave no realization; each is printed by the command.
@@ -384,7 +403,7 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
             Err(_) => f64::INFINITY,
         }
     };
-    let menu = Menu::default();
+    let menu = a.menu.clone();
     let (machine, time): (Box<dyn Machine>, bool) = match a.profile.map(presk_opt::Profile::load) {
         Some(Ok(p)) => (Box::new(Roofline(p)), true),
         _ => (Box::new(solve::Traffic), false),
@@ -392,8 +411,8 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     // The sites that are the solver's to choose and how the others are
     // rounded (plan 0.11.0 step 2b, D112); the parameters, each with the
     // field sites that read it (plan 0.12.0 step 4).
-    let params = param_sites(core, entry, &args[0], &param_sens);
-    let roles = solve::Roles::of(core).with_params(params);
+    let params = param_sites(core, prog, entry, &args[0], &param_sens, &menu);
+    let roles = solve::Roles::of(core).with_params(params.clone());
     let mut sol = if a.verify {
         let heldout: Option<&mut dyn FnMut(&Realization) -> f64> = if held.is_some() { Some(&mut measure_heldout) } else { None };
         solve::solve_with_heldout(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), Some(&mut measure), heldout, a.options)
@@ -407,10 +426,7 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     let quant = match (a.quant, &grad_theta) {
         (Some(scheme), Some(g)) => {
             // Ranks as declared, so a stacked vector is not taken for a matrix.
-            let declared: BTreeMap<String, usize> = match &core.func(entry).params.first().map(|p| &p.ty) {
-                Some(presk_types::ty::Ty::Params(m)) => prog.params_tree(m).declared_ranks().into_iter().collect(),
-                _ => Default::default(),
-            };
+            let declared = declared_ranks(core, prog, entry);
             let r0 = sol.realization.clone();
             let float_bytes = |path: &str| r0.params.get(path).copied().unwrap_or(r0.default).bytes();
             let cands = presk_precision::quant::candidates(&args[0], g, &declared, &float_bytes, scheme);
@@ -431,7 +447,7 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     };
     let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000, a.options).map(|(_, bytes)| bytes);
     let breakdown = solve::breakdown_with(env, &sens, &roles, &sol.realization, &menu, Dtype::F64, machine.as_ref(), a.options.rounding);
-    Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time })
+    Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time, menu, params })
 }
 
 /// Whether `f` returns a real tensor, of any shape, an open prefix bound at
@@ -482,10 +498,16 @@ fn leaf_norms(v: &Value) -> BTreeMap<String, f64> {
 /// of its own (`Realization::store_params` refuses it), so every
 /// measurement narrowing it failed, read as an infinite gap, and the
 /// solver widened the other sites back one by one until it came to it.
-fn param_sites(core: &presk_core::Program, entry: FuncId, theta: &Value, sens: &BTreeMap<String, f64>) -> Vec<solve::ParamSite> {
+///
+/// With the menu's integer rungs (D177), a parameter of rank two or more as
+/// declared is priced in each: quantized over the axis its readers contract
+/// (`solve::contracted_axes`, else −2), the largest move `max |ŵ − w|` of
+/// its values and the bytes of its integers and scales.
+fn param_sites(core: &presk_core::Program, prog: &ElabProgram, entry: FuncId, theta: &Value, sens: &BTreeMap<String, f64>, menu: &Menu) -> Vec<solve::ParamSite> {
     if !matches!(theta, Value::Record(_)) {
         return Vec::new();
     }
+    let (declared, axes) = if menu.1.is_empty() { (BTreeMap::new(), BTreeMap::new()) } else { (declared_ranks(core, prog, entry), solve::contracted_axes(core, entry)) };
     let reads = solve::param_reads(core, entry);
     let mut fields: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (site, paths) in &reads {
@@ -501,11 +523,38 @@ fn param_sites(core: &presk_core::Program, entry: FuncId, theta: &Value, sens: &
             // Its rounding at rest in each type, from its own values: they
             // are doubles, so the `f64` term is 0 (D155).
             let round = values.iter().map(|x| presk_interp::eval::rounding_of_f64(*x)).fold([0.0f64; 3], |a, b| [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]);
-            out.push(solve::ParamSite { path: path.to_string(), elems: t.numel() as f64, mag, sens: *s, fields: fields.get(path).cloned().unwrap_or_default(), round: Some(presk_precision::envelope::Rounding::of(round)) });
+            let ints = if declared.get(path).copied().unwrap_or(t.rank()) >= 2 { int_rungs(t, &values, &menu.1, axes.get(path).copied()) } else { Vec::new() };
+            out.push(solve::ParamSite { path: path.to_string(), elems: t.numel() as f64, mag, sens: *s, fields: fields.get(path).cloned().unwrap_or_default(), round: Some(presk_precision::envelope::Rounding::of(round)), ints });
         }
         Value::Nat(0)
     });
     out
+}
+
+/// Each leaf's rank as its module declares it, without the axes
+/// `stack{n}` prepends: a stacked bias is a vector.
+fn declared_ranks(core: &presk_core::Program, prog: &ElabProgram, entry: FuncId) -> BTreeMap<String, usize> {
+    match &core.func(entry).params.first().map(|p| &p.ty) {
+        Some(presk_types::ty::Ty::Params(m)) => prog.params_tree(m).declared_ranks().into_iter().collect(),
+        _ => Default::default(),
+    }
+}
+
+/// A leaf's integer rungs (D177), one per `(bits, scheme)` of the menu: its
+/// values `w` quantized over `axis` (−2 when its readers contract no single
+/// axis), the largest `|ŵ − w|` with `ŵ` the dequantized `f32(q·s)`, and the
+/// bytes of the integers and their `f32` scales. A rung that does not
+/// quantize (no such axis) is not offered.
+fn int_rungs(t: &Tensor, values: &[f64], rungs: &[(u8, QuantScheme)], axis: Option<i64>) -> Vec<solve::IntRung> {
+    rungs
+        .iter()
+        .filter_map(|(bits, scheme)| {
+            let q = presk_rt::Quant { bits: *bits, over: presk_rt::AxisRef::Pos(axis.unwrap_or(-2)), scheme: *scheme };
+            let qt = presk_rt::quant::QTensor::quantize(t, &q).ok()?;
+            let round = qt.dequantize().data.to_f64().iter().zip(values).fold(0.0f64, |m, (h, w)| m.max((h - w).abs()));
+            Some(solve::IntRung { bits: *bits, scheme: *scheme, axis: axis.unwrap_or(-2), contracted: axis.is_some(), round, bytes: qt.bytes() as f64 })
+        })
+        .collect()
 }
 
 /// The program of the sensitivities' sweep (plan 0.11.0 step 2): the

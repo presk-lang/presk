@@ -284,6 +284,9 @@ pub enum IndexSel {
     Pos(Expr),
     /// `axis: expr`
     Named { axis: Ident, value: Expr },
+    /// `axis: lo..hi`, or `lo..hi` on the first axis: a slice, which keeps
+    /// its axis at the length `hi - lo` (reference, rule E-Slice).
+    Slice { axis: Option<Ident>, lo: Expr, hi: Expr },
 }
 
 #[derive(Clone, Debug)]

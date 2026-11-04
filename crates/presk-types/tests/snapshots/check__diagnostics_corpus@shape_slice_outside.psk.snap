@@ -1,0 +1,14 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: "render_all(&diags, &sm, false)"
+input_file: tests/diag/shape_slice_outside.psk
+---
+[E2014] Error: the slice `1..T + 1` is not inside an axis of length `T`
+   ,-[ tests/diag/shape_slice_outside.psk:4:49 ]
+   |
+ 4 | fn targets(w : ℝ[seq: T]) -> ℝ[seq: T] = w[seq: 1..T + 1]
+   |                                                 ^^^^|^^^  
+   |                                                     `----- `T + 1 ≤ T` fails for T = 0
+   | 
+   | Note: the facts must place the bounds inside the axis for every value of its dimensions: 0 ≤ lo ≤ hi ≤ length
+---'

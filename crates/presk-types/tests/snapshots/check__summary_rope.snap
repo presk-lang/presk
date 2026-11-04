@@ -1,0 +1,26 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: summary
+---
+rope.psk Attention.apply : ℝ[batch: B, seq: T, model: 16]
+    let φ : ℝ[seq: T, rot: 4]
+    let q : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+    let k : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+    let v : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+    let s : ℝ[batch: B, heads: 2, seq: T, seq2: T]
+    let a : ℝ[batch: B, heads: 2, seq: T, seq2: T]
+    let o : ℝ[batch: B, heads: 2, seq: T, hd: 8]
+rope.psk frequencies : ℝ[rot: 4]
+    let r : ℝ[rot: 4]
+rope.psk llama3_scaling : ℝ[rot: 4]
+    let s : ℝ[rot: 4]
+rope.psk angles : ℝ[seq: T, rot: 4]
+rope.psk rope : ℝ[..., seq: T, 8]
+    let p : ℝ[..., seq: T, pair: 2, rot: 4]
+    let x0 : ℝ[..., seq: T, pair: 1, rot: 4]
+    let x1 : ℝ[..., seq: T, pair: 1, rot: 4]
+    let c : ℝ[seq: T, rot: 4]
+    let s : ℝ[seq: T, rot: 4]
+    let y : ℝ[..., seq: T, pair: 2, rot: 4]
+rope.psk attention2 : ℝ[batch: B, seq: T, model: 16]
+rope.psk attention3 : ℝ[batch: B, seq: T, model: 16]

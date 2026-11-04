@@ -62,6 +62,9 @@ pub struct Options {
     pub consts: Vec<String>,
     /// `--budget ε`: solve for a realization.
     pub budget: Option<f64>,
+    /// `--menu`: what the solve offers, the integer rungs among it (plan
+    /// 0.17.0 step 4, D177); the float types by default.
+    pub menu: presk_precision::solve::Menu,
     /// `--realize f64|f32|bf16|@FILE`: a realization given.
     pub realize: Option<String>,
     /// `--plan @FILE`: a plan given, its realization with it.

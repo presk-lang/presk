@@ -487,6 +487,15 @@ impl<'a> P<'a> {
                     let attr = match s {
                         IndexSel::Named { axis, value } => M::AxisLen(axis.name.clone(), Box::new(self.dim(value))),
                         IndexSel::Pos(value) => self.dim(value),
+                        IndexSel::Slice { axis, lo, hi } => {
+                            let range = M::Cat(vec![self.dim(lo), M::code(".."), self.dim(hi)]);
+                            let attr = match axis {
+                                Some(a) => M::AxisLen(a.name.clone(), Box::new(range)),
+                                None => range,
+                            };
+                            x = M::op("slice", vec![vec![attr]], vec![x]);
+                            continue;
+                        }
                     };
                     x = M::op("index", vec![vec![attr]], vec![x]);
                 }
@@ -668,6 +677,19 @@ impl<'a> P<'a> {
             "matmul" => {
                 let (a, b) = (x(self, 0), x(self, 1));
                 M::op("dot", vec![], vec![a, b])
+            }
+            "max" | "min" => {
+                let (a, b) = (x(self, 0), x(self, 1));
+                M::op(name, vec![], vec![a, b])
+            }
+            // `clamp(x, lo, hi)`: `min (max x, lo), hi`, which it denotes.
+            "clamp" => {
+                let (a, lo, hi) = (x(self, 0), x(self, 1), x(self, 2));
+                M::op("min", vec![], vec![M::op("max", vec![], vec![a, lo]), hi])
+            }
+            "concat" => {
+                let (a, b) = (x(self, 0), x(self, 1));
+                M::op("concat", vec![code_axes(&axes)], vec![a, b])
             }
             "dropout" => {
                 let (r, k, v) = (x(self, 0), x(self, 1), x(self, 2));

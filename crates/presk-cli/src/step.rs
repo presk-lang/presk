@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use presk_precision::solve::Grain;
 use presk_rt::{Dtype, Realization};
 use presk_train::step::{StepOptions, StepResult, StepSetup};
 
@@ -222,6 +223,19 @@ pub fn calibrate(a: &StepArgs, realize: &[String], out: Option<&Path>, profile: 
             Err(m) => return fail("calibrate", m),
         }
     }
+    // A realization that types the step's stored values (D178) is priced by
+    // role, and every realization asked with it, in the one model: each
+    // stored value and fused member at its type, a carried value at nothing.
+    // The column above is D52's, by function, which cannot price it.
+    let rs: Vec<Realization> = realize.iter().filter_map(|spec| parse(spec, &names, &ctx.setup.opt_name).ok()).collect();
+    if rs.iter().any(|r| !r.storage.is_empty()) {
+        let roles = presk_precision::solve::Roles::of(&ctx.core);
+        let m = machine(profile);
+        println!("{:<28} {:>14}   (by role: stored values and fused members at their types, D178)", "realization", if profile.is_some() { "predicted s" } else { "predicted B" });
+        for (spec, r) in realize.iter().zip(&rs) {
+            println!("{:<28} {:>14.4e}", spec, presk_precision::solve::step_time(&env, m.as_ref(), &roles, r));
+        }
+    }
     if let Some(path) = out {
         if let Err(m) = env.save(path) {
             return fail("calibrate", m);
@@ -283,8 +297,10 @@ fn against_f64(ctx: &Ctx, a: &StepArgs, realize: &[String], out: Option<&Path>) 
 }
 
 /// `presk solve --step`: the step solver over an envelope written by
-/// `presk calibrate --step`.
-pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool, out: Option<&Path>, profile: Option<&Path>) -> ExitCode {
+/// `presk calibrate --step`, by function (D52) or by stored value (plan
+/// 0.17.0 step 5, D178).
+#[allow(clippy::too_many_arguments)]
+pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool, out: Option<&Path>, profile: Option<&Path>, grain: Grain) -> ExitCode {
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => return fail("solve", m),
@@ -316,7 +332,19 @@ pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool,
         return fail("solve", m);
     }
     let menu = presk_precision::solve::Menu::default();
-    let groups = presk_precision::solve::step_groups(&env, &menu, machine(profile).as_ref());
+    let machine = machine(profile);
+    let groups = match grain {
+        Grain::Function => presk_precision::solve::step_groups(&env, &menu, machine.as_ref()),
+        // The step's stored values, but its state (D178): a carried value
+        // or a fused member has no type of its own (D112), and the master
+        // weights and the moments keep the default type.
+        Grain::Value => {
+            let roles = presk_precision::solve::Roles::of(&ctx.core);
+            let state = presk_train::state_sites(&ctx.core, &ctx.setup.fns);
+            let offered = |site: &str| roles.role(site) == presk_precision::solve::Role::Decision && !state.contains(site);
+            presk_precision::solve::step_value_groups(&env, &menu, machine.as_ref(), &roles, &offered)
+        }
+    };
     let mut error: Option<String> = None;
     let mut runs = 0usize;
     let mut measure = |r: &Realization| -> f64 {
@@ -329,20 +357,60 @@ pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool,
             }
         }
     };
-    let sol = presk_precision::solve::solve_step(groups, budget, &menu, Dtype::F64, &mut measure, verify);
+    let sol = presk_precision::solve::solve_step_with(groups, budget, &menu, Dtype::F64, &mut measure, verify, grain);
     if let Some(m) = error {
         return fail("solve", m);
     }
     let unit = if profile.is_some() { "s (predicted)" } else { "bytes" };
-    println!("presk solve: the step under an update budget of {budget:.2e} (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), {} functions, {runs} native steps measured", sol.groups.len());
-    println!("{:<30} {:>6} {:>12} {:>11} {:>11} {:>8}", "function", "sites", "f64 cost", "gap f32", "gap bf16", "chosen");
-    for g in &sol.groups {
-        let gap = |d| g.gap.get(&d).map(|x: &f64| format!("{x:.2e}")).unwrap_or_else(|| "-".into());
-        println!("{:<30} {:>6} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.sites, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::Bf16), sol.chosen[&g.name].name());
-    }
     let n = |d: Dtype| sol.chosen.values().filter(|x| **x == d).count();
-    println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::Bf16));
-    println!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), {unit}", sol.cost, sol.baseline, sol.speedup());
+    match grain {
+        Grain::Function => {
+            println!("presk solve: the step under an update budget of {budget:.2e} (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), {} functions, {runs} native steps measured", sol.groups.len());
+            println!("{:<30} {:>6} {:>12} {:>11} {:>11} {:>8}", "function", "sites", "f64 cost", "gap f32", "gap bf16", "chosen");
+            for g in &sol.groups {
+                let gap = |d| g.gap.get(&d).map(|x: &f64| format!("{x:.2e}")).unwrap_or_else(|| "-".into());
+                println!("{:<30} {:>6} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.sites, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::Bf16), sol.chosen[&g.name].name());
+            }
+            println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::Bf16));
+            println!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), {unit}", sol.cost, sol.baseline, sol.speedup());
+        }
+        Grain::Value => {
+            println!("presk solve: the step under an update budget of {budget:.2e} (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), by stored value: {} of its {} sites offered, {runs} native steps measured", sol.groups.len(), env.sites.len());
+            // By function: the values offered and the types chosen.
+            let mut by_fn: BTreeMap<&str, [usize; 4]> = BTreeMap::new();
+            for g in &sol.groups {
+                let f = g.name.rsplit_once('/').map_or(g.name.as_str(), |(f, _)| f);
+                let e = by_fn.entry(f).or_default();
+                e[0] += 1;
+                e[match sol.chosen[&g.name] {
+                    Dtype::F64 => 1,
+                    Dtype::F32 => 2,
+                    Dtype::Bf16 => 3,
+                }] += 1;
+            }
+            println!("{:<34} {:>9} {:>12} {:>11} {:>11} {:>8}", "value", "elements", "f64 cost", "gap f32", "gap bf16", "chosen");
+            for g in &sol.groups {
+                let gap = |d| g.gap.get(&d).map(|x: &f64| format!("{x:.2e}")).unwrap_or_else(|| "-".into());
+                println!("{:<34} {:>9} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.elems, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::Bf16), sol.chosen[&g.name].name());
+            }
+            println!("{:<30} {:>7} {:>6} {:>6} {:>6}", "function", "values", "f64", "f32", "bf16");
+            for (f, c) in &by_fn {
+                println!("{f:<30} {:>7} {:>6} {:>6} {:>6}", c[0], c[1], c[2], c[3]);
+            }
+            // What the estimate says of every value in `f32`, the
+            // per-function realization's choice on these values.
+            let all32 = sol.groups.iter().map(|g| g.gap.get(&Dtype::F32).copied().unwrap_or(0.0).powi(2)).sum::<f64>().sqrt();
+            println!("  all f32     {all32:.3e} (√Σ of every value's isolated gap in f32)");
+            println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::Bf16));
+            println!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), {unit}, over the values offered", sol.cost, sol.baseline, sol.speedup());
+            // The whole step by role (D178): what compares with a
+            // realization by function, `presk calibrate --step` pricing both.
+            let roles = presk_precision::solve::Roles::of(&ctx.core);
+            let all = presk_precision::solve::step_time(&env, machine.as_ref(), &roles, &Realization::uniform(Dtype::F64));
+            let got = presk_precision::solve::step_time(&env, machine.as_ref(), &roles, &sol.realization);
+            println!("  step        {got:.4e} against {all:.4e} all-f64 ({:.2}x), {unit}, the step's every stored value and fused member at its type", if got > 0.0 { all / got } else { 1.0 });
+        }
+    }
     println!("  estimate    {:.3e} (√Σ of the chosen functions' isolated gaps: it proposes, it does not guarantee)", sol.estimate);
     match sol.measured {
         Some(g) => {

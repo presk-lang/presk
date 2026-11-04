@@ -50,7 +50,7 @@ fn a_stored_value_of_one_element_is_not_offered() {
 #[test]
 fn a_parameter_of_one_element_is_not_offered() {
     let (env, sens) = envelope(&[("f/%1", 300), ("f/%2", 200)]);
-    let param = |path: &str, elems: f64| ParamSite { path: path.into(), elems, mag: 1.0, sens: 1.0, fields: Vec::new(), round: None };
+    let param = |path: &str, elems: f64| ParamSite { path: path.into(), elems, mag: 1.0, sens: 1.0, fields: Vec::new(), round: None, ints: Vec::new() };
     let roles = Roles::default().with_params(vec![param("θ.w", 400.0), param("θ.t", 1.0)]);
     let s = solve(&env, &sens, &roles, LOOSE, Options::default(), None);
     assert_eq!(excluded(&s), [("θ.t", Rule::OneElement)]);

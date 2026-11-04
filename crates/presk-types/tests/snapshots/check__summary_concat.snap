@@ -1,0 +1,19 @@
+---
+source: crates/presk-types/tests/check.rs
+expression: summary
+---
+concat.psk QKV.apply : (ℝ[..., out: 16], ℝ[..., out: 16], ℝ[..., out: 16])
+    let w : ℝ[model: 16, out: 48]
+    let y : ℝ[..., out: 48]
+concat.psk Toy.apply : ℝ[batch: B, seq: T, vocab: 64]
+    let x : ℝ[batch: B, seq: T, model: 16]
+    let q : ℝ[batch: B, seq: T, out: 16]
+    let k : ℝ[batch: B, seq: T, out: 16]
+    let v : ℝ[batch: B, seq: T, out: 16]
+    let g : ℝ[batch: B, seq: T, out: 16]
+concat.psk inputs : idx[64][batch: B, seq: T]
+concat.psk targets : idx[64][batch: B, seq: T]
+concat.psk hardtanh : ℝ[...]
+concat.psk leaky : ℝ[...]
+concat.psk loss : ℝ[]
+concat.psk loss_grad : params Toy

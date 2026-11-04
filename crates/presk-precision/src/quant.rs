@@ -30,6 +30,11 @@
 //! fold's slicing that nothing here needs yet, so a gathered table (an
 //! embedding) is offered too, where the scale is simply per column. The error rule holds on any axis; what is lost there is
 //! only the scale's factoring out of a sum, which no kernel uses.
+//!
+//! This is the two-pass solver of `--quant`, kept for the record. Since
+//! plan 0.17.0 step 4 (D177) `presk solve --menu` offers the integers in
+//! the float solve itself, priced as the floats are, over the axis the
+//! readers contract (`crate::solve`'s `Rung` and `contracted_axes`).
 
 use std::collections::BTreeMap;
 

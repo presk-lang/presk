@@ -177,6 +177,22 @@ fn gelu_deriv(x: Expr) -> Expr {
     bin(BinOp::Add, phi, bin(BinOp::Mul, x, dens))
 }
 
+/// The element of a binary elementwise primitive. `max` and `min` are a
+/// comparison and a selection, the second operand at a tie (the
+/// reference's realized `max`), so that every backend gives one bit
+/// pattern, a zero's sign included.
+fn binary_expr(op: &PrimOp, x: Expr, y: Expr) -> Option<Expr> {
+    Some(match op {
+        PrimOp::Add => bin(BinOp::Add, x, y),
+        PrimOp::Sub => bin(BinOp::Sub, x, y),
+        PrimOp::Mul => bin(BinOp::Mul, x, y),
+        PrimOp::Div => bin(BinOp::Div, x, y),
+        PrimOp::Max => select(cmp(CmpOp::Gt, x.clone(), y.clone()), x, y),
+        PrimOp::Min => select(cmp(CmpOp::Lt, x.clone(), y.clone()), x, y),
+        _ => return None,
+    })
+}
+
 fn unary_expr(op: &PrimOp, x: Expr) -> Option<Expr> {
     Some(match op {
         PrimOp::Neg => un(UnOp::Neg, x),
@@ -237,7 +253,7 @@ pub fn lower_planned(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: Reductio
         return Some(emit_contraction(&c, dtype, ins, &layout.resolve(&kind)));
     }
     Some(match op {
-        PrimOp::Add | PrimOp::Sub | PrimOp::Mul | PrimOp::Div => elementwise_binary(op, ins, dtype),
+        PrimOp::Add | PrimOp::Sub | PrimOp::Mul | PrimOp::Div | PrimOp::Max | PrimOp::Min => elementwise_binary(op, ins, dtype),
         PrimOp::Neg | PrimOp::Exp | PrimOp::Log | PrimOp::Tanh | PrimOp::Sqrt | PrimOp::Sin | PrimOp::Cos | PrimOp::Abs | PrimOp::Gelu | PrimOp::GeluDeriv | PrimOp::Relu | PrimOp::Heaviside | PrimOp::Sign | PrimOp::Sigmoid | PrimOp::Pow(_) => unary(op, ins, dtype),
         PrimOp::Real if ins.len() == 1 && ins[0].kind == BufKind::Idx => unary(op, ins, dtype),
         PrimOp::Dot | PrimOp::Matmul => dot(ins, dtype, order),
@@ -257,6 +273,18 @@ pub fn lower_planned(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: Reductio
         PrimOp::Argmax => argmax(ins, dtype),
         PrimOp::IndexConst { axis, index } => index_const(axis, *index, ins, dtype),
         PrimOp::ScatterIndex { axis, index } => scatter_index(axis, *index, ins, dtype),
+        // A slice's bounds reach a kernel as numbers: the host resolves them
+        // under the launch's dimensions, and the key of a compiled kernel
+        // carries them.
+        PrimOp::Slice { axis, lo, hi } => match (lo.as_nat(), hi.as_nat()) {
+            (Some(l), Some(h)) => slice(axis, l as usize, h as usize, ins, dtype),
+            _ => Err(format!("slice {axis}: bounds not resolved to numbers")),
+        },
+        PrimOp::SliceVjp { axis, lo, hi } => match (lo.as_nat(), hi.as_nat()) {
+            (Some(l), Some(h)) => slice_vjp(axis, l as usize, h as usize, ins, dtype),
+            _ => Err(format!("slice_vjp {axis}: bounds not resolved to numbers")),
+        },
+        PrimOp::Concat { axis } => concat(axis, ins, dtype),
         PrimOp::SplitHeads { h, hd } => split_heads(*h as usize, *hd as usize, ins, dtype),
         PrimOp::MergeHeads { h, hd } => merge_heads(*h as usize, *hd as usize, ins, dtype),
         PrimOp::SumTo => sum_to(ins, dtype),
@@ -279,13 +307,8 @@ fn elementwise_binary(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowe
     let iv = bd.loops(&dims(&out));
     let ia: Vec<Expr> = ma.iter().map(|p| Expr::Iv(iv[*p])).collect();
     let ib: Vec<Expr> = mb.iter().map(|p| Expr::Iv(iv[*p])).collect();
-    let k = match op {
-        PrimOp::Add => BinOp::Add,
-        PrimOp::Sub => BinOp::Sub,
-        PrimOp::Mul => BinOp::Mul,
-        _ => BinOp::Div,
-    };
-    let body = vec![Stmt::Store { buf: 2, index: ivs(&iv), value: bin(k, load(0, ia), load(1, ib)) }];
+    let value = binary_expr(op, load(0, ia), load(1, ib)).ok_or_else(|| format!("{}: not a binary primitive", op.name()))?;
+    let body = vec![Stmt::Store { buf: 2, index: ivs(&iv), value }];
     let kern = kernel(op.name(), dtype, ins, &out, BufKind::Real, &bd, nest(&iv, &dims(&out), body));
     done(kern, out)
 }
@@ -317,16 +340,7 @@ pub fn fused(steps: &[Step], ins: &[Operand], out: &[Axis], dtype: Dtype) -> Res
             .collect();
         let value = match a.as_slice() {
             [x] => unary_expr(&s.op, x.clone()).ok_or_else(|| format!("fused: `{}` is not a unary primitive", s.op.name()))?,
-            [x, y] => {
-                let k = match s.op {
-                    PrimOp::Add => BinOp::Add,
-                    PrimOp::Sub => BinOp::Sub,
-                    PrimOp::Mul => BinOp::Mul,
-                    PrimOp::Div => BinOp::Div,
-                    _ => return Err(format!("fused: `{}` is not a binary primitive", s.op.name())),
-                };
-                bin(k, x.clone(), y.clone())
-            }
+            [x, y] => binary_expr(&s.op, x.clone(), y.clone()).ok_or_else(|| format!("fused: `{}` is not a binary primitive", s.op.name()))?,
             _ => return Err(format!("fused: `{}` takes {} arguments", s.op.name(), a.len())),
         };
         vals.push(value);
@@ -1475,6 +1489,67 @@ fn scatter_index(axis: &str, index: i64, ins: &[Operand], dtype: Dtype) -> Resul
     body.extend(nest(&cv, &dims(&ct.axes), vec![Stmt::Store { buf: 2, index: full, value: load(1, ivs(&cv)) }]));
     let kern = kernel(format!("scatter_index {axis}: {index}"), dtype, ins, &tmpl.axes, BufKind::Real, &bd, body);
     done(kern, tmpl.axes.clone())
+}
+
+/// `t[axis: lo..hi]`: a copy of the elements `lo` to `hi − 1` of the
+/// axis, which the result keeps; for a real and an index tensor.
+fn slice(axis: &str, lo: usize, hi: usize, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
+    let t = tensor_in(ins, 0, "slice")?;
+    let p = axis_pos(&t.axes, axis)?;
+    if lo > hi || hi > t.axes[p].len {
+        return Err(format!("slice {lo}..{hi} outside the axis `{axis}`, of length {}", t.axes[p].len));
+    }
+    let mut out = t.axes.clone();
+    out[p].len = hi - lo;
+    let mut bd = B::new();
+    let ov = bd.loops(&dims(&out));
+    let mut src = ivs(&ov);
+    src[p] = bin(BinOp::IAdd, Expr::Iv(ov[p]), Expr::I(lo as i64));
+    let body = vec![if t.kind == BufKind::Idx { Stmt::StoreI { buf: 1, index: ivs(&ov), value: Expr::LoadI(0, src) } } else { Stmt::Store { buf: 1, index: ivs(&ov), value: load(0, src) } }];
+    let kind = if t.kind == BufKind::Idx { BufKind::Idx } else { BufKind::Real };
+    let kern = kernel(format!("slice {axis}: {lo}..{hi}"), dtype, ins, &out, kind, &bd, nest(&ov, &dims(&out), body));
+    Ok(Lowered { kernel: kern, out_axes: out, out_kind: kind, out_bound: 0 })
+}
+
+/// `(template, ct)`: zeros of the template's shape, `ct` at the elements
+/// `lo` to `hi − 1` of the axis.
+fn slice_vjp(axis: &str, lo: usize, hi: usize, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
+    let (tmpl, ct) = (tensor_in(ins, 0, "slice_vjp")?, tensor_in(ins, 1, "slice_vjp")?);
+    let p = axis_pos(&tmpl.axes, axis)?;
+    if ct.axes.len() != tmpl.axes.len() || ct.axes[p].len != hi - lo {
+        return Err(format!("slice_vjp {axis}: {lo}..{hi}: a cotangent of {} into {}", show(&ct.axes), show(&tmpl.axes)));
+    }
+    let mut bd = B::new();
+    let mut body = zero_fill(&mut bd, 2, &tmpl.axes);
+    let cv = bd.loops(&dims(&ct.axes));
+    let mut dst = ivs(&cv);
+    dst[p] = bin(BinOp::IAdd, Expr::Iv(cv[p]), Expr::I(lo as i64));
+    body.extend(nest(&cv, &dims(&ct.axes), vec![Stmt::Store { buf: 2, index: dst, value: load(1, ivs(&cv)) }]));
+    let kern = kernel(format!("slice_vjp {axis}: {lo}..{hi}"), dtype, ins, &tmpl.axes, BufKind::Real, &bd, body);
+    done(kern, tmpl.axes.clone())
+}
+
+/// `concat(axis a, x, y)`: `x` into the first part of the result along
+/// the axis, `y` into the rest, each element written once.
+fn concat(axis: &str, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
+    let (x, y) = (tensor_in(ins, 0, "concat")?, tensor_in(ins, 1, "concat")?);
+    let (p, q) = (axis_pos(&x.axes, axis)?, axis_pos(&y.axes, axis)?);
+    let same = p == q && x.axes.len() == y.axes.len() && x.axes.iter().zip(&y.axes).enumerate().all(|(k, (u, v))| k == p || u.len == v.len);
+    if !same {
+        return Err(format!("concat {axis}: {} and {}", show(&x.axes), show(&y.axes)));
+    }
+    let m = x.axes[p].len;
+    let mut out = x.axes.clone();
+    out[p].len = m + y.axes[p].len;
+    let mut bd = B::new();
+    let xv = bd.loops(&dims(&x.axes));
+    let mut body = nest(&xv, &dims(&x.axes), vec![Stmt::Store { buf: 2, index: ivs(&xv), value: load(0, ivs(&xv)) }]);
+    let yv = bd.loops(&dims(&y.axes));
+    let mut dst = ivs(&yv);
+    dst[p] = bin(BinOp::IAdd, Expr::Iv(yv[p]), Expr::I(m as i64));
+    body.extend(nest(&yv, &dims(&y.axes), vec![Stmt::Store { buf: 2, index: dst, value: load(1, ivs(&yv)) }]));
+    let kern = kernel(format!("concat {axis}"), dtype, ins, &out, BufKind::Real, &bd, body);
+    done(kern, out)
 }
 
 /// `[..., seq, model] → [..., heads, seq, hd]`.

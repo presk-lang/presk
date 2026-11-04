@@ -156,24 +156,28 @@ typedef struct {
 
 /* A .psk.d file open for reading, its header checked. The functions below
  * return 0, or the code of presk-data's error, whose text presk_error()
- * gives: 9002 not a .psk.d file of version 1, 9003 truncated, 9004 an index
- * not below its bound, 9005 another type, or a length that is not the
+ * gives: 9002 not a .psk.d file of version 1 or 2, 9003 truncated, 9004 an
+ * index not below its bound, 9005 another type, or a length that is not the
  * layout's (a model of other dimensions). */
 typedef struct {
     FILE *f;
     const presk_leaf *leaves;
     size_t nleaves;
-    uint64_t count; /* samples in the file */
-    uint64_t next;  /* the sample presk_read reads */
+    uint64_t count;     /* samples in the file */
+    uint64_t next;      /* the sample presk_read reads */
+    unsigned char *enc; /* version 2: each leaf's encoding, 0 f64, 1 f32,
+                           2 bf16 (plan 0.17.0 step 7); NULL in version 1 */
 } presk_reader;
 
-/* Opens `path` and checks its header: magic, version 1, the sample type
- * `type` byte for byte, and a length of exactly `count` samples of the
- * leaves. */
+/* Opens `path` and checks its header: magic, version 1 or 2, the sample
+ * type `type` byte for byte, a version 2 file's encodings, one per leaf and
+ * none of an index, and a length of exactly `count` samples of the leaves
+ * in their encodings. */
 int presk_open(presk_reader *r, const char *path, const char *type, const presk_leaf *leaves, size_t nleaves);
 
 /* Reads the next sample: leaf i into dst[i], as dtypes[i]. A real leaf is
- * read as f64, the format's type, and converted to dtypes[i] (presk_convert);
+ * read in its encoding, f64 unless a version 2 file says f32 or bf16, each a
+ * number of f64 exactly, and converted to dtypes[i] (presk_convert);
  * an index leaf is read into int64_t (PRESK_I64), each checked below its
  * bound. */
 int presk_read(presk_reader *r, void *const *dst, const presk_dtype *dtypes);

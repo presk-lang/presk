@@ -1,0 +1,2 @@
+-- E1007: the bound of a slice is a dimension, not a value (0.17.0 step 6).
+fn f(x : ℝ[a: 4], i : nat) -> ℝ[a: 1] = x[a: i..i + 1]

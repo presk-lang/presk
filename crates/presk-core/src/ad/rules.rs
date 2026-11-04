@@ -109,6 +109,37 @@ pub(crate) fn prim_vjp(e: &mut Emit, op: &PrimOp, args: &[VarId], tys: &[Ty], y:
             let d = e.prim(yt.clone(), PrimOp::Sign, vec![args[0]], span);
             vec![(0, mul(e, ct, d, &yt))]
         }
+        // `max`: the first operand takes the cotangent where it is the
+        // larger, the second elsewhere, ties included; `min` likewise where
+        // the first is the smaller. The difference is read for its sign.
+        PrimOp::Max | PrimOp::Min => {
+            let (a, b) = if matches!(op, PrimOp::Max) { (args[0], args[1]) } else { (args[1], args[0]) };
+            let diff = e.prim(yt.clone(), PrimOp::Sub, vec![a, b], span);
+            let u = e.prim(yt.clone(), PrimOp::Heaviside, vec![diff], span);
+            let one = real(e, 1);
+            let v = e.prim(yt.clone(), PrimOp::Sub, vec![one, u], span);
+            let ca = mul(e, ct, u, &yt);
+            let cb = mul(e, ct, v, &yt);
+            both(e, ca, cb)
+        }
+        // A slice's cotangent is placed into zeros; a concatenation's is cut
+        // into the two slices its operands came from.
+        PrimOp::Slice { axis, lo, hi } => {
+            if differentiable(&tys[0]) {
+                vec![(0, e.prim(tys[0].clone(), PrimOp::SliceVjp { axis: axis.clone(), lo: lo.clone(), hi: hi.clone() }, vec![args[0], ct], span))]
+            } else {
+                vec![]
+            }
+        }
+        PrimOp::Concat { axis } => {
+            let len = |t: &Ty| t.shape().and_then(|s| s.axes.iter().find(|x| x.name.as_deref() == Some(axis.as_str()))).map(|x| x.len.clone());
+            let (Some(m), Some(n)) = (len(&tys[0]), len(&tys[1])) else {
+                return Err(format!("`concat` along `{axis}`: an operand without the axis"));
+            };
+            let c0 = e.prim(tys[0].clone(), PrimOp::Slice { axis: axis.clone(), lo: presk_types::dim::DimExpr::nat(0), hi: m.clone() }, vec![ct], span);
+            let c1 = e.prim(tys[1].clone(), PrimOp::Slice { axis: axis.clone(), lo: m.clone(), hi: m.add(&n) }, vec![ct], span);
+            vec![(0, c0), (1, c1)]
+        }
         // Hyperparameters and indices carry no adjoint.
         PrimOp::Real | PrimOp::Argmax | PrimOp::Sample | PrimOp::OneHot | PrimOp::Positions { .. } | PrimOp::CausalMask { .. } => vec![],
         PrimOp::Pi | PrimOp::Zeros { .. } | PrimOp::Ones { .. } | PrimOp::Normal { .. } | PrimOp::XavierUniform { .. } | PrimOp::SplitKey { .. } | PrimOp::DropoutMask => vec![],
@@ -179,7 +210,7 @@ pub(crate) fn prim_vjp(e: &mut Emit, op: &PrimOp, args: &[VarId], tys: &[Ty], y:
             };
             vec![(0, m)]
         }
-        PrimOp::SumSquares | PrimOp::SetSlice | PrimOp::DotVjpL | PrimOp::DotVjpR | PrimOp::EmbedVjp | PrimOp::CrossEntropyVjp | PrimOp::ScatterIndex { .. } | PrimOp::ScatterParams { .. } | PrimOp::GeluDeriv | PrimOp::Heaviside | PrimOp::Sign => {
+        PrimOp::SumSquares | PrimOp::SetSlice | PrimOp::DotVjpL | PrimOp::DotVjpR | PrimOp::EmbedVjp | PrimOp::CrossEntropyVjp | PrimOp::ScatterIndex { .. } | PrimOp::SliceVjp { .. } | PrimOp::ScatterParams { .. } | PrimOp::GeluDeriv | PrimOp::Heaviside | PrimOp::Sign => {
             return Err("second-order derivatives of adjoint primitives are not supported in 0.1.0".into());
         }
     })

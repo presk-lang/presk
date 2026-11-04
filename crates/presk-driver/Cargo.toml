@@ -17,6 +17,7 @@ presk-train.workspace = true
 presk-rt.workspace = true
 presk-kernel.workspace = true
 presk-cranelift.workspace = true
+presk-llvm.workspace = true
 presk-opt.workspace = true
 presk-precision.workspace = true
 presk-serve.workspace = true

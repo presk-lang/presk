@@ -1,0 +1,4 @@
+-- E2008: both operands of `concat` carry the axis it joins along; there is
+-- no implicit axis of length one (0.17.0 step 6). `y[a: 0..1]` of a tensor
+-- with the axis would give one.
+fn f(x : ℝ[a: 4, b: 2], y : ℝ[b: 2]) -> ℝ[a: 5, b: 2] = concat(axis a, x, y)

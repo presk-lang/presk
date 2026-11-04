@@ -10,11 +10,27 @@ and the `presk data` command.
 
 ```text
 magic      "PSKD"                      4 bytes
-version    u16 = 1                     little-endian
+version    u16 = 1 or 2                little-endian
 type_len   u32, then the type, UTF-8   the sample type in Presk syntax
 count      u64                         number of samples
+leaves     u32, version 2 only         the leaves of the type
+encodings  u8 a leaf, version 2 only   0 f64 (and every idx), 1 f32, 2 bf16
 data                                   the samples, back to back
 ```
+
+**Version 2** (0.17.0 step 7, D180) declares each real leaf's encoding in
+the header and stores the leaf in it: `f64`, `f32`, or `bf16` as the upper
+sixteen bits of an `f32`. Every `f32` and every `bf16` is a number of
+`f64`, so a leaf is injected exactly whatever its encoding, as an `f64`
+leaf is. A checkpoint published in `bf16` is thus stored at its own size:
+Llama 3.2 1B is 2.5 GB where `f64` would take 10 GB. A writer writes
+version 1 unless a leaf is narrower, so a file of `f64` leaves is the same
+bytes as before; every reader takes both versions (`presk-data`, the C
+export's `presk_rt.c`, the PyTorch export's `pskd.py`, the experiments'
+scripts). `presk_data::write_encoded` writes one, refusing a number that
+the leaf's encoding does not hold (`E9004`), and `presk data info` lists
+the encodings. A version 1 file of the same leaves is read to the same
+bits, whatever the version.
 
 A sample is the concatenation of the leaves of its type, in order: for a
 tuple, its elements left to right; for a parameter tree, its fields in
@@ -23,7 +39,7 @@ declaration order. Each leaf is a tensor in row-major order:
 | Leaf type | Element on disk |
 |---|---|
 | `idx[N][…]` | the smallest of `u8`, `u16`, `u32`, `u64` that holds `N − 1`, little-endian |
-| `ℝ[…]` | `f64`, little-endian |
+| `ℝ[…]` | `f64`, little-endian; in version 2, the leaf's encoding |
 
 Two rules follow from the language's semantics:
 

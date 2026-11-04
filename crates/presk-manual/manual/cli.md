@@ -164,15 +164,16 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 | `--digits D` | significant digits when printing (default 12). |
 | `--json` | machine-readable output: entry, seed, bits, dimensions, inputs and result, reals as decimal strings at `--digits`, a value of type `bool[…]` as its axes and JSON booleans (since 0.10.0 step 8; its text output prints `bool[…]` of `true` and `false` too, by the entry's signature, where a mask is indices below 2 at run time). |
 | `--verbose` | also print the synthesized inputs. |
+| `--result-only` | print the result alone: `--json` without `inputs`, `--verbose` without the inputs' lines (0.17.0 step 7, D180). With `--weights`, the checkpoint is then neither printed nor held in exact arithmetic to be printed: Llama 3.2 1B's 1.2·10⁹ parameters would take tens of gigabytes as JSON. |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
-| `--backend interp\|kernel\|native` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, or the same kernels compiled by Cranelift (`native` chapter); `presk train` takes the same flag. |
+| `--backend interp\|kernel\|native\|llvm` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, the same kernels compiled by Cranelift (`native` chapter), or, since 0.17.0 step 3, the same kernels printed as C and compiled by LLVM's `clang -O3` on the native backend's host, with the same bits (`native` chapter, "The LLVM backend"). `llvm` needs the `clang` of `make llvm` (or `PRESK_CLANG`) and refuses to run without it (exit code 1); its kernels are kept in a cache (`PRESK_LLVM_CACHE`, else `~/.cache/presk/llvm`). `presk train` and `presk serve` take the same flag. |
 | `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it), and since 0.12.0 step 1 a `params` map giving a parameter its own type at rest, `f32` or `bf16` (`precision` chapter; run by every executor and the C export since step 2). The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
 | `--plan @FILE` | a realization plan (`realize` chapter, "The realization plan"; 0.7.0 step 1): a realization and a layout per nest. `--realize R` is the plan with realization `R` and the default layout, so the two flags are exclusive. The plan is checked against the program before anything runs, and each nest's layout against its shapes and its kernel when it is launched; an ill-formed layout is refused (`E7002`), never ignored. Every decision of the reference is lowered since 0.7.0 step 3. The reference interpreter ignores the layout. Also on `presk train`, `presk bench` and `presk dump`. |
 | `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). The optimizer writes each function it optimizes back with new numbers, even where no rule changed it, so a realization that types sites (`storage`, `accum`) or a plan's layouts name the program before it: under `--opt` they are refused, `E7002`, each site named with what the optimizer made of it (since 0.13.0 step 1, D134; until then they applied to nothing they named, D133). A uniform realization runs. |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
 | `--threads N` | workers a parallel kernel may use on the native backend (`native` chapter); the default is the machine's cores, `1` keeps every kernel on one thread. Also on `presk train` and `presk bench`. |
 | `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`, from sample `--from I` (default 0). The other arguments are synthesized from `--seed` as usual. |
-| `--weights ckpt/final.psk.d` | take the entry's **first** argument, its parameters, from a checkpoint (0.6.0 step 7): with `--data`, a trained model's loss on held-out text is one command. The checkpoint must be of the dimensions the entry is run at (`E9005` otherwise). |
+| `--weights ckpt/final.psk.d` | take the entry's **first** argument, its parameters, from a checkpoint (0.6.0 step 7): with `--data`, a trained model's loss on held-out text is one command. The checkpoint must be of the dimensions the entry is run at (`E9005` otherwise). Its parameters are never synthesized first (since 0.17.0 step 7, D180): the checkpoint is read against zeros of their shape, which the kernel backend's host builds without computing anything, so the run holds the model once in the backend's type. `presk export`, `bench`, `quantize`, `solve` and `calibrate` read `--weights` the same way. |
 
 **Inputs** are synthesized from the parameter types: real tensors from a
 standard normal, index tensors uniformly in `[0, N)`, `params M` by running
@@ -290,7 +291,7 @@ out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" -
 | Flag | Meaning |
 |---|---|
 | `--entry E` | the entry, as `presk run --entry` names it (`mse_grad`, `LayerNorm{8}.apply`, `adamw.step`, `next_token`); required, but with `--serve`, where it names the generation function as for `presk serve`. |
-| `--serve` | the generation function of the file's `inference serve` (or `--entry`), at one sequence (`B = 1`, which `--dim` may not change) and the window `--dim T=N` its model's parameters fix, with its greedy copy and `generate`, `presk serve`'s loop (step 6; below). A model whose parameters do not fix the context's length is refused (`E8009`). |
+| `--serve` | the generation function of the file's `inference serve` (or `--entry`), at one sequence (`B = 1`, which `--dim` may not change) and the window `--dim T=N` its model's parameters fix, with its greedy copy and `generate`, `presk serve`'s loop (step 6; below). A model whose parameters do not fix the context's length is exported at the length `--dim T=N` gives, the context padded after its last token whose logits it reads, and refused without it (`E8009`; 0.17.0 step 7, the `serve` chapter). |
 | `--dim NAME=N`, `--const NAME=N` | as for `presk run`; every dimension must be bound (`E8003`). |
 | `--remat store\|recompute` | as for `presk run` (0.10.0 step 4): a gradient entry is exported with its forward pass stored, `f.bwd` after `f.fwd`, by default; `recompute` exports the recomputing `.vjp`s. The C program follows the native backend's run either way, and C1 holds for both. |
 | `--realize f64\|f32\|bf16\|@FILE` | the realization, `f64` by default; a solved one (`@FILE`) too, its buffers converted at the kernels' edges as the native backend converts them; one with a `quant` map (`int8`, `int4`; `presk quantize`) too since step 7, below; one with a `params` map since 0.12.0, each such weight in its own type in the arena and widened by the kernels' loads. |
@@ -595,7 +596,7 @@ function (`training` chapter). `--remat store|recompute` as `presk run`: stored
 (the default), the step is `f.bwd` after `f.fwd`, one forward pass. Besides the log, standard error gets the kernel launches a step
 (native backend) and the median step time with the first step excluded;
 `--json` carries `ms` per step and `step_ms`. `--host-profile` (0.10.0 step
-5), with `--backend native` only (exit code 2 otherwise), times the native
+5), with `--backend native` or `llvm` only (exit code 2 otherwise), times the native
 host by phase in every step, as `presk bench --host-profile` does a call,
 and prints the table of a step on standard error, the mean of every step
 but the first, with its page faults; only the clock is read, and the run's weights are the same
@@ -737,8 +738,8 @@ the `precision` chapter, "Does the condition number rescue the bound?".
 
 ```sh
 presk solve FILE.psk --precision ENV.json [--budget 1e-3 | --budget-abs EPS] [--weights ckpt/final.psk.d]
-    [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--no-verify] [--bits 128]
-    [--rounding unit|measured] [--narrow off|measured|heldout] [--heldout M]
+    [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--menu f64,f32,bf16,int8,int4]
+    [--no-verify] [--bits 128] [--rounding unit|measured] [--narrow off|measured|heldout] [--heldout M]
     [--estimate sum|rss] [--margin 2.5] [--min-gain 1e-3]
     [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
 ```
@@ -808,12 +809,25 @@ default, 0 to turn it off, in bytes even under a `--profile`; a θ outside
 [0, 1) is refused, exit 2). The line `rules` names those values, with
 rule 2's gains beside θ·B and what the two forgo at most; the line `sites`
 counts the values offered (the `precision` chapter, "Two rules").
+Since 0.17.0 (plan 0.17.0 step 4, D177) `--menu` states what the solve
+offers, comma-separated: `f64`, `f32` and `bf16`, the default, and `int8`
+and `int4`, each under both scales (`int8/absmax`, `int4/pow2`… for one).
+With an integer rung, every parameter of rank two or more as declared is
+offered its integers in the solve itself, beside its float types, priced
+as they are and scaled along the axis its readers contract, and an
+integer decision is written in the realization's `quant` map; the line
+`parameters` counts them and a line `menu` names the rungs and the
+parameters priced in them. `--menu f64,f32,bf16` solves as no `--menu`,
+whatever order the types are written in. A menu without a float type, or
+an unknown rung, is refused (exit 2), and so is `--quant` with `--menu`'s
+integers: `--quant` quantizes in a pass after the solve, the one menu in
+it (the `precision` chapter, "One menu").
 
 ### `presk solve --step`: a budget on the update
 
 ```sh
 presk solve --step FILE.psk --precision ENV.json [--budget 1e-3] [--profile FILE.json]
-    [--no-verify] [--bits 128] [--out R.json] [--remat store|recompute]
+    [--grain function|value] [--no-verify] [--bits 128] [--out R.json] [--remat store|recompute]
 ```
 
 With an envelope written by `presk calibrate --step`, solves the whole
@@ -835,6 +849,25 @@ envelope written before D93 does not record it, and its sites' names say
 it), and so should `presk train`'s: a
 realization of the recomputing step names `.vjp`s, which a stored gradient
 only calls.
+
+`--grain value` (0.17.0, plan 0.17.0 step 5, D178) runs the same method at
+the grain of the step's stored values: every value the step stores, of
+more than one element (rule 1), is measured alone in `f32` and in `bf16`,
+the values are narrowed greedily by predicted time saved per unit of
+isolated gap under their root-sum-square, and the combination is measured
+and widened as above. A carried value or a fused member is not offered
+(D112), nor the optimizer's state, the master weights and the moments,
+which keep the default type. It prints a row per value (its elements, its
+cost in `f64`, its isolated gaps, its type), a row per function (the
+values offered and the types chosen), the estimate of every value in
+`f32`, the predicted cost over the values offered, and the whole step's
+predicted time by role, each stored value and fused member at its type
+and a carried value at nothing; `--out` writes
+the values' types in `storage`, which `presk train --realize` applies under
+the same `--remat`. `--grain function`, the default, is D52's solver,
+unchanged. `presk calibrate --step --realize @R.json`, given a realization
+that types stored values, also prints every realization it was given priced
+by role, beside D52's column.
 
 **Exit codes**: 0, whether or not the measured gap is inside the budget (the
 report says which); 1 a run-time error; 2 an envelope of an entry rather than
@@ -881,7 +914,8 @@ realization under the plan's layout, so that the two rows differ by the layout
 alone; with `--calibrate`, the kernels are timed under the plan's layout.
 `--plan-only` (0.9.0 step 5) times that row alone, not the uniform
 realizations' (at the course GPT's `B = 16` on one thread they take most of
-half an hour), and `--weights CKPT.psk.d` replaces the entry's first argument
+half an hour); with `--calibrate` (0.17.0 step 1) it times the plan's kernels
+alone, and the profile has no fit of the other realizations (`others`). `--llvm` (0.17.0 step 3) puts the native rows, and `--calibrate`, on the LLVM backend: the rows are named `llvm …`, the same host and threads, the kernels compiled by `clang`. And `--weights CKPT.psk.d` replaces the entry's first argument
 by trained parameters, as for `presk run`: how `make c-speed` times the
 native side of an exported program. `--warmup N` (after 0.9.0, D87) makes
 `N` calls per row before the timed ones and times none of them: the native
@@ -1152,7 +1186,7 @@ the one 0.7.0 made (`make ra4-dev`, D64).
 
 ```text
 presk explain FILE.psk --entry ENTRY [--dim N=v …] [--const N=v …]
-    [--budget ε | --realize R | --plan @P.json] [--profile P.json] [--threads N]
+    [--budget ε [--menu RUNGS] | --realize R | --plan @P.json] [--profile P.json] [--threads N]
     [--remat store|recompute] [--opt] [--weights W] [--seed S] [--bits B]
     [--envelope ENV.json] [--no-exact] [--target native,c,pytorch] [--measure]
     [--site SITE …] [--format md|json|html] --out DIR
@@ -1177,8 +1211,10 @@ quotes print is in it verbatim (X3). `--format json` also writes
 (0.13.0 step 2, D135), and `--format html` also `DIR/explain.html`, the
 pipeline view (step 3, D136), with the formulas of the printer of the
 denotation (step 4, D137). `--opt` is refused with `--budget`, and with a
-realization that types sites (`E7002`, 0.13.0 step 1). See the `explain`
-chapter.
+realization that types sites (`E7002`, 0.13.0 step 1). `--menu`, with
+`--budget` only, is `presk solve --menu`'s (0.17.0, D177): an integer
+decision's reason then gives its rung, its bytes and its scale's axis. See
+the `explain` chapter.
 
 ## `presk memory FILE.psk --entry ENTRY …`
 

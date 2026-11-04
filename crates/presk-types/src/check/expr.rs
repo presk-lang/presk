@@ -7,6 +7,7 @@ use presk_syntax::{Diagnostic, Span};
 
 use super::{Binding, Callee, Checker, EinInfo, Env};
 use crate::dim::{DimExpr, DimVar};
+use crate::presburger::{Constraint, Validity, display_assignment, entails};
 use crate::elab::{FnId, FnSig};
 use crate::ty::{Axis, ModRef, Shape, Ty};
 
@@ -490,9 +491,71 @@ impl Checker<'_> {
                     }
                     shape.axes.remove(0);
                 }
+                IndexSel::Slice { axis, lo, hi } => {
+                    let pos = match axis {
+                        Some(axis) => match shape.axes.iter().position(|a| a.name.as_deref() == Some(&axis.name)) {
+                            Some(p) => p,
+                            None => return self.no_axis(&axis.name, &shape, axis.span),
+                        },
+                        None => {
+                            if shape.prefix.is_some() || shape.axes.is_empty() {
+                                self.error(Diagnostic::error("E2008", "positional slice on a shape without a known first axis").label(lo.span(), "use a named slice `[axis: lo..hi]`"));
+                                return None;
+                            }
+                            0
+                        }
+                    };
+                    let len = shape.axes[pos].len.clone();
+                    let l = self.slice_bound(lo, env)?;
+                    let h = self.slice_bound(hi, env)?;
+                    let sp = lo.span().to(hi.span());
+                    if !self.slice_inside(&l, &h, &len, sp) {
+                        return None;
+                    }
+                    shape.axes[pos].len = h.sub(&l);
+                }
             }
         }
         Some(rebuild(shape))
+    }
+
+    /// A bound of a slice: a dimension (reference, rule E-Slice).
+    fn slice_bound(&mut self, e: &Expr, env: &Env) -> Option<DimExpr> {
+        let d = self.dim_of_expr(e, env);
+        if d.is_none() {
+            self.error(
+                Diagnostic::error("E1007", "the bound of a slice is not a dimension")
+                    .label(e.span(), "expected a dimension: a natural literal, a constant, a dimension, or their sums")
+                    .note("a slice selects by position, which the shape fixes; it is no value"),
+            );
+        }
+        d
+    }
+
+    /// The facts entail `0 ≤ l ≤ h ≤ len`, for every value of the symbols.
+    fn slice_inside(&mut self, l: &DimExpr, h: &DimExpr, len: &DimExpr, span: Span) -> bool {
+        let (l, h, len) = (self.resolve_dim(l), self.resolve_dim(h), self.resolve_dim(len));
+        for (a, b) in [(DimExpr::nat(0), l.clone()), (l.clone(), h.clone()), (h.clone(), len.clone())] {
+            let goal = Constraint::Le(a.clone(), b.clone());
+            match entails(&self.prog.facts, &goal) {
+                Validity::Valid => {}
+                other => {
+                    let (sl, sh, sn) = (self.show_dim(&l), self.show_dim(&h), self.show_dim(&len));
+                    let why = match other {
+                        Validity::Invalid(w) if w.is_empty() => format!("`{} ≤ {}` is false", self.show_dim(&a), self.show_dim(&b)),
+                        Validity::Invalid(w) => format!("`{} ≤ {}` fails for {}", self.show_dim(&a), self.show_dim(&b), display_assignment(&w, &goal, &|v| self.prog.dim_name(v))),
+                        _ => format!("`{} ≤ {}` cannot be proved", self.show_dim(&a), self.show_dim(&b)),
+                    };
+                    self.error(
+                        Diagnostic::error("E2014", format!("the slice `{sl}..{sh}` is not inside an axis of length `{sn}`"))
+                            .label(span, why)
+                            .note("the facts must place the bounds inside the axis for every value of its dimensions: 0 ≤ lo ≤ hi ≤ length"),
+                    );
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     pub(crate) fn no_axis(&mut self, name: &str, shape: &Shape, span: Span) -> Option<Ty> {

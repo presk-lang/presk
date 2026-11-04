@@ -124,6 +124,25 @@ pub fn rules(sol: &presk_precision::solve::Solution) -> Vec<String> {
     out
 }
 
+/// The line `menu` of `presk solve` with `--menu`'s integers (D177): the
+/// rungs, how many parameters were priced in them, and on which axes their
+/// scales are, the one their readers contract or −2.
+fn menu_line(solved: &Solved) -> Option<String> {
+    let m = &solved.menu;
+    if m.1.is_empty() {
+        return None;
+    }
+    let rungs: Vec<String> = m.rungs().map(|r| r.name()).collect();
+    let priced: Vec<&presk_precision::solve::ParamSite> = solved.params.iter().filter(|p| !p.ints.is_empty()).collect();
+    let contracted = priced.iter().filter(|p| p.ints.iter().all(|q| q.contracted)).count();
+    Some(format!(
+        "  menu        {}: {} parameter(s) of rank two or more priced in integers, {contracted} scaled along the axis their readers contract, {} along −2 (D177)",
+        rungs.join(", "),
+        priced.len(),
+        priced.len() - contracted
+    ))
+}
+
 /// `presk solve`: the budget, the sites, the cost, the estimate and the
 /// measured gap, the parameter menu's with `--quant`, the exhaustive
 /// search's cost, and with `list` the sites assigned away from the default.
@@ -146,17 +165,24 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
     let mut out = vec![head, format!("  sites       {} narrowable, {} assigned away from f64{}", stored - out_sites, sol.realization.storage.len(), of(stored, out_sites, "stored values"))];
     if !params.is_empty() {
         let typed = |d: presk_rt::Dtype| sol.realization.params.values().filter(|t| **t == d).count();
-        let at_rest = |c: &&presk_precision::solve::SiteCost| c.elems * c.dtype.bytes() as f64;
+        // The one menu's integers (D177), said when it decided some: a
+        // `--quant` realization's are the second pass's, below.
+        let ints: Vec<&&presk_precision::solve::SiteCost> = params.iter().filter(|c| c.int.is_some()).collect();
+        let int_typed = |bits: u8| ints.iter().filter(|c| c.int.as_ref().is_some_and(|q| q.bits == bits)).count();
+        let int_part = if ints.is_empty() { String::new() } else { format!(", {} int8, {} int4", int_typed(8), int_typed(4)) };
         out.push(format!(
-            "  parameters  {} offered{}, {} stored away from f64 ({} f32, {} bf16): {:.4e} bytes at rest against {:.4e} in f64",
+            "  parameters  {} offered{}, {} stored away from f64 ({} f32, {} bf16{int_part}): {:.4e} bytes at rest against {:.4e} in f64",
             params.len() - out_params,
             if out_params > 0 { format!(" of {}", params.len()) } else { String::new() },
-            sol.realization.params.len(),
+            sol.realization.params.len() + ints.len(),
             typed(presk_rt::Dtype::F32),
             typed(presk_rt::Dtype::Bf16),
-            params.iter().map(at_rest).sum::<f64>(),
+            params.iter().map(|c| c.bytes).sum::<f64>(),
             params.iter().map(|c| c.elems * 8.0).sum::<f64>()
         ));
+        if let Some(m) = menu_line(solved) {
+            out.push(m);
+        }
     }
     out.extend(rules(sol));
     let per = if solved.outputs > 1 { "first order, of a mean output element" } else { "first order" };
@@ -242,10 +268,33 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
             out.push(format!("{site:<30} {:>8} {:>12} {:>12.3e}", d.name(), env.elems(site), sens.get(site).unwrap_or(0.0)));
         }
     }
-    if list > 0 && !sol.realization.params.is_empty() {
+    // The one menu's pricing of every parameter in integers (D177), at
+    // rest: the term each rung would add, beside its float type's.
+    if list > 0 && !solved.menu.1.is_empty() && solved.params.iter().any(|p| !p.ints.is_empty()) {
+        let rungs: Vec<String> = solved.menu.1.iter().map(|(bits, scheme)| presk_precision::solve::Rung::Int { bits: *bits, scheme: *scheme }.name()).collect();
+        let mut head = format!("{:<28} {:>5} {:>10} {:>10}", "parameter", "axis", "‖∂L/∂θ‖₁", "f32");
+        for r in &rungs {
+            head.push_str(&format!(" {r:>10}"));
+        }
+        out.push(head);
+        for p in solved.params.iter().filter(|p| !p.ints.is_empty()) {
+            let axis = p.ints.first().map(|q| format!("{}{}", q.axis, if q.contracted { "" } else { "*" })).unwrap_or_default();
+            let f32_term = p.round.map(|r| p.sens * r.f32).unwrap_or(f64::NAN);
+            let mut line = format!("{:<28} {:>5} {:>10.3e} {:>10.3e}", p.path, axis, p.sens, f32_term);
+            for (bits, scheme) in &solved.menu.1 {
+                match p.ints.iter().find(|q| q.bits == *bits && q.scheme == *scheme) {
+                    Some(q) => line.push_str(&format!(" {:>10.3e}", p.sens * q.round)),
+                    None => line.push_str(&format!(" {:>10}", "-")),
+                }
+            }
+            out.push(line);
+        }
+        out.push("  (each rung's term at rest, s·max|ŵ − w|, and f32's, s·max|fl(w) − w|; * scaled along −2, its readers contracting no single axis)".to_string());
+    }
+    if list > 0 && (!sol.realization.params.is_empty() || params.iter().any(|c| c.int.is_some())) {
         out.push(format!("{:<30} {:>8} {:>12} {:>12}", "parameter", "dtype", "elements", "‖∂L/∂θ‖₁"));
-        for c in params.iter().filter(|c| sol.realization.params.contains_key(&c.name)).take(list) {
-            out.push(format!("{:<30} {:>8} {:>12} {:>12.3e}", c.name, c.dtype.name(), c.elems, c.sens));
+        for c in params.iter().filter(|c| sol.realization.params.contains_key(&c.name) || c.int.is_some()).take(list) {
+            out.push(format!("{:<30} {:>8} {:>12} {:>12.3e}", c.name, c.rung.name(), c.elems, c.sens));
         }
     }
     out

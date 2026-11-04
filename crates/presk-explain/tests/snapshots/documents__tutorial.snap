@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift), C, PyTorch | `--target native,c,pytorch` |
 
-Compiler: presk 0.16.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -52,7 +52,7 @@ Compiler: presk 0.16.1. Each section ends with the commands that print what it s
 | Fusion | 39 launches without it, 27 with it: 12 saved | decision | §7 |
 | Layout plan | 10 nests, 78 points costed, 1 tiled, 0 split; predicted 0.281 µs a call over the nests it prices | decision, estimate | §8 |
 | Kernels | 9 distinct, 27 launches a call | fact | §9 |
-| C program | 9 files, 4391 lines with its runtime | fact | §10 |
+| C program | 9 files, 4456 lines with its runtime | fact | §10 |
 | Memory | 696 bytes a call: the inputs, 504 bytes, and the peak of live bytes, 192 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
@@ -964,8 +964,8 @@ presk export: `loss` at B = 4 in f64+sequential+9sites+4params under the plan $D
 | `model.c` | 167 |
 | `model.h` | 35 |
 | `presk_libm.c` | 2680 |
-| `presk_rt.c` | 743 |
-| `presk_rt.h` | 347 |
+| `presk_rt.c` | 804 |
+| `presk_rt.h` | 351 |
 
 The first contraction, `k5`, as C:
 

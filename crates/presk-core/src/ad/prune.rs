@@ -255,7 +255,7 @@ fn demands(prog: &Program, generated: &[FuncId], narrow: &HashSet<FuncId>, acc: 
 fn templates(op: &PrimOp) -> &'static [usize] {
     match op {
         PrimOp::SumTo | PrimOp::BroadcastLike | PrimOp::MeanVjp { .. } | PrimOp::ReshapeLike => &[1],
-        PrimOp::ZerosLike | PrimOp::ScatterIndex { .. } | PrimOp::ScatterParams { .. } | PrimOp::EmbedVjp => &[0],
+        PrimOp::ZerosLike | PrimOp::ScatterIndex { .. } | PrimOp::SliceVjp { .. } | PrimOp::ScatterParams { .. } | PrimOp::EmbedVjp => &[0],
         PrimOp::DropoutMask => &[2],
         _ => &[],
     }
