@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.17.1 — 2026-11-08
+
+Llama 3.2 1B solved whole under a budget read off a quality target,
+against the field's recipes on the exact scale, with perplexity under the
+bound (`presk-specs/implementation/presk-plan-0.17.1.md`, D185–D191; the
+user's decisions of 2026-11-05 to 2026-11-08). Also D181's addendum, D183
+and D184, merged after `v0.17.0`'s tree.
+- `presk solve --sweep f64` and `--measure native`, behind their flags:
+  without them every output is 0.17.0's (OP0), and with them the solves of
+  record are 0.17.0's byte for byte (OP1).
+- `Llama3.nll`, the perplexity; `make llama3-budget` and
+  `experiments/llama/budget.py`; `docs/llama3-budget-0.17.1.md`.
+- RW5, RW6 and RW8 hold, RW7 fails at every δ as written, RW9 is
+  reported (the manual's `status`).
+
+- D181's addendum (no code changes): BERT-large's two blocks at 10⁻³
+  under `presk solve --narrow measured`, the rows QM2 reports beside its
+  verdict. The one menu takes eight matrices in `int8` and `int4`, at 6.73×
+  against the two passes' 6.80×; with `--margin 1` it reaches 8.41×,
+  measured 5.91·10⁻³ inside the budget. QM2, judged under the defaults,
+  still fails.
+- D183 (no code changes): the C program under GCC `-O3` and `-O3
+  -mcpu=neoverse-v2`, against NB2 and NB3. GCC 13.3 does not know the
+  Cortex-X925, so its `-mcpu=native` and `-march=native` pass no target on
+  falicon. The LLVM backend takes 0.98–1.00× the C program's time on the
+  forward pass and 0.84–0.90× on the step against every build.
+- D184: the C program under GCC 16.2 (`experiments/gcc/setup.sh` builds
+  it into `.gcc`), whose `-mcpu=native` is falicon's chip, `gb10`. Built
+  `-O3 -mcpu=native` it runs at GCC 13.3's speed; built `-O2
+  -mcpu=native` it is 3.6× slower, SVE at an unknown vector length
+  keeping the register tile's sums on the stack (the `export_c`
+  chapter). NB2 and NB3 hold against every build.
+  `pytorch_baseline.py`'s report names the GCC that built the program.
+- D185, plan 0.17.1 opened (Llama 3.2 1B solved whole at ε\*(δ) from its
+  margins, against the field's recipes): `presk solve --sweep f64`, the
+  ranking sweep on the reference interpreter's evaluator in binary64, and
+  `--measure native`, the measurements on the native backend with the
+  kernel interpreter's bits; the defaults unchanged, the course rows of
+  record the same byte for byte under both. `nll` in
+  `coverage/llama3.psk`; `make llama3-budget`
+  (`experiments/llama/llama3_budget.sh`, `texts.py`, `budget.py`);
+  llama.cpp from its release (`make llamacpp`); `rw2.py --dtype`.
+- D186, plan 0.17.1 step 1: the exact logits of the 32 held-out windows
+  (41 min and 96.6 GB each) and ε\*(δ). ε\*(10⁻¹), ε\*(3·10⁻²) and
+  ε\*(10⁻²) are 4.88·10⁻², 1.09·10⁻² and 3.81·10⁻³ logit units. `f32` is
+  inside all three, and so is `bf16-params-f32`, whose rows are `f32`'s byte
+  for byte at half the weight; `bf16`, `int8` and the field's recipes under
+  `f32`'s bytes are outside them. `llama3_budget.sh`'s pool pins a subshell to run a shell
+  function, and only the texts stage packs again under `FRESH=1`. The
+  user's additions: a realization by hand (`bf16-params-f32.json`), and
+  an eighth solve with `--min-gain 0`.
+- D187, plan 0.17.1 step 2: the envelope on the calibration sample at 128
+  bits (6 h 35 min, 98.7 GB) and the eight solves, one at a time (2 h 06
+  min and 96.7 GB each, the eighth 2 h 19 min). The plan's seven return
+  one realization, byte for byte: the token table and the seven block
+  matrices in `bf16`, the norms and every value in `f64`, 2.47 GB at
+  rest, measured 2.75·10⁻¹³. `bf16` is free on the `bf16` checkpoint and
+  each matrix alone in `int8` moves a logit by more than 0.11, so the menu
+  binds, not the budget. RW5 holds. The eighth (`--min-gain 0`) stores
+  every parameter in `bf16` and computes in `f32`, with Q, K, V and the
+  attention's output stored in `bf16`: 1.52·10⁻⁴ on the calibration
+  sample.
+- D188, plan 0.17.1 step 3: every realization on the 1 024 held-out
+  decisions. The plan's seven solves give `f64`'s rows byte for byte (no
+  flip), so RW6 holds at every δ. RW7 fails at every δ. At 10⁻¹ and
+  3·10⁻², llama.cpp Q8_0 and per-column `int8` are lighter and within the
+  flips allowed, at gaps 37 and 43 times ε\*(10⁻¹): the certificate bounds
+  the worst logit, not the flips. At 10⁻², the realization by hand and the
+  eighth solve are 405 504 bytes lighter, the norms rule 2 keeps in `f64`.
+  The eighth measures 7.70·10⁻⁴ held out, with no flip. D186's time for a
+  window run side by side is corrected (about 1 min 15 s, not 2 min 30 s).
+- D189, plan 0.17.1 step 4: perplexity on the quality text. RW8 holds on
+  all 22 rows: every perplexity within e^{±2g} of `f64`'s, every solved
+  one's within e^{±2ε}. The plan's seven solves give `f64`'s perplexity
+  byte for byte, the eighth within 4.5·10⁻⁷ in log. `f32` stands at 0.46
+  of its bound, not one to two orders under it: its −3.96·10⁻⁴ is `nll`'s
+  own log-softmax, 128 256 exponentials summed in one `f32` accumulator in
+  sequence, which every row of ours whose default is `f32` carries. Our
+  reading of llama.cpp's logits gives `llama-perplexity`'s figure.
+- D190, plan 0.17.1 step 5: RW9, the times, alone on one X925 core, three
+  processes each. At T = 16 the forward pass takes 14.6 s in `f64`,
+  11.5 s in `f32` and 9.87 s under A, the realization solved at every
+  budget: 1.48× `f64`'s at a traffic ratio of 3.97. A's vector lanes make
+  it 4 % slower; those of the realizations whose values are `f32` make
+  them 1.26–2.05× faster. `presk serve` for 32 tokens takes 806 s in
+  `f32`, 724 s under A, 547 s under B and 429 s in `int8`.
+  `experiments/llama/budget.py time` reads the processes; the time stage
+  serves B too.
+- D191, plan 0.17.1 step 6: version 0.17.1. OP0 holds on the version's
+  tree: X1 differs from `v0.17.0`'s by its version and commit lines and
+  the envelopes' dates alone, and the quant and step tables are
+  `v0.17.0`'s byte for byte. The checks of record pass. The record
+  `docs/llama3-budget-0.17.1.md` gains the figure's data, the solved
+  realizations in words, the statements and the cost against the plan;
+  the archive is presk-project `data/llama3-budget-0.17.1.tar.xz`.
+
 ## 0.17.0 — 2026-10-29
 
 The native backend at GCC on its own kernels, integers in the solver's

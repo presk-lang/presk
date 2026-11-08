@@ -15,7 +15,7 @@ use presk_precision::propagate::{Analysis, Model};
 use presk_precision::quant::QuantSolution;
 use presk_precision::sensitivity::Sensitivity;
 use presk_precision::solve::{self, Machine, Menu, Solution};
-use presk_rt::{Backend, Buf, Dtype, InterpBackend, QuantScheme, Realization, Tensor, Value};
+use presk_rt::{Backend, Buf, Dtype, F64InterpBackend, InterpBackend, QuantScheme, Realization, Tensor, Value};
 use presk_syntax::SourceMap;
 use presk_syntax::diag::has_errors;
 use presk_types::elab::ElabProgram;
@@ -233,6 +233,44 @@ pub struct SolveArgs<'a> {
     /// The estimate's rounding term and the narrowing step (D155): the
     /// default is the solver of record.
     pub options: solve::Options,
+    /// What the sweep and the measurements run on (plan 0.17.1 §4, D185):
+    /// the default is the solver of record.
+    pub exec: SolveExec,
+}
+
+/// What a solve's sweep and measurements run on (plan 0.17.1 §4, D185).
+/// Neither changes what decides: the sweep's sensitivities rank the sites,
+/// and the measurement against the exact reference at `bits` accepts or
+/// widens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SolveExec {
+    pub sweep: Sweep,
+    pub measure: Measure,
+}
+
+/// The arithmetic of the sensitivity sweep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sweep {
+    /// The reference interpreter at the solve's `bits`, MPFR: about 80
+    /// bytes a real, and every parameter's cotangent returned whole, so
+    /// 2.7 times an exact run's memory (D185).
+    #[default]
+    Exact,
+    /// The same evaluator in binary64 (`presk solve --sweep f64`): 8 bytes
+    /// a real, for a model whose sweep MPFR does not fit (Llama 3.2 1B).
+    F64,
+}
+
+/// The executor of the measurements (the widening, `--narrow`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Measure {
+    /// The kernel interpreter.
+    #[default]
+    Kernel,
+    /// The native backend (`presk solve --measure native`), which computes
+    /// the kernel interpreter's bits: the same gaps, about twenty times
+    /// faster.
+    Native,
 }
 
 /// What `presk solve` found.
@@ -262,6 +300,8 @@ pub struct Solved {
     /// integer rungs among them (D177).
     pub menu: Menu,
     pub params: Vec<solve::ParamSite>,
+    /// What the sweep and the measurements ran on (D185).
+    pub exec: SolveExec,
 }
 
 /// Why `presk solve` gave no realization; each is printed by the command.
@@ -335,8 +375,6 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     // Where the budget should *not* be spent: one reverse sweep.
     let (vjp, adjoints, _) = presk_core::ad::vjp_with_adjoints(core, entry);
     let core: &presk_core::Program = core;
-    let mut sb = InterpBackend::new(core, prog, a.bits);
-    sb.interp.sums = Some(Default::default());
     let mut vargs = args.clone();
     vargs.push(ones_like(&reference));
     // The same sweep's cotangent of the parameters, `∂L/∂θ`: each leaf's
@@ -344,9 +382,21 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     // sweep returns it and dropped, so that it is never kept whole; kept
     // only when `--quant` prices the integer menu with it (0.6.0 step 5d,
     // plan 0.10.1 step 3).
-    let (mut sens, mut param_sens, grad_theta) = match Backend::prepare(&mut sb, vjp, &fdims, &one).and_then(|p| Backend::call(&mut sb, &p, vargs)) {
-        Ok(g) => {
-            let sens = presk_precision::sensitivity::from_run(core, entry, &adjoints, &sb.interp.sums.take().unwrap_or_default());
+    let swept = match a.exec.sweep {
+        Sweep::Exact => {
+            let mut sb = InterpBackend::new(core, prog, a.bits);
+            sb.interp.sums = Some(Default::default());
+            Backend::prepare(&mut sb, vjp, &fdims, &one).and_then(|p| Backend::call(&mut sb, &p, vargs)).map(|g| (g, sb.interp.sums.take().unwrap_or_default()))
+        }
+        Sweep::F64 => {
+            let mut sb = F64InterpBackend::new(core, prog);
+            sb.interp.sums = Some(Default::default());
+            Backend::prepare(&mut sb, vjp, &fdims, &one).and_then(|p| Backend::call(&mut sb, &p, vargs)).map(|g| (g, sb.interp.sums.take().unwrap_or_default()))
+        }
+    };
+    let (mut sens, mut param_sens, grad_theta) = match swept {
+        Ok((g, sums)) => {
+            let sens = presk_precision::sensitivity::from_run(core, entry, &adjoints, &sums);
             let ct = params_cotangent(&g, &args[0]);
             drop(g);
             let norms = ct.as_ref().map(leaf_norms).unwrap_or_default();
@@ -362,8 +412,9 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     }
     let output_site = format!("{}/%{}", core.func(entry).name, core.func(entry).body.result.0);
 
+    let on = a.exec.measure;
     let mut measure = |r: &Realization| -> f64 {
-        let mut b = presk_kernel::KernelBackend::new(core, prog, r);
+        let mut b = measuring_backend(on, core, prog, r);
         let Ok(a) = r.realize_args(&args) else {
             return f64::INFINITY;
         };
@@ -394,7 +445,7 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
         let Some((hdims, hargs, href)) = held.as_ref() else {
             return f64::INFINITY;
         };
-        let mut b = presk_kernel::KernelBackend::new(core, prog, r);
+        let mut b = measuring_backend(on, core, prog, r);
         let Ok(a) = r.realize_args(hargs) else {
             return f64::INFINITY;
         };
@@ -447,7 +498,7 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     };
     let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000, a.options).map(|(_, bytes)| bytes);
     let breakdown = solve::breakdown_with(env, &sens, &roles, &sol.realization, &menu, Dtype::F64, machine.as_ref(), a.options.rounding);
-    Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time, menu, params })
+    Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time, menu, params, exec: a.exec })
 }
 
 /// Whether `f` returns a real tensor, of any shape, an open prefix bound at
@@ -458,6 +509,16 @@ pub fn returns_real(core: &presk_core::Program, f: FuncId) -> bool {
 
 /// The seed of a sweep over `v`'s output: ones of its shape (plan 0.12.0,
 /// its question 5; the cotangent `1` of a scalar).
+/// The backend a candidate realization is measured on: the kernel
+/// interpreter, or the native backend with its bits ([`Measure`]); the
+/// kernel interpreter where the native backend is unavailable.
+fn measuring_backend<'p>(on: Measure, core: &'p presk_core::Program, prog: &'p ElabProgram, r: &Realization) -> presk_kernel::KernelBackend<'p> {
+    match on {
+        Measure::Native => presk_cranelift::native_backend(core, prog, r).unwrap_or_else(|_| presk_kernel::KernelBackend::new(core, prog, r)),
+        Measure::Kernel => presk_kernel::KernelBackend::new(core, prog, r),
+    }
+}
+
 fn ones_like(v: &Value) -> Value {
     v.map_leaves(&mut |l| match l {
         Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::F64(vec![1.0; t.numel()].into()) }),

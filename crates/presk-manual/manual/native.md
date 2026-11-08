@@ -519,6 +519,18 @@ program's time and the step 0.871× (statement NB3 holds); most of the
 step's difference is the C program's host. A cold compile takes 37 to
 48 ms a kernel.
 
+The C program of record is GCC `-O2` with no target, where this backend's
+kernels get `clang -O3 -mcpu=native`. D183 measures it against GCC `-O3`
+as well. GCC 13.3 knows no Cortex-X925, so its `-mcpu=native` passes no
+target and `-O3 -mcpu=native` is `-O3`; it was also measured with
+`-O3 -mcpu=neoverse-v2`, the nearest core GCC knows. D184 measures it
+under GCC 16.2, whose `-mcpu=native` is falicon's chip, `gb10`: at `-O2`
+and at `-O3 -mcpu=native` GCC 16 is at GCC 13.3's level, and at `-O2
+-mcpu=native` it is 3.6× slower (the `export_c` chapter, the flags).
+Against every build at GCC's level, this backend takes 0.975–0.998× the
+C program's time on the forward pass and 0.84–0.90× on the step, and
+Cranelift 1.17–1.19× and 0.97–1.03×.
+
 ## Training natively
 
 `presk train --backend native [--realize f64|f32|bf16|@R.json]` is the training loop of

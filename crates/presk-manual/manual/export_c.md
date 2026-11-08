@@ -379,6 +379,21 @@ program's, and `-mcpu=native` adds nothing; `-O2` stays the default. Two
 other things moved the program more, and the follow-up of step 7 settled
 both (D97's addendum).
 
+On falicon "`-mcpu=native` adds nothing" was GCC 13.3 not knowing the
+Cortex-X925: its `-mcpu=native` passes no target (D183). GCC 16.2 knows
+the chip, and its `-mcpu=native` is `-mcpu=gb10`, with SVE (D184).
+- Built `-O3 -mcpu=native`, the course GPT runs at GCC 13.3's speed:
+  210.9 ms on the forward pass and 792.0 ms on the step, against 206.5
+  and 808.1 at `-O2`.
+- Built `-O2 -mcpu=native`, it is 3.6× slower. At `-O2`, GCC 16
+  vectorizes the four-lane loops of a product's register tile as SVE
+  loops, for a vector length it does not know. Every tile operation runs
+  twice, and the sixteen sums live on the stack. The products drop from
+  about 620 GFLOP/s to 138, and C1 still holds.
+- With an SVE target on GCC 16, build `-O3`, or tell GCC the vector
+  length (`-msve-vector-bits=128` on falicon: 219 ms against 206). The
+  Makefile's default, `-O2` with no target, is not affected.
+
 - **Every kernel is always inlined** into the host's functions
   (`PRESK_KERNEL`, a static inline function with GCC's `always_inline`, in
   `kernels.c`), and on GCC `model.c` is compiled without the scheduling

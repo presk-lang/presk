@@ -740,7 +740,7 @@ the `precision` chapter, "Does the condition number rescue the bound?".
 presk solve FILE.psk --precision ENV.json [--budget 1e-3 | --budget-abs EPS] [--weights ckpt/final.psk.d]
     [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--menu f64,f32,bf16,int8,int4]
     [--no-verify] [--bits 128] [--rounding unit|measured] [--narrow off|measured|heldout] [--heldout M]
-    [--estimate sum|rss] [--margin 2.5] [--min-gain 1e-3]
+    [--estimate sum|rss] [--margin 2.5] [--min-gain 1e-3] [--sweep exact|f64] [--measure kernel|native]
     [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
 ```
 
@@ -822,6 +822,19 @@ whatever order the types are written in. A menu without a float type, or
 an unknown rung, is refused (exit 2), and so is `--quant` with `--menu`'s
 integers: `--quant` quantizes in a pass after the solve, the one menu in
 it (the `precision` chapter, "One menu").
+Since 0.17.1 (D185) two options say what the solve runs on, the defaults
+being the solver of record. `--sweep f64` runs the reverse sweep that
+ranks the sites on the reference interpreter's evaluator in binary64
+rather than in MPFR at `--bits`: about 8 bytes a real rather than 80,
+where the exact sweep takes 2.7 times an exact run's memory, every
+parameter's cotangent returned whole (Llama 3.2 1B's would need about
+300 GB). `--measure native` runs each measurement of a candidate on the
+native backend rather than the kernel interpreter, whose bits it
+computes: the same gaps, about twenty times faster at that size. Neither
+changes what decides: the measurement against the exact reference at
+`--bits` accepts or widens either way, and on the rows of record both give
+the same realization byte for byte (OP1). A line `executors` names them
+when either is set.
 
 ### `presk solve --step`: a budget on the update
 

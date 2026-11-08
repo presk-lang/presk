@@ -29,6 +29,14 @@ The harness therefore:
 - replaces the rotary `forward` by the same computation in `float64`;
 - replaces `LlamaRMSNorm.forward` by the same lines without the cast;
 - takes the SDPA attention, which computes in its operands' type.
+
+**The field's points (plan 0.17.1, presk D185).** With `--dtype float32` or
+`--dtype bfloat16` and `--logits OUT.f32`, the harness runs no comparison
+and patches nothing: `transformers` loads the checkpoint in that type, as
+its users load it (its own `float32` casts kept, the SDPA attention), runs
+each line of PROMPTS.txt alone at batch 1 on the CPU, and writes every
+position's logits to OUT.f32 as float32 (a `bfloat16` logit exactly),
+window after window. WEIGHTS.psk.d is then not read (`-` will do).
 """
 
 import argparse
@@ -83,6 +91,23 @@ def float64_rmsnorm():
     modeling_llama.LlamaRMSNorm.forward = forward
 
 
+def field_logits(a):
+    """The checkpoint in `a.dtype` as `transformers` runs it, each window
+    alone, its logits written as float32."""
+    dtype = getattr(torch, a.dtype)
+    model = LlamaForCausalLM.from_pretrained(a.checkpoint, dtype=dtype, attn_implementation="sdpa")
+    model.eval()
+    windows = [[int(t) for t in line.split()] for line in open(a.prompts) if line.strip()]
+    n = 0
+    with open(a.logits, "wb") as f, torch.no_grad():
+        for ids in windows:
+            z = model(torch.tensor([ids])).logits[0]
+            assert z.dtype == dtype, z.dtype
+            z.to(torch.float32).numpy().astype("<f4").tofile(f)
+            n += len(ids)
+    print(f"transformers in {a.dtype}: {len(windows)} windows, {n} positions, {model.config.vocab_size} logits each, into {a.logits}")
+
+
 def numbers(v):
     if isinstance(v, list):
         return [x for y in v for x in numbers(y)]
@@ -99,7 +124,18 @@ def main():
     ap.add_argument("--const", action="append", default=[])
     ap.add_argument("--backend", default="native")
     ap.add_argument("--out", default="out/llama3/rw2")
+    ap.add_argument("--dtype", default="float64", choices=["float64", "float32", "bfloat16"])
+    ap.add_argument("--logits", help="with --dtype float32 or bfloat16: write the logits here, float32, and compare nothing")
+    ap.add_argument("--threads", type=int, default=0, help="torch's threads (0: its default)")
     a = ap.parse_args()
+    if a.threads:
+        torch.set_num_threads(a.threads)
+    if a.logits:
+        if a.dtype == "float64":
+            sys.exit("--logits is for the field's types: float32 or bfloat16")
+        return field_logits(a)
+    if a.dtype != "float64":
+        sys.exit("RW2 compares in float64; --dtype float32 or bfloat16 goes with --logits")
     os.makedirs(a.out, exist_ok=True)
 
     torch.set_default_dtype(torch.float64)

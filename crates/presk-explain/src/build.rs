@@ -371,7 +371,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
     let scalar = presk_driver::precision::returns_scalar(&pcore, entry);
     let (mut sens, mut sens_none, mut solved) = (None, None, None);
     if let (Some(budget), Some((e, _))) = (o.budget, &env) {
-        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None, menu: o.menu.clone(), options: Default::default() };
+        let args = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(budget), weights: o.weights.as_deref(), verify: !o.no_exact, bits: o.bits, seed: o.seed, profile: o.profile.as_deref(), quant: None, menu: o.menu.clone(), options: Default::default(), exec: Default::default() };
         match presk_driver::precision::solve(&mut pcore.clone(), &prog, e, &args) {
             Ok(s) => {
                 if let Err(m) = std::fs::write(art("realization.json"), s.solution.realization.to_json()) {

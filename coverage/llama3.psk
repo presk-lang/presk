@@ -25,6 +25,8 @@ dim B
 dim T <= 131072            -- max_position_embeddings
 
 type Tokens = idx[V][batch: B, seq: T]
+-- A window of T + 1 tokens: its first T the context, its last T the targets.
+type Window = idx[V][batch: B, seq: T + 1]
 type Acts   = ℝ[batch: B, seq: T, model: D]
 type Mask   = bool[seq: T, seq2: T]
 
@@ -122,6 +124,14 @@ module Llama3 {
     let h = norm.apply(blocks.apply(embed(tok, ids), causal_mask(seq: T), angles()))
     ein[batch, seq, vocab](h * tok)
 }
+
+-- The next-token negative log-likelihood at each of a window's first T
+-- positions (plan 0.17.1, D185): −log softmax of the logits of the context
+-- at the target, `cross_entropy` per position. The context and the targets
+-- are two slices of `seq`; the mean over the positions is the log of the
+-- perplexity.
+fn nll(θ : params Llama3, w : Window) -> ℝ[batch: B, seq: T] =
+  cross_entropy(Llama3.apply(θ, w[seq: 0..T]), w[seq: 1..T + 1])
 
 -- Greedy generation reads the last position; `presk serve --temperature 0`.
 fn next_token(θ : params Llama3, key : key, ctx : Tokens, temperature : f64 = 1.0)

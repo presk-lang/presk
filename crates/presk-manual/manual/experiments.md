@@ -1839,6 +1839,18 @@ the paper was solved or timed again: the paper stays at 0.16.1.
     `native` chapter, "The code generator").
   - The LLVM backend compiles a kernel in 37–48 ms through `clang`, once:
     cached, a program starts as fast as on Cranelift (NB4).
+  - Against GCC `-O3` (D183), which is what `-O3 -mcpu=native` gives on
+    GCC 13.3, unaware of the Cortex-X925, and against `-O3
+    -mcpu=neoverse-v2`, the nearest core it knows: LLVM 0.98–1.00× and
+    0.84–0.90×, Cranelift 1.18× and 0.97–1.03×. The best GCC step,
+    `-O3 -mcpu=neoverse-v2`, is 3.6 % faster than `-O2`'s; NB2 and NB3
+    hold against every build.
+  - Against GCC 16.2 (D184), whose `-mcpu=native` is the GB10's:
+    `-O3 -mcpu=native` takes 210.9 ms on the forward pass and 792.0 ms
+    on the step, GCC 13.3's level, and `-O2 -mcpu=native` 3.6× more
+    (SVE at an unknown vector length keeps the register tile's sums on
+    the stack). LLVM 0.975× and 0.879× against the first; NB2 and NB3
+    hold against every build.
 - **One menu (QM1 and QM3 hold, QM2 fails).** `presk solve --menu
   f64,f32,bf16,int8,int4` against `--quant`'s two passes, on the envelopes
   of record:
@@ -1854,7 +1866,11 @@ the paper was solved or timed again: the paper stays at 0.16.1.
     6.25·10⁻³).** The one menu prices an integer by its largest single
     move, a worst case of about the whole budget. The second pass prices
     the moves' root-sum-square, an estimate its measurement checks (the
-    `precision` chapter, "One menu").
+    `precision` chapter, "One menu");
+  - under `--narrow measured` the measurement corrects the term (D181's
+    addendum). On BERT-large the one menu takes eight matrices in `int8`
+    and `int4`, at 6.73× against the two passes' 6.80×, and 8.41× with
+    `--margin 1`, measured 5.91·10⁻³ inside the budget.
 - **The step per stored value (TS2 fails).** At course scale the
   per-value realization's step takes 7.80 s: 1.92× faster than
   all-`f64`'s, but slower than J′'s per-function 6.99 s.
@@ -1864,6 +1880,101 @@ the paper was solved or timed again: the paper stays at 0.16.1.
     1.0 % of J′'s (TS3).
   - At D = 64 they take 12.5 % of H6's step, 38 % of its loss against
     all-`f64` (§20).
+
+## 27. Llama 3.2 1B solved whole, against the field's recipes (plan 0.17.1)
+
+`make llama3-budget` (`experiments/llama/llama3_budget.sh`) runs plan
+0.17.1 (`presk-specs/implementation/presk-plan-0.17.1.md`, D185 onward) on
+D180's converted checkpoint. It solves Llama 3.2 1B whole under a budget
+read off the exact model's margins, then measures every realization against
+the exact logits on the same tokens: the solved ones, D180's uniform ones,
+llama.cpp's BF16, Q8_0, Q4_K_M and Q4_0, and transformers in `float32` and
+`bfloat16`. It also gives perplexity on WikiText-2 under the e^{±2ε} bound.
+
+**The stages**, each reusing what exists (`FRESH=1` redoes them), in
+`out/llama3-budget/`:
+
+| stage | what it does |
+|---|---|
+| `texts` | WikiText-2 raw, the user's download, each split's `text` joined by "\n\n" and tokenized whole by the checkpoint's tokenizer (`texts.py`, `.venv-hf` with `pyarrow`). The samples: 4 windows of 16 of the train split (the envelope's); 32 of 32 of the test split (the certificate's, 1 024 positions); the next 128 of 129 (the perplexity's: 128 of context, 128 targets). Each window is opened by the beginning-of-text token |
+| `exact` | The held-out windows on the reference at 128 bits, one a run and one at a time, each in a scope of 108 GB: 41 min and 96.6 GB a window, about 22 h in all. `margins.py exact` keeps each window's margins and its logits as two doubles |
+| `margins` | ε\*(δ) for δ = 10⁻¹, 3·10⁻², 10⁻² by `margins.py`'s rule (`budget.py eps`) |
+| `gguf` | llama.cpp's converter and `llama-quantize` (`make llamacpp` first) |
+| `calibrate` | The envelope on the calibration windows at 128 bits, alone: about 6.5 h and 105 GB |
+| `solve` | The seven solves of the plan's §3.3, then an eighth at ε\*(10⁻²) with `--min-gain 0` (the user, 2026-11-06), one at a time, under `--sweep f64 --measure native` (the `cli` chapter); each realization's `presk explain`. `SOLVES` chooses among them |
+| `measure` | Our realizations natively on the held-out windows, one thread a window, `JOBS` side by side on the X925 cores (22 to 26 GB a run); the field's by their own programs (`llamacpp_logits`, `rw2.py --dtype`); the weights' bytes. Ours are `f64`, D180's six uniform ones, one written by hand (`experiments/llama/bf16-params-f32.json`: every parameter `bf16` at rest, every stored value `f32`) and the solved ones |
+| `perplexity` | `nll` of `coverage/llama3.psk` on the quality windows, 8 a run; the field's from their logits |
+| `time` | RW9, alone on the machine |
+| `report` | The tables and the statements (`budget.py report`) |
+
+A stage that runs for hours runs from a copy of the script and of the
+binary (`PRESK=out/bin/…`): `make llama3-budget` rebuilds
+`target/release/presk`, which an exact run in progress would then start
+from at its next window.
+
+**What it found.** The record is `docs/llama3-budget-0.17.1.md`.
+- **Step 1 (D186).** The exact model's margins on the 1 024 held-out
+  decisions put ε\*(10⁻¹), ε\*(3·10⁻²) and ε\*(10⁻²) at 4.88·10⁻²,
+  1.09·10⁻² and 3.81·10⁻³ logit units.
+  - `f32` (4.28·10⁻⁴) and transformers in `float32` (2.40·10⁻⁴) are
+    inside all three.
+  - Every narrower realization, ours or the field's, is outside all three.
+    The gaps are 0.706 for `bf16`, 2.10 for `int8`, 0.257 for llama.cpp
+    BF16 and 1.81 for Q8_0.
+- **Step 2 (D187).** The envelope took 6 h 35 min and 98.7 GB, each solve
+  2 h 06 min and 96.7 GB, the exact reference being all of its memory.
+  - The plan's seven solves, at the three ε\*(δ), at 10⁻² and 10⁻³
+    relative, without the narrowing and at margin 1, return one
+    realization: the token table and the seven block matrices in `bf16`,
+    the norms and every value in `f64`. It weighs 2.47 GB and measures
+    `f64`'s gap. The checkpoint is `bf16`, so `bf16` weights cost
+    nothing, and each matrix alone in `int8` moves a logit by more than
+    0.11: no budget of the plan lies past that rung.
+  - The eighth, with rule 2 off, stores every parameter in `bf16` and
+    computes in `f32`, with Q, K, V and the attention's output stored in
+    `bf16`; 1.52·10⁻⁴ on the calibration sample.
+- **Step 3 (D188).** Every realization on the 1 024 held-out decisions.
+  - The plan's seven solves give `f64`'s rows byte for byte: no flip,
+    3.67·10⁻¹³. RW6 holds at every δ.
+  - RW7 fails at every δ.
+    - At 10⁻¹ and 3·10⁻², llama.cpp Q8_0 (1.31 GB, 28 flips) and
+      per-column `int8` (2.03 GB, 27 flips) are lighter and within the
+      flips allowed, at gaps 37 and 43 times ε\*(10⁻¹). The certificate
+      bounds the worst logit, not the flips.
+    - At 10⁻², the realization by hand and the eighth solve are 405 504
+      bytes lighter: the norms, which rule 2 keeps in `f64`.
+  - The eighth measures 7.70·10⁻⁴ held out, with no flip.
+  - Every flip of every row, the field's included, lies where the exact
+    margin is under twice its position's gap.
+- **Step 4 (D189).** Perplexity on the 16 384 targets of the quality text.
+  - RW8 holds on all 22 rows: every perplexity lies within e^{±2g} of
+    `f64`'s (24.7699), every solved one's within e^{±2ε}. The plan's seven
+    solves give `f64`'s byte for byte, the eighth within 4.5·10⁻⁷ in log.
+  - `f32` is at 0.46 of its bound (−3.96·10⁻⁴ in log). The offset is
+    `nll`'s own log-softmax: 128 256 exponentials summed in one `f32`
+    accumulator, in sequence, come out low. Its logits with the
+    log-softmax in binary64 give −8.2·10⁻⁷ on window 0. Every row of ours
+    whose default is `f32` carries the term; the field's, whose
+    log-softmax is binary64's, do not.
+  - The other rows are 1.1 (`int4`, a vacuous bound) to 4.8 orders under
+    their bound.
+  - Our reading of llama.cpp's logits gives `llama-perplexity`'s figure
+    for all four GGUFs.
+- **Step 5 (D190).** RW9, the times, alone on one X925 core, three
+  processes each, the median and the fastest (D126).
+  - The forward pass at T = 16: `f64` 14.6 s, `f32` 11.5 s, A, the
+    realization solved at every budget, 9.87 s. That is 1.48× `f64`'s
+    time at a traffic ratio of 3.97: on one core this pass is not bound
+    by the bytes it reads.
+  - With vector lanes, A is 4 % slower. The realizations whose values are
+    `f32` gain: by hand 7.73 s, B 7.78 s, `int8` 5.43 s, `int4` 4.83 s.
+  - `presk serve` for 32 tokens: `f32` 806 s, A 724 s, by hand 549 s,
+    B 547 s, `int8` 429 s. A, B and the hand give `f32`'s tokens.
+- **Step 6 (D191).** Version 0.17.1. OP0 holds on the version's tree, and
+  the checks of record pass. The record, `docs/llama3-budget-0.17.1.md`,
+  gathers the figure's data (§7), the solved realizations in words (§8),
+  the statements (§9) and the cost against the plan (§10). The archive is
+  presk-project `data/llama3-budget-0.17.1.tar.xz`.
 
 ## What these experiments do not show
 

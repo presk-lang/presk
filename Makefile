@@ -109,7 +109,7 @@ EXAMPLES = tests/examples/mlp/mlp.psk \
            tests/examples/concat/concat.psk \
            tests/examples/rope/rope.psk
 
-.PHONY: llama3 venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: llama3 llama3-budget llamacpp venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -436,13 +436,29 @@ llama3:
 	$(CARGO) build --release -p presk
 	./experiments/llama/llama3.sh $(STAGE)
 
+# Plan 0.17.1 (D185 onward): Llama 3.2 1B solved whole at ε*(δ) from its
+# margins on WikiText-2, against the uniform types and the field's recipes on
+# the exact scale (experiments/llama/llama3_budget.sh's stages texts, exact,
+# margins, gguf, calibrate, solve, measure, perplexity, time, report; STAGE=
+# one of them, all by default). WikiText-2 raw is the user's download into
+# ~/presk-data/wikitext-2-raw (WIKI= another); llama.cpp is `make llamacpp`.
+# The exact stage takes about 22 h and 97 GB, one window at a time.
+llama3-budget: .venv-hf/bin/python
+	$(CARGO) build --release -p presk
+	./experiments/llama/llama3_budget.sh $(STAGE)
+
+# llama.cpp from its release into .llamacpp (plan 0.17.1, D185).
+llamacpp:
+	./experiments/llama/setup_llamacpp.sh
+
 # transformers in a venv of its own, for RW2 (D180): torch on the CPU and
-# transformers' Llama, which the comparison patches to compute in float64.
+# transformers' Llama, which the comparison patches to compute in float64;
+# pyarrow reads WikiText-2's Parquet files (plan 0.17.1, D185).
 venv-hf: .venv-hf/bin/python
 .venv-hf/bin/python:
 	python3 -m venv .venv-hf
 	.venv-hf/bin/pip install -q torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
-	.venv-hf/bin/pip install -q transformers==5.21.0 safetensors==0.8.0
+	.venv-hf/bin/pip install -q transformers==5.21.0 safetensors==0.8.0 pyarrow==26.0.1
 
 # A budget on one training step's update (plan 0.6.0 step 7b, D52): the gap
 # table at D = 64 (needs `make gpt-trained` and out/gpt_prof.json), statement

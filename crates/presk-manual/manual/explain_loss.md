@@ -21,7 +21,7 @@
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift), C, PyTorch | `--target native,c,pytorch` |
 
-Compiler: presk 0.17.0. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 

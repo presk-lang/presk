@@ -243,6 +243,9 @@ def report(a):
     version = machine.splitlines()[1].split(", ", 1)[1]  # `presk --version`
     flags = re.search(r"^cflags (.*)$", machine, re.M)
     flags = flags.group(1).replace(" -Wall -Wextra", "") if flags else "-O2"
+    # The C compiler as `gcc --version` named it (D184: GCC 16.2 beside 13.3).
+    gcc = re.search(r"^gcc \(.*\) (\S+)$", machine, re.M)
+    gcc = f"GCC {gcc.group(1)}" if gcc else "GCC"
     # Since 0.10.0 step 7's follow-up: every C program timed under OpenMP's
     # default waiting and under C_WAIT, the native pool's (keys `….w`).
     wait = re.search(r"^c_wait (.*)$", machine, re.M)
@@ -250,7 +253,7 @@ def report(a):
     waited = lambda k: f"{k}.w" if wait and f"{k}.w" in res else k
     print(f"# The course GPT on three sides: {version} against PyTorch")
     print()
-    print(f"The course GPT (`corpus/nlp/05_gpt.psk`, D = {D}, {H} heads, {L} blocks, V = {V}) at B = {B}, T = {T}, `f32` on every side, with the checkpoint `out/course_probe_f32/final.psk.d` and the token indices the C export synthesizes; {date}, presk `{rev}`, `experiments/pytorch_baseline.sh`. Three sides: presk's native backend (`presk bench --plan-only`, `presk train`), the C program `presk export --target c` writes (GCC 13, `{flags}`, OpenMP), and PyTorch {torch.__version__} running the model `presk export --target pytorch` writes. Each time is the median of seven calls or steps, the first call or step, which compiles natively, left out on the native and PyTorch sides; the C program's seven calls are all counted.")
+    print(f"The course GPT (`corpus/nlp/05_gpt.psk`, D = {D}, {H} heads, {L} blocks, V = {V}) at B = {B}, T = {T}, `f32` on every side, with the checkpoint `out/course_probe_f32/final.psk.d` and the token indices the C export synthesizes; {date}, presk `{rev}`, `experiments/pytorch_baseline.sh`. Three sides: presk's native backend (`presk bench --plan-only`, `presk train`), the C program `presk export --target c` writes ({gcc}, `{flags}`, OpenMP), and PyTorch {torch.__version__} running the model `presk export --target pytorch` writes. Each time is the median of seven calls or steps, the first call or step, which compiles natively, left out on the native and PyTorch sides; the C program's seven calls are all counted.")
     print()
     if wait:
         print(f"**The C program's threads.** Each C program is timed twice: under the OpenMP runtime's default, by which an idle worker sleeps after about 0.1 ms (libgomp's 300 000 spins on these cores), and with `{wait}`, by which it spins about 2 ms before it sleeps, as the native backend's pool does (presk D97's addendum). T4 compares the native backend with the second, both sides waiting alike; T2 compares PyTorch, at its own runtime's default, with the first. The same bits either way.")

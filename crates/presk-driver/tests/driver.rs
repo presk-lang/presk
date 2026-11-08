@@ -55,7 +55,7 @@ fn breakdown_sums_to_the_estimate() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default() };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default(), exec: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
     use presk_precision::solve::Role;
     let sum: f64 = solved.breakdown.iter().map(|s| s.err).sum();
@@ -90,7 +90,7 @@ fn the_measured_rounding_is_at_most_the_unit_term() {
         }
     }
     let solve = |core: &mut presk_core::Program, options: Options| {
-        let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options };
+        let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options, exec: Default::default() };
         presk_driver::precision::solve(core, &prog, &env, &a).ok().expect("the tutorial's loss solves").solution
     };
     let unit = solve(&mut core, Options { rounding: RoundingTerm::Unit, narrow: Narrow::Off, ..Options::default() });
@@ -118,7 +118,7 @@ fn a_tensor_first_argument_is_no_parameter() {
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default() };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default(), exec: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the attention row solves") };
     assert!(solved.breakdown.iter().all(|s| !s.param), "a parameter offered");
     assert!(solved.solution.realization.params.is_empty());
@@ -209,7 +209,7 @@ fn one_menu_offers_the_matrices_their_integers() {
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
     let menu = Menu::parse("f64,f32,bf16,int8,int4").unwrap();
-    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(0.5), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu, options: Default::default() };
+    let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(0.5), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu, options: Default::default(), exec: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
     let paths: Vec<(&str, usize)> = solved.params.iter().map(|p| (p.path.as_str(), p.ints.len())).collect();
     assert!(paths.iter().any(|(p, n)| *p == "blocks.proj.w" && *n == 4), "{paths:?}");
@@ -280,5 +280,104 @@ fn given_params_have_the_drawn_tree() {
         assert_eq!(read, before, "{entry}: the checkpoint read either way");
         // The drawn tree holds the interpreter's exact numbers; the file, f64.
         assert_eq!(read, drawn[0].realize(presk_rt::Dtype::F64), "{entry}: the checkpoint is the drawn parameters");
+    }
+}
+
+/// What a solve's moves decided: a proposal's order and choices, and every
+/// measured move whole. A proposal's `added` and `spent` are the estimate's
+/// sums, which a sweep in binary64 moves in their last bits.
+fn decided(moves: &[presk_precision::solve::Move]) -> Vec<String> {
+    use presk_precision::solve::Move;
+    moves
+        .iter()
+        .map(|m| match m {
+            Move::Tried { site, to, saved, taken, rank, .. } => format!("tried {site} {to:?} {saved} {taken} {rank}"),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// D185 (plan 0.17.1 §4): the sweep in binary64 and the measurements on the
+/// native backend change no decision. On the tutorial's loss and on a small
+/// `coverage/llama3.psk` under the one menu, narrowed by measurement, the
+/// solve under either option and under both returns the default's
+/// realization, its decisions and every measured gap bit for bit; the
+/// sweep's sensitivities are the exact sweep's to binary64's rounding.
+#[test]
+fn the_executors_change_no_decision() {
+    use presk_driver::precision::{Measure, SolveExec, Sweep};
+    use presk_precision::solve::{Narrow, Options};
+    let cases: [(&str, &str, &[(&str, u64)], &[&str]); 2] = [
+        ("tutorial/07_train.psk", "loss", &[("B", 4)], &[]),
+        ("coverage/llama3.psk", "Llama3.apply", &[("B", 2), ("T", 8)], &["V=64", "D=32", "H=4", "G=2", "FF=64", "L=2"]),
+    ];
+    for (file, entry, dims, consts) in cases {
+        let file = root().join(file);
+        let consts: Vec<String> = consts.iter().map(|c| c.to_string()).collect();
+        let (_, prog, mut core) = program(&file, &consts);
+        let dims: Vec<(String, u64)> = dims.iter().map(|(n, v)| (n.to_string(), *v)).collect();
+        let c = presk_driver::precision::Calibrate { file: &file, entry, dims, consts: &consts, data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+        let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
+        let menu = presk_precision::solve::Menu::parse("f64,f32,bf16,int8,int4").unwrap();
+        let mut solve = |exec: SolveExec| {
+            let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-2), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: menu.clone(), options: Options { narrow: Narrow::Measured, ..Options::default() }, exec };
+            presk_driver::precision::solve(&mut core, &prog, &env, &a).ok().unwrap_or_else(|| panic!("{entry} solves"))
+        };
+        let base = solve(SolveExec::default());
+        assert!(base.solution.measurements > 1, "{entry}: the narrowing measured");
+        for exec in [SolveExec { sweep: Sweep::F64, measure: Measure::Kernel }, SolveExec { sweep: Sweep::Exact, measure: Measure::Native }, SolveExec { sweep: Sweep::F64, measure: Measure::Native }] {
+            let s = solve(exec);
+            assert_eq!(s.solution.realization, base.solution.realization, "{entry} under {exec:?}");
+            assert_eq!(decided(&s.solution.moves), decided(&base.solution.moves), "{entry} under {exec:?}");
+            assert_eq!(s.solution.measured.map(f64::to_bits), base.solution.measured.map(f64::to_bits), "{entry} under {exec:?}");
+            assert_eq!(s.solution.measurements, base.solution.measurements, "{entry} under {exec:?}");
+            assert_eq!(s.sens.sites.keys().collect::<Vec<_>>(), base.sens.sites.keys().collect::<Vec<_>>());
+            for (site, x) in &base.sens.sites {
+                let y = s.sens.sites[site];
+                assert!((x - y).abs() <= 1e-12 * x.abs().max(1e-300), "{entry} {site}: {x} against {y} under {exec:?}");
+            }
+        }
+    }
+}
+
+/// Plan 0.17.1 (D185): `nll` of `coverage/llama3.psk` is the next-token
+/// cross-entropy of `Llama3.apply`'s logits on the window's first T tokens,
+/// at each position: on the reference at 128 bits, at a small width, its
+/// value is log Σ exp z − z[target] computed in binary64 from the logits
+/// of the same window's context, to 10⁻¹².
+#[test]
+fn llama3_nll_is_the_cross_entropy_of_its_logits() {
+    use presk_interp::Value as I;
+    let file = root().join("coverage/llama3.psk");
+    let consts: Vec<String> = ["V=64", "D=32", "H=4", "G=2", "FF=64", "L=2"].iter().map(|c| c.to_string()).collect();
+    let (_, prog, core) = program(&file, &consts);
+    let (b, t, v) = (2usize, 8usize, 64usize);
+    let dims = vec![("B".to_string(), b as u64), ("T".to_string(), t as u64)];
+    let opts = presk_interp::RunOptions { entry: "nll".into(), dims: dims.clone(), seed: 3, bits: 128, digits: 17 };
+    let nll = presk_interp::run(&core, &prog, &opts).unwrap();
+    let (theta, window) = (&nll.inputs[0].1, &nll.inputs[1].1);
+    let I::Idx { bound, t: w } = window else { panic!("a window of ids") };
+    assert_eq!(w.data.len(), b * (t + 1));
+    // The context, the window's first T ids, as `Llama3.apply`'s argument.
+    let ctx: Vec<i64> = (0..b).flat_map(|i| w.data[i * (t + 1)..i * (t + 1) + t].to_vec()).collect();
+    let mut axes = w.axes.clone();
+    axes[1].len = t;
+    let ctx = I::Idx { bound: *bound, t: presk_interp::Tensor { axes, data: ctx.into_iter().collect() } };
+    let at = presk_interp::RunOptions { entry: "Llama3.apply".into(), dims, seed: 3, bits: 128, digits: 17 };
+    let (apply, fdims, _) = presk_interp::run::bind_run(&core, &prog, &at).unwrap();
+    let mut it = presk_rt::InterpBackend::new(&core, &prog, 128);
+    let z = it.interp.call(apply, fdims, vec![theta.clone(), ctx]).unwrap();
+    let (I::Real(z), I::Real(got)) = (z, &nll.result) else { panic!("real results") };
+    assert_eq!(got.data.len(), b * t);
+    for i in 0..b {
+        for p in 0..t {
+            let row: Vec<f64> = (0..v).map(|k| z.data[(i * t + p) * v + k].to_f64()).collect();
+            let m = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let lse = m + row.iter().map(|x| (x - m).exp()).sum::<f64>().ln();
+            let target = w.data[i * (t + 1) + p + 1] as usize;
+            let want = lse - row[target];
+            let have = got.data[i * t + p].to_f64();
+            assert!((have - want).abs() <= 1e-12 * want.abs().max(1.0), "window {i}, position {p}: {have} against {want}");
+        }
     }
 }

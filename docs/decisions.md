@@ -18505,6 +18505,51 @@ each, the median):
 **The report** is `docs/rows-0.17.0.md`, in D163's form; the archive is
 presk-project `data/rows-0.17.0.tar.xz`.
 
+**Addendum (2026-10-29, after D182): BERT-large's rows under `--narrow
+measured`.** The four solves ran again from 15:06 to 23:19, in a scope of
+their own, beside step 9's checks. They used the same binary
+(`out/bin/presk-0.17.0-step8a`) and the same envelope, and were untimed
+(`out/qm-0.17.0/bert/`, `qm.py` read again):
+
+| setting | the one menu | ratio | measured | the two passes | ratio | measured | one ≥ two |
+|---|---|---|---|---|---|---|---|
+| the defaults (QM2, above) | 8 `f32` | 2.00× | 1.06·10⁻⁵ | 10 of 10 matrices (6 `int8`, 4 `int4`) | 4.93× | 3.82·10⁻³ | no |
+| `--narrow measured` | 4 `int8`, 4 `int4` | 6.73× | 2.21·10⁻⁴ | 10 of 10 (6 `int8`, 4 `int4`) | 6.80× | 4.64·10⁻³ | no |
+| `--narrow measured --margin 1` | 5 `int8`, 3 `int4` | 8.41× | 5.91·10⁻³ | 10 of 10 (6 `int8`, 4 `int4`) | 6.80× | 4.64·10⁻³ | yes |
+
+- **The narrowing corrects the term.** Under `--narrow measured` the one
+  menu takes the integers its default solve priced out, as it did on the
+  trained GPT (D177).
+  - At the default margin of 2.5 it reaches 6.73×, 1 % short of the two
+    passes' 6.80×.
+  - With `--margin 1` it reaches 8.41×, measured 5.91·10⁻³ inside
+    6.25·10⁻³. The two passes stay at 6.80×.
+- **Why the margin moves one side only.**
+  - The two passes narrow the floats by measurement under the margin
+    (measured 8.32·10⁻⁴). Only then do they quantize the ten matrices,
+    which takes the gap to 4.64·10⁻³. `--margin 1` changes neither part.
+  - The one menu narrows floats and integers in one order, each step
+    measured, so the margin bounds the whole realization. Its gap is
+    2.21·10⁻⁴ under margin 2.5's limit of 2.50·10⁻³, and 5.91·10⁻³ under
+    margin 1's.
+- **The two small matrices.** The one menu leaves at `f64` the two
+  rank-two parameters that rule 2 does not offer, `head.span.w` and
+  `bert.emb.seg` (16 KB each in `f64`). The two passes quantize all ten.
+- **Their cost.**
+  - The one menu's narrowing took 43 measurements in 3 passes, 8 h 13 min
+    a solve.
+  - The two passes' narrowing took 27 measurements in 1 pass, 6 h 15 min.
+  - Each solve peaked at 11.1 GB. A measurement runs the kernel interpreter
+    on BERT-large's two blocks: 11 to 14 minutes here, four solves side by
+    side.
+- **QM2's verdict stands.** It is judged under the defaults (the user's
+  decision of 2026-10-28), where the one menu loses, 2.00× against 4.93×.
+  Under the narrowing the one menu is level at the default margin and ahead
+  at `--margin 1`. That narrowing as `--menu`'s default is remedy (a) of
+  the presk-project roadmap's §J row, for a later version.
+
+The archive is presk-project `data/rows-bert-narrow-0.17.0.tar.xz`.
+
 ## D182 — Version 0.17.0: NB0, QM0, TS0 and RW0 on the version's tree, the checks of record, the documents (plan 0.17.0 step 9) (2026-10-29)
 
 **NB0, QM0, TS0 and RW0 hold on the version's tree.** This step's release
@@ -18583,3 +18628,1491 @@ reported beside QM2 and not judged, still ran at this step; their rows are
 D181's addendum, in a merge request of their own, after the tag, so the
 version's tree stays this one. No row of the paper was solved or timed
 again: the paper stays at 0.16.1.
+
+## D183 — The C program under GCC -O3, against NB2 and NB3. GCC 13.3 does not know the Cortex-X925, so its `-mcpu=native` and `-march=native` pass no target on falicon and "-O3 -march=native" is plain `-O3`. With the nearest core it knows, `-mcpu=neoverse-v2`, the C step is 3.6 % faster than at `-O2`. NB2 and NB3 hold against every build: the LLVM backend takes 0.98–1.00× the C program's time on the forward pass and 0.84–0.90× on the step, Cranelift 1.18× and 0.97–1.03× (2026-10-31)
+
+**The question** (the user, 2026-10-30, on D181): was the C program of
+record GCC `-O3 -march=native`? It was not. NB2's and NB3's C program is
+the export's Makefile: GCC 13.3 at `-O2` with `STRICT` (`-std=c11
+-ffp-contract=off`), with no target. The LLVM backend compiles its kernels
+with `clang -O3 -mcpu=native` (D176). The user asked to settle it.
+
+**A finding first: `-mcpu=native` does nothing here.** GCC 13.3 (Ubuntu
+24.04) knows neither the Cortex-X925 (CPU part `0xd85`) nor the A725
+(`0xd87`).
+- Its `-mcpu=native` and `-march=native` then pass no `-mcpu` or `-march`
+  to `cc1` (`gcc -v`).
+- They define the same five `__ARM_FEATURE` macros as no flag at all:
+  armv8-a.
+- D97's "`-O3 -mcpu=native`, adds nothing" (0.10.0) was therefore plain
+  `-O3`.
+- The nearest cores GCC 13.3 knows are the Cortex-X3 and the Neoverse V2
+  (Armv9-A with SVE2, `bf16`, i8mm and dotprod: 31 macros).
+
+clang's `-mcpu=native` resolves to `cortex-x925` (D176).
+
+**The measurement** (`out/o3-0.17.0/run.sh`), alone on falicon, the paper
+session told before and after.
+- When: 2026-10-30 21:56 to 2026-10-31 00:55; the one-minute load at
+  each start was 1.27 to 1.47.
+- What: five rounds of `experiments/pytorch_baseline.sh` with `LLVM=1`,
+  by D127's protocol.
+- Two processes of every side in each round, one per build of the C
+  program:
+  - `CFLAGS="-O3 -mcpu=native"`, the question as asked, which is `-O3`
+    here;
+  - `CFLAGS="-O3 -mcpu=neoverse-v2"`, GCC at its best on this machine.
+- `STRICT` stays, and C1 holds on all 30 programs built.
+- The binary is phase B's (`out/bin/presk-0.17.0-step8a`), so the native
+  and LLVM rows are a control. They are within 1 % of D181's: the
+  forward pass 245.2–247.6 ms on Cranelift and 206.5–206.6 on LLVM, the
+  step 798.6–799.4 and 698.6–700.9.
+
+On ten X925 pinned, the C program's workers waiting as the native pool's
+(`GOMP_SPINCOUNT=8M`), the medians of five processes
+(`out/o3-0.17.0/{o3native,o3v2}/table4.md`):
+
+| the C program | forward pass, C | Cranelift ÷ C | LLVM ÷ C | step, C | Cranelift ÷ C | LLVM ÷ C |
+|---|---|---|---|---|---|---|
+| GCC `-O2` (D181, the row of record) | 206.5 ms | 1.193 | 0.995 | 808.1 ms | 0.994 | 0.871 |
+| GCC `-O3`, which is `-O3 -mcpu=native` here | 207.2 ms | 1.183 | 0.997 | 827.9 ms | 0.965 | 0.844 |
+| GCC `-O3 -mcpu=neoverse-v2` | 209.9 ms | 1.179 | 0.984 | 778.7 ms | 1.027 | 0.900 |
+
+- **NB2 and NB3 hold against every build.**
+  - The LLVM backend's forward pass is 0.98 to 1.00× the C program's,
+    and its step 0.84 to 0.90×.
+  - Cranelift's forward pass is 1.18×. Its step is 0.97 to 1.03×: at
+    the C program's level, within 3 %, but not below GCC at its best.
+- **Where the flags act: the gradient under its plan.** The instrumented
+  C program splits its time into kernels and host (the medians of five):
+
+  | build | the call | its kernels | the host |
+  |---|---|---|---|
+  | `-O2` | 791.5 ms | 693.3 ms | 96.6 ms |
+  | `-O3` | 813.6 ms | 748.4 ms | 64.8 ms |
+  | `-O3 -mcpu=neoverse-v2` | 756.5 ms | 694.3 ms | 61.1 ms |
+
+  - `-O3` with no target slows GCC's kernels by 8 % and speeds its host
+    by a third.
+  - The V2 tuning gives the kernels back their `-O2` speed and keeps the
+    faster host.
+  - The forward pass has no host to speak of, and the flags move it by
+    at most 1.6 %.
+- **Against the best GCC on each workload.** That is `-O2` on the forward
+  pass (206.5 ms) and `-O3 -mcpu=neoverse-v2` on the step (778.7 ms).
+  - The LLVM backend takes 0.995× and 0.900×.
+  - Cranelift takes 1.193× and 1.027×.
+  - What remains of LLVM's lead on the step, about 78 ms, is mostly the
+    host: about 61 ms in the C program, about 20 ms in the native host
+    (D174, D181). The kernels themselves are close; NB4's method puts
+    LLVM's gradient kernels at 672 ms.
+- **What it changes.** No verdict moves: NB2's and NB3's row of record
+  stays D181's, the C program as exported. The sentence "the compiler's
+  own backend is at GCC on its own kernels" holds against GCC `-O3`
+  tuned for the nearest core GCC knows. The paper does not move.
+
+The archive is presk-project `data/gcc-o3-0.17.0.tar.xz`, with the
+programs' outputs, checkpoints and binaries left out and checksummed.
+
+## D184 — The C program under GCC 16.2, which knows falicon's chip: its `-mcpu=native` and `-march=native` are `-mcpu=gb10`. Built `-O3 -mcpu=native`, the program takes 210.9 ms on the forward pass and 792.0 ms on the step, GCC 13.3's level: the forward pass 2 % slower than at `-O2`, the step 2 % faster, and not faster than D183's `-O3 -mcpu=neoverse-v2`. Built `-O2 -mcpu=native`, it is 3.6× slower: under `-O2` GCC 16 writes the register tile's four-lane loops for SVE at a vector length it does not know, and the tile's sums go to the stack. NB2 and NB3 hold against every build (2026-10-31)
+
+**The question** (the user, 2026-10-31, after D183: "pourquoi pas gcc
+16?"). D183 found that GCC 13.3, Ubuntu 24.04's, knows neither of
+falicon's cores, so that "`-O3 -march=native`" was `-O3`. GCC 15.1 added
+`-mcpu=cortex-x925` and GCC 16.1 `-mcpu=gb10`, NVIDIA's GB10, the chip
+falicon is. The user asked for the latest release, GCC 16.2
+(2026-08-07).
+
+**GCC 16.2** (`experiments/gcc/setup.sh`, into `.gcc`, git-ignored).
+- The release built from source, C only, without bootstrap and without
+  root: three minutes on falicon's twenty cores. The tarball is checked
+  against its SHA-256, after a first check of its signature against the
+  GNU keyring.
+- `.gcc/wrap` holds `gcc` and `cc` calling it with an rpath to its own
+  libgomp. First on `PATH`, it is the compiler of `pytorch_baseline.sh`,
+  which calls `gcc`, and of the exported Makefiles, which call `$(CC)`.
+- Its `-mcpu=native` and `-march=native` find the X925 (`0xd85`) and the
+  A725 (`0xd87`) as one big.LITTLE pair of its table, `gb10`. They pass
+  `-mcpu=gb10+crc+nossbs` to `cc1`: Armv9.2-A, SVE2 with its
+  bit-permute, AES, SHA3 and SM4 instructions, the X925's tuning, and 41
+  `__ARM_FEATURE` macros against GCC 13.3's 5.
+- The manual's dependencies chapter and presk-specs' `presk-tooling.md`
+  have its row and section.
+
+**The measurement** (`out/gcc16-0.17.0/run.sh`), alone on falicon, the
+paper session told before and after.
+- When: 2026-10-31 08:21 to 13:06; the one-minute load at each round's
+  start was 1.28 to 1.48.
+- What: five rounds of `experiments/pytorch_baseline.sh` with `LLVM=1`,
+  by D127's protocol, each round two processes of every side, one per
+  build of the C program, all three by GCC 16.2:
+  - `CFLAGS` empty, the Makefile's `-O2`: the compiler apart from the
+    target;
+  - `CFLAGS="-O3 -mcpu=native"`, the question as asked, now with a target;
+  - `CFLAGS="-O2 -mcpu=native"`: the target without `-O3`, which slowed
+    GCC 13.3's gradient kernels by 8 % (D183).
+- `STRICT` stays, and C1 holds on all 225 programs built.
+- The binary is phase B's (`out/bin/presk-0.17.0-step8a`), so the native
+  and LLVM rows are a control. They are within 1.5 % of D181's (246.4
+  and 205.5 ms, 803.4 and 703.7): the forward pass 244.8–246.9 ms on
+  Cranelift and 205.6–208.3 on LLVM, the step 797.4–806.9 and
+  695.9–700.7.
+
+On ten X925 pinned, the C program's workers waiting as the native pool's
+(`GOMP_SPINCOUNT=8M`), the medians of five processes
+(`out/gcc16-0.17.0/{g16o2,g16o3native,g16o2native}/table4.md`), beside
+D181's and D183's builds by GCC 13.3:
+
+| the C program | forward pass, C | Cranelift ÷ C | LLVM ÷ C | step, C | Cranelift ÷ C | LLVM ÷ C |
+|---|---|---|---|---|---|---|
+| GCC 13.3 `-O2` (D181, the row of record) | 206.5 ms | 1.193 | 0.995 | 808.1 ms | 0.994 | 0.871 |
+| GCC 13.3 `-O3`, which is `-O3 -mcpu=native` there (D183) | 207.2 ms | 1.183 | 0.997 | 827.9 ms | 0.965 | 0.844 |
+| GCC 13.3 `-O3 -mcpu=neoverse-v2` (D183) | 209.9 ms | 1.179 | 0.984 | 778.7 ms | 1.027 | 0.900 |
+| GCC 16.2 `-O2` | 207.4 ms | 1.185 | 0.998 | 804.9 ms | 0.993 | 0.869 |
+| GCC 16.2 `-O3 -mcpu=native` (`gb10`) | 210.9 ms | 1.170 | 0.975 | 792.0 ms | 1.019 | 0.879 |
+| GCC 16.2 `-O2 -mcpu=native` (`gb10`) | 753.2 ms | 0.325 | 0.277 | 2 374.8 ms | 0.336 | 0.295 |
+
+- **NB2 and NB3 hold against every build.**
+  - Against the five builds that keep GCC's level, the LLVM backend's
+    forward pass is 0.975 to 0.998× the C program's, and its step 0.844
+    to 0.900×.
+  - Cranelift's forward pass is 1.17 to 1.19×, and its step 0.97 to
+    1.03×.
+- **The question as asked.** With a GCC that knows the chip, `-O3
+  -march=native` takes 210.9 ms on the forward pass, 2 % more than
+  GCC 13.3's `-O2`, and 792.0 ms on the step, 2 % less. Its five steps
+  spread from 777.2 to 797.5 ms. It does not beat D183's `-O3
+  -mcpu=neoverse-v2` (778.7 ms), which GCC 13.3 builds without knowing
+  the chip.
+- **GCC 16 against 13.3 apart from the target.** At `-O2` the two
+  compilers are within 0.5 % on both workloads.
+- **The gradient under its plan**, split into kernels and host by the
+  instrumented C program (`out/gcc16-0.17.0/split.md`, the medians of
+  five):
+
+  | build | the call | its kernels | the host |
+  |---|---|---|---|
+  | GCC 13.3 `-O2` | 791.5 ms | 693.3 ms | 96.6 ms |
+  | GCC 13.3 `-O3` | 813.6 ms | 748.4 ms | 64.8 ms |
+  | GCC 13.3 `-O3 -mcpu=neoverse-v2` | 756.5 ms | 694.3 ms | 61.1 ms |
+  | GCC 16.2 `-O2` | 790.3 ms | 689.0 ms | 103.4 ms |
+  | GCC 16.2 `-O3 -mcpu=native` | 771.5 ms | 710.1 ms | 61.7 ms |
+  | GCC 16.2 `-O2 -mcpu=native` | 2 365.2 ms | 2 261.6 ms | 100.5 ms |
+
+  `-O3` cuts the host by a third or more on both compilers (96.6 to
+  61–65 ms, 103.4 to 61.7). With GCC 16's target the kernels lose 3 %
+  against `-O2`, where GCC 13.3's `neoverse-v2` loses nothing; the gain
+  on the step is the host's.
+
+**`-O2 -mcpu=native`: SVE at an unknown vector length.** The
+instrumented program puts the loss in the contractions alone: 138 GFLOP/s
+against about 620 under `-O2` and under `-O3 -mcpu=native`, every other
+kernel unchanged. The register tile is the cause.
+- The C printer writes a product's 4×4 tile, under the plan's layout,
+  as sixteen arrays of four `float`s, each operation a loop `for (int l
+  = 0; l < 4; l++)`.
+- At `-O3`, and at `-O2` with no SVE target, GCC unrolls these loops and
+  keeps the sixteen sums in Advanced SIMD registers.
+- At `-O2` with SVE, GCC 16 vectorizes each one as an SVE loop. SVE's
+  vector length is not known when compiling, and may exceed four
+  lanes.
+  - Every operation is done twice: on a whole vector, and again under a
+    predicate for the lanes past it, `whilelo` up to 4 − VL. That
+    predicate is empty on falicon's 128-bit vectors, but the code runs
+    anyway.
+  - The sums stay in memory, the arrays the C wrote.
+
+The forward plan's widest product, `k19`, compiled on its own
+(`out/gcc16-0.17.0/sve-o2/asm.sh`, `asm/loops.md`):
+
+| `k19`'s inner loop | instructions | `fmul` | to or from the stack | SVE operands |
+|---|---|---|---|---|
+| GCC 13.3 `-O2` | 61 | 16 | 2 | 0 |
+| GCC 16.2 `-O2` | 59 | 16 | 2 | 0 |
+| GCC 16.2 `-O3 -mcpu=native` | 42 | 16 | 0 | 0 |
+| GCC 16.2 `-O2 -mcpu=native`, `gb10` or `cortex-x925` alike | 278 | 32 | 99 | 116 |
+| GCC 16.2 `-O2 -mcpu=native -msve-vector-bits=128` | 80 | 16 | 18 | 36 |
+| GCC 16.2 `-O2 -march=armv9.2-a+nosve -mtune=gb10` | 67 | 16 | 25 | 0 |
+| GCC 13.3 and 16.2 `-O2 -mcpu=neoverse-v2` | 102 and 99 | 16 | 6 and 5 | 0 |
+
+The forward pass under its plan was rebuilt from round 5's export under
+five sets of flags, checked by C1, and timed in three processes of seven
+calls (`out/gcc16-0.17.0/sve-o2/run.sh`). This is a diagnosis, not a row
+of record; the load at its start was 2.62, as round 15 had just ended.
+
+| build | C1 | three processes' medians |
+|---|---|---|
+| `-O2` | holds | 206.5, 205.9, 206.2 ms |
+| `-O2 -mcpu=native` | holds | 744.5, 750.2, 749.4 ms |
+| `-O2 -mcpu=native -msve-vector-bits=128` | holds | 218.4, 220.4, 219.2 ms |
+| `-O2 -march=armv9.2-a+nosve -mtune=gb10` | holds | 205.8, 206.4, 206.4 ms |
+| `-O3 -mcpu=native` | holds | 210.0, 209.0, 211.0 ms |
+
+- Telling GCC the vector length gives back most of the loss. Taking SVE
+  away gives back all of it.
+- `-mcpu=gb10+nosve` cannot be used here: GCC 16 passes the assembler
+  extension names (`sve-aes` and others) that Ubuntu 24.04's binutils
+  2.42 does not know. `-march=armv9.2-a+nosve -mtune=gb10` gives the same
+  `k19`.
+- With `-mcpu=neoverse-v2`, both GCCs keep these loops in Advanced SIMD
+  at `-O2`; only a target tuned for the X925 picks SVE.
+
+**What it changes.**
+- No verdict moves. NB2's and NB3's row of record stays D181's, the C
+  program as exported (`-O2`, no target). The sentence "the compiler's
+  own backend is at GCC on its own kernels" holds against GCC 16 tuned
+  for the chip, as against GCC 13.3's best.
+- The best GCC on each workload, over the six builds, is still D183's:
+  GCC 13.3 `-O2` on the forward pass (206.5 ms) and `-O3
+  -mcpu=neoverse-v2` on the step (778.7 ms). Against them the LLVM
+  backend takes 0.995× and 0.900×, Cranelift 1.193× and 1.027×.
+- The export's Makefile keeps `-O2` with no target. The manual's C
+  export chapter now says what an SVE target does at `-O2` with GCC 16:
+  with such a target, build `-O3`.
+- Not done: the printer could write a tile's lane operations unrolled,
+  four statements rather than a loop, so that no loop vectorizer sees
+  them. This would make the program depend less on the C compiler's
+  flags; it is for a later version.
+- `pytorch_baseline.py` printed "GCC 13" in each report's first
+  paragraph whatever compiled the program. The reports of this run say
+  so; `machine.txt` names GCC 16.2.0. The report now takes the version
+  from `machine.txt`.
+- Fourteen of the fifteen reports name presk `8e72238-dirty`. The
+  manual's dependencies chapter, under `crates/`, took GCC 16.2's row at
+  08:22, after round 1 had begun. The compiler timed is phase B's binary
+  in every round.
+
+The archive is presk-project `data/gcc16-0.17.0.tar.xz`. It holds the
+fifteen rounds, their tables, the split, the diagnosis (its builds' C1
+checks, logs and `k19`'s code), the run scripts and logs, and GCC 16.2's
+build logs. The programs' outputs, checkpoints and binaries are left out
+and checksummed, with GCC's driver, `cc1` and libgomp.
+
+## D185 — Version 0.17.1 opened: Llama 3.2 1B solved whole at ε\*(δ) from its margins, against the field's recipes on the exact scale. `presk solve --sweep f64` and `--measure native`, without which the solve does not fit falicon at 1.24·10⁹ parameters, give the course rows of record byte for byte (OP1 holds); `nll`; the samples; llama.cpp b12132 (2026-11-05)
+
+The plan is `presk-specs/implementation/presk-plan-0.17.1.md` (presk-specs
+!106). It comes from the paper session's note, presk-project
+`docs/presk-llama-budget-2026-11-05.md`, which the user asked for on
+2026-11-05 ("Let's plan 1 (+3). I'll launch it on falicon"), and from its
+prompt, which answers the note's eight questions as recommended:
+- held-out 32 × 32, calibration on WikiText-2's train split, δ = 10⁻¹,
+  3·10⁻², 10⁻²;
+- the field's points llama.cpp BF16, Q8_0, Q4_K_M, Q4_0 and transformers
+  `float32`, `bfloat16`;
+- version 0.17.1, RW5–RW9 after D180's statements;
+- no timing of llama.cpp, no grouped scales for `int4`;
+- the result for the author response and the arXiv version first.
+
+Nothing of it enters the PLDI submission of 12 November, and no row of
+record of the paper is run again.
+
+**What the facts changed** (the plan's §2, measured on 2026-11-05 at
+`35b9af3`, whose crates are `e391a8b`'s). On a small `llama3.psk` (V =
+1 024, D = 256, 4 heads over 2, FF = 1 024, L = 2: 2 229 504 parameters,
+random `bf16` weights through D180's converter), on 4 windows of 16, under
+`--menu f64,f32,bf16,int8,int4 --narrow measured` at 10⁻²:
+
+| run | time | peak |
+|---|---|---|
+| `presk run --backend interp --bits 128` | 8.7 s | 207 MB |
+| `presk calibrate --precision --bits 128` | 41.0 s | 224 MB |
+| `presk solve --no-verify` (the reference and the sweep) | 53.9 s | 562 MB |
+| `presk solve --narrow measured` (23 measurements) | 120.0 s | 562 MB |
+| one measurement on the kernel interpreter | 3.25 s | 63 MB |
+| the same on the native backend | 0.19 s | 65 MB |
+
+- **The sweep does not fit.** The solve's sensitivity sweep runs the
+  entry's VJP on the reference interpreter at `--bits`: the model, its
+  activations and every parameter's cotangent in MPFR, returned whole. It
+  peaks at 2.7 times the exact run's memory, about 250 bytes a parameter:
+  about 300 GB at 1.24·10⁹. falicon has 119 GB.
+- **The measurement is slow.** A `--narrow measured` solve measures each
+  candidate on the kernel interpreter, 17 times the native run here and
+  about 29 min a measurement at the full size, 20 to 50 of them a solve.
+  The native backend computes the kernel interpreter's bits.
+- **The calibration** takes 4.7 times the exact run's time and 1.08 times
+  its memory: about 6.5 h and 105 GB at the full size, alone in its
+  108 GB scope.
+- **The exact run at T = 32** (step 1's window 0, 2026-11-05 20:17–20:58)
+  takes 40 min 56 s and 96.6 GB, D180's peak at T = 16: the model in MPFR
+  is all of it.
+- **Rule 2 at this scale.** θ·B ≈ 9.9 MB, almost all weights. The largest
+  activation at the envelope's 16 tokens, the logits, saves 8.2 MB in
+  `f32`, under it. The default solve decides the token table and the seven
+  block matrices alone, every activation at `f64`.
+
+**Decided by the user, 2026-11-05**, asked on these facts before the plan
+was written:
+- the two options of `presk solve`, the defaults unchanged ("Two options
+  (Recommended)");
+- rule 2 at its default: the solves decide the weights, the activations
+  stay in `f64` ("Defaults only (Recommended)");
+- llama.cpp fetched at its latest release ("Fetch latest release").
+
+The paper session's two checks for the options are OP1 and the small
+model's peak, both before any full-size solve.
+
+**The statements** (the plan's §5): OP0 (nothing moves without the
+options), OP1 (the options give the course rows of record byte for byte),
+RW5 (each of the seven solves inside its budget, under 24 h and 108 GB),
+RW6 (the solve at ε\*(δ) flips at most δ·N of the 1 024 held-out
+decisions, its gap there at most its budget), RW7 (among every
+realization within δ·N, the solved one has the fewest weight bytes at
+rest), RW8 (every perplexity within e^{±2g} of `f64`'s, the solved ones
+within e^{±2ε}), RW9 (reported: the times).
+
+**What was built** (presk `932e2dd`, `1d865e3`, and this step's documents):
+- *`presk-interp`*: `Real` for `f64`. IEEE's four operations and `sqrt`,
+  the `libm` crate's `exp`, `log`, `tanh`, `sin`, `cos` and `erf` (the
+  native backend's), the precision ignored. The evaluator was already
+  generic in its arithmetic.
+- *`presk-rt`*: `F64InterpBackend`, the evaluator in binary64 behind the
+  seam, and `Value::to_interp_f64` / `from_interp_f64`, every real rounded
+  once to `f64` at the seam.
+- *`presk-driver`*: `SolveArgs::exec`, `SolveExec { sweep, measure }`.
+  `Sweep::F64` runs the sweep on `F64InterpBackend` and reads its sums as
+  the exact sweep's. `Measure::Native` builds each measurement's backend
+  with `presk_cranelift::native_backend`, the kernel interpreter where it
+  is unavailable. `Solved::exec`; the line `executors` when either is not
+  the default.
+- *`presk-cli`*: `presk solve --sweep exact|f64` and `--measure
+  kernel|native`.
+- *Tests* (presk-driver): `the_executors_change_no_decision`, on the
+  tutorial's loss and a small `llama3.psk` under the one menu narrowed by
+  measurement. Under either option and both, the realization, every
+  decision of the moves and every measured gap are the default's, bit
+  for bit, and each site's sensitivity is the exact sweep's to 10⁻¹². A
+  proposal's `added` and `spent` move in their last bits, so the test
+  compares the moves' decisions and not those sums.
+- *`coverage/llama3.psk`*: `nll(θ, w)`, the cross-entropy at each of a
+  window's first T positions, the window of T + 1 ids cut by two slices
+  (`type Window = idx[V][batch: B, seq: T + 1]`). It is a function beside
+  `next_token`, since a module's function cannot call its sibling. Test
+  `llama3_nll_is_the_cross_entropy_of_its_logits`: on the reference at 128
+  bits at a small width, log Σ exp z − z[target] from `Llama3.apply`'s
+  logits to 10⁻¹². On the 2.2 M-parameter checkpoint natively in `f64`,
+  against log-softmax in Python (NumPy) from `Llama3.apply`'s logits:
+  1.8·10⁻¹⁵.
+- *The samples* (`experiments/llama/texts.py`, `.venv-hf` with `pyarrow`
+  26.0.1, added on the prompt's word). WikiText-2 raw, the user's download
+  (`Salesforce/wikitext`, CC BY-SA), each split's `text` joined by "\n\n"
+  as GPTQ's `datautils.py` and Hugging Face's perplexity guide join it,
+  tokenized whole by the checkpoint's `tokenizer.json`: 2 436 213 train
+  tokens, 289 076 test tokens. Each window is the beginning-of-text token
+  (128000) and the split's next tokens, contiguous and disjoint:
+
+  | sample | windows | split | tokens |
+  |---|---|---|---|
+  | calibration | 4 of 16 | train | 0–60 |
+  | held-out | 32 of 32 | test | 0–992 |
+  | quality | 128 of 129 | test | 992–17 376 |
+
+  `texts.json` records the Parquet files' sha256 and every window decoded.
+  The held-out sample opens on the article "Robert Boulter".
+- *`experiments/llama/llama3_budget.sh`*, `make llama3-budget`: the stages
+  `texts`, `exact`, `margins`, `gguf`, `calibrate`, `solve`, `measure`,
+  `perplexity`, `time`, `report`; `experiments/llama/budget.py` their
+  arithmetic, ε\*(δ) by `margins.py`'s functions, imported, and the rows
+  of a realization in NumPy (`margins.py native`'s pure Python takes
+  minutes on a window of 4.1·10⁶ logits).
+- *llama.cpp* (`experiments/llama/setup_llamacpp.sh`, `make llamacpp`):
+  release `b12132`, commit `2ada830`, the latest on 2026-11-05, cloned at
+  depth 1 into `.llamacpp`. Built by cmake 3.28 and GCC 13.3 at its
+  defaults (`-mcpu=native`, OpenMP), without its network library.
+  - Its `convert_hf_to_gguf.py`, in `.venv-hf` with its own `gguf-py`,
+    imports `sentencepiece` before checking for a `tokenizer.model`, which
+    Llama 3 does not have. A stand-in module that only lets the import
+    succeed (`experiments/llama/stub/sentencepiece.py`) sends it down its
+    Llama 3 path (`_set_vocab_gpt2`), and no package is added.
+  - BF16 (2 479 591 680 bytes, the checkpoint's own numbers), then
+    `llama-quantize` to Q8_0 (1 321 079 040), Q4_K_M (807 690 496) and Q4_0
+    (770 924 800), in `out/llama3-budget/gguf/`.
+  - `experiments/llama/llamacpp_logits.c` reads the logits of given ids
+    through `libllama`, each window from an empty cache in one batch, the
+    library's defaults otherwise (its KV cache in `f16`).
+- *`rw2.py --dtype float32|bfloat16 --logits OUT`*: `transformers` as its
+  users run it, unpatched, each window at batch 1, the logits as float32.
+- On D180's prompt 0, against its exact logits (`out/llama3/rw3/exact.0.json`),
+  a check of the two readings, not a measurement of record:
+
+  | tool | max \|logit − exact\| | relative | argmax changed, of 16 |
+  |---|---|---|---|
+  | llama.cpp BF16 | 6.29·10⁻² | 2.41·10⁻³ | 0 |
+  | llama.cpp Q8_0 | 3.59·10⁻¹ | 1.38·10⁻² | 0 |
+  | llama.cpp Q4_K_M | 1.85 | 7.09·10⁻² | 0 |
+  | llama.cpp Q4_0 | 3.20 | 1.23·10⁻¹ | 4 |
+  | transformers `float32` | 4.67·10⁻⁵ | 1.79·10⁻⁶ | 0 |
+  | transformers `bfloat16` | 1.86·10⁻¹ | 7.12·10⁻³ | 0 |
+
+  D180's per-column `int4` was 0.49 relative on this prompt; Q4_0's blocks
+  of 32 are 0.12.
+
+**OP1 holds** (`out/op1-0.17.1/run.sh`, binary `out/bin/presk-0.17.1-932e2dd`,
+each solve with its setting of record and `--sweep f64 --measure native`,
+compared with `out/qm-0.17.0/`, D181's records):
+
+| row (its setting of record) | record | realization | measured gap | time, record → options | peak, record → options |
+|---|---|---|---|---|---|
+| V6 at ε\* = 4.67·10⁻⁴, the one menu | `qm-0.17.0/v6/menu` | the same bytes | 2.138·10⁻⁶, the same | 1 min 59.6 s → 26.8 s | 336 MB → 161 MB |
+| the curve at D = 64, 10⁻¹, the one menu | `qm-0.17.0/curve/menu_1e-1` | the same bytes | 1.720·10⁻⁴, the same | 59.5 s → 13.5 s | 182 MB → 91 MB |
+| the curve at D = 64, 10⁻², the one menu | `qm-0.17.0/curve/menu_1e-2` | the same bytes | 7.182·10⁻⁵, the same | 1 min 0.6 s → 13.3 s | 182 MB → 91 MB |
+| the course logits at ε\* = 4.96·10⁻⁴, the one menu | `qm-0.17.0/course/menu` | the same bytes | 3.017·10⁻⁶, the same | 1 h 47 min → 17 min 21 s | 2.91 GB → 1.30 GB |
+| BERT-large's two blocks at 10⁻³, the one menu, `--narrow measured` | `qm-0.17.0/bert/menu-narrow` | the same bytes | 2.213·10⁻⁴, the same | 8 h 12 min 47 s → 31 min 44 s | 11.1 GB → 5.31 GB |
+
+Every printed line but the new `executors` is the record's. On BERT the
+narrowing makes the record's 43 measurements, 38 narrowings kept in three
+passes, each on the native backend. The records ran on
+`out/bin/presk-0.17.0-step8a`, beside other jobs; the times are not of
+record, and they ran here beside step 1's exact runs.
+
+**OP0 at this step.** X1's harness under step 0's build
+(`out/bin/presk-0.17.1-1d865e3`, `out/x1/step0-0.17.1.sh`) against
+`v0.17.0`'s (`out/x1/version-0.17.0`, D182): 22 of 863 files differ, by
+the version lines (`0.17.0` → `0.17.1-dev`), the exported READMEs' commit
+lines and the three envelopes' `measured` dates alone. `make quant-table` and `step-table` give `v0.17.0`'s bytes (`out/x1/step0-0.17.1-tables.txt`). The tutorial differs by its measurements alone, numbers masked (`out/x1/step0-0.17.1-tutorial.shape.diff`), O's verdict among them (a layout ranked by measured times, **holds** at 0.17.0 and **fails** here, beside the exact runs), as at 0.17.0's step 4 (D177). `make test` passes: 115 test binaries.
+
+**Step 1 started before this step's merge request.** The 32 exact runs
+need the samples alone. They run since 2026-11-05 20:17 as the user
+service `llama3-budget-exact`, from a copy of the script
+(`out/llama3-budget/run-exact.sh`), on `target/release/presk` built at
+`35b9af3` (`out/bin/presk-0.17.0-35b9af3` holds its bytes). That build was
+replaced for a few minutes by this step's (a `cargo build --release` in the
+default target), and put back at 21:10, before the next window started. Windows 0 and 1 ran on the first build of the same
+tree. The development builds go to `target/dev` until step 1 ends.
+
+**Documents.** The manual's `cli` (the two options), `precision` ("A
+solve at a billion parameters"), `experiments` (§27), `dependencies`
+(`pyarrow`, llama.cpp, `rw2.py --dtype`), `status` (Version 0.17.1, in
+progress); presk-specs `presk-tooling.md` (on !106); `CLAUDE.md`, the
+CHANGELOG's `Unreleased`, `.gitignore` (`.llamacpp`), the `Makefile`
+(`llama3-budget`, `llamacpp`, `pyarrow` in `venv-hf`).
+
+## D186 — Plan 0.17.1, step 1: the exact logits of the 32 held-out windows and ε\*(δ). On WikiText-2's test text the exact model's margins put ε\*(10⁻¹), ε\*(3·10⁻²) and ε\*(10⁻²) at 4.88·10⁻², 1.09·10⁻² and 3.81·10⁻³ logit units. `f32` is inside all three (4.28·10⁻⁴), `bf16` and `int8` outside all three (0.706 and 2.10 absmax). A realization by hand and an eighth solve join the plan (the user, 2026-11-06)
+
+The plan's step 1 (`presk-specs/implementation/presk-plan-0.17.1.md`
+§3.1–3.2): the held-out sample's exact logits, their margins, ε\*(δ) for
+the three δ, and `f64`'s, `bf16`'s and `int8`'s gaps beside them. The
+record is `docs/llama3-budget-0.17.1.md` §2; the outputs are in
+`out/llama3-budget/`.
+
+**The exact runs.** The 32 held-out windows of 32 tokens on the reference
+at 128 bits, one window a run and one run at a time, each in a scope of
+108 GB. They ran as the user service `llama3-budget-exact`, from a copy of
+the script (`run-exact.sh`), from 2026-11-05 20:17 to 2026-11-06 18:15:49,
+on `target/release/presk` built at `35b9af3` (D185). Each run took 40 min
+51 s to 42 min 27 s and 96.65 GB (96 647 096 to 96 648 308 kB), and all 32
+exited 0. `margins.py exact` kept each window's margins and its logits as
+two doubles (`exact/NNNN.tsv`, `.hilo`); with the JSON, 7.5 GB.
+
+**The margins** of the 1 024 exact decisions (`margins.json`,
+`margins.md`):
+- no tie; the largest exact |logit| is 30.24;
+- the smallest margin is 1.888·10⁻³ (window 7); the 0.1 %, 1 %, 10 % and
+  50 % quantiles are 5.29·10⁻³, 1.13·10⁻², 0.108 and 0.821; the largest
+  is 9.40;
+- nine windows have a margin under 10⁻².
+
+Two limits of the sample:
+- The first position of every window predicts from the beginning-of-text
+  token alone, so 32 of the 1 024 decisions are one decision (margin
+  1.033).
+- The windows are consecutive in one text, so the positions are not the
+  independent draws that the Clopper–Pearson bound assumes.
+
+**ε\*(δ)**, half the (k+1)-th smallest margin, k from the one-sided
+Clopper–Pearson bound at α = 0.05 (`margins.py`'s rule, `budget.py eps`):
+
+| δ | allowed | k | ε\*(δ) | relative to 30.24 | raw (k = δ·N) | #{m < 2ε\*}, in windows |
+|---|---|---|---|---|---|---|
+| 10⁻¹ | 102 | 86 | 4.880·10⁻² | 1.61·10⁻³ | 5.389·10⁻² | 86, in 30 |
+| 3·10⁻² | 30 | 21 | 1.091·10⁻² | 3.61·10⁻⁴ | 1.607·10⁻² | 21, in 17 |
+| 10⁻² | 10 | 4 | 3.807·10⁻³ | 1.26·10⁻⁴ | 5.674·10⁻³ | 4, in 4 |
+
+**Our uniform realizations on the held-out sample**, natively, one window
+and one thread a run (step 3's rows, taken now). The gap is the largest
+|z − exact| over the 1 024 × 128 256 logits. "Relative" is the largest
+over windows of the window's gap over its largest exact |logit| (RW3's
+form). The bound is #{m < 2g}:
+
+| realization | weights (bytes) | gap | relative | flips | #{m < 2g} | δ certified, #{m < 2g}/N |
+|---|---|---|---|---|---|---|
+| `f64` | 9 886 515 200 | 3.666·10⁻¹³ | 1.52·10⁻¹⁴ | 0 | 0 | 0 |
+| `f32` | 4 943 257 600 | 4.277·10⁻⁴ | 1.57·10⁻⁵ | 0 | 0 | 0 |
+| `bf16` | 2 471 628 800 | 0.7060 | 2.63·10⁻² | 32 | 743 | 0.726 |
+| `int8` absmax | 2 025 529 344 | 2.100 | 7.19·10⁻² | 27 | 973 | 0.950 |
+| `int8` pow2 | 2 025 529 344 | 3.055 | 0.112 | 48 | 1 009 | 0.985 |
+| `int4` absmax | 1 538 990 080 | 19.65 | 0.783 | 624 | 1 024 | 1 |
+| `int4` pow2 | 1 538 990 080 | 19.94 | 0.819 | 814 | 1 024 | 1 |
+
+`bf16` here is every value in `bf16`, the activations too. The integer
+realizations are D180's: the seven block matrices, one scale per output
+column, with the token table and the norms in `f32`. The bytes are the
+weights at rest, with the scales.
+
+So:
+- `f32` is inside all three ε\*(δ): its gap is 1/9 of ε\*(10⁻²), and its
+  bound is empty, since 2g = 8.6·10⁻⁴ is under the smallest margin. It is
+  certified at every δ.
+- `bf16` is 14 times ε\*(10⁻¹) and 185 times ε\*(10⁻²). `int8` absmax is
+  43 and 552 times, pow2 63 and 802 times.
+- So no uniform narrowing below `f32` is certified at any of the three δ,
+  although `bf16`'s 32 flips and `int8` absmax's 27 are within 10⁻¹'s 102.
+  What the solves can take lies between them: the weights narrowed, the
+  activations kept wider.
+- The checkpoint is `bf16`, so `bf16` weights cost nothing in the gap
+  (D187 will say what the solver does with that).
+
+**The field's six on the same 1 024** (their logits taken on 2026-11-05
+during the exact runs; `budget.py field`; D188 reports them with the rest):
+
+| realization | weights (bytes) | gap | relative | flips | #{m < 2g} |
+|---|---|---|---|---|---|
+| llama.cpp BF16 | 2 471 764 096 | 0.2569 | 9.57·10⁻³ | 0 | 391 |
+| llama.cpp Q8_0 | 1 313 251 456 | 1.810 | 7.01·10⁻² | 28 | 959 |
+| llama.cpp Q4_K_M | 799 862 912 | 11.07 | 0.379 | 163 | 1 024 |
+| llama.cpp Q4_0 | 763 097 216 | 15.61 | 0.611 | 266 | 1 024 |
+| transformers `float32` | 4 943 257 600 | 2.401·10⁻⁴ | 1.01·10⁻⁵ | 0 | 0 |
+| transformers `bfloat16` | 2 471 628 800 | 0.5660 | 2.25·10⁻² | 32 | 659 |
+
+Of the field's six, only transformers in `float32` is inside any ε\*(δ).
+llama.cpp BF16's weights are the checkpoint's own. On falicon its gap is
+its kernels':
+- its CPU backend rounds each activation row to `bf16` before every
+  product with a weight (BF16's `vec_dot_type`, `ggml-cpu.c`), since
+  `llamafile_sgemm` has no BF16 path on ARM;
+- it keeps K and V in an `f16` cache.
+
+The two terms were not measured apart.
+
+**The native runs' memory.** Each realization's first held-out window ran
+alone, its peak measured, before any ran beside another (D180's rule):
+
+| realization | time, one thread | peak |
+|---|---|---|
+| `f64` | 1 min 24 s | 21.8 GB |
+| `f32` | 1 min 17 s | 26.3 GB |
+| `bf16` | 1 min 17 s | 23.8 GB |
+| `int8` absmax, pow2 | 1 min 11 s | 23.4 GB |
+| `int4` absmax, pow2 | 1 min 11 s, 1 min 13 s | 22.9 GB |
+| `bf16-params-f32` (by hand, below) | 1 min 15 s | 23.8 GB |
+
+The measure stage then ran three windows at a time (`JOBS=3`, from
+100 GB over the largest peak), in a scope of 112 GB, 2 min 30 s a window
+side by side.
+
+**Two checks for step 4, run now** (the paper session's, 2026-11-06; D189
+will cite them):
+- *presk's `nll` under the batch and the threads* (`nll-check/`): on
+  the quality windows, T = 128, natively in `f32` and in `int8` absmax:
+  - window 0 alone gives row 0 of the B = 8 run, and window 3 alone gives
+    row 3;
+  - the B = 8 run gives the same rows on 1 thread, 8, and the default.
+
+  Every row is identical in its 17 printed digits. Times: `f32` 2 min 14 s
+  at B = 8 on 8 threads, 12 min 13 s on one; `int8` 1 min 41 s and 6 min
+  48 s.
+- *llama-perplexity under its batch* (`check/batch/`, `batch.md`): BF16,
+  `-c 128`, its windows. Its figure follows the number of a window's
+  tokens in one micro-batch, not the number of windows in a batch nor
+  the threads:
+  - one window in micro-batches of 32 (`-b 128 -ub 32`) gives exactly the
+    default batch of 16 windows' chunks (6.9792, 11.8054, 12.0745,
+    11.7762);
+  - 4 windows of 128 a batch (`-b 512`), and 16 with `-ub 2048`, give the
+    one-window figures (16.5726 over 32 chunks);
+  - `-t 1` gives `-t 4`'s figures, and `-fa on` the default's.
+
+  The source says why:
+  - at its default `-b 2048 -ub 512`, `split_equal` (`llama-batch.cpp`)
+    gives each of the 16 sequences 32 tokens a micro-batch;
+  - the CPU flash-attention kernel (`ops.cpp`) takes its tiled `f32` path
+    from `GGML_FA_TILE_Q` = 64 query rows a stream;
+  - below that it takes its vector path: Q rounded to `f16` and V
+    accumulated in `f16` at every key.
+
+  It is a precision chosen by a tensor's shape, each configuration
+  repeating its own figure.
+
+**What went wrong, and what was fixed** (presk `1b040e3`):
+- The margins stage first reused a `margins.json` left by a test on window
+  0 alone. The stage skips an output that exists, and the runner did not
+  pass `FRESH=1`. It was run again with `FRESH=1` at 18:18, on the 32
+  windows.
+- That `FRESH=1` also packed the three samples' `.psk.d` again while the
+  first native run was reading `heldout.psk.d`. The packed files hold the
+  type and the ids alone, and their ids are the texts' (checked), so
+  nothing changed. Since `1b040e3`, only the texts stage packs again under
+  `FRESH=1`.
+- The measure stage's pool passed a shell function to `taskset`, which
+  cannot run one, so no native window ran. Each job is now a subshell that
+  pins itself (`taskset -pc`), and its children inherit the core.
+
+**The user's decisions of 2026-11-06**, proposed by the paper session,
+relayed by it, then confirmed in this session ("vas-y"):
+- *A realization by hand* (`experiments/llama/bf16-params-f32.json`):
+  every parameter `bf16` at rest, every stored value `f32`. It holds the
+  field's bf16 inference with the 16 bits in the weights alone. It joins
+  step 3's measurements, step 4's perplexities and RW9's times. On the
+  `bf16` checkpoint it stores `f32`'s values, since widening `bf16` is
+  exact. On the 2.2 M-parameter `llama3.psk` its native logits are
+  `f32`'s byte for byte. At 1B, on the 32 held-out windows, its rows (gap, argmax and sum a position) are `f32`'s byte for byte, file for file. It weighs 2 471 628 800 bytes,
+  `bf16`'s.
+- *An eighth solve* at ε\*(10⁻²) with `--min-gain 0` (rule 2 off, the
+  activations offered), `--narrow measured`, after the seventh. In the
+  script it is `eps-1e-2-mingain0`, and `SOLVES` chooses among the solves.
+- *No grouped scales for `int4`* in 0.17.1, as decided on 2026-11-05.
+  ε\*(10⁻¹) is 1/227 of Q4_K_M's gap on the held-out sample.
+
+**Documents.** `docs/llama3-budget-0.17.1.md` begun (§1–2); the manual's
+`status` (step 1 done) and `experiments` §27 (the figures, the eighth
+solve and the realization by hand); the CHANGELOG's `Unreleased`.
+
+## D187 — Plan 0.17.1, step 2: the envelope on the calibration sample and the solves. The plan's seven solves return one realization, byte for byte: the token table and the seven block matrices in `bf16` at rest, the norms and every value in `f64`, 2.47 GB, `f64`'s gap (2.75·10⁻¹³). What binds is the menu, not the budget: `bf16` costs nothing on a `bf16` checkpoint, and each matrix alone in `int8` moves a logit by more than 0.11. RW5 holds. With rule 2 off, the eighth stores every parameter in `bf16` (the realization by hand's 2 471 628 800 bytes) and computes in `f32`, Q, K, V and the attention's output stored in `bf16`: 1.52·10⁻⁴
+
+The plan's step 2 (`presk-specs/implementation/presk-plan-0.17.1.md`
+§3.3): the envelope calibrated on the calibration sample at 128 bits,
+then the seven solves, one at a time, each with its `presk explain`, and
+the eighth the user added on 2026-11-06 (D186). The record is
+`docs/llama3-budget-0.17.1.md` §3; the outputs are in
+`out/llama3-budget/envelope/` and `out/llama3-budget/solve/`.
+
+**What ran.** Every run on `out/bin/presk-0.17.1-1d865e3` (D185's tree),
+from a frozen copy of `llama3_budget.sh` (`run-step2-budget.sh`, at
+`efc0941`), each alone on falicon in its own scope of 108 GB:
+
+| run | from | time | peak | exit |
+|---|---|---|---|---|
+| `presk calibrate --precision --bits 128 --samples 4` | 2026-11-06 20:55:50 | 6 h 34 min 32 s | 98.65 GB | 0 |
+| `eps-1e-1` | 2026-11-07 03:30:22 | 2 h 06 min 29 s | 96.74 GB | 0 |
+| `eps-3e-2` | 05:38:19 | 2 h 06 min 36 s | 96.74 GB | 0 |
+| `rel-1e-2` | 07:46:39 | 2 h 06 min 58 s | 96.74 GB | 0 |
+| `eps-1e-2` | 09:55:05 | 2 h 06 min 22 s | 96.74 GB | 0 |
+| `rel-1e-3` | 12:02:59 | 2 h 06 min 22 s | 96.74 GB | 0 |
+| `eps-1e-2-defaults` | 14:10:50 | 2 h 05 min 34 s | 96.74 GB | 0 |
+| `eps-1e-2-margin1` | 16:17:54 | 2 h 06 min 40 s | 96.74 GB | 0 |
+| `eps-1e-2-mingain0` | 18:26:04 | 2 h 18 min 37 s | 96.74 GB | 0 |
+
+The peaks are each run's resident set (`/usr/bin/time -v`): the
+calibration 98 651 912 kB, the solves 96 739 044 to 96 739 172 kB: the
+exact reference at T = 16 and 4 samples, which is all of a solve's
+memory. The plan put the calibration at 6.5 h and a solve at about 3 h
+(§7); the solves took 2 h 06 min. Each `presk explain` took about a
+minute and a half, in its scope of 40 GB.
+
+**The order** (the user, 2026-11-07 morning, relayed by the paper
+session; the plan leaves it free): `rel-1e-2`, the one budget where the
+narrowing by measurement might admit an integer matrix, moved up to run
+third, the eighth kept last. At 06:48:38, while `eps-3e-2`'s solve ran,
+the loop's two shells were stopped by PID; the solve ran on in its scope
+(its output to its file). `run-step2b.sh` waited for it, moved its
+realization into place as the stage does on exit 0, and ran the stage on
+the rest, the solves done skipped. No run was interrupted.
+
+**The envelope** (`envelope/calib_env.json`, `calibrate.txt`): 123 sites
+over the 4 calibration windows of 16 tokens. The largest |x| are the
+RoPE angles and frequencies (5·10⁵) and the norms' sum of squares
+(4.95·10⁴). 14 sums and contractions, the worst condition number 6.89
+(`SwiGLU.apply/%3`). The rounding each site's values take (D155): 113
+sites, 37 exact in `bf16`, 40 below a tenth of u·max|x|.
+
+**The seven solves of the plan**, `--menu f64,f32,bf16,int8,int4
+--sweep f64 --measure native`, the solver's other defaults:
+
+| solve | budget, absolute | setting | narrowing threshold | measurements | realization |
+|---|---|---|---|---|---|
+| `eps-1e-1` | 4.880·10⁻² (ε\*(10⁻¹)) | `--narrow measured` | 1.952·10⁻² | 9 | A |
+| `eps-3e-2` | 1.091·10⁻² (ε\*(3·10⁻²)) | `--narrow measured` | 4.366·10⁻³ | 9 | A |
+| `eps-1e-2` | 3.807·10⁻³ (ε\*(10⁻²)) | `--narrow measured` | 1.523·10⁻³ | 9 | A |
+| `rel-1e-2` | 0.2755 (10⁻² × 27.55) | `--narrow measured` | 0.1102 | 9 | A |
+| `rel-1e-3` | 2.755·10⁻² | `--narrow measured` | 1.102·10⁻² | 9 | A |
+| `eps-1e-2-defaults` | 3.807·10⁻³ | the defaults (no narrowing) | — | 1 | A |
+| `eps-1e-2-margin1` | 3.807·10⁻³ | `--narrow measured --margin 1` | 3.807·10⁻³ | 9 | A |
+
+The relative budgets are of the calibration sample's largest exact
+|logit|, 27.55. The seven realizations are one file, byte for byte
+(`cmp`):
+
+- **Realization A**: the token table and the seven block matrices
+  (`blocks.attn.wq`, `wk`, `wv`, `wo`, `blocks.ff.gate`, `up`, `down`)
+  stored in `bf16`; the three norms' γ stored in `f64`; every value the
+  program computes in `f64`, the default.
+- 2 472 034 304 bytes at rest against 9 886 515 200 in `f64` (4.00×);
+  the traffic the solver prices, 2.4982·10⁹ bytes against 9.9126·10⁹
+  (3.97×); its relaxation floor 6.4606·10⁸.
+- Measured on the calibration sample against the exact reference:
+  2.753·10⁻¹³, after no widening round. The estimate, 2.266·10⁻⁸,
+  ranks and does not bound.
+- `presk explain` (`solve/explain-*/explain.md`, 15 sections each): the
+  59 stored values in `f64`, the eight parameters in `bf16`; 657
+  launches in 44 kernels; 2 488 713 344 bytes a call, the inputs
+  2 472 034 432 and a live peak of 16 678 912. Its bound by the rule
+  `cond`, 9.0·10⁶⁴, says nothing at this depth.
+
+**Why one realization.** Every budget of the plan lies between the two
+rungs the weights can take:
+- *`bf16` is free.* The checkpoint is `bf16`, so a `bf16` weight is the
+  checkpoint's value: its term at rest is 0, as is `f32`'s (the solve's
+  table of terms prints 0.000 for every matrix), and the proposal takes
+  the narrower.
+- *`int8` per column is far.* Its term at rest, s·max|ŵ − w|, is 7.44
+  for the token table (152 times ε\*(10⁻¹)) and 62.7 to 1.39·10³ for the
+  block matrices. Measured, each matrix alone in `int8` moves some logit
+  of the calibration sample by more than 0.1102: `rel-1e-2`'s narrowing
+  tried each (the proposal and eight candidates, the largest saving
+  first, one step from `bf16` to `int8` absmax) and kept none. `int8` on
+  every matrix gave 2.10 on the held-out sample (D186).
+- *The values stay `f64`.* Rule 2 (`--min-gain`, θ = 10⁻³ of the
+  traffic, 9.91·10⁶ bytes) offers no stored value: the largest saving,
+  the logits' 8.2·10⁶ bytes in `f32`, is under it. With rule 1 (15 of
+  one element), all 59 are kept out, and so are the three norms
+  (1.3·10⁵ and 8.2·10³ bytes). They forgo at most 2.00·10⁷ bytes, 0.80 %
+  of the traffic.
+
+The paper's sentence on the course GPT at ε\* (D170), that what stops the
+solve there is the menu, not the budget, holds here at every budget of
+the plan; the paper session put it so (2026-11-07). Rows 6 and 7 show
+what the narrowing buys, as QM did (D181): here nothing, there is no
+rung between for it to take. Without it the solve is 48 s shorter: a
+native measurement takes about 6 s, and the two hours are the exact
+reference and the sweep.
+
+**RW5 holds.** Each of the seven returns a realization measured inside
+its budget on the calibration sample (2.753·10⁻¹³ against 2.755·10⁻² to
+3.807·10⁻³), no widening round runs, let alone empties the menu, and each
+takes 2 h 06 min (under 24 h) and 96.74 GB (under 108 GB).
+
+**The eighth solve**, ε\*(10⁻²) with `--narrow measured --min-gain 0`
+(rule 2 off; the user, 2026-11-06), offers the 44 stored values rule 1
+leaves (the 15 of one element stay `f64`, at most 90 bytes forgone) and
+all 11 parameters. It took 2 h 18 min 37 s and 96.74 GB.
+
+**Realization B** (`solve/eps-1e-2-mingain0.json`):
+- Every parameter in `bf16` at rest, the three norms too: 2 471 628 800
+  bytes, the realization by hand's and transformers `bfloat16`'s.
+- 32 of the 44 values in `f32`: every product with a weight, the logits,
+  the attention's scores and softmax, the norms' arithmetic, the residual
+  sums, SwiGLU's product, RoPE's arithmetic.
+- 12 in `bf16`:
+  - three exact there (the envelope's rounding term 0): the embedding of
+    the `bf16` table (`Llama3.apply/%3`) and two integers made real
+    (`angles/%1`, `frequencies/%10`);
+  - one under a clamp, `frequencies/%24` (rounded by 1.2 at 1.3·10³, its
+    ‖∂L/∂v‖₁ 2.8·10⁻⁴);
+  - eight reshapes, whose stored copy rounds the value: the query's two
+    splits (`Attention.apply/%6`, `%7`), the key's and the value's
+    (`%12`, `%17`), RoPE's input split into pairs and its output merged
+    (`rope/%2`, `%14`), the attention's output merged (`%25`) and its
+    heads merged (`heads/%1`) before `wo`. So Q, K and V reach the
+    attention in `bf16`, and its output reaches `wo` in `bf16`: what
+    llama.cpp's `f16` cache does to K and V, chosen here by measurement.
+- Measured 1.515·10⁻⁴ on the calibration sample, after no widening
+  round. The narrowing kept 16 steps in two passes under its threshold,
+  1.523·10⁻³; 90 measurements in all. The first-order estimate, 49.6, is
+  five orders above the measured gap: it ranks, as it says.
+- Traffic 2.4842·10⁹ bytes (3.99×) against A's 2.4982·10⁹: at T = 16
+  the values are 1.05 % of A's traffic and 0.51 % of B's, the weights the
+  rest.
+
+So with rule 2 off the solver lands near the field's `bf16` recipes, by
+measurement: `bf16` weights, as all of them have; `f32` arithmetic, where
+transformers `bfloat16` computes in `bf16` and llama.cpp BF16 rounds each
+product's activations to `bf16`; and the attention's operands in `bf16`,
+where llama.cpp keeps K and V in `f16`. Rule 2 is right by its own
+measure: B saves 1.40·10⁷ bytes of traffic over A, 0.56 % of A's (rule
+2's bound was 2.00·10⁷, 0.80 %), for a measured gap of 1.5·10⁻⁴ instead
+of 2.8·10⁻¹³.
+
+**What this says of steps 3 to 5** (judged there, not here):
+- Realization A computes in `f64` from the checkpoint's own values, so
+  its held-out rows should be `f64`'s, as `bf16-params-f32`'s are
+  `f32`'s (D186).
+- A weighs 405 504 bytes more than `bf16-params-f32` and B (the norms in
+  `f64` against `bf16`) and 270 208 more than llama.cpp BF16 (the norms
+  in `f32`). RW7 compares weight bytes among the realizations within
+  δ·N flips, the solved at ε\*(δ) being A at every δ; D188 judges it.
+- Step 3 measures all eight, the seven copies of A among them, which
+  should give one row seven times.
+
+**Not printed.** The solver measures each narrowing candidate's gap
+(`Move::Narrowed`), but `presk solve` prints only their count and
+`presk explain` only the moves kept. So the smallest gap of one matrix
+in `int8` is known only to exceed 0.1102. Printing the rejected
+candidates is a small change to `presk-driver`'s text, left for after
+the version: the rows of record do not need it.
+
+**Documents.** `docs/llama3-budget-0.17.1.md` §3 (the held-out table
+moves to §4); the manual's `status` (step 2 done) and `experiments` §27;
+the CHANGELOG's `Unreleased`; `CLAUDE.md`.
+
+## D188 — Plan 0.17.1, step 3: every realization on the held-out sample. The plan's seven solves give `f64`'s rows byte for byte on the 32 windows: no flip, and RW6 holds at every δ. RW7 fails at every δ. At 10⁻¹ and 3·10⁻², llama.cpp Q8_0 (1.31 GB, 28 flips) and our own per-column `int8` (2.03 GB, 27 flips) stay within the flips allowed, at gaps 37 and 43 times ε\*(10⁻¹). What loses is the certificate, which bounds the worst logit and not the flips; grouped scales are not the cause. At 10⁻², the realization by hand and the eighth solve weigh 405 504 bytes less, the norms that rule 2 keeps in `f64`. The eighth measures 7.70·10⁻⁴ on the held-out sample, with no flip
+
+This is the plan's step 3 (`presk-specs/implementation/presk-plan-0.17.1.md`
+§3.4, §3.5): every realization on the 32 held-out windows, ours natively
+and the field's by their own programs, then RW6 and RW7.
+- Step 1 (D186) took the uniform rows, the field's, and the realization
+  by hand's. This step adds the eight solved names.
+- The record is `docs/llama3-budget-0.17.1.md` §4.
+- The outputs are `out/llama3-budget/native/solve-*/`, `report.md`,
+  `report.json` and `figure.json`; `report-step1.*` keep step 1's.
+
+**What ran.** `run-step3.sh`, from a frozen copy, on
+`out/bin/presk-0.17.1-1d865e3` with step 2's frozen
+`run-step2-budget.sh`, from 2026-11-07 20:51:40 to 22:37:03. Everything
+exited 0.
+- **Each new realization's first window, alone.** It ran in a scope of
+  108 GB, one thread on core 5:
+  - A (`solve-eps-1e-1`): 1 min 18 s, 23.85 GB;
+  - B (`solve-eps-1e-2-mingain0`): 1 min 15 s, 23.85 GB.
+
+  These are the peaks of step 1's `bf16` and `bf16-params-f32`.
+- **The measure stage on the eight names.** Three windows at a time on
+  the X925 cores, in a scope of 112 GB: 1 h 42 min 46 s for 256 windows.
+  - Side by side, a window takes about what it takes alone, 1 min 13 s to
+    1 min 28 s; the stage completes one every 24 to 28 s.
+  - **Correction to D186.** D186 says "2 min 30 s a window side by side".
+    That is wrong: the rows' file times give the same 1 min 13 s to
+    1 min 28 s at step 1 too.
+- **The rows compared by `cmp`.** Each of A's six other copies gives
+  `solve-eps-1e-1`'s rows on 32 of 32 windows, and `solve-eps-1e-1`'s
+  rows are `f64`'s on 32 of 32.
+- **`budget.py report`** on every name.
+
+**The solved realizations on the held-out sample:**
+
+| realization | solves | weights (bytes) | gap | relative | mean gap | flips | #{m < 2g} |
+|---|---|---|---|---|---|---|---|
+| A | the plan's seven | 2 472 034 304 | 3.666·10⁻¹³ | 1.52·10⁻¹⁴ | 1.73·10⁻¹⁴ | 0 | 0 |
+| B | the eighth (`--min-gain 0`) | 2 471 628 800 | 7.703·10⁻⁴ | 2.87·10⁻⁵ | 1.56·10⁻⁵ | 0 | 0 |
+
+- **A off its sample.** It measures 2.753·10⁻¹³ on the calibration sample
+  and 3.666·10⁻¹³ held out: the `f64` realization's figures, which A
+  reproduces byte for byte.
+- **B off its sample.** It measures 1.515·10⁻⁴ on the calibration sample
+  and 7.703·10⁻⁴ held out, 5.1 times more.
+  - That is still 4.9 times under its budget, and 1.8 times `f32`'s gap.
+  - No decision flips, and no margin lies under 2g.
+- **The certificate's bound at each budget**, #{m < 2ε}:
+  - `budget.py` counts it at the budget the solve took, the nearest
+    double to ε\*. That gives 88, 21 and 5 at ε\*(10⁻¹), ε\*(3·10⁻²) and
+    ε\*(10⁻²), against 102, 30 and 10 allowed.
+  - At ε\* exactly the counts are 86, 21 and 4, Clopper–Pearson's k by
+    construction.
+  - The difference: at 10⁻¹ and 10⁻² the double lies just above
+    m₍ₖ₊₁₎/2, so the count takes in the (k+1)-th margin.
+  - At 10⁻¹ that margin is shared by two positions. Position 1 of
+    windows 11 and 18 follows the same first token, so the two positions
+    are one decision.
+  - At the relative budgets the counts are 411 (0.2755) and 57
+    (2.755·10⁻²).
+
+**RW6 holds** at every δ, as written:
+- The realization solved at ε\*(δ), A, changes 0 of the 1 024 held-out
+  decisions. The limits are 102, 30 and 10.
+- Its largest absolute gap, 3.666·10⁻¹³, is under each budget.
+- The prediction "well under δ·N" holds trivially. A computes in `f64`
+  from the checkpoint's own values, so the gap that carries over to the
+  held-out sample is `f64`'s, and the bound at that gap is 0.
+- The same holds for B (0 flips, 7.70·10⁻⁴ ≤ 3.807·10⁻³), which is not
+  the plan's row.
+
+**The certificate on every row.**
+- **It is sound everywhere.** Every flip of every realization, the
+  field's among them, lies at a position whose exact margin is under
+  twice that position's gap. `report.json` counts the exceptions
+  (`outside`): 0 on all 22 rows. So the per-position statement the
+  certificate rests on holds everywhere.
+- **It is loose wherever a row flips.** The positions under 2g
+  outnumber the flips:
+  - 21× for transformers `bfloat16` (659 against 32);
+  - 23× for `bf16` (743 against 32);
+  - 34× for Q8_0 (959 against 28);
+  - 36× for `int8` absmax (973 against 27);
+  - 3.8× and 6.3× for llama.cpp's `int4` formats, where every position
+    lies under 2g.
+
+**RW7 fails at every δ**, as written. The candidates are the realizations
+whose held-out flips are at most δ·N, and A is the one solved at ε\*(δ):
+
+| δ | allowed | realizations within (distinct) | fewest weight bytes | A by weight | lighter than A |
+|---|---|---|---|---|---|
+| 10⁻¹ | 102 | 12 | llama.cpp Q8_0, 1 313 251 456 (28 flips) | 9th | Q8_0; `int8` absmax and pow2, 2 025 529 344 (27 and 48 flips); `bf16` and transformers `bfloat16` (32 flips each), `bf16-params-f32` and B (0), 2 471 628 800; llama.cpp BF16 (0), 2 471 764 096 |
+| 3·10⁻² | 30 | 9 | llama.cpp Q8_0 | 6th | Q8_0; `int8` absmax; `bf16-params-f32` and B; llama.cpp BF16 |
+| 10⁻² | 10 | 7 | `bf16-params-f32` and B, 2 471 628 800 (0 flips) | 4th | those two; llama.cpp BF16 |
+
+Why, at each δ:
+- **At 10⁻¹ and 3·10⁻², the certificate.** The rows that beat A by
+  most stay within the flips allowed while their gaps are far above
+  ε\*(δ):
+  - Q8_0 at 1.81 (37 and 166 times ε\*);
+  - `int8` absmax at 2.10 (43 and 192 times).
+
+  The solver keeps a realization only if its largest gap on the
+  calibration sample is under ε\*(δ). That is the certificate's
+  sufficient condition for at most δ·N flips, not a necessary one. These
+  rows meet the flip count without it, by where their errors happen to
+  fall, which the bound does not see: 959 and 973 positions under 2g
+  against 28 and 27 flips.
+- **The plan's exception does not apply.** The exception is a loss at
+  10⁻¹ to the grouped formats, with grouped scales as the reason. But our
+  per-column `int8` absmax beats A at both δ, by 446 504 960 bytes, and it
+  has no grouped scale; at 10⁻¹ every `bf16` row beats A too. So grouped
+  scales are not the reason, and the record says so.
+  - Q8_0 is 712 277 888 bytes lighter than our `int8`, its token table in
+    8 bits where D180's integer realizations keep it in `f32`.
+- **At 10⁻², rule 2.** The three lightest rows within 10 flips are all
+  `bf16` at rest: the realization by hand and B with the norms in
+  `bf16`, and llama.cpp BF16 with them in `f32`.
+  - A keeps the norms' γ (33 vectors of 2 048) in `f64`. Rule 2 offers
+    no parameter whose first narrowing saves under θ·B = 9.9·10⁶ bytes,
+    and the norms' save 1.3·10⁵ and 8.2·10³ (D187).
+  - That costs A 405 504 bytes over the realization by hand (0.016 %)
+    and 270 208 over llama.cpp BF16.
+  - With rule 2 off, the eighth solve stores the norms in `bf16`. It ties
+    the realization by hand for the fewest bytes, 135 296 under llama.cpp
+    BF16.
+  - B is not the statement's row: the plan's solve at ε\*(10⁻²) is
+    `eps-1e-2`. So RW7 fails at 10⁻² as written, and B's tie is reported
+    beside the verdict.
+- **The plan's prediction fails on both counts.** It said RW7 would hold
+  at 3·10⁻² and 10⁻², with the fight at 10⁻¹ against Q4_K_M. But
+  Q4_K_M's 163 flips exceed 10⁻¹'s 102, and Q8_0 and our `int8` fall
+  within 3·10⁻²'s 30.
+
+**ε\*(δ) against the uniform gaps.** As multiples of ε\*(10⁻¹),
+ε\*(3·10⁻²) and ε\*(10⁻²):
+- `bf16`'s held-out gap, 0.706: 14.5, 64.7 and 185 times;
+- `int8` absmax's, 2.10: 43, 192 and 552 times;
+- llama.cpp BF16's, 0.257, the closest under `f32`'s bytes: 5.3, 23.5
+  and 67.5 times.
+
+Inside all three are `f64`, `f32`, transformers `float32`, the
+realization by hand, A and B: every realization whose arithmetic is
+`f32` or wider.
+
+**Time against the plan's §7**, which gave step 3 about 3 h across the
+cores. Our rows took 3 h 38 min in three runs, for 16 names where the
+plan counted 14 (the realization by hand and the eighth solve are the
+user's additions):
+- step 1's seven uniform names: 1 h 38 min;
+- the realization by hand: 15 min;
+- this step's eight solved names: 1 h 45 min, the two first windows
+  alone included.
+
+**What this says of steps 4 and 5:**
+- A's arithmetic is `f64`'s on any input, since a `bf16` weight read into
+  `f64` is exact. So its perplexity should be `f64`'s.
+- RW9's realization solved at ε\*(10⁻²) is A: `bf16` weights, `f64`
+  arithmetic.
+
+**Documents.** `docs/llama3-budget-0.17.1.md` §4; the manual's `status`
+(step 3 done) and `experiments` §27; the CHANGELOG's `Unreleased`;
+`CLAUDE.md`.
+
+## D189 — Plan 0.17.1, step 4: perplexity on the quality text. RW8 holds on all 22 rows: every realization's perplexity lies within e^{±2g} of `f64`'s, and every solved one's within e^{±2ε}. The plan's seven solves give `f64`'s perplexity byte for byte (16 of 16 runs). The eighth's is within 4.5·10⁻⁷ in log. The prediction, one to two orders under the bound, fails for `f32` and the realization by hand, at 0.46 of theirs. Their offset, −3.96·10⁻⁴, does not come from the logits: it is `nll`'s own log-softmax, the sum of 128 256 exponentials in one `f32` accumulator, in sequence. Every row of ours whose default is `f32` carries it, and the field's do not. llama-perplexity's figure is our reading of its logits for all four GGUFs
+
+This is the plan's step 4 (`presk-specs/implementation/presk-plan-0.17.1.md`
+§3.5, §6): `Llama3.nll` on the quality text under our realizations, the
+field's six from their logits, `llama-perplexity` as the check, then RW8.
+- The record is `docs/llama3-budget-0.17.1.md` §5.
+- The outputs are in `out/llama3-budget/`:
+  - `nll/<name>/` holds the runs, and `nll/<name>.json` the 16 384 targets' `nll`;
+  - `nll/peaks/` holds the first runs' times;
+  - `check/check.md` is the check;
+  - `nll-bias/` holds the diagnosis below;
+  - `report.md`, `report.json` and `figure.json` are rewritten with the perplexity columns. `report-step3.*` and `figure-step3.json` keep step 3's.
+
+**What ran.** `run-step4.sh`, from a frozen copy, on
+`out/bin/presk-0.17.1-1d865e3` with step 2's frozen
+`run-step2-budget.sh`, from 2026-11-07 22:52:30 to 2026-11-08 08:09:54.
+Every run exited 0.
+- **Each realization new to `nll`, its first run alone.** Each ran in a
+  scope of 108 GB, B = 8 windows on 8 X925 cores (5–9, 15–17).
+  `f32` and `int8` absmax were not new: D186's `nll-check/` had run them.
+
+  | realization | time | peak |
+  |---|---|---|
+  | `f64` | 3 min 02 s | 21.75 GB |
+  | `bf16` | 2 min 07 s | 23.85 GB |
+  | `int8` pow2 | 1 min 45 s | 23.38 GB |
+  | `int4` absmax, pow2 | 1 min 39 s, 1 min 41 s | 22.91 GB |
+  | `bf16-params-f32` (by hand) | 1 min 50 s | 23.85 GB |
+  | A (`solve-eps-1e-1`) | 2 min 04 s | 23.85 GB |
+  | B (`solve-eps-1e-2-mingain0`) | 1 min 47 s | 23.85 GB |
+
+- **The perplexity stage.** The 16 names, 16 runs of B = 8 each (the
+  128 windows of 129 ids), one run at a time in a scope of 108 GB:
+  8 h 24 min 47 s.
+  - `f64` took 46 min and `f32` 37 min.
+  - The other names took 25 to 33.5 min each.
+  - A's seven copies took 3 h 52 min of that.
+- **The check.** It took 36 min 41 s. On the CPU, `llama-perplexity` takes 9.5 min
+  to run its 32 windows on the BF16 GGUF, and about 40 s on each quantized one.
+- **The rows compared by `cmp`.**
+  - Each of A's six other copies gives `solve-eps-1e-1`'s 16 runs byte for byte, and those are `f64`'s, 16 of 16.
+  - B's runs are neither `f64`'s nor the realization by hand's (0 of 16 each).
+  - The hand's runs are `f32`'s, 16 of 16.
+  - `nll/f32/0000.json` and `nll/int8-absmax/0000.json` are D186's `nll-check/` runs at B = 8 on 8 threads, byte for byte.
+
+**The perplexities.** f64's perplexity is 24.769920 (mean `nll` 3.2096300302 over 16 384 targets). g is
+each row's largest absolute gap on the held-out sample (D186, D188), and
+"under" is −log₁₀ of |Δ log ppl| / 2g:
+
+| realization | weights (bytes) | g | perplexity | Δ log ppl | 2g | orders under |
+|---|---|---|---|---|---|---|
+| `f64` | 9 886 515 200 | 3.666·10⁻¹³ | 24.7699 | 0 | 7.3·10⁻¹³ | — |
+| `f32` | 4 943 257 600 | 4.277·10⁻⁴ | 24.7601 | −3.961·10⁻⁴ | 8.553·10⁻⁴ | 0.33 |
+| `bf16-params-f32` | 2 471 628 800 | 4.277·10⁻⁴ | 24.7601 | −3.961·10⁻⁴ | 8.553·10⁻⁴ | 0.33 |
+| `bf16` | 2 471 628 800 | 0.7060 | 24.8159 | +1.854·10⁻³ | 1.412 | 2.9 |
+| `int8` absmax | 2 025 529 344 | 2.100 | 24.8638 | +3.782·10⁻³ | 4.200 | 3.0 |
+| `int8` pow2 | 2 025 529 344 | 3.055 | 24.9791 | +8.411·10⁻³ | 6.110 | 2.9 |
+| `int4` absmax | 1 538 990 080 | 19.65 | 75.5661 | +1.115 | 39.30 | 1.5 |
+| `int4` pow2 | 1 538 990 080 | 19.94 | 596.2051 | +3.181 | 39.88 | 1.1 |
+| A (the plan's seven) | 2 472 034 304 | 3.666·10⁻¹³ | 24.7699 | 0 | 7.3·10⁻¹³ | — |
+| B (the eighth) | 2 471 628 800 | 7.703·10⁻⁴ | 24.7699 | +4.51·10⁻⁷ | 1.541·10⁻³ | 3.5 |
+| llama.cpp BF16 | 2 471 764 096 | 0.2569 | 24.7661 | −1.542·10⁻⁴ | 0.5138 | 3.5 |
+| llama.cpp Q8_0 | 1 313 251 456 | 1.810 | 24.8192 | +1.986·10⁻³ | 3.620 | 3.3 |
+| llama.cpp Q4_K_M | 799 862 912 | 11.07 | 25.9183 | +4.532·10⁻² | 22.14 | 2.7 |
+| llama.cpp Q4_0 | 763 097 216 | 15.61 | 27.9202 | +0.1197 | 31.22 | 2.4 |
+| transformers `float32` | 4 943 257 600 | 2.401·10⁻⁴ | 24.7699 | −7.9·10⁻⁹ | 4.801·10⁻⁴ | 4.8 |
+| transformers `bfloat16` | 2 471 628 800 | 0.5660 | 24.7883 | +7.43·10⁻⁴ | 1.132 | 3.2 |
+
+Against the budgets:
+- A's Δ is 0 at every budget: 2ε is 9.76·10⁻², 2.18·10⁻² and 7.61·10⁻³ at the three ε\*(δ), and 0.551 and 5.51·10⁻² at the relative 10⁻² and 10⁻³.
+- B's Δ is 5.9·10⁻⁵ of its 2ε, 7.61·10⁻³.
+
+**RW8 holds**, as written:
+- every realization's perplexity, ours and the field's, lies within
+  e^{±2g} of `f64`'s (`report.json`'s `rw8_gap`, true on all 22 rows);
+- every solved realization's lies within e^{±2ε} (`rw8_budget`, true on
+  all eight).
+
+**The plan's prediction**, "one to two orders under the bound", holds
+for every row but two:
+- Every row with a gap from 0.25 to 16 is 2.4 to 3.5 orders under its
+  bound, ours and the field's. B is 3.5 orders under, and transformers
+  `float32` 4.8.
+- For per-column `int4`, the plan expected g at about 13 logit units and
+  a vacuous bound. The gaps are 19.65 and 19.94, so the bound is
+  e^{±39}, and the measured perplexities, 75.6 and 596, are the figure.
+- **`f32` and the realization by hand stand at 0.46 of their bound**,
+  0.33 orders under it. For these two, the prediction fails. As the next
+  paragraph shows, their logits are not the cause.
+
+**`f32`'s offset is `nll`'s log-softmax.**
+- **On the whole text,** `f32`'s `nll` is under `f64`'s:
+  - at 16 358 of the 16 384 targets;
+  - in every one of the 128 windows' means (−3.10·10⁻⁴ to −4.87·10⁻⁴).
+- **transformers `float32`** takes `f32` logits with the log-softmax in
+  binary64 (`budget.py nll-field`, plan §3.5). It is centred: mean
+  −7.9·10⁻⁹, sd 1.27·10⁻⁵, under at 8 268 targets.
+- **The split on window 0** (`nll-bias/`). Its 128 × 128 256 logits were
+  taken under `f32` (2 min 23 s, 27.5 GB, alone), then the log-softmax was
+  taken in binary64:
+
+  | `f32` against `f64`, window 0 | mean | sd | targets under |
+  |---|---|---|---|
+  | the whole offset, its `nll` | −3.927·10⁻⁴ | 1.64·10⁻⁴ | 128 of 128 |
+  | its logits, the log-softmax in binary64 | −8.2·10⁻⁷ | 1.56·10⁻⁵ | 65 of 128 |
+  | `nll`'s own log-softmax | −3.918·10⁻⁴ | 1.64·10⁻⁴ | 128 of 128 |
+
+- **The mechanism.**
+  - `nll`'s sites beyond `Llama3.apply`'s take the realization's default
+    type (plan §3.5), and its order, `sequential`, the default order (D34).
+  - The sum of exp(z − max) over the vocabulary is therefore 128 256
+    additions into one `f32` accumulator. Each rounds to the running
+    sum's ulp, and the terms under half of it are lost or shortened.
+  - So the sum comes out low, the log-sum-exp low, and the `nll` low.
+- **numpy reproduces it** from the same logits:
+  - a sequential `f32` sum of the `f32` exponentials gives our `nll`
+    within 1.9·10⁻⁶ at all 128 targets; the rest is numpy's `expf`
+    against ours;
+  - 8 interleaved partials would give −5.7·10⁻⁵;
+  - a pairwise sum gives +4·10⁻⁸, and a binary64 sum +1·10⁻⁸.
+- **`int8` absmax carries the same term.** Its default is `f32` (D180).
+  On window 0 its log-softmax adds −3.901·10⁻⁴, under at 128 of 128,
+  while its logits carry −4.31·10⁻³ (1 min 50 s, 23.7 GB).
+- **So does every row of ours whose default is `f32`:** `f32`, the
+  realization by hand, `int8` and `int4`. Each carries about −3.9·10⁻⁴
+  in log perplexity from `nll` itself, 0.04 % of the perplexity.
+- **`bf16` shows no such term on window 0.** Its log-softmax adds
+  +8.9·10⁻⁴ there, with sd 8.9·10⁻³ and the sign mixed: its `nll` values
+  are stored in `bf16`, whose ulp at 3 is 1.6·10⁻². Its logits carry
+  +1.61·10⁻² there (2 min 26 s, 25.1 GB).
+- **The rows whose default is `f64`** take the log-softmax in binary64,
+  as the field's do: `f64`, A and B.
+  - B is centred: mean +4.5·10⁻⁷, sd 4.1·10⁻⁵, under at 8 466 targets.
+
+**What this means.**
+- **What the bound counts.** e^{±2g} bounds the log-softmax taken
+  exactly of a realization's logits. A narrower `nll` adds a term the
+  bound does not count.
+  - On the whole text, `f32`'s offset at a single target passes
+    2g = 8.55·10⁻⁴ at 18 of the 16 384 targets (largest 9.49·10⁻⁴).
+  - `bf16`'s passes 2g = 1.41 at 4 targets (largest 1.62).
+  - Here g is the held-out sample's gap. The quality text has no exact
+    logits, so its own gap is not known.
+  - The perplexity, a mean over 16 384 targets, stays within the bound.
+- **The plan's §8 holds only in part.** It says the field's perplexities
+  are "the same function of their logits as ours". That is true for
+  `f64`, A and B. For our rows whose default is `f32` it is not: their
+  log-softmax is `f32`'s in sequence, and the field's is binary64's.
+  - So `f32` against transformers `float32`, 24.7601 against 24.7699,
+    is the log-softmax's difference, by window 0's split, not the logits'.
+  - Our narrow rows against the field's carry the same −3.9·10⁻⁴.
+- **It is not the solver's error.** No solve was asked of `nll`: the
+  solves budget `Llama3.apply`. A solve on `nll` would have measured the
+  term.
+- **For later, not in 0.17.1.** A wider accumulator for this sum is
+  `accum`, which the native backend refuses for any type but the
+  storage's arithmetic one (E7002, question 67). An interleaved order
+  would shorten the term, by about 7× at 8 partials (simulated).
+
+**The check** (`check/check.md`, on llama.cpp's own windows of the whole
+WikiText-2 test text):
+- **The tokenizers agree.** llama.cpp's and ours give the same 289 077 ids.
+- **Our reading of llama.cpp's logits gives `llama-perplexity`'s figure
+  at `-b 128`** for all four GGUFs, to its four printed decimals:
+  - BF16 16.5726;
+  - Q8_0 16.5793;
+  - Q4_K_M 16.9761;
+  - Q4_0 18.5607.
+
+  These are over 32 windows of 128 tokens, 2 016 targets, which is why
+  they are not the quality text's figures.
+- **At its default `-b 2048`,** `llama-perplexity` prints 16.5639,
+  16.5911, 17.0154 and 18.5478. D186 found why: its figure follows how
+  many of a window's tokens share a micro-batch.
+
+**Time against the plan's §7**, which gave step 4 about 8 h across the
+cores. It took 9 h 17 min for 16 names, where the plan counted 14 (the
+realization by hand and the eighth are the user's additions):
+- 16 min for the first runs;
+- 8 h 25 min for the perplexity stage, of which 3 h 52 min were A's seven copies;
+- 37 min for the check;
+- 7 min for the diagnosis, outside the stage.
+
+**What this says of step 5.** RW9's realization solved at ε\*(10⁻²) is A,
+`bf16` weights and `f64` arithmetic. Its perplexity is `f64`'s.
+
+**Documents.**
+- `docs/llama3-budget-0.17.1.md` §5;
+- the manual's `status` (step 4 done) and `experiments` §27;
+- the CHANGELOG's `Unreleased`;
+- `CLAUDE.md`.
+
+## D190 — Plan 0.17.1, step 5: RW9, the times, alone on falicon. On one X925 core at T = 16 the forward pass takes 14.6 s in `f64` and 11.5 s in `f32`. A, the realization solved at ε\*(10⁻²) and at every other budget, takes 9.87 s, 1.48× `f64`'s time and 1.17× `f32`'s, at a traffic ratio of 3.97. With vector lanes A is slower, 10.26 s, while the realizations whose values are `f32` gain: B and the realization by hand 7.7–7.8 s, `int8` 5.4 s, `int4` 4.8 s. `presk serve` for 32 tokens takes 806 s in `f32`, 724 s under A, 549 s by hand, 547 s under B and 429 s in `int8`. The time does not follow the traffic (2026-11-08)
+
+This is the plan's step 5 (`presk-specs/implementation/presk-plan-0.17.1.md`
+§3.5, RW9, and §6). RW9 reports these timings, alone on the machine, three
+processes each, the median and the fastest (D126):
+- the forward pass at T = 16 under each of our realizations;
+- `presk serve` for 32 tokens under `f32`, `int8` and the realization
+  solved at ε\*(10⁻²);
+- the traffic ratio beside, and the field's gaps, flips and perplexities
+  as a table.
+
+The user added two rows: `presk serve` under the realization by hand, in
+the time stage since step 2 (2026-11-06), and under B, the eighth solve
+(2026-11-08, relayed by the paper session and confirmed here).
+
+**Where things are.**
+- The record is `docs/llama3-budget-0.17.1.md` §6.
+- The outputs are in `out/llama3-budget/time/`:
+  - `forward-<name>-<round>.txt`, `presk bench`'s table, one process each;
+  - `serve-<name>-<round>.txt`, the tokens, then `/usr/bin/time`'s
+    seconds and peak;
+  - `peaks/`, the first runs.
+- `experiments/llama/budget.py time` (new) reads them and writes
+  `time.md` and `time.json`. `llama3_budget.sh`'s time stage now ends
+  with it, and its serve list includes B.
+- The paper session was told before (with step 4's MR) and after.
+
+**What ran.** On `out/bin/presk-0.17.1-1d865e3`, with nothing else on falicon but the reading item 2 names.
+Each process ran one thread pinned to core 5, an X925.
+1. **`run-step5.sh`**, from a frozen copy, 2026-11-08 08:30:00 to 18:15:39.
+   - **Each realization's first run on the two paths, alone**, in a scope
+     of 108 GB: `presk bench` at one call without a warm-up for each new
+     realization, and `presk serve` at one token for the four served
+     realizations (08:30–09:00).
+
+     | path | realization | time | peak |
+     |---|---|---|---|
+     | `bench` | `f64`, `f32`, `bf16` | 2 min 11 s to 2 min 14 s | 39.67 GB |
+     | `bench` | `int8`, `int4` | 2 min 45 s to 2 min 50 s | 43.35 to 43.83 GB |
+     | `bench` | by hand | 2 min 43 s | 45.52 GB |
+     | `bench` | A, B | 2 min 47 s, 2 min 45 s | 50.35 GB |
+     | `serve`, one token | `f32` | 1 min 08 s | 21.43 GB |
+     | `serve`, one token | by hand, `int8`, A | 1 min 02 s to 1 min 05 s | 19.02, 18.55, 23.85 GB |
+
+     `presk bench` builds a backend for each row it times, which is why its
+     peak exceeds `serve`'s.
+   - **Step 2's frozen time stage**, in one scope of 108 GB, one process at
+     a time. Each of its three rounds took about 3 h 05 min:
+     - 2 h 23 min of `presk bench`, one process for each of the 16 names;
+     - then 42 min of `presk serve`, one process for each of the four.
+2. **`run-step5b.sh`**, B's `presk serve`, from 18:15:53 to 18:44:21. B's first
+   run alone, at one token: 1 min 06 s, 23.85 GB. Then its three processes
+   ran one after another, after the other rows' three rounds rather than
+   interleaved with them.
+   - The first reading of the files (`budget.py time`, about a second on
+     A725 core 0) ran during B's first process. That process took
+     547.07 s, against 547.53 s and 547.04 s for the other two.
+
+**The protocol.** Every figure is one of D126's.
+- **The forward pass.** Each process is `presk bench --native-only
+  --threads 1 --warmup 1 --repeat 5` at B = 1, T = 16, and gives the
+  median of its five calls.
+  - D100's protocol takes the median of seven calls. The stage was written
+    with five at step 2 and was run as written.
+  - `presk bench` times the five uniform rows (`f64`, `f64 +lanes`, `f32`,
+    `f32 +lanes`, `bf16`) in every process. For a realization that is not
+    uniform, it also times the realization's own row, with and without
+    lanes.
+- **Serving.** `presk serve` generates 32 tokens greedily from D180's
+  first prompt (16 tokens). Each process gives `/usr/bin/time`'s elapsed
+  seconds.
+  - `serve` runs the native backend in its default layout, one lane, so
+    it compares with `bench`'s rows without lanes.
+  - It recomputes the context at every token, at lengths 16 to 47, and
+    compiles the kernels again at each new length (D180).
+- **Across the three processes:** the median and the fastest
+  (`retime_processes.py`'s rule, D127).
+- **The traffic** is counted in the solver's unit (D157): the parameters
+  at rest, and each stored value at one sample's elements.
+  - For A and B, it is the solve's own figure.
+  - For the others, the values' bytes are the all-`f64` traffic less
+    `f64`'s parameters, at the realization's default width.
+
+**The forward pass at B = 1, T = 16, one X925 core**, in ms; ÷ `f64` is
+`f64`'s median over the row's:
+
+| realization | traffic ratio | lanes | per process | median | fastest | ÷ `f64` |
+|---|---|---|---|---|---|---|
+| `f64` | 1.000 | — | 14 615.9, 14 623.9, 14 617.3 | **14 617.3** | 14 615.9 | 1.000 |
+| | | `+lanes` | 14 444.2, 14 409.7, 14 433.9 | **14 433.9** | 14 409.7 | 1.013 |
+| `f32` | 2.000 | — | 11 527.6, 11 512.2, 11 510.6 | **11 512.2** | 11 510.6 | 1.270 |
+| | | `+lanes` | 10 107.7, 10 159.4, 10 134.5 | **10 134.5** | 10 107.7 | 1.442 |
+| `bf16` | 4.000 | — | 10 202.0, 10 220.2, 10 232.5 | **10 220.2** | 10 202.0 | 1.430 |
+| `int8` absmax | 4.863 | — | 7 750.6, 7 740.8, 7 793.5 | **7 750.6** | 7 740.8 | 1.886 |
+| | | `+lanes` | 5 507.7, 5 420.4, 5 430.7 | **5 430.7** | 5 420.4 | 2.692 |
+| `int8` pow2 | 4.863 | — | 7 782.4, 7 767.1, 7 765.7 | **7 767.1** | 7 765.7 | 1.882 |
+| | | `+lanes` | 5 405.1, 5 443.0, 5 425.3 | **5 425.3** | 5 405.1 | 2.694 |
+| `int4` absmax | 6.387 | — | 9 912.4, 9 899.3, 9 902.6 | **9 902.6** | 9 899.3 | 1.476 |
+| | | `+lanes` | 4 825.0, 4 830.0, 4 828.6 | **4 828.6** | 4 825.0 | 3.027 |
+| `int4` pow2 | 6.387 | — | 9 885.7, 9 924.7, 9 907.0 | **9 907.0** | 9 885.7 | 1.475 |
+| | | `+lanes` | 4 819.0, 4 836.9, 4 811.7 | **4 819.0** | 4 811.7 | 3.033 |
+| `bf16-params-f32` (by hand) | 3.990 | — | 9 976.5, 9 909.2, 10 059.0 | **9 976.5** | 9 909.2 | 1.465 |
+| | | `+lanes` | 7 733.4, 7 727.8, 7 766.8 | **7 733.4** | 7 727.8 | 1.890 |
+| A at ε\*(10⁻²) (`solve-eps-1e-2`) | 3.968 | — | 9 914.5, 9 874.3, 9 857.4 | **9 874.3** | 9 857.4 | 1.480 |
+| | | `+lanes` | 10 280.8, 10 249.1, 10 256.0 | **10 256.0** | 10 249.1 | 1.425 |
+| B (the eighth) | 3.990 | — | 9 820.9, 9 767.5, 9 835.5 | **9 820.9** | 9 767.5 | 1.488 |
+| | | `+lanes` | 7 804.3, 7 775.4, 7 757.4 | **7 775.4** | 7 757.4 | 1.880 |
+
+**A's seven copies**, one realization byte for byte (D187), were timed as
+seven names, 21 processes:
+- without lanes, their medians run from 9 819.6 to 9 896.8 ms, and every
+  process from 9 812.5 to 9 930.5 ms;
+- with lanes, from 10 210.0 to 10 298.6 ms.
+
+This 0.8 % between copies of the same code is what separates two rows
+here. The table gives `solve-eps-1e-2`'s copy, RW9's.
+
+**The uniform rows in all 48 processes** (16 names × 3 rounds) show no
+process in D119's slow mode:
+
+| row | median | fastest | slowest | max ÷ min |
+|---|---|---|---|---|
+| `f64` | 14 615.6 | 14 584.4 | 14 637.3 | 1.0036 |
+| `f64 +lanes` | 14 428.7 | 14 409.7 | 14 528.9 | 1.0083 |
+| `f32` | 11 519.2 | 11 492.2 | 11 643.7 | 1.0132 |
+| `f32 +lanes` | 10 121.2 | 10 027.6 | 10 207.8 | 1.0180 |
+| `bf16` | 10 206.1 | 10 156.3 | 10 297.7 | 1.0139 |
+
+**`presk serve`**, 32 tokens from D180's first prompt, one X925 core, in
+s; ÷ `f32` is the median over `f32`'s:
+
+| realization | per process | median | fastest | ÷ `f32` | peak |
+|---|---|---|---|---|---|
+| `f32` | 806.30, 806.96, 804.47 | **806.30** | 804.47 | 1.000 | 31.12 GB |
+| A at ε\*(10⁻²) | 723.78, 723.91, 727.09 | **723.91** | 723.78 | 0.898 | 23.85 GB |
+| `bf16-params-f32` (by hand) | 548.63, 545.06, 549.08 | **548.63** | 545.06 | 0.680 | 19.02 GB |
+| B (the eighth) | 547.07, 547.53, 547.04 | **547.07** | 547.04 | 0.678 | 23.85 GB |
+| `int8` absmax | 428.62, 428.98, 428.81 | **428.81** | 428.62 | 0.532 | 24.40 GB |
+
+- **The tokens.** Every process of a realization gave the same 32 tokens.
+  - `f32`, A, B and the realization by hand give D180's `f32`
+    tokens for this prompt (`out/llama3/rw4.md`).
+  - `int8` absmax gives D180's `int8` tokens. They differ from `f32`'s at
+    the last one, 10057 for 8494.
+- **D180's serving times** were taken beside other runs: 16–28 min a
+  prompt in `f32`, 8.1–8.4 min in `int8`. Alone, the same prompt takes
+  13.4 min and 7.1 min.
+
+**RW9, reported.** What the figures say:
+- **A against `f64` and `f32`.** A keeps `f64`'s arithmetic, with `bf16`
+  weights. Its forward pass is 1.48× `f64`'s and 1.17× `f32`'s without
+  lanes. With lanes `f32` gains 1.14× and A loses 4 %, so `f32 +lanes`,
+  at 10.13 s, is within 3 % of A's 9.87 s while it moves twice A's
+  bytes (a traffic ratio of 2.00 against 3.97).
+- **The time does not follow the traffic.** A's traffic ratio is 3.97 and
+  its time ratio 1.48. Uniform `bf16`, at a ratio of 4.00, is 1.43×.
+  `int4`, at 6.39, is 1.48× without lanes, no faster than A. On one core
+  at T = 16, this forward pass is not bound by the bytes it reads. The
+  cause is not measured here.
+- **Lanes.** A's lanes are `f64`'s two: `f64` gains 1.3 % from them and A
+  loses 4 % (every one of its 21 processes with lanes is slower than the
+  slowest without). The realizations whose values are `f32` take four
+  lanes and gain: by hand 1.29×, B 1.26×, `int8` 1.43×, `int4` 2.05×.
+- **B against A.** B differs from A by its values: 32 `f32`, 12 `bf16`
+  and the norms' gains in `bf16`. Without lanes it is A's time (9.82 s
+  against 9.87 s); with them it is 1.27× faster than A's best row (7.78 s
+  against 9.87 s), at the same traffic within 0.6 %.
+- **Serving.** The ratios between realizations are not the forward
+  pass's: `int8` is 0.53 of `f32`'s time serving and 0.67 at T = 16; A
+  0.90 and 0.86; the realization by hand 0.68 and 0.87. Serving runs the
+  scalar code at lengths 16 to 47 and compiles at each length, so neither
+  the forward pass's ratio nor its traffic predicts it. B serves 1.32×
+  faster than A (547 s against 724 s), though their scalar forward passes
+  at T = 16 are within 0.6 %. The split between compiling and computing
+  is not measured here.
+
+**The field's rows, beside** (D188, D189; not timed, llama.cpp by the
+plan's decision):
+
+| realization | weights (bytes) | gap g | relative | flips of 1 024 | #{m < 2g} | perplexity |
+|---|---|---|---|---|---|---|
+| llama.cpp BF16 | 2 471 764 096 | 0.2569 | 9.57·10⁻³ | 0 | 391 | 24.7661 |
+| llama.cpp Q8_0 | 1 313 251 456 | 1.810 | 7.01·10⁻² | 28 | 959 | 24.8192 |
+| llama.cpp Q4_K_M | 799 862 912 | 11.07 | 0.379 | 163 | 1 024 | 25.9183 |
+| llama.cpp Q4_0 | 763 097 216 | 15.61 | 0.611 | 266 | 1 024 | 27.9202 |
+| transformers `float32` | 4 943 257 600 | 2.401·10⁻⁴ | 1.01·10⁻⁵ | 0 | 0 | 24.7699 |
+| transformers `bfloat16` | 2 471 628 800 | 0.5660 | 2.25·10⁻² | 32 | 659 | 24.7883 |
+| A, for comparison | 2 472 034 304 | 3.666·10⁻¹³ | 1.52·10⁻¹⁴ | 0 | 0 | 24.7699 |
+
+**Time against the plan's §7**, which gave step 5 about 6 h. The planned
+runs took 9 h 46 min, from 08:30 to 18:15, and B's serve 28 min more:
+- 30 min for the first runs;
+- 9 h 15 min for the three rounds.
+  - `presk bench` times the five uniform rows in every process, about
+    6.1 min of each. In the 13 processes of a round whose name is not
+    uniform, that is 79 min a round, 4 h in all. It bought the check of
+    D126's modes on 48 processes.
+  - A's six copies beyond RW9's took about 2 h 50 min of the rounds,
+    their uniform rows included. They measured the spread between
+    processes of one code.
+  - Serving took 42 min a round. That is less than §7 assumed from D180's
+    side-by-side times.
+
+**What this says of step 6.** RW5–RW9 are all measured:
+- RW5, RW6 and RW8 hold;
+- RW7 fails at every δ, judged as written;
+- RW9 is reported.
+
+Step 6 gathers them into the record and the version. After step 6, the
+D189 addendum, which the user confirmed on 2026-11-08, re-runs the six
+rows whose default is `f32` with `nll`'s own sites in `f64`.
+
+**Documents.**
+- `docs/llama3-budget-0.17.1.md` §6;
+- the manual's `status` (step 5 done) and `experiments` §27;
+- the CHANGELOG's `Unreleased`;
+- `CLAUDE.md`.
+
+## D191 — Version 0.17.1: OP0 on the version's tree, the checks of record, the record, the documents and the archive (plan 0.17.1 step 6) (2026-11-08)
+
+This is the plan's step 6 (`presk-specs/implementation/presk-plan-0.17.1.md`
+§6). Version `0.17.1` is set in `Cargo.toml` and in the presk packages of
+`Cargo.lock`. The version line moves in `presk explain`'s six document
+snapshots and in the manual's `explain_loss`, the only outputs that carry
+it (presk `6c000ce`). The release build of that commit is
+`out/bin/presk-0.17.1-6c000ce`.
+
+**OP0 holds on the version's tree.** `out/x1/version-0.17.1.sh`, run by
+`out/x1/checks-0.17.1.sh`, alone on falicon from 18:56. It ran X1's
+harness, the quant and step tables and the tutorial under the version's
+build.
+- *X1, against `v0.17.0`'s* (`out/x1/version-0.17.0`, D182): 22 of 863
+  files differ, 44 lines in all:
+  - the exported C programs' version lines (`0.17.0` → `0.17.1`);
+  - the exported READMEs' version and commit lines;
+  - three envelopes' `measured` dates.
+
+  Step 0's build differed by the same 22 files (D185).
+- *X1, against step 0's build* (`out/x1/step0-0.17.1`): the same 22
+  files, 44 lines, the version lines (`0.17.1-dev` → `0.17.1`), the
+  commit lines and the dates alone.
+- *The tables.* `make quant-table` and `step-table` are `v0.17.0`'s byte
+  for byte (`out/x1/version-0.17.1-tables.txt`).
+- *The tutorial* differs from `v0.17.0`'s by its measurements alone,
+  with paths and numbers masked (`out/x1/version-0.17.1-tutorial.shape.diff`,
+  12 lines). The measurements decide two of `presk rank`'s picks (loop
+  order IJ → JI on `scores` and `attend`) and one nest's line in Q's
+  table (**fails** → **holds**); Q's verdict is 0.17.0's. O holds, as at
+  0.17.0. At step 0, beside the exact runs, O failed (D185).
+
+**The checks of record on the version's tree** (`out/x1/version-0.17.1-*.log`),
+from 19:04 to 19:31:
+- `make test` passes: 363 tests in 115 suites.
+- `make check-examples`, `coverage` and `plan-check` pass.
+- `make c-conformance` passes: `export_c`'s 17 tests and `export_scop`'s
+  5.
+- `make llvm-conformance` passes: the same 17, every program checked
+  against the LLVM backend's run.
+- `cargo doc -p presk-manual` gives no warning. The manual's chapters were
+  edited while `make test` ran, so its test and its doc ran again on
+  their final text: both pass, with no warning.
+
+**The documents**, checked against what the version did (the user's rule
+of 2026-09-30).
+- *The record*, `docs/llama3-budget-0.17.1.md`, gains four sections:
+  - §7, the figure's data: every row's bytes, gap, flips, bound, δ
+    certified, perplexity and times (`figure.json`);
+  - §8, the solved realizations in words;
+  - §9, the statements;
+  - §10, the cost against the plan's §7.
+- *The manual.*
+  - `status`: the section *Version 0.17.1*, its steps, statements, what
+    it has and what it does not.
+  - `experiments`: §27, step by step.
+  - `precision`: "A solve at a billion parameters", written at step 0
+    (D185), now with its measured result.
+  - `cli` and `dependencies`, brought up at step 0 (D185).
+  - `explain_loss`: its version line.
+- *In presk-specs* (!107, stacked on the plan's !106):
+  - the plan, marked done with its verdicts;
+  - the reference at draft v0.27: its Status paragraphs at 0.17.1, the
+    solver's two executors in chapter 4, the version's tree;
+  - the report: chapter 8's paragraph on 0.17.1, the foreword, the
+    roadmap and the history;
+  - the status note `docs/status-2026-11-08-0.17.1.md`.
+
+  As at 0.16.1, a patch version: the slides, the summary and the poster
+  stay at 0.17.0, and no question was opened, so there is no
+  `presk-spec-questions-0.17.1.md`.
+- *In presk-project:*
+  - `docs/STATEMENTS.md`'s 0.17.1 section (OP0, OP1, RW5–RW9);
+  - the archive `data/llama3-budget-0.17.1.tar.xz` with its `.sha256`,
+    written by `out/llama3-budget/archive-0.17.1.sh`. It holds 2 608
+    files in 5.99 MB, with a README that names each statement's files and
+    `LINKS.txt`, the four archives of record it reads. 814 files are left
+    out and checksummed in `EXCLUDED.sha256`:
+    - the exact logits (64);
+    - the native rows (704);
+    - the field's logits (12);
+    - the GGUFs (4);
+    - the diagnosis's logits (3);
+    - 27 other files over 1 MB.
+
+    The four binaries' checksums are in `BINARIES.sha256`.
+- CHANGELOG `## 0.17.1`, `CLAUDE.md`, version `0.17.1`.
+
+**What follows the version** (the user, 2026-11-08). The D189 addendum
+re-runs the perplexity of the six rows whose default is `f32`: `f32`, the
+realization by hand, and `int8` and `int4` under both scales. It types
+`nll`'s own sites `f64` by per-site storage, so that the 22 perplexities
+are one function of the logits. D189's rows stay of record. The
+addendum's rows sit beside them, in a merge request of their own after
+this one, so the version's tree stays this one.
+
+The user tags `v0.17.1`. No row of record of the paper was solved,
+measured or timed again.

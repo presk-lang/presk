@@ -634,6 +634,57 @@ impl Value {
         }
     }
 
+    /// The interpreter's value in binary64 ([`F64InterpBackend`]): every
+    /// real rounded once to `f64`.
+    pub fn to_interp_f64(&self) -> presk_interp::Value<f64> {
+        use presk_interp::Value as V;
+        match self {
+            Value::Real(t) => V::Real(presk_interp::Tensor {
+                axes: t.axes.clone(),
+                data: match &t.data {
+                    Buf::F64(v) => v.iter().copied().collect(),
+                    other => other.to_f64().into_iter().collect(),
+                },
+            }),
+            Value::Idx { bound, t } => V::Idx {
+                bound: *bound,
+                t: presk_interp::Tensor {
+                    axes: t.axes.clone(),
+                    data: match &t.data {
+                        Buf::I64(v) => v.to_vec().into(),
+                        other => other.to_f64().into_iter().map(|x| x as i64).collect(),
+                    },
+                },
+            },
+            Value::Nat(n) => V::Nat(*n),
+            Value::Int(n) => V::Int(*n),
+            Value::F64(x) => V::F64(*x),
+            Value::Bool(b) => V::Bool(*b),
+            Value::Key(k) => V::Key(k.clone()),
+            Value::Tuple(vs) => V::tuple(vs.iter().map(Value::to_interp_f64).collect()),
+            Value::Record(fs) => V::record(fs.iter().map(|(n, v)| (n.clone(), v.to_interp_f64())).collect()),
+            Value::Stacked(vs) => V::Stacked(std::sync::Arc::new(vs.iter().map(Value::to_interp_f64).collect())),
+        }
+    }
+
+    /// A value of [`F64InterpBackend`], its reals as `f64` buffers.
+    pub fn from_interp_f64(v: &presk_interp::Value<f64>) -> Result<Value> {
+        use presk_interp::Value as V;
+        Ok(match v {
+            V::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::F64(t.data.iter().copied().collect()) }),
+            V::Idx { bound, t } => Value::Idx { bound: *bound, t: Tensor { axes: t.axes.clone(), data: Buf::I64(t.data.to_vec().into()) } },
+            V::Nat(n) => Value::Nat(*n),
+            V::Int(n) => Value::Int(*n),
+            V::F64(x) => Value::F64(*x),
+            V::Bool(b) => Value::Bool(*b),
+            V::Key(k) => Value::Key(k.clone()),
+            V::Tuple(vs) => Value::Tuple(vs.iter().map(Value::from_interp_f64).collect::<Result<_>>()?),
+            V::Record(fs) => Value::Record(fs.iter().map(|(n, v)| Ok((n.clone(), Value::from_interp_f64(v)?))).collect::<Result<_>>()?),
+            V::Stacked(vs) => Value::Stacked(vs.iter().map(Value::from_interp_f64).collect::<Result<_>>()?),
+            V::Closure { .. } => return err("E7001", "a function value cannot cross the backend seam"),
+        })
+    }
+
     /// The same, consuming the value: an exact buffer is moved rather than
     /// copied, each real rounded in place to `prec` bits — the value
     /// `with_val` gives, and no change at the precision it was made at. A
@@ -852,6 +903,42 @@ impl Backend for InterpBackend<'_> {
         let args: Vec<IValue> = args.into_iter().map(|a| a.into_interp(self.prec)).collect();
         let out = self.interp.call(p.func, p.dims.clone(), args)?;
         Value::from_interp(&out)
+    }
+}
+
+/// The reference interpreter's evaluator in binary64 behind the seam (plan
+/// 0.17.1 §4, D185): `presk solve --sweep f64` ranks the sites with it where
+/// MPFR does not fit in memory, a real taking 8 bytes and not about 80. Each
+/// real crossing the seam is rounded once to `f64`; a machine buffer's
+/// numbers cross as they are.
+pub struct F64InterpBackend<'p> {
+    pub interp: Interp<'p, f64>,
+}
+
+impl<'p> F64InterpBackend<'p> {
+    pub fn new(prog: &'p Program, elab: &'p ElabProgram) -> Self {
+        F64InterpBackend { interp: Interp::new(prog, elab, 53) }
+    }
+}
+
+impl Backend for F64InterpBackend<'_> {
+    fn name(&self) -> &'static str {
+        "interp-f64"
+    }
+
+    fn set_training(&mut self, on: bool) {
+        self.interp.training = on;
+    }
+
+    fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared> {
+        presk_interp::defined::check(self.interp.prog, self.interp.elab, entry, dims, None)?;
+        Ok(Prepared { func: entry, dims: dims.clone(), realize: realize.clone(), handle: 0 })
+    }
+
+    fn call(&mut self, p: &Prepared, args: Vec<Value>) -> Result<Value> {
+        let args: Vec<presk_interp::Value<f64>> = args.iter().map(Value::to_interp_f64).collect();
+        let out = self.interp.call(p.func, p.dims.clone(), args)?;
+        Value::from_interp_f64(&out)
     }
 }
 

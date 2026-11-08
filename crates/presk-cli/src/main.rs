@@ -953,6 +953,18 @@ enum Command {
         /// (rule 1).
         #[arg(long, value_name = "θ", default_value_t = 1e-3)]
         min_gain: f64,
+        /// The sensitivity sweep's arithmetic (plan 0.17.1, D185): `exact`,
+        /// the reference interpreter at `--bits`, the default; or `f64`, the
+        /// same evaluator in binary64, for a model whose sweep in MPFR does
+        /// not fit in memory (2.7 times an exact run's). The sweep ranks; the
+        /// measurement against the exact reference decides either way.
+        #[arg(long, value_enum, default_value_t = SweepArg::Exact)]
+        sweep: SweepArg,
+        /// Where each measurement runs (plan 0.17.1, D185): `kernel`, the
+        /// kernel interpreter, the default; or `native`, the native backend,
+        /// which computes its bits, the same gaps about twenty times faster.
+        #[arg(long, value_enum, default_value_t = MeasureArg::Kernel)]
+        measure: MeasureArg,
         /// Solve one training step under a budget on its **update**, the
         /// envelope being `presk calibrate --step`'s (0.6.0 step 7b): every
         /// function of the step measured alone in `f32` and `bf16`, greedy
@@ -1160,6 +1172,24 @@ enum NarrowArg {
     Measured,
     /// The same, then stopped early on held-out samples (D161).
     Heldout,
+}
+
+/// The arithmetic of `presk solve`'s sensitivity sweep (plan 0.17.1, D185).
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum SweepArg {
+    /// The reference interpreter at `--bits`: the solver of record.
+    Exact,
+    /// The same evaluator in binary64.
+    F64,
+}
+
+/// Where `presk solve`'s measurements run (plan 0.17.1, D185).
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum MeasureArg {
+    /// The kernel interpreter: the solver of record.
+    Kernel,
+    /// The native backend, with the kernel interpreter's bits.
+    Native,
 }
 
 /// The estimate of `presk solve`'s proposal (D161).
@@ -1509,7 +1539,7 @@ fn main() -> ExitCode {
             };
             step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref(), grain)
         }
-        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, menu, rounding, narrow, estimate, margin, heldout, min_gain, remat, .. } => {
+        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, menu, rounding, narrow, estimate, margin, heldout, min_gain, sweep, measure, remat, .. } => {
             set_remat(remat);
             let scheme = match scheme.as_str() {
                 "absmax" => presk_rt::QuantScheme::Absmax,
@@ -1560,7 +1590,17 @@ fn main() -> ExitCode {
                 eprintln!("presk solve: --quant quantizes in a pass after the solve, and --menu's integers in the solve itself: one or the other");
                 return ExitCode::from(2);
             }
-            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), menu, options)
+            let exec = presk_driver::precision::SolveExec {
+                sweep: match sweep {
+                    SweepArg::Exact => presk_driver::precision::Sweep::Exact,
+                    SweepArg::F64 => presk_driver::precision::Sweep::F64,
+                },
+                measure: match measure {
+                    MeasureArg::Kernel => presk_driver::precision::Measure::Kernel,
+                    MeasureArg::Native => presk_driver::precision::Measure::Native,
+                },
+            };
+            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), menu, options, exec)
         }
         Command::Plan { file, entry, dims, consts, realize, mode, profile, nest, space, cost, out, seed, remat } => match ra4::Space::parse(&space).inspect(|_| {
             set_remat(remat);
@@ -1777,7 +1817,7 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
 
 /// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
 #[allow(clippy::too_many_arguments)]
-fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, menu: presk_precision::solve::Menu, options: presk_precision::solve::Options) -> ExitCode {
+fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, menu: presk_precision::solve::Menu, options: presk_precision::solve::Options, exec: presk_driver::precision::SolveExec) -> ExitCode {
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => {
@@ -1796,7 +1836,7 @@ fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve:
     if has_errors(&diags) {
         return ExitCode::from(1);
     }
-    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant, menu, options };
+    let args = presk_driver::precision::SolveArgs { budget, weights, verify, bits, seed, profile: profile.as_deref(), quant, menu, options, exec };
     let solved = match presk_driver::precision::solve(&mut core, &prog, &env, &args) {
         Ok(s) => s,
         Err(e) => {

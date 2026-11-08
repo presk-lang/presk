@@ -226,6 +226,18 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
             sol.narrowed, sol.narrow_passes, sol.options.margin, sol.budget_abs / sol.options.margin, sol.measurements
         ));
     }
+    // The executors of D185, said when they are not the solver of record's.
+    if solved.exec != crate::precision::SolveExec::default() {
+        let sweep = match solved.exec.sweep {
+            crate::precision::Sweep::Exact => "the sweep on the reference interpreter",
+            crate::precision::Sweep::F64 => "the sweep in binary64 (--sweep f64)",
+        };
+        let measure = match solved.exec.measure {
+            crate::precision::Measure::Kernel => "the measurements on the kernel interpreter",
+            crate::precision::Measure::Native => "the measurements on the native backend, the kernel interpreter's bits (--measure native)",
+        };
+        out.push(format!("  executors   {sweep}; {measure}; the exact reference at its bits either way (D185)"));
+    }
     if sol.options.narrow == presk_precision::solve::Narrow::Heldout {
         let which = sol.options.heldout.map(|m| format!("{m} after the envelope's")).unwrap_or_else(|| "as many after the envelope's as its own".into());
         match sol.heldout {

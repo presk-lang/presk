@@ -33,7 +33,8 @@ The decision is D181. Two phases:
   08:19, after 3 h 20. Each of their measurements runs on the kernel
   interpreter, minutes at BERT-large's size, and they make up to about
   eighty: the course's took 55 measurements and 6 h 25. They are reported
-  beside QM2, not judged, and ran again after phase B (§1).
+  beside QM2, not judged, and ran again after phase B, from 15:06 to 23:19
+  (§1, D181's addendum).
 - **Beside phase A** ran step 7's RW4 and RW3, each heavy run in a memory
   scope of its own. Phase A ended at 11:42, and phase B started the same
   minute, alone.
@@ -65,8 +66,8 @@ envelope's samples.
 | the course logits, ε* = 4.96·10⁻⁴ | `--narrow measured` | 18 of 18, narrowed 1 in 2 pass(es) | 9 f32, 0 bf16 | 1.99× | 2.526e-06 | 4.960e-04 | yes |
 | the course logits, ε* = 4.96·10⁻⁴ | `--narrow measured --margin 1` | 18 of 18, narrowed 1 in 2 pass(es) | 9 f32, 0 bf16 | 1.99× | 2.526e-06 | 4.960e-04 | yes |
 | BERT-large, two blocks, 10⁻³ | the defaults | 19 of 19 | 8 f32, 0 bf16 | 2.00× | 1.059e-05 | 6.254e-03 | yes |
-| BERT-large, two blocks, 10⁻³ | `--narrow measured` | running | | | | | — |
-| BERT-large, two blocks, 10⁻³ | `--narrow measured --margin 1` | running | | | | | — |
+| BERT-large, two blocks, 10⁻³ | `--narrow measured` | 19 of 19, narrowed 38 in 3 pass(es) | 0 f32, 0 bf16, 4 int8, 4 int4 | 6.73× | 2.213e-04 | 6.254e-03 | yes |
+| BERT-large, two blocks, 10⁻³ | `--narrow measured --margin 1` | 19 of 19, narrowed 37 in 3 pass(es) | 0 f32, 0 bf16, 5 int8, 3 int4 | 8.41× | 5.912e-03 | 6.254e-03 | yes |
 
 **QM1 holds.** Every one-menu solve is inside its budget by measurement,
 with no widening round:
@@ -74,7 +75,8 @@ with no widening round:
 - V6 at ε\* = 4.67·10⁻⁴;
 - the course logits at ε\* = 4.96·10⁻⁴;
 - BERT-large's two blocks at 10⁻³;
-- every `--narrow measured` row that ran.
+- every `--narrow measured` row, BERT-large's included (8.41× with
+  `--margin 1`, measured 5.91·10⁻³).
 
 **The curve under the one menu** against 0.16.1's floating-point curve
 (D170, the same envelope):
@@ -104,8 +106,8 @@ where 0.16.1's flip 475 and 78.
 | the course logits, ε* = 4.96·10⁻⁴ | `--narrow measured` | 9 f32, 0 bf16 | 1.99× | 2.526e-06 | 0 of 9 (0 int8, 0 int4) | 1.99× | 2.526e-06 | yes | (reported) |
 | the course logits, ε* = 4.96·10⁻⁴ | `--narrow measured --margin 1` | 9 f32, 0 bf16 | 1.99× | 2.526e-06 | 0 of 9 (0 int8, 0 int4) | 1.99× | 2.526e-06 | yes | (reported) |
 | BERT-large, two blocks, 10⁻³ | the defaults | 8 f32, 0 bf16 | 2.00× | 1.059e-05 | 10 of 10 (6 int8, 4 int4) | 4.93× | 3.821e-03 | no | fails |
-| BERT-large, two blocks, 10⁻³ | `--narrow measured` | running | | | | | | | |
-| BERT-large, two blocks, 10⁻³ | `--narrow measured --margin 1` | running | | | | | | | |
+| BERT-large, two blocks, 10⁻³ | `--narrow measured` | 0 f32, 0 bf16, 4 int8, 4 int4 | 6.73× | 2.213e-04 | 10 of 10 (6 int8, 4 int4) | 6.80× | 4.637e-03 | no | (reported) |
+| BERT-large, two blocks, 10⁻³ | `--narrow measured --margin 1` | 0 f32, 0 bf16, 5 int8, 3 int4 | 8.41× | 5.912e-03 | 10 of 10 (6 int8, 4 int4) | 6.80× | 4.637e-03 | yes | (reported) |
 
 **QM2 fails, on BERT-large.**
 - **V6 and the course logits.** The one menu holds at equality under the
@@ -121,8 +123,16 @@ where 0.16.1's flip 475 and 78.
   sensitivity. That is about the whole budget at 10⁻³ (D177's finding on
   the trained GPT). The second pass prices by the root-sum-square of the
   moves (D49), and its measurement confirms it with room to spare.
-- **BERT's `--narrow measured` rows** ran again after phase B, alone
-  but for the paper session's light work, and are D181's addendum.
+- **BERT's `--narrow measured` rows** (D181's addendum) ran again after
+  phase B, from 15:06 to 23:19, beside step 9's checks. The narrowing
+  corrects the term. The one menu takes four `int8` and four `int4`
+  matrices, at 6.73× against the two passes' 6.80×, 1 % short at the
+  default margin. With `--margin 1` it takes five `int8` and three `int4`,
+  at 8.41×, measured 5.91·10⁻³ inside 6.25·10⁻³, where the two passes
+  stay at 6.80×. The two passes narrow the floats under the margin and
+  quantize after it (8.32·10⁻⁴, then 4.64·10⁻³), so the margin does not
+  move them. Each one-menu solve took 43 measurements and 8 h 13 min, each
+  two-pass one 27 and 6 h 15 min.
 
 ## 2. QM3: certified, and timed
 

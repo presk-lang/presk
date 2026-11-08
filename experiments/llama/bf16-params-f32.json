@@ -1,0 +1,19 @@
+{
+  "default": "f32",
+  "order": {
+    "kind": "sequential"
+  },
+  "params": {
+    "tok": "bf16",
+    "blocks.attn.wq": "bf16",
+    "blocks.attn.wk": "bf16",
+    "blocks.attn.wv": "bf16",
+    "blocks.attn.wo": "bf16",
+    "blocks.ff.gate": "bf16",
+    "blocks.ff.up": "bf16",
+    "blocks.ff.down": "bf16",
+    "blocks.n1.γ": "bf16",
+    "blocks.n2.γ": "bf16",
+    "norm.γ": "bf16"
+  }
+}

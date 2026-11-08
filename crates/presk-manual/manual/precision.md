@@ -1143,7 +1143,48 @@ The rows of record are step 8's (D181; the `experiments` chapter, §26):
   inside the budget of 6.25·10⁻³. The one menu does not reach the two
   passes there (QM2 fails): its term is the worst case of each matrix's
   moves, about the whole budget, where `--quant`'s root-sum-square lets
-  them cancel and is checked by its measurement.
+  them cancel and is checked by its measurement;
+- under `--narrow measured` the one menu takes the integers there (D181's
+  addendum): four `int8` and four `int4` matrices at 6.73×, against the
+  two passes' 6.80×. With `--margin 1` it takes five `int8` and three
+  `int4` at 8.41×, measured 5.91·10⁻³ inside 6.25·10⁻³. The two passes
+  quantize after their narrowing, so the margin does not move them.
+
+## A solve at a billion parameters (0.17.1)
+
+The solve runs the exact reference on the envelope's samples, one reverse
+sweep that ranks the sites, and a measurement per candidate (D185). At
+Llama 3.2 1B's size two of the three do not fit as they stand: the
+reference interpreter's sweep holds the model and every parameter's
+cotangent in MPFR, 2.7 times an exact run's memory (about 300 GB where
+falicon has 119), and each measurement on the kernel interpreter takes
+about half an hour. `presk solve --sweep f64` runs the sweep on the same
+evaluator in binary64, and `--measure native` the measurements on the
+native backend, with the kernel interpreter's bits. The sweep ranks and
+the measurement decides, so neither changes what a solve accepts: on the
+small `llama3.psk` and on the rows of record (the curve at D = 64 at 10⁻¹
+and 10⁻², V6, the course logits at ε\*, BERT-large's two blocks under
+`--narrow measured`) the realizations and their measured gaps are the
+defaults', byte for byte (OP1). The estimates' sums move in their last
+bits.
+
+At that size rule 2 decides what is offered: θ·B is about 9.9 MB, almost
+all of it the weights, and the largest activation at the envelope's 16
+tokens, the logits, saves 8.2 MB in `f32`. The default solve then decides
+the token table and the seven block matrices alone, and the activations
+keep `f64` (the user's decision of 2026-11-05: the defaults).
+
+Measured (D187, D188): with both options a solve takes 2 h 06 min and
+96.7 GB, and the calibration of its envelope 6 h 35 min and 98.7 GB. At
+every budget from ε\*(10⁻¹) = 4.88·10⁻² to ε\*(10⁻²) = 3.81·10⁻³, the
+exact model's margins on held-out text, the solve returns one realization.
+It keeps the token table and the block matrices in `bf16`, which is the
+checkpoint's own type, so they are not rounded at all, and everything else
+in `f64`. It weighs a quarter of `f64`'s bytes, and its outputs are
+`f64`'s byte for byte. The menu decides it, not the budget: each matrix
+alone in `int8` moves a logit by more than the largest budget allows.
+With rule 2 off (`--min-gain 0`), the solve also puts the norms' gains in
+`bf16` and the values in `f32` and `bf16`, measured 7.70·10⁻⁴ held out.
 
 ## J at course scale
 

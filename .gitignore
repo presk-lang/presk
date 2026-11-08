@@ -6,6 +6,8 @@
 /.llvm
 /.gappa
 /.tuning
+/.gcc
+/.llamacpp
 *.snap.new
 .DS_Store
 __pycache__/
