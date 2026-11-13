@@ -51,7 +51,7 @@ one reference.
 
 | Run | Steps | PyTorch float32 | PyTorch float64 | presk `f32` | presk `f64` | Parameter scale |
 |---|---|---|---|---|---|---|
-| Tutorial tower (`tutorial/07_train.psk`, AdamW, cosine warm-up) | 10 | 3.2e-7 | 4.4e-16 | 2.0e-7 | 4.4e-16 | 1.0 |
+| Tutorial tower (`examples/tutorial/07_train.psk`, AdamW, cosine warm-up) | 10 | 3.2e-7 | 4.4e-16 | 2.0e-7 | 4.4e-16 | 1.0 |
 | Tiny MiniGPT (`train_minigpt.psk`, weight decay 0.1, clipping 1.0, cosine warm-up) | 20 | 9.6e-7 | 8.9e-16 | 3.7e-7 | 6.7e-16 | 1.0 |
 
 Read against the machine epsilons (6e-8 for float32, 1.1e-16 for float64),
@@ -118,7 +118,8 @@ excluded, three repetitions of each row:
 **The factor is 22×, not 94×, and fourteen of it is one kernel.** On this
 machine a 1024³ `f32` product runs at **710 GFLOP/s** under PyTorch and at
 **49.6 GFLOP/s** under presk's blocked kernel with lanes (`presk bench
-out/gemm.psk --entry gemm --realize f32`), a factor of 14.3 on the
+examples/experiments/gemm_1024.psk --entry gemm --realize f32`, the product
+`make realize` writes into `out/gemm.psk` until D199), a factor of 14.3 on the
 contraction alone. PyTorch's side of that is not a matrix unit: this wheel
 carries its own OpenBLAS 0.3.34 (built `DYNAMIC_ARCH USE_OPENMP`, selecting
 its `neoversev2` kernels) and oneDNN 3.12 over Arm Compute Library 53.2, and
@@ -504,7 +505,7 @@ civil, so the other tenth — 461 windows, 118 016 next-character predictions �
 is held out.
 
 - **MLPerf's side** is next-character accuracy over the held-out windows (a
-  new entry of `corpus/nlp/05_gpt.psk`, `accuracy`), with the loss beside it
+  new entry of `examples/corpus/nlp/05_gpt.psk`, `accuracy`), with the loss beside it
   because perplexity on a held-out corpus is the roadmap's declared NLP
   measure. The model runs in the realization and the metric in `f64`, as
   MLPerf's harness scores a model from outside it: in `bf16`, the mean over
@@ -1231,7 +1232,7 @@ solved under a budget on its largest elementwise gap (D123), and the row
 stays on the loss, D101's.
 
 **A second model, after the tag.** The Llama 2 decoder of
-`coverage/llama.psk`, at the 7B configuration's width and one of its 32
+`examples/coverage/llama.psk`, at the 7B configuration's width and one of its 32
 blocks, ran by BERT's protocol on 2026-10-04 (D104, `make llama`, the
 `coverage` chapter's *The decoder, run*): its exact logits in 1 h 55 min
 and 87.6 GB, `f32` the one narrowed type inside 10⁻² (6.2·10⁻⁶), `int8`
@@ -1381,7 +1382,7 @@ in D108. Two were fixed in 0.11.0 (D110): `presk check --precision` did
 not bind a module's dimension arguments, so on the entry
 `LayerNorm{8}.apply` itself the mean's length fell back to 1 024 terms and
 the bound printed was 93× its rule's (the soundness test binds them and
-gives §4's table; the paper's entries are top-level functions and
+gives its table; the entries of record are top-level functions and
 unaffected; `presk solve` bound them through its run and was not
 affected); and `presk calibrate --precision --samples N` without `--data`
 drew nothing, and is now refused. Two are left: the entry's arguments are not sites of the envelope, so an
@@ -1393,7 +1394,7 @@ being symmetric in them.
 
 Every solve §4–§10 report was accepted as proposed. `make widening`
 (`experiments/widening.sh`, the report `docs/widening-2026-10-16.md`)
-solves six small entries of `experiments/widening.psk` at seven budgets,
+solves six small entries of `examples/experiments/widening.psk` at seven budgets,
 three pairs in which one form makes the first-order estimate wrong and the
 other does not:
 
@@ -1468,7 +1469,7 @@ proof is 514 times the gap and `cond` 164 times.
 `docs/precision-tuning-2026-10-19.md`) sets the solver beside the C
 precision-tuning tools. Their own input is the program `presk export
 --target c` writes: `make margins`' model at D = 64, its logits in `f64`. The
-criterion is the paper's: the logits within ε\*(10⁻³) = 4.67·10⁻⁴ of the
+criterion is the budget of record: the logits within ε\*(10⁻³) = 4.67·10⁻⁴ of the
 exact outputs the export ships, on its conformance inputs.
 
 - *CRAFT on the C.* CRAFT's variable mode runs on it. Its builder is
@@ -1594,15 +1595,15 @@ things move a row:
 - the kernel interpreter computes the native bits (D159);
 - an entry outside a training run has no dropout mask (D160).
 
-The report, with each row's old value, its new one and the paper's
-sentence, is `docs/rows-0.16.0.md`. The outputs are archived in
+The report, with each row's old value, and its new one,
+is `docs/rows-0.16.0.md`. The outputs are archived in
 presk-project `data/`.
 
 | row | before | 0.16.0 |
 |---|---|---|
 | the decoder's solve (D162) | D124: 31 of 32, 13 weights in `f32`, 1.99×, 2.6·10⁻⁵ | the same 31, 13 weights with RMSNorm's three gains (ones at initialization) in `bf16`, 1.99×, 2.5·10⁻⁵ (the native gap, which D124's realization had too) |
-| H2, the curve at 10⁻³ (D163) | D132: 33 stored values, 2.12×, 1.6·10⁻⁵ | 27 (the masks gone), **2.04×**, 4.9·10⁻⁶ |
-| H5, the margins | four of seven certified; H2's realization 17 ε\*, 30 flips | four of seven; H2's 5.5 ε\*, 9 flips |
+| D, the curve at 10⁻³ (D163) | D132: 33 stored values, 2.12×, 1.6·10⁻⁵ | 27 (the masks gone), **2.04×**, 4.9·10⁻⁶ |
+| S, the margins | four of seven certified; D's realization 17 ε\*, 30 flips | four of seven; D's 5.5 ε\*, 9 flips |
 | V6 | D124: 29 of 31, 1.97×, 7.5·10⁻⁵ | 22 of 25, **1.97×**, 1.4·10⁻⁴, no decision changed |
 | the course GPT through the margins (D129) | the logits' solve 1.97×, 2.1·10⁻⁴ | 1.99×, 4.2·10⁻⁴, still inside ε\* |
 | `make precision` | D124: 2.12×, 3.9·10⁻⁶ | **2.02×**, 1.2·10⁻⁶ |
@@ -1611,11 +1612,11 @@ presk-project `data/`.
 | D154: the tools' searches (D165) | 2.17× | **2.00×**, the same realization, the masks no longer counted |
 | D155: the measured term at ε\* | 2.14× against 1.97× | **1.96× either way**: its gain was the masks, ones exact in `bf16` |
 | D156: out of sample against in, N = 4 and 32 | 2.30×, 1.92× | 1.94×, 1.15×, the default's realization the same from one window, the solver's measurement the native gap to the digit |
-| Table 1 (D166) | D101, D124 | the solves within 7 %; the calibrations 14–19 % slower, measured: D155's rounding table (+5 %) and D158's pass for one sample's counts (+9 %) |
+| the compile times (D166) | D101, D124 | the solves within 7 %; the calibrations 14–19 % slower, measured: D155's rounding table (+5 %) and D158's pass for one sample's counts (+9 %) |
 | V5: the decoder block's realization ÷ all-`f32` | D124: as fast | **0.73×**, below all-`f32` in each of eight processes |
-| T2 and T4 (Table 4) | D127: 0.98×; 1.52×, 1.60× | **0.93×; 1.63×, 1.67×**, the C program 5 % faster without masks |
+| T2 and T4 | D127: 0.98×; 1.52×, 1.60× | **0.93×; 1.63×, 1.67×**, the C program 5 % faster without masks |
 | D153: the C step ÷ `torch.compile`'s | 1.80× (2.07× like for like) | 1.70× (1.97×) |
-| H6 (D50): course scale, D = 64 | 1.13×, 1.06× (apremont) | 1.02×, 0.74× (falicon) |
+| J (D50): course scale, D = 64 | 1.13×, 1.06× (apremont) | 1.02×, 0.74× (falicon) |
 
 What changed the numbers:
 - *The masks.* They are gone from every entry outside a training run, so
@@ -1626,7 +1627,7 @@ What changed the numbers:
 - *The cost per sample.* It makes the weights weigh more against the
   activations.
 
-What stayed: every row is inside its budget by measurement, H2, H5 and
+What stayed: every row is inside its budget by measurement, D and
 statement S hold at both scales, and T2 holds and T4 fails as before.
 The step-5 runs found one defect. Since D160, `presk plan` had planned
 the inference reading, so `presk train` refused the plan of a training
@@ -1749,7 +1750,7 @@ plan's kernels alone (the manual's `cli` chapter).
 
 ## 25. A public model's weights: Llama 3.2 1B (D180)
 
-`make llama3` (`experiments/llama/llama3.sh`) runs `coverage/llama3.psk`
+`make llama3` (`experiments/llama/llama3.sh`) runs `examples/coverage/llama3.psk`
 on the published weights of `meta-llama/Llama-3.2-1B`, the base model.
 The user downloads them, the licence accepted and the token theirs. This is
 plan 0.17.0 step 7, statements RW2–RW4.
@@ -1820,8 +1821,7 @@ read the checkpoint against that tree.
 
 Plan 0.17.0's step 8 measured every row the version changes, on the
 version's binary (`docs/rows-0.17.0.md`). The timed rows ran alone on
-falicon by D127's protocol: five processes, ten X925, the median. No row of
-the paper was solved or timed again: the paper stays at 0.16.1.
+falicon by D127's protocol: five processes, ten X925, the median.
 - **The native code (NB2, NB3 hold).** The course GPT at B = 16,
   T = 256 in `f32`, under the frozen profile's plans, against the exported
   C program under GCC `-O2`, its workers waiting as the native pool's:
@@ -1878,7 +1878,7 @@ the paper was solved or timed again: the paper stays at 0.16.1.
     keeps it, already takes 7.58 s.
   - The conversions between types take 3.1 % of the per-value step and
     1.0 % of J′'s (TS3).
-  - At D = 64 they take 12.5 % of H6's step, 38 % of its loss against
+  - At D = 64 they take 12.5 % of J's step, 38 % of its loss against
     all-`f64` (§20).
 
 ## 27. Llama 3.2 1B solved whole, against the field's recipes (plan 0.17.1)
@@ -1903,7 +1903,7 @@ llama.cpp's BF16, Q8_0, Q4_K_M and Q4_0, and transformers in `float32` and
 | `calibrate` | The envelope on the calibration windows at 128 bits, alone: about 6.5 h and 105 GB |
 | `solve` | The seven solves of the plan's §3.3, then an eighth at ε\*(10⁻²) with `--min-gain 0` (the user, 2026-11-06), one at a time, under `--sweep f64 --measure native` (the `cli` chapter); each realization's `presk explain`. `SOLVES` chooses among them |
 | `measure` | Our realizations natively on the held-out windows, one thread a window, `JOBS` side by side on the X925 cores (22 to 26 GB a run); the field's by their own programs (`llamacpp_logits`, `rw2.py --dtype`); the weights' bytes. Ours are `f64`, D180's six uniform ones, one written by hand (`experiments/llama/bf16-params-f32.json`: every parameter `bf16` at rest, every stored value `f32`) and the solved ones |
-| `perplexity` | `nll` of `coverage/llama3.psk` on the quality windows, 8 a run; the field's from their logits |
+| `perplexity` | `nll` of `examples/coverage/llama3.psk` on the quality windows, 8 a run; the field's from their logits |
 | `time` | RW9, alone on the machine |
 | `report` | The tables and the statements (`budget.py report`) |
 
@@ -1975,6 +1975,178 @@ from at its next window.
   gathers the figure's data (§7), the solved realizations in words (§8),
   the statements (§9) and the cost against the plan (§10). The archive is
   presk-project `data/llama3-budget-0.17.1.tar.xz`.
+- **D189's addendum** (after the version, the user's decision). The six
+  rows whose default is `f32` were run again with `nll`'s own sites typed
+  `f64` by per-site storage (`nll/%3`, the logits it receives; `nll/%5`,
+  its `cross_entropy`). D189's rows stay of record.
+  - `f32` and the realization by hand give 24.7699, `f64`'s perplexity
+    within 1.5·10⁻⁷ in log. They are 3.8 orders under their bound, where
+    D189 had 0.33.
+  - `int8` gives 24.8736 and 24.9890, `int4` 75.6076 and 596.5223.
+  - The `f32` log-softmax's share is −3.96·10⁻⁴ for `f32`, by hand and
+    `int8`, and −5.3 to −5.5·10⁻⁴ for `int4`.
+  - On window 0 the new `nll` is numpy's binary64 log-softmax of the same
+    logits within 5.3·10⁻¹⁴. The archive is presk-project
+    `data/llama3-budget-nll-f64-0.17.1.tar.xz`.
+
+## 28. The reference at 53 bits (D192)
+
+The first of the short runs (SR2). Does
+the 128-bit reference decide anything at D = 64? `make reference-bits`
+solves the eight rows of record again with the reference interpreter at
+`--bits 53` and at `--bits 64`: the curve on the trained envelope (10⁻¹ to
+10⁻⁷) and V6 on the logits at ε\*(10⁻³). Each row keeps its envelope and its
+options (§22).
+- **The realizations.** All 16 are D170's byte for byte.
+- **The gaps.** Every measured gap is D170's to the four digits printed,
+  from 1.778·10⁻⁴ down to 1.576·10⁻⁹.
+- **The rounds.** No solve widened anything. SR2 holds.
+
+The smallest gap is six orders above what a reference correctly rounded at
+53 bits misses. So the 128 bits measure how far a realization near `f64` is,
+and decide no row here. The time is the same at 53 and at 64 bits (49.5 s a
+curve solve, 98.2 s V6), one limb of MPFR either way. The 128-bit solves of
+record were not timed alone, so nothing is said of the cost.
+
+## 29. The bound against depth (D193)
+
+The second of the short runs (SR1). The explanation of the nine
+orders between `cond` and the measured gap is `k` against `√k` over the
+sums in series (D51). `make bound-depth` tests it as a law: the course GPT
+at D = 64, trained by `make gpt-trained`'s recipe at L = 1, 2, 4 and 6
+blocks, each checked under the four rules with `--measure`.
+- **SR1a holds.** log₁₀(`cond`/`rss`) on the loss is 5.22, 8.29, 13.55 and
+  19.42. That is 2.81 orders a block (the prediction, read off L = 2's
+  sites before the run, was 3.2), in `f64` and in `f32` alike. At L = 6
+  the conditioned bound is 2·10²⁰ times the gap in `f64`.
+- **SR1b fails at one point.** The estimate `rss` stays within 7.8–27× of
+  the gap in `f64` at every depth, and within 17× in `f32` up to L = 4.
+  At L = 6 in `f32` it is 59×. It is above the gap in every trained row.
+- **At initialization** the zero `head` makes the loss `ln 92` whatever
+  the blocks do, so every L gives the same rules and gap. There the
+  estimate falls below the gap (0.27–0.31×): the log-sum-exp of 92 equal
+  terms, where the roundings are correlated (D128).
+
+## 30. The budgeted step under its plan (D194)
+
+The third of the short runs (SR4). J′'s 1.75× for the step solved
+at 10⁻³ on the update was timed under the default layout. `make step-plan`
+times it under the cost model's plan. At the course constants, all-`f64`,
+all-`f32` and the solved step each run under their own plan from the
+frozen profile. They are pinned on the ten X925 cores, five processes a
+row, each the median of seven steps (D126).
+- **SR4 holds.** The solved step takes 956.5 ms against all-`f64`'s
+  1 740.3, 1.82× (1.74× by J′'s four-minus-one-step measure, 1.73× over 63
+  steps). A layout moves no bit, so the update gap is J′'s.
+- **The prediction misses.** The solved step is 8.3 % slower than
+  all-`f32` (883.0 ms), not within 3 %, though its weights are all-`f32`'s
+  bit for bit.
+  - The difference is on the host (`presk train --host-profile`). The
+    realization's default type, `f64`, types the step's arguments at the
+    entry (433 MB a step), and its `f32` kernels convert them back (303
+    MB).
+  - Under the default layout that cost was under 1 % of a step seven
+    times longer.
+  - Over 64 steps it grows to 12.6 %, with the peak from 3.7 to 5.3 GB.
+
+## 31. The optimizer on the course GPT (D195)
+
+The fourth of the short runs (SR3), reported, with no statement.
+`--opt` is refused with a plan, with `--budget` and with a realization that
+types sites, so `make opt-measured` measures it where it is allowed: the
+course GPT at `D` = 64 and at the course constants, all-`f32` and
+all-`f64`, the default layout, five processes a row on the ten X925.
+- **The loss.** `--opt` moves no bit of it, in either type at either
+  scale, on the envelopes' two held-out windows. In the functions the loss
+  calls it changes no operation it counts. It shares the `x − μ` that
+  `LayerNorm.apply` writes twice, and reassociates a residual.
+- **Its time.** `presk bench` is 0.1–2.9 % slower with `--opt`, in every
+  row. The shared `x − μ` is read by two fusion groups, so it reaches
+  memory: 81 → 86 launches a call at `D` = 64, 217 → 230 at the course
+  constants (`presk explain`). The extraction chooses the term before the
+  partition (the `optimization` chapter, question 49).
+- **The gradient.** The rules rewrite 15 of its 44 functions, mostly the
+  adjoints' accumulations into zero records. Its gap keeps its order
+  (`f32` 4.67 → 4.71·10⁻⁷ at `D` = 64), though about 80 % of its elements
+  change bits.
+- **The step.** `presk train` takes 5.4 % (`f32`) and 8.0 % (`f64`) less
+  with `--opt` at `D` = 64, 0.6 % and 2.5 % at the course constants, with
+  511 → 358 and 1 132 → 799 launches a step and 11–21 % less peak memory.
+  Under the plan, where `--opt` is refused, the same step is about 6.9×
+  faster (D194).
+
+## 32. The weights' certified width (D196)
+
+The sixth of the short runs (SR6), which changes nothing in the
+compiler. `make weights-width` asks how many significant bits the course
+GPT's weights need at rest for the all-`f32` realization to stay
+certified at δ = 10⁻³ (§5's ε from the margins, D118). No type is
+added, since a parameter is rounded once when the program receives it.
+- **The method.** `experiments/weights_width.py` rounds the trained
+  checkpoint of record to k significant bits. It rounds through `f32` to
+  nearest, ties to even, as `presk-rt` rounds a stored `f64` to `bf16`.
+  The rows run under `--realize f32` natively, as `make margins`' rows
+  run, against the exact logits of the **unrounded** weights.
+- **The ladder.** k runs from 8 to 24. Variant M rounds the nine
+  matrices, and variant A all twenty-one parameters.
+- **The check (SR6a) holds.** At k = 24 the logits are all-`f32`'s of
+  record byte for byte. At k = 8 they are, byte for byte, those of the
+  realization with the same parameters at rest in `bf16` (`params`).
+- **Three bytes (SR6b) hold.** With the nine matrices at 16 bits, the
+  largest gap is 0.16 ε\* at `D` = 64 and 0.31 ε\* at the course
+  constants. No decision changes.
+- **The smallest certified width** is 14 bits at `D` = 64 and 16 at the
+  course constants, in both variants. In `bf16` the matrices are 55 and
+  231 ε\*.
+- **The bytes.** At 16 bits the weights at rest take 0.75 of all-`f32`'s
+  bytes. The traffic is 0.81 of all-`f32`'s at the course constants,
+  where the weights dominate it, 1.24× under the realization solved on
+  the logits. The traffic is a count: no kernel reads a three-byte
+  element, and nothing was timed.
+
+## 33. Serving split, and the two modes (D201)
+
+The fifth of the short runs (SR5), on 0.17.2's binary, alone on
+falicon. `make sr5` runs `experiments/sr5.sh` on D200's two timers and
+writes `out/sr5-0.17.2/report.md`. No row of record is run again: D190's
+and D124's stay, and these are new rows beside them.
+- **Serving Llama 3.2 1B (SR5a)** is computing. D190's five serving rows,
+  32 tokens on one X925 core, three processes each, with `presk serve`'s
+  split:
+  - compiling takes 0.30 to 0.39 s for the 32 lengths, under 0.1 % of
+    425 to 764 s;
+  - computing takes 86 to 93 % of the time;
+  - the rest, reading the weights and the initializer, takes 50 to 60 s.
+  B's computing alone is 0.686 of `f32`'s, where its elapsed time is
+  0.712 here and 0.678 in D190. So the serving ratio is not compiling's.
+- **The timers change nothing (SR5-0)** fails as written. Every process
+  gives D190's tokens, but `f32`'s row takes 0.947 of D190's time and A's
+  0.971, beyond the 2 % allowed. D190's own binary, run the same evening
+  in the same setting, takes 0.934 of D190's time, and this binary is
+  1.4 % slower than it. So the difference is the setting's: D190 ran
+  those rows in one memory scope after its `presk bench` processes.
+- **The two modes (SR5b)** on the Llama 2 decoder block at the 7B width,
+  D124's program and plan, 20 processes of `presk bench --host-profile
+  --launches`:
+  - the call takes 1.88 to 2.81 s, 1.49× apart, and 3 processes are slow
+    by the 20 % rule fixed before the runs;
+  - the spread is one launch's, the attention's output projection, an
+    `ein` the plan leaves at one lane, untiled, which reads the 64 MiB
+    weight across its rows. It takes 1.36 to 2.29 s, and the rest of the
+    call 0.51 to 0.55 s in every process;
+  - the buffers' addresses do not order the processes.
+  - Under huge pages the spread stays, 1.31×, and the projection is
+    faster (0.88× by the medians), so the placement of the physical pages
+    is ruled out by the rule fixed before the test.
+  - With the address space's randomization off as well, the weight sits
+    at one address in every process and the spread stays (1.22×), so
+    the weight's placement is ruled out too. The activations, from the
+    heap, still move, and their placement is left open, like the
+    physical placement above 2 MiB and a cause other than placement.
+
+  The search stopped there, inside the day the plan allows. The
+  roadmap's section on a launch slower inside a call than alone takes it
+  up (`docs/kernels-roadmap.md`).
 
 ## What these experiments do not show
 

@@ -43,7 +43,7 @@ fn analyze(rel: &str) -> (SourceMap, String, Vec<presk_syntax::Diagnostic>) {
 #[test]
 fn examples_analysis() {
     for rel in ["mlp/mlp.psk", "layernorm/layernorm.psk", "minigpt/minigpt.psk", "minigpt/train_minigpt.psk", "minigpt/serve_minigpt.psk"] {
-        let (sm, summary, diags) = analyze(&format!("tests/examples/{rel}"));
+        let (sm, summary, diags) = analyze(&format!("examples/spec/{rel}"));
         assert!(diags.iter().all(|d| d.code == "W0001" || d.code == "W0002"), "{rel}:\n{}", render_all(&diags, &sm, false));
         let name = format!("analysis_{}", Path::new(rel).file_stem().unwrap().to_str().unwrap());
         insta::assert_snapshot!(name, summary);
@@ -53,7 +53,7 @@ fn examples_analysis() {
 #[test]
 fn diagnostics_corpus() {
     chdir_root();
-    insta::glob!(repo_root().join("tests/diag"), "{reg,eff}_*.psk", |path| {
+    insta::glob!(repo_root().join("examples/tests/diag"), "{reg,eff}_*.psk", |path| {
         let rel = path.strip_prefix(repo_root()).unwrap().display().to_string();
         let (sm, _summary, diags) = analyze(&rel);
         assert!(diags.iter().any(|d| d.is_error()), "{rel} produced no error");
@@ -63,7 +63,7 @@ fn diagnostics_corpus() {
 
 #[test]
 fn piecewise_smooth_is_differentiable() {
-    let (sm, summary, diags) = analyze("tests/analysis_ok_relu.psk");
+    let (sm, summary, diags) = analyze("examples/tests/analysis_ok_relu.psk");
     assert!(diags.is_empty(), "{}", render_all(&diags, &sm, false));
     assert!(summary.contains("f : [x C⁰⁺]"), "{summary}");
 }

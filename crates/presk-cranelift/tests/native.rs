@@ -116,7 +116,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     // stack_prefix_grad's gradient, where a small result is left over from
     // larger terms cancelling, it crosses the band on some inputs and not
     // others, with 0.6.0's kernels as with these (D58).
-    if rel.starts_with("tests/examples/") || realize.default != Dtype::Bf16 {
+    if rel.starts_with("examples/spec/") || realize.default != Dtype::Bf16 {
         assert!(w.0 <= eps, "{rel} {entry} ({}): gap {:.3e} > {eps:.3e} at {}", realize.label(), w.0, w.1);
     }
     w.0
@@ -131,18 +131,18 @@ const BERT_TINY: &[(&str, u64)] = &[("V", 100), ("D", 16), ("H", 2), ("L", 2)];
 fn examples_conform() {
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
-        ("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
-        ("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)]),
-        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
-        ("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)]),
-        ("tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)]),
-        ("tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
-        ("coverage/bert.psk", BERT_TINY, "BertSquad.apply", &[("B", 2), ("T", 8)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
+        ("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
+        ("examples/spec/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)]),
+        ("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
+        ("examples/tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)]),
+        ("examples/tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)]),
+        ("examples/tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
+        ("examples/coverage/bert.psk", BERT_TINY, "BertSquad.apply", &[("B", 2), ("T", 8)]),
     ];
     let mut report = String::new();
     for (rel, consts, entry, dims) in cases {
@@ -158,7 +158,7 @@ fn examples_conform() {
 #[test]
 fn primitives_conform() {
     use presk_core::PrimOp;
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let ax = |name: Option<&str>, len: usize| presk_interp::value::Axis { name: name.map(String::from), len };
     let real = |axes: Vec<presk_interp::value::Axis>, seed: u64| -> IValue {
@@ -258,7 +258,7 @@ fn primitives_conform() {
 /// The textual form of the kernels of a small entry.
 #[test]
 fn kernel_dump_snapshot() {
-    let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
+    let (prog, core) = prepare("examples/tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{3, 2}.apply".into(), dims: vec![("batch".into(), 4)], seed: 0, bits: 64, digits: 12 };
     let mut backend = native_backend(&core, &prog, &Realization::uniform(Dtype::F32)).unwrap();
     presk_rt::run_with(&mut backend, &core, &prog, &opts, &Realization::uniform(Dtype::F32)).unwrap();
@@ -274,7 +274,7 @@ fn native_training_matches_reference() {
     use presk_train::{TrainOptions, prepare_training, train};
     chdir_root();
     let mut sm = SourceMap::new();
-    let id = sm.load(Path::new("tests/train/mlp_regression.psk")).unwrap();
+    let id = sm.load(Path::new("examples/tests/train/mlp_regression.psk")).unwrap();
     let (program, _) = parse_file(&sm, id);
     let (prog, _) = elab::elaborate(&mut sm, id, program, &Options::default());
     let (typed, _) = check::check(&sm, &prog);
@@ -316,7 +316,7 @@ fn native_training_matches_reference() {
 /// loops in the same order, so one worker and twelve must agree bit for bit.
 #[test]
 fn threads_do_not_change_a_single_bit() {
-    let (prog, core) = prepare("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 64), ("H", 2), ("L", 2)]);
+    let (prog, core) = prepare("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 64), ("H", 2), ("L", 2)]);
     for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32)] {
         // Batch 1 is the regime where the outermost loop has one iteration
         // and the default splits nothing; a split at a depth still can.
@@ -384,7 +384,7 @@ fn gemm_row(n: usize, realize: &Realization) -> Vec<f64> {
     let k = 37;
     let a: Vec<f64> = (0..k).map(|i| ((i * 7 + 1) as f64).sin()).collect();
     let b: Vec<f64> = (0..k).flat_map(|i| (0..n).map(move |j| ((i * 31 + j * 3) as f64).cos())).collect();
-    let (prog, core) = prepare("tests/data/gemm_exact.psk", &[("K", k as u64), ("N", n as u64)]);
+    let (prog, core) = prepare("examples/tests/data/gemm_exact.psk", &[("K", k as u64), ("N", n as u64)]);
     let f = core.find("gemm").unwrap();
     let dims: presk_interp::eval::Dims = core.func(f).dims.iter().map(|d| (*d, 1)).collect();
     let mut back = presk_cranelift::native_backend(&core, &prog, realize).unwrap();
@@ -409,9 +409,9 @@ fn the_emitted_vector_kernel_is_bit_identical() {
     chdir_root();
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 32), ("B", 4)]),
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 32), ("B", 4)]),
-        ("tests/examples/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 32), ("B", 4)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 32), ("B", 4)]),
+        ("examples/spec/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)]),
     ];
     for (rel, consts, entry, dims) in cases {
         for (d, lanes) in [(Dtype::F64, 2usize), (Dtype::F32, 4)] {
@@ -435,12 +435,12 @@ fn the_emitted_vector_kernel_is_bit_identical() {
 /// A closure applied inside a differentiated function, natively (0.10.0 step
 /// 3, defect 3a of the reference's chapter 5; `presk-interp`'s
 /// `ad_through_applied_closures_matches_finite_differences` checks the
-/// reference): each gradient of `tests/data/closure_grad.psk` in `f64`
+/// reference): each gradient of `examples/tests/data/closure_grad.psk` in `f64`
 /// agrees with central finite differences of its primal, both run
 /// natively, h = 2^-12, to 2^-30 relative.
 #[test]
 fn applied_closures_differentiate_natively() {
-    let rel = "tests/data/closure_grad.psk";
+    let rel = "examples/tests/data/closure_grad.psk";
     let (prog, core) = prepare(rel, &[]);
     let realize = Realization::uniform(Dtype::F64);
     let mut backend = native_backend(&core, &prog, &realize).unwrap();
@@ -469,14 +469,14 @@ fn applied_closures_differentiate_natively() {
 /// The gradient of a stacked module that drops, training on, natively (0.10.0
 /// step 4, defect 3f of the reference's chapter 5; `presk-interp`'s
 /// `ad_through_stacked_dropout_matches_finite_differences` checks the
-/// reference): `tests/data/stack_dropout_grad.psk`'s gradient in `f64`
+/// reference): `examples/tests/data/stack_dropout_grad.psk`'s gradient in `f64`
 /// agrees with central finite differences of its loss, both run natively
 /// with the same key, h = 2^-20, to 2^-24 relative. The kernel host kept the
 /// first key of the stacked accumulators for every layer, as the
 /// interpreter did: 77 % off at layer 1.
 #[test]
 fn stacked_dropout_differentiates_natively() {
-    let rel = "tests/data/stack_dropout_grad.psk";
+    let rel = "examples/tests/data/stack_dropout_grad.psk";
     let (prog, core) = prepare(rel, &[]);
     let realize = Realization::uniform(Dtype::F64);
     let mut backend = native_backend(&core, &prog, &realize).unwrap();
@@ -529,14 +529,14 @@ fn integer_weights_load_as_their_values() {
     chdir_root();
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], i64, (usize, usize));
     let cases: &[Case] = &[
-        ("tests/examples/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)], -2, (0, 1)),
+        ("examples/spec/minigpt/minigpt.psk", &[("V", 64), ("D", 64), ("H", 2), ("L", 2)], "MiniGPT.apply", &[("B", 2), ("T", 8)], -2, (0, 1)),
         // Odd widths: an `int4` row of 13 starts every other row mid-byte.
-        ("tests/quant/odd.psk", &[], "L.apply", &[("B", 3)], -2, (0, 1)),
+        ("examples/tests/quant/odd.psk", &[], "L.apply", &[("B", 3)], -2, (0, 1)),
         // A matrix read through `split` of the axis its scales are constant
         // along, and of the other one (D104, plan 0.10.1 step 6): the
         // native backend read past the scales.
-        ("tests/quant/split.psk", &[], "M.apply", &[("B", 3)], -2, (0, 2)),
-        ("tests/quant/split.psk", &[], "M.apply", &[("B", 3)], -1, (2, 1)),
+        ("examples/tests/quant/split.psk", &[], "M.apply", &[("B", 3)], -2, (0, 2)),
+        ("examples/tests/quant/split.psk", &[], "M.apply", &[("B", 3)], -1, (2, 1)),
     ];
     for (rel, consts, entry, dims, axis, over) in cases {
         integer_weights_case(rel, consts, entry, dims, *axis, *over);
@@ -604,9 +604,9 @@ fn the_host_profile_reads_only_the_clock() {
     let minigpt: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str);
     let cases: &[Case] = &[
-        ("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 2)], "GPT.apply"),
-        ("tests/plan/minigpt_grad.psk", minigpt, "loss_grad"),
-        ("tests/examples/minigpt/train_minigpt.psk", minigpt, "adamw.step"),
+        ("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 2)], "GPT.apply"),
+        ("examples/tests/plan/minigpt_grad.psk", minigpt, "loss_grad"),
+        ("examples/spec/minigpt/train_minigpt.psk", minigpt, "adamw.step"),
     ];
     let realize = Realization::uniform(Dtype::F32);
     for (rel, consts, entry) in cases {
@@ -659,7 +659,7 @@ fn a_dropout_mask_drawn_apart_is_drawn_in_order() {
     use presk_core::PrimOp;
     use presk_interp::key::{Key, uniform01};
     use presk_rt::{Axis, Buf, Tensor};
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     for dtype in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
         let r = Realization::uniform(dtype);
         for (n, rate, seed) in [(10usize, 0.5, 1u64), ((1 << 17) + 3, 0.2, 7), (10 * (1 << 16) + 11, 0.1, 42), ((1 << 20) - 1, 0.25, 0xdead)] {

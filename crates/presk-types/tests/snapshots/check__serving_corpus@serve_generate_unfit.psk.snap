@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/serve_generate_unfit.psk
+input_file: examples/tests/diag/serve_generate_unfit.psk
 ---
 [E2010] Error: `generate`: `logits` is not a generation function of `Toy`
-    ,-[ tests/diag/serve_generate_unfit.psk:16:14 ]
+    ,-[ examples/tests/diag/serve_generate_unfit.psk:16:14 ]
     |
  10 | fn logits(θ : params Toy, ctx : idx[V][batch: B, seq: T]) -> ℝ[batch: B, seq: T, vocab: V] = Toy.apply(θ, ctx)
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  

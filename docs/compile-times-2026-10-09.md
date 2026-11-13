@@ -4,7 +4,7 @@
 > `presk calibrate --precision` (the magnitude envelope of the entry on 2 sample(s) at 128 bits);
 > `presk solve --budget 1e-3` (a realization proposed and verified by measurement against the reference
 > at 128 bits); and the exact reference alone, `presk run --bits 128` on one sample. The first column is
-> the model's key, which the paper's `tables/setup.py` reads.
+> the model's key.
 
 # Compile and solve times, 2026-10-09
 
@@ -13,12 +13,12 @@
 | bert-large-L2 | BERT-large at MLPerf's constants, L = 2 of 24, one feature, its SQuAD loss | 0.006 | 10447.634 | 5229.045 | 580.703 |
 
 The outputs of every command are under `out/compile_times/` (not committed; archived in
-`presk-project/data/paper-0.11.0.tar.xz`). A time is of the
-command as the paper's reader would run it, the front end, the JIT and the reading of the data
+presk-project's `data/` with D117's runs). A time is of the
+command as a reader would run it, the front end, the JIT and the reading of the data
 included; `presk solve` includes the reference run it verifies against.
 
 `bert-large-L2` was run by `MODELS=bert-large-L2 ./experiments/compile_times.sh` on presk
-`bb78cb8`, version 0.11.0's tree, from 17:47 to 22:18 CEST on 2026-10-09, in the paper's runs of
+`bb78cb8`, version 0.11.0's tree, from 17:47 to 22:18 CEST on 2026-10-09, in the runs of record of
 plan 0.11.0's step 7 (decision D117), after `make precision`, the quant and step tables and
 `make curve` and before the Llama 2 decoder's solve. Nothing else was measured on the machine
 meanwhile; the session edited text, and ran `gas-agents` once for a few seconds at `nice 19` on

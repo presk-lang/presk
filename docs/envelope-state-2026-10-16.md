@@ -1,4 +1,4 @@
-> The curve's envelope and the envelope-stability figure on the trained weights (presk D132). The prompt was presk-project `docs/prompt-envelope-state-2026-10-16.md`, at the user's request through the paper session, after the user's observation on `make explain-pdf` that an envelope measured at initialization says nothing of the trained model. Version 0.12.0 (presk `main` `cce1379`), on falicon, 2026-10-16; nothing is timed. The tables come from `experiments/curve_trained.sh` (`out/curve-trained.md`), `experiments/curve_course_trained.sh` (`out/curve-course-trained.md`), `make margins` and `experiments/margins_course.sh` with the new realizations added, and the stability calibrations under `out/envelope-state/`. The outputs are in presk-project `data/envelope-state-0.12.0.tar.xz`, and the quality axis's, added after, in `data/envelope-state-quality-0.12.0.tar.xz`.
+> The curve's envelope and the envelope-stability figure on the trained weights (presk D132). The prompt was presk-project `docs/prompt-envelope-state-2026-10-16.md`, at the user's request, after the user's observation on `make explain-pdf` that an envelope measured at initialization says nothing of the trained model. Version 0.12.0 (presk `main` `cce1379`), on falicon, 2026-10-16; nothing is timed. The tables come from `experiments/curve_trained.sh` (`out/curve-trained.md`), `experiments/curve_course_trained.sh` (`out/curve-course-trained.md`), `make margins` and `experiments/margins_course.sh` with the new realizations added, and the stability calibrations under `out/envelope-state/`. The outputs are in presk-project `data/envelope-state-0.12.0.tar.xz`, and the quality axis's, added after, in `data/envelope-state-quality-0.12.0.tar.xz`.
 
 # The curve's envelope and the stability figure, on the trained weights
 
@@ -32,7 +32,7 @@ The trained envelope (`out/curve-trained_env.json`) against the initialization's
 | 10⁻⁶ | 13 | 1.35× | 4.542·10⁻⁹ | 19 (0) | 19 (1) | **1.52×** | 4.418·10⁻⁹ | 0 |
 | 10⁻⁷ | 6 | 1.08× | 3.729·10⁻⁹ | 8 (0) | 10 (1) | **1.15×** | 1.738·10⁻⁹ | 0 |
 
-- *What the columns measure:* D124's are its record's (`make curve` at 0.12.0, the paper's `curve-D124.md`). D132's measured gap is on the loss over the two windows, D124's on random tokens; neither is a gap on held-out text.
+- *What the columns measure:* D124's are its record's (`make curve` at 0.12.0, `curve-D124.md`). D132's measured gap is on the loss over the two windows, D124's on random tokens; neither is a gap on held-out text.
 - *Every solve is inside its budget, and none widened.* D132 measured nothing that needed a widening round.
 - *The bound (`f64`, `cond`) under the new envelope* is 1.60·10⁻⁶, against 2.58·10⁻¹³ under the initialization's.
 
@@ -52,7 +52,7 @@ The trained envelope (`out/curve-trained_env.json`) against the initialization's
 - *The spread:* every trained-envelope realization trains to within 1.3·10⁻⁴ of all-`f64`. The loosest, 10⁻¹, with every matrix in `bf16`, is 1.28·10⁻⁴ above it, against D124's largest, 5.2·10⁻⁵.
 - *The yardstick:* the seeds' spread, 0.092 (D124: all-`f64` at seeds 0, 1, 2), is 700 times the largest difference.
 - *The two tightest budgets* train to all-`f64`'s loss to the eighth digit, as under the initialization's envelope.
-- *The fixture:* the full table, in the format of the paper's `curve-D124.md`, is `curve-D132.md` (presk-project `data/envelope-state-quality-0.12.0.tar.xz`).
+- *The full table*, in the format of `curve-D124.md`, is `curve-D132.md` (presk-project `data/envelope-state-quality-0.12.0.tar.xz`).
 
 **The realizations moved.**
 - *Under the trained envelope the solver narrows more at every budget but 10⁻⁴:* 3.17× against 2.78× at 10⁻¹, 2.12× against 2.00× at 10⁻³, 1.92× against 1.58× at 10⁻⁵.

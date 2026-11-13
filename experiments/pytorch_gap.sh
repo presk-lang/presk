@@ -52,7 +52,7 @@ ls "$MARGINS"/exact/*.hilo > /dev/null 2>&1 || { echo "pytorch_gap.sh: no exact 
 mkdir -p "$OUT/margins/native" "$OUT/margins/decisions"
 "$PRESK" --version > "$OUT/presk-version.txt"
 
-[ -f "$OUT/export/_05_gpt.py" ] || "$PRESK" export corpus/nlp/05_gpt.psk --target pytorch --mode readable --train \
+[ -f "$OUT/export/_05_gpt.py" ] || "$PRESK" export examples/corpus/nlp/05_gpt.psk --target pytorch --mode readable --train \
     $CONSTS -o "$OUT/export" > "$OUT/export.log" 2>&1 || { echo "export failed"; exit 1; }
 
 # The exact logits and the compiler's rows, linked.

@@ -1,9 +1,9 @@
 ---
 source: crates/presk-explain/tests/documents.rs
-expression: "document(\"mlp\", \"tests/examples/mlp/mlp.psk\", \"mse\", &[\"D=4\", \"B=2\"], &[],\n(Some(1e-3), None), &[Target::Native])"
+expression: "document(\"mlp\", \"examples/spec/mlp/mlp.psk\", \"mse\", &[\"D=4\", \"B=2\"], &[],\n(Some(1e-3), None), &[Target::Native])"
 ---
 ---
-title: "`mse` of `../../tests/examples/mlp/mlp.psk`, under a budget of 1e-3, planned under the profile `data/x925-frozen.json`"
+title: "`mse` of `../../examples/spec/mlp/mlp.psk`, under a budget of 1e-3, planned under the profile `data/x925-frozen.json`"
 subtitle: "What the Presk compiler does to one program: `presk explain`"
 ---
 
@@ -11,7 +11,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 
 | Parameter | Value | Where it comes from |
 |-------------------|------------------------|------------------------------------|
-| Program | `../../tests/examples/mlp/mlp.psk` | the command line |
+| Program | `../../examples/spec/mlp/mlp.psk` | the command line |
 | Entry | `mse` | `--entry mse` |
 | Dimensions | `D = 4`, `B = 2` | `--dim D=4` `--dim B=2` |
 | Constants | none | the files' |
@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.17.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.2. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -58,7 +58,7 @@ A *fact* is a property of the program or of the compilation; a *decision* is wha
 
 The entry's file and the files it imports, as the compiler reads them.
 
-**`../../tests/examples/mlp/mlp.psk`**
+**`../../examples/spec/mlp/mlp.psk`**
 
 ```text
   1  -- mlp.psk — The smallest "complete" Presk program.
@@ -103,7 +103,7 @@ Diagnostics, as `presk check` reports them:
 
 ```text
 [W0001] Warning: implicit dimension `B`
-    ,-[ ../../tests/examples/mlp/mlp.psk:26:65 ]
+    ,-[ ../../examples/spec/mlp/mlp.psk:26:65 ]
     |
  26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
     |                                                                 |  
@@ -112,7 +112,7 @@ Diagnostics, as `presk check` reports them:
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [W0001] Warning: implicit dimension `B`
-    ,-[ ../../tests/examples/mlp/mlp.psk:34:35 ]
+    ,-[ ../../examples/spec/mlp/mlp.psk:34:35 ]
     |
  34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
     |                                   |  
@@ -122,14 +122,14 @@ Diagnostics, as `presk check` reports them:
 ----'
 ```
 
-*Command:* `presk check ../../tests/examples/mlp/mlp.psk`
+*Command:* `presk check ../../examples/spec/mlp/mlp.psk`
 
 ## 2 Elaboration
 
 Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
 
 ```text
-== ../../tests/examples/mlp/mlp.psk (main)
+== ../../examples/spec/mlp/mlp.psk (main)
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init
   param b : ℝ[Out]  init
@@ -188,8 +188,8 @@ mse_grad.lambda0 : [x C∞, y C∞, θ C∞] uses none
 
 *Commands:*
 
-- `presk dump ../../tests/examples/mlp/mlp.psk --stage elab`
-- `presk check ../../tests/examples/mlp/mlp.psk --summary`
+- `presk dump ../../examples/spec/mlp/mlp.psk --stage elab`
+- `presk check ../../examples/spec/mlp/mlp.psk --summary`
 
 ## 3 PSK-Core
 
@@ -226,7 +226,7 @@ fn mse{D B}(θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch:
 }
 ```
 
-*Command:* `presk dump ../../tests/examples/mlp/mlp.psk --stage core`
+*Command:* `presk dump ../../examples/spec/mlp/mlp.psk --stage core`
 
 ## 4 Differentiation
 
@@ -278,7 +278,7 @@ presk calibrate: the largest rounding error of each site's values (D155): 12 sit
 
 The envelope holds 13 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
 
-*Command:* `presk calibrate --precision ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --bits 128 --out $DOC/artifacts/envelope.json`
+*Command:* `presk calibrate --precision ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --bits 128 --out $DOC/artifacts/envelope.json`
 
 ### 6.2 The sensitivities
 
@@ -307,7 +307,7 @@ mse/%5                                   1.0000e0
 mse/%6                                   1.0000e0
 ```
 
-*Command:* `presk dump ../../tests/examples/mlp/mlp.psk --stage sensitivity --entry mse --dim D=4 --dim B=2 --sites 30`
+*Command:* `presk dump ../../examples/spec/mlp/mlp.psk --stage sensitivity --entry mse --dim D=4 --dim B=2 --sites 30`
 
 ### 6.3 The realization
 
@@ -366,7 +366,7 @@ presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.
 | `MLP.apply/%6` | `call Linear.apply{In = hidden, Out = D}(l2, %4)` | carried | `f64` | 8.739e-1 | 1.707e0 | 0.000e0 | 0.000 % |
 | `mse/%3` | `call MLP.apply{D = D, hidden = 4*D}(θ, x)` | carried | `f64` | 8.739e-1 | 1.707e0 | 0.000e0 | 0.000 % |
 
-*Command:* `presk solve ../../tests/examples/mlp/mlp.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json`
+*Command:* `presk solve ../../examples/spec/mlp/mlp.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json`
 
 ### 6.4 The bound and the measurement
 
@@ -394,7 +394,7 @@ MLP.apply/%4                       6.443e-1     2.205e-2     3.423e-2           
 
 The sound rule (`cond`) bounds the error by 4.224e-2, conditional on the envelope's 1 sample; the measurement is 3.636e-8, 1.2e6× under it.
 
-*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/mlp/mlp.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure`
+*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../examples/spec/mlp/mlp.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure`
 
 ## 7 Fusion
 
@@ -417,7 +417,7 @@ Over one call, fusion takes 8 launches to 5.
 | `MLP.apply/%4` | `%4 : ℝ[..., hidden] = gelu %3` | alone | read by `%6 : ℝ[..., D] = call Linear.apply{In = hidden, Out = D}(l2, %4)`: a call |
 | `mse/%5` | `%5 : ℝ[batch: B, model: D] = pow 2 %4` | ends a group of 2 | read by `%6 : ℝ[] = mean %5`: a reduction |
 
-*Command:* `presk dump ../../tests/examples/mlp/mlp.psk --stage realize --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/spec/mlp/mlp.psk --stage realize --plan @$DOC/artifacts/plan.json`
 
 ## 8 The machine and the layout plan
 
@@ -527,7 +527,7 @@ mse/%6 [2, 4] — 1 points, 1 within 1 + u, 1 launch
      lanes 1, split none
 ```
 
-*Command:* `PRESK_THREADS=10 presk plan ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --realize @$DOC/artifacts/realization.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+*Command:* `PRESK_THREADS=10 presk plan ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --realize @$DOC/artifacts/realization.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
 
 ## 9 The kernels and the host
 
@@ -670,7 +670,7 @@ void presk_mse(presk_arena *arena, const presk_mse_in *in, presk_mse_out *out)
 }
 ```
 
-*Command:* `presk dump ../../tests/examples/mlp/mlp.psk --stage kernel --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/spec/mlp/mlp.psk --stage kernel --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json`
 
 ## 10 Targets
 
@@ -775,25 +775,25 @@ presk memory --symbolic: `mse` in f64+sequential+4sites+4params, in D and B: eac
 
 *Commands:*
 
-- `presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json`
-- `presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json --symbolic`
+- `presk memory ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json --symbolic`
 
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
 
 ```sh
-presk check ../../tests/examples/mlp/mlp.psk
-presk dump ../../tests/examples/mlp/mlp.psk --stage elab
-presk check ../../tests/examples/mlp/mlp.psk --summary
-presk dump ../../tests/examples/mlp/mlp.psk --stage core
-presk calibrate --precision ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --bits 128 --out $DOC/artifacts/envelope.json
-presk dump ../../tests/examples/mlp/mlp.psk --stage sensitivity --entry mse --dim D=4 --dim B=2 --sites 30
-presk solve ../../tests/examples/mlp/mlp.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json
-presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/mlp/mlp.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure
-presk dump ../../tests/examples/mlp/mlp.psk --stage realize --plan @$DOC/artifacts/plan.json
-PRESK_THREADS=10 presk plan ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --realize @$DOC/artifacts/realization.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
-presk dump ../../tests/examples/mlp/mlp.psk --stage kernel --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json
-presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json
-presk memory ../../tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json --symbolic
+presk check ../../examples/spec/mlp/mlp.psk
+presk dump ../../examples/spec/mlp/mlp.psk --stage elab
+presk check ../../examples/spec/mlp/mlp.psk --summary
+presk dump ../../examples/spec/mlp/mlp.psk --stage core
+presk calibrate --precision ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --bits 128 --out $DOC/artifacts/envelope.json
+presk dump ../../examples/spec/mlp/mlp.psk --stage sensitivity --entry mse --dim D=4 --dim B=2 --sites 30
+presk solve ../../examples/spec/mlp/mlp.psk --precision $DOC/artifacts/envelope.json --budget 1e-3 --profile tests/data/x925-frozen.json --sites 30 --out $DOC/artifacts/realization.json
+presk check --precision $DOC/artifacts/envelope.json ../../examples/spec/mlp/mlp.psk --realize @$DOC/artifacts/realization.json --model all --sites 8 --measure
+presk dump ../../examples/spec/mlp/mlp.psk --stage realize --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --realize @$DOC/artifacts/realization.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump ../../examples/spec/mlp/mlp.psk --stage kernel --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2 --plan @$DOC/artifacts/plan.json --symbolic
 ```

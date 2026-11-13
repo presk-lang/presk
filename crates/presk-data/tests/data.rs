@@ -11,7 +11,7 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn tokens() -> Vec<u64> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/tokens.txt");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/tests/data/tokens.txt");
     std::fs::read_to_string(root).unwrap().split_whitespace().map(|t| t.parse().unwrap()).collect()
 }
 

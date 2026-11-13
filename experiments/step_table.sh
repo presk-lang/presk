@@ -20,7 +20,7 @@ PRESK=${PRESK:-./target/release/presk}
 # 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
 # recorded (the re-measurement after defect 3f, D93).
 REMAT=${REMAT:-store}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 W=${W:-out/gpt_trained/final.psk.d}
 PROF=${PROF:-out/gpt_prof.json}
 OUT=${1:-out/step_table.md}

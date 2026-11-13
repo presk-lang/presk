@@ -2,11 +2,11 @@
 source: crates/presk-cli/tests/run_diag.rs
 assertion_line: 74
 expression: snap
-input_file: tests/diag/run_mean.psk
+input_file: examples/tests/diag/run_mean.psk
 ---
-$ presk run tests/diag/run_mean.psk --entry average --dim T=0
+$ presk run examples/tests/diag/run_mean.psk --entry average --dim T=0
 [E7003] Error: `average` is refused at the dimensions given: `mean` averages over no element: the axis `seq` of its operand has length 0 (`T` = 0)
-   ,-[ tests/diag/run_mean.psk:6:46 ]
+   ,-[ examples/tests/diag/run_mean.psk:6:46 ]
    |
  6 | fn average(x : ℝ[seq: T, model: 4]) -> ℝ[] = mean(x)
    |                                              ^^^|^^^  

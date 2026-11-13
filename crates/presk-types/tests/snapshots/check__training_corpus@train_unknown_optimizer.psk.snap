@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/train_unknown_optimizer.psk
+input_file: examples/tests/diag/train_unknown_optimizer.psk
 ---
 [E2010] Error: `optimizer sgd`: only `adamw` is implemented in 0.2.0
-    ,-[ tests/diag/train_unknown_optimizer.psk:14:15 ]
+    ,-[ examples/tests/diag/train_unknown_optimizer.psk:14:15 ]
     |
  14 |   optimizer = sgd
     |               ^|^  

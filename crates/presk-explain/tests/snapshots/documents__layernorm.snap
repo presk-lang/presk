@@ -1,9 +1,9 @@
 ---
 source: crates/presk-explain/tests/documents.rs
-expression: "document(\"layernorm\", \"tests/examples/layernorm/layernorm.psk\",\n\"LayerNorm{8}.apply\", &[\"batch=3\"], &[], (None, Some(\"f32\")),\n&[Target::Native])"
+expression: "document(\"layernorm\", \"examples/spec/layernorm/layernorm.psk\",\n\"LayerNorm{8}.apply\", &[\"batch=3\"], &[], (None, Some(\"f32\")),\n&[Target::Native])"
 ---
 ---
-title: "`LayerNorm{8}.apply` of `../../tests/examples/layernorm/layernorm.psk`, in f32, planned under the profile `data/x925-frozen.json`"
+title: "`LayerNorm{8}.apply` of `../../examples/spec/layernorm/layernorm.psk`, in f32, planned under the profile `data/x925-frozen.json`"
 subtitle: "What the Presk compiler does to one program: `presk explain`"
 ---
 
@@ -11,7 +11,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 
 | Parameter | Value | Where it comes from |
 |-------------------|------------------------------------|------------------------------------|
-| Program | `../../tests/examples/layernorm/layernorm.psk` | the command line |
+| Program | `../../examples/spec/layernorm/layernorm.psk` | the command line |
 | Entry | `LayerNorm{8}.apply` | `--entry LayerNorm{8}.apply` |
 | Dimensions | `batch = 3` | `--dim batch=3` |
 | Constants | none | the files' |
@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.17.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.2. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -54,7 +54,7 @@ A *fact* is a property of the program or of the compilation; a *decision* is wha
 
 The entry's file and the files it imports, as the compiler reads them.
 
-**`../../tests/examples/layernorm/layernorm.psk`**
+**`../../examples/spec/layernorm/layernorm.psk`**
 
 ```text
   1  -- layernorm.psk — Layer normalization.
@@ -88,14 +88,14 @@ The entry's file and the files it imports, as the compiler reads them.
 
 Diagnostics: none (`presk check` reports no error and no warning).
 
-*Command:* `presk check ../../tests/examples/layernorm/layernorm.psk`
+*Command:* `presk check ../../examples/spec/layernorm/layernorm.psk`
 
 ## 2 Elaboration
 
 Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
 
 ```text
-== ../../tests/examples/layernorm/layernorm.psk (main)
+== ../../examples/spec/layernorm/layernorm.psk (main)
 module LayerNorm{D : dim} {
   param γ : ℝ[D]  init
   param β : ℝ[D]  init
@@ -134,8 +134,8 @@ RMSNorm.init : [key C∞] uses Rand
 
 *Commands:*
 
-- `presk dump ../../tests/examples/layernorm/layernorm.psk --stage elab`
-- `presk check ../../tests/examples/layernorm/layernorm.psk --summary`
+- `presk dump ../../examples/spec/layernorm/layernorm.psk --stage elab`
+- `presk check ../../examples/spec/layernorm/layernorm.psk --summary`
 
 ## 3 PSK-Core
 
@@ -164,7 +164,7 @@ fn LayerNorm.apply{D}(θ : params LayerNorm{D}, x : ℝ[..., model: D], eps : f6
 }
 ```
 
-*Command:* `presk dump ../../tests/examples/layernorm/layernorm.psk --stage core`
+*Command:* `presk dump ../../examples/spec/layernorm/layernorm.psk --stage core`
 
 ## 4 Differentiation
 
@@ -212,7 +212,7 @@ presk calibrate: the largest rounding error of each site's values (D155): 12 sit
 
 The envelope holds 13 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
 
-*Command:* `presk calibrate --precision ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --bits 128 --out $DOC/artifacts/envelope.json`
+*Command:* `presk calibrate --precision ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --bits 128 --out $DOC/artifacts/envelope.json`
 
 ### 6.2 The sensitivities
 
@@ -252,7 +252,7 @@ LayerNorm.apply/%4                  2.223e0     7.037e-7     3.166e-7           
 
 The sound rule (`cond`) bounds the error by 2.590e-6, conditional on the envelope's 1 sample; the measurement is 1.440e-7, 1.8e1× under it.
 
-*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/layernorm/layernorm.psk --realize f32 --model all --sites 8 --measure`
+*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../examples/spec/layernorm/layernorm.psk --realize f32 --model all --sites 8 --measure`
 
 ## 7 Fusion
 
@@ -277,7 +277,7 @@ Over one call, fusion takes 10 launches to 5.
 | `LayerNorm.apply/%10` | `%10 : ℝ[...] = sqrt %9` | ends a group of 2 | read by `x̂ : ℝ[..., model: D] = div %7, %10`, of another shape: a group is one loop nest over one shape |
 | `LayerNorm.apply/%15` | `%15 : ℝ[..., model: D] = add %13, β` | ends a group of 4 | the function's result |
 
-*Command:* `presk dump ../../tests/examples/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/spec/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json`
 
 ## 8 The machine and the layout plan
 
@@ -365,7 +365,7 @@ LayerNorm.apply/%15 [3, 8] [3] [3] [8] [8] — 5 points, 1 within 1 + u, 1 launc
      lanes 1, split (0, 10)
 ```
 
-*Command:* `PRESK_THREADS=10 presk plan ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+*Command:* `PRESK_THREADS=10 presk plan ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
 
 ## 9 The kernels and the host
 
@@ -445,7 +445,7 @@ void presk_LayerNorm_8_apply(presk_arena *arena, const presk_LayerNorm_8_apply_i
 }
 ```
 
-*Command:* `presk dump ../../tests/examples/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/spec/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json`
 
 ## 10 Targets
 
@@ -537,23 +537,23 @@ presk memory --symbolic: `LayerNorm{8}.apply` in f32, in batch: each buffer's by
 
 *Commands:*
 
-- `presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json`
-- `presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json --symbolic`
+- `presk memory ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json --symbolic`
 
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
 
 ```sh
-presk check ../../tests/examples/layernorm/layernorm.psk
-presk dump ../../tests/examples/layernorm/layernorm.psk --stage elab
-presk check ../../tests/examples/layernorm/layernorm.psk --summary
-presk dump ../../tests/examples/layernorm/layernorm.psk --stage core
-presk calibrate --precision ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --bits 128 --out $DOC/artifacts/envelope.json
-presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/layernorm/layernorm.psk --realize f32 --model all --sites 8 --measure
-presk dump ../../tests/examples/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json
-PRESK_THREADS=10 presk plan ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
-presk dump ../../tests/examples/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
-presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
-presk memory ../../tests/examples/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json --symbolic
+presk check ../../examples/spec/layernorm/layernorm.psk
+presk dump ../../examples/spec/layernorm/layernorm.psk --stage elab
+presk check ../../examples/spec/layernorm/layernorm.psk --summary
+presk dump ../../examples/spec/layernorm/layernorm.psk --stage core
+presk calibrate --precision ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --bits 128 --out $DOC/artifacts/envelope.json
+presk check --precision $DOC/artifacts/envelope.json ../../examples/spec/layernorm/layernorm.psk --realize f32 --model all --sites 8 --measure
+presk dump ../../examples/spec/layernorm/layernorm.psk --stage realize --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump ../../examples/spec/layernorm/layernorm.psk --stage kernel --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/spec/layernorm/layernorm.psk --entry LayerNorm{8}.apply --dim batch=3 --plan @$DOC/artifacts/plan.json --symbolic
 ```

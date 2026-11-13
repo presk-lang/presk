@@ -19,7 +19,7 @@ it may be differentiated; randomness is an explicit effect.
 
 - [`install`] — building the tool from source, requirements.
 - [`tutorial`] — a guided tour, from a first module to a PyTorch export;
-  start here. Its programs are in `tutorial/`, its commands in `make tutorial`.
+  start here. Its programs are in `examples/tutorial/`, its commands in `make tutorial`.
 - [`cli`] — the `presk` command line.
 - [`language`] — the syntax accepted by this version; reading a program as the reference's equations (0.13.0).
 - [`training`] — `presk train`: the training loop on any backend, checkpoints, a precision budget on the step.
@@ -46,10 +46,10 @@ it may be differentiated; randomness is an explicit effect.
 | Item | Location |
 |---|---|
 | Compiler sources | `crates/` of the `presk` repository (Rust workspace) |
-| Example programs (acceptance tests) | `tests/examples/` (copied from `presk-specs/examples/`) |
-| Tutorial programs | `tutorial/*.psk`, run by `make tutorial` |
-| The NLP-course corpus | `corpus/nlp/`, run by `make corpus` and `make corpus-gpt` |
-| MLPerf transcriptions | `coverage/`, checked by `make coverage` |
+| Example programs (acceptance tests) | `examples/spec/`, the language's, which `presk-specs` reads; every other program under `examples/` (`examples/README.md`) |
+| Tutorial programs | `examples/tutorial/*.psk`, run by `make tutorial` |
+| The NLP-course corpus | `examples/corpus/nlp/`, run by `make corpus` and `make corpus-gpt` |
+| MLPerf transcriptions | `examples/coverage/`, checked by `make coverage` |
 | Implementation plans | `presk-specs/implementation/presk-plan-0.1.0.md` … `presk-plan-0.10.0.md` |
 | Experiment scripts | `experiments/*.sh` and `*.py`, run by `make curve`, `quant-table`, `step-table`, `j-step`, `step-train`, `foil`, `bert`, `ra4-small`, `ra4`, `ra4-check`, `ra4-20`, `ra4-day2`, `ra4-dev`, `ra4-ablation`, `ra4-f2*`, `ra4-f1*`, `c-speed` and `pytorch-baseline` |
 | The RA4 measurement of 0.7.0 | `docs/ra4-2026-09-24.md` and `docs/ra4-20cores-2026-09-24.md`, written by `presk rank` |

@@ -5,7 +5,7 @@
 //!   `--straight-line`, `--serve`, `--weights` and `--no-exact` refused, as
 //!   is a realization with integer weights; `--mode scop` refused with the
 //!   PyTorch target and the PyTorch modes with this one; nothing written.
-//! - Every nest of every entry of `tests/plan/entries.txt`, in `f64`, `f32`
+//! - Every nest of every entry of `examples/tests/plan/entries.txt`, in `f64`, `f32`
 //!   and `bf16`: emitted, each file compiled on its own by its `Makefile`
 //!   with GCC and `-Werror`, and run by the driver, once against the native
 //!   backend's outputs (`make check`, bit for bit) and once timed. The nests
@@ -48,7 +48,7 @@ fn make(dir: &Path, args: &[&str]) -> Output {
     Command::new("make").arg("-s").arg("-C").arg(dir).arg(format!("-j{}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))).args(args).output().expect("running make")
 }
 
-const MLP: &str = "tests/examples/mlp/mlp.psk";
+const MLP: &str = "examples/spec/mlp/mlp.psk";
 
 #[test]
 fn the_options_of_the_scop_mode_are_checked_before_anything_is_written() {
@@ -128,7 +128,7 @@ fn build_and_check(x: &Exported) {
 }
 
 fn test_set() -> Vec<(String, String, Vec<String>)> {
-    std::fs::read_to_string(root().join("tests/plan/entries.txt"))
+    std::fs::read_to_string(root().join("examples/tests/plan/entries.txt"))
         .unwrap()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -193,7 +193,7 @@ fn every_nest_of_the_test_set_computes_the_native_backends_bits() {
 /// check` reports.
 #[test]
 fn a_nest_that_departs_from_the_native_backend_fails_the_check() {
-    let x = export("tests/examples/minigpt/train_minigpt.psk", "loss", &["--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2", "--dim", "B=2", "--dim", "T=8"], "f32", &scratch("mutations"));
+    let x = export("examples/spec/minigpt/train_minigpt.psk", "loss", &["--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2", "--dim", "B=2", "--dim", "T=8"], "f32", &scratch("mutations"));
     build_and_check(&x);
     let check = || Command::new(x.dir.join("scop")).arg("-c").arg(x.dir.join("conformance/native.bin")).output().unwrap();
     // GCC's GNU mode contracts `a + b*c` into one rounding (§3.5, rule 1):
@@ -289,7 +289,7 @@ fn the_course_gpts_nests_compute_the_native_backends_bits() {
     for (i, (dims, realize)) in runs.iter().enumerate() {
         let mut a: Vec<&str> = consts.to_vec();
         a.extend_from_slice(dims);
-        let x = export("corpus/nlp/05_gpt.psk", "GPT.apply", &a, realize, &base.join(i.to_string()));
+        let x = export("examples/corpus/nlp/05_gpt.psk", "GPT.apply", &a, realize, &base.join(i.to_string()));
         build_and_check(&x);
         let (st, not) = agree_with_polly(&x, &clang);
         eprintln!("the course GPT at {} in {realize}: {} nests bit-identical, {st} static control and one SCoP each for Polly, {not} gathers", dims.join(" "), x.nests.len());

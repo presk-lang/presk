@@ -1,10 +1,10 @@
 //! NB0 for the LLVM backend (plan 0.17.0 step 3, D176): the native
 //! backend's bits, bit for bit, on the C export's test set
-//! (`tests/plan/entries.txt`) in `f64`, `f32` and `bf16`, MiniGPT's entries
+//! (`examples/tests/plan/entries.txt`) in `f64`, `f32` and `bf16`, MiniGPT's entries
 //! also under the mixed realization, each on the parameters `presk run`
 //! synthesizes and with their zeros drawn, on one worker and on four; the
-//! test set under `tests/plan/default.json`; and the attention under
-//! `tests/plan/attention.json`, which states a tile in lanes, a k-block, a
+//! test set under `examples/tests/plan/default.json`; and the attention under
+//! `examples/tests/plan/attention.json`, which states a tile in lanes, a k-block, a
 //! split over ten workers and packing.
 
 use std::path::{Path, PathBuf};
@@ -64,7 +64,7 @@ fn pairs(args: &[&str], flag: &str) -> Vec<(String, u64)> {
 }
 
 fn test_set() -> Vec<Case> {
-    let text = std::fs::read_to_string(root().join("tests/plan/entries.txt")).unwrap();
+    let text = std::fs::read_to_string(root().join("examples/tests/plan/entries.txt")).unwrap();
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -154,7 +154,7 @@ fn the_test_set_computes_the_native_backends_bits() {
     for case in test_set() {
         let (prog, core) = prepare(&case.file, &case.consts);
         let minigpt = case.file.contains("minigpt");
-        for realize in ["f64", "f32", "bf16", "@tests/plan/mixed-realization.json"] {
+        for realize in ["f64", "f32", "bf16", "@examples/tests/plan/mixed-realization.json"] {
             if realize.starts_with('@') && !minigpt {
                 continue;
             }
@@ -181,15 +181,15 @@ fn the_plans_of_the_test_directory_compute_the_native_backends_bits() {
     // The default plan on every entry of the test set, and the attention's
     // plan (a tiled contraction in lanes, k-blocked, split and packed, a
     // two-pass softmax) at a T its tile divides, on its ten workers.
-    let mut runs: Vec<(Case, &str, usize)> = test_set().into_iter().map(|c| (c, "@tests/plan/default.json", 4)).collect();
+    let mut runs: Vec<(Case, &str, usize)> = test_set().into_iter().map(|c| (c, "@examples/tests/plan/default.json", 4)).collect();
     runs.push((
         Case {
-            file: "corpus/nlp/05_gpt.psk".into(),
+            file: "examples/corpus/nlp/05_gpt.psk".into(),
             entry: "SelfAttention.apply".into(),
             consts: vec![("V".into(), 92), ("D".into(), 64), ("H".into(), 2), ("L".into(), 1)],
             dims: vec![("B".into(), 2), ("T".into(), 16)],
         },
-        "@tests/plan/attention.json",
+        "@examples/tests/plan/attention.json",
         10,
     ));
     for (case, spec, threads) in runs {

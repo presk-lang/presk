@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_grad_not_fn.psk
+input_file: examples/tests/diag/shape_grad_not_fn.psk
 ---
 [E2002] Error: `grad` expects a function `λ θ. …`, found `ℝ[]`
-   ,-[ tests/diag/shape_grad_not_fn.psk:3:8 ]
+   ,-[ examples/tests/diag/shape_grad_not_fn.psk:3:8 ]
    |
  3 |   grad(x)(x)
    |        |  

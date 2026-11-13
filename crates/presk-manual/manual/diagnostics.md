@@ -7,9 +7,10 @@ dimension names, function names — never internal identifiers.
 
 Rendering (on a terminal, with colors; below, the plain form used in tests):
 
+<!-- psk: check examples/tests/diag/parse_missing_eq.psk -->
 ```text
 [E0010] Error: expected `=`, found identifier `gelu`
-   ,-[ tests/diag/parse_missing_eq.psk:3:3 ]
+   ,-[ examples/tests/diag/parse_missing_eq.psk:3:3 ]
    |
  3 |   gelu(x)
    |   ^^|^
@@ -49,7 +50,7 @@ declaration keyword.
 | `E0010` | expected X, found Y | the general syntax error: the parser expected a token or construct (`=`, `]`, an expression, a type, end of line…) and found something else |
 | `E0011` | (construct-specific message) | a `let` without a body on the next line, or a `let` inside parentheses or brackets |
 
-Every code has at least one reference input in `tests/diag/` whose rendered
+Every code has at least one reference input in `examples/tests/diag/` whose rendered
 report is a snapshot test; adding a code means adding such a file.
 
 ## Elaboration codes
@@ -123,9 +124,9 @@ report is a snapshot test; adding a code means adding such a file.
 
 The C export's codes, `E8003`–`E8009`, are reported when the entry is
 exported, not by `presk check`: `crates/presk-cli/tests/export_c.rs` runs
-`presk export --target c` on `tests/diag/export_c_key.psk`,
-`tests/diag/export_c_scalar.psk`, `tests/diag/export_c_quant.psk`,
-`tests/export_c/serve_untied.psk` and the examples, and asserts each code
+`presk export --target c` on `examples/tests/diag/export_c_key.psk`,
+`examples/tests/diag/export_c_scalar.psk`, `examples/tests/diag/export_c_quant.psk`,
+`examples/tests/export_c/serve_untied.psk` and the examples, and asserts each code
 and message.
 
 | Code | Message | Cause |

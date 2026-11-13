@@ -1,6 +1,6 @@
 ---
 source: crates/presk-print-math/tests/listings.rs
-expression: "typed_listing(\"corpus/nlp/05_gpt.psk\", Format::Latex)"
+expression: "typed_listing(\"examples/corpus/nlp/05_gpt.psk\", Format::Latex)"
 ---
 % presk dump --stage elab --format latex: 05_gpt.psk and its imports, as the equations
 % of the language reference's chapter 3. A fragment: it compiles with the reference's

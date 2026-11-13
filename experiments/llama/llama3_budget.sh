@@ -121,7 +121,7 @@ if want exact; then
     { [ -f "$p.tsv" ] && [ -f "$p.hilo" ] && [ "${FRESH:-0}" != 1 ]; } && continue
     echo "-- exact, window $k $(date)"
     if fresh "$p.json"; then
-      scoped /usr/bin/time -v $P run coverage/llama3.psk --entry Llama3.apply --dim T=32 --weights "$W" \
+      scoped /usr/bin/time -v $P run examples/coverage/llama3.psk --entry Llama3.apply --dim T=32 --weights "$W" \
         --data "$TX/heldout.psk.d" --from "$k" --samples 1 --json --result-only --digits 30 \
         --backend interp --bits 128 > "$p.json.tmp" 2> "$p.err" < /dev/null && mv "$p.json.tmp" "$p.json"
       grep -E "Elapsed|Maximum resident|Exit status" "$p.err"
@@ -164,7 +164,7 @@ ENV=$OUT/envelope/calib_env.json
 if want calibrate && fresh "$ENV"; then
   say calibrate
   mkdir -p "$OUT/envelope"
-  scoped /usr/bin/time -v -o "$OUT/envelope/calibrate.time" $P calibrate --precision coverage/llama3.psk --entry Llama3.apply \
+  scoped /usr/bin/time -v -o "$OUT/envelope/calibrate.time" $P calibrate --precision examples/coverage/llama3.psk --entry Llama3.apply \
     --dim T=16 --data "$TX/calib.psk.d" --samples 4 --weights "$W" --bits 128 --out "$ENV.tmp" \
     > "$OUT/envelope/calibrate.txt" 2>&1 < /dev/null && mv "$ENV.tmp" "$ENV"
   grep -E "Elapsed|Maximum resident|Exit status" "$OUT/envelope/calibrate.time"
@@ -192,7 +192,7 @@ if want solve; then
     if fresh "$S/$name.json"; then
       say "solve $name: $b $o"
       # shellcheck disable=SC2086 # the options are words
-      scoped /usr/bin/time -v -o "$S/$name.time" $P solve coverage/llama3.psk --precision "$ENV" $b --menu "$MENU" $o \
+      scoped /usr/bin/time -v -o "$S/$name.time" $P solve examples/coverage/llama3.psk --precision "$ENV" $b --menu "$MENU" $o \
         --sweep f64 --measure native --weights "$W" --sites 40 --out "$S/$name.json.tmp" > "$S/$name.txt" 2>&1 < /dev/null \
         && mv "$S/$name.json.tmp" "$S/$name.json"
       grep -E "Elapsed|Maximum resident|Exit status" "$S/$name.time"
@@ -200,7 +200,7 @@ if want solve; then
       [ -f "$S/$name.json" ] || { echo "the solve $name failed: $S/$name.txt"; exit 1; }
     fi
     if fresh "$S/explain-$name/explain.md"; then
-      MEM=40G scoped $P explain coverage/llama3.psk --entry Llama3.apply --dim B=1 --dim T=16 --weights "$W" \
+      MEM=40G scoped $P explain examples/coverage/llama3.psk --entry Llama3.apply --dim B=1 --dim T=16 --weights "$W" \
         --realize "@$S/$name.json" --envelope "$ENV" --no-exact --target native --out "$S/explain-$name" \
         > "$S/explain-$name.log" 2>&1 < /dev/null || echo "presk explain $name failed: $S/explain-$name.log"
     fi
@@ -239,7 +239,7 @@ drain() { wait; running=0; }
 native_window() { # name spec k
   local d=$OUT/native/$1 k; k=$(printf %04d "$3")
   [ -f "$d/$k.tsv" ] && [ "${FRESH:-0}" != 1 ] && return 0
-  $P run coverage/llama3.psk --entry Llama3.apply --dim T=32 --weights "$W" --data "$TX/heldout.psk.d" --from "$3" --samples 1 \
+  $P run examples/coverage/llama3.psk --entry Llama3.apply --dim T=32 --weights "$W" --data "$TX/heldout.psk.d" --from "$3" --samples 1 \
     --backend native --threads 1 --realize "$2" --json --result-only --digits 17 > "$d/$k.json" 2> "$d/$k.err" < /dev/null \
     && $PY experiments/llama/budget.py native "$d/$k.json" "$OUT/exact/$k.hilo" "$d/$k.tsv" && rm -f "$d/$k.json" "$d/$k.err" \
     || echo "the $1 run of window $3 failed: $d/$k.err"
@@ -296,7 +296,7 @@ if want perplexity; then
     for ((f = 0; f < NQ; f += B)); do
       o=$d/$(printf %04d "$f").json
       [ -s "$o" ] && [ "${FRESH:-0}" != 1 ] && continue
-      taskset -c "$(IFS=,; echo "${CORES[*]:0:8}")" $P run coverage/llama3.psk --entry nll --dim T=128 --weights "$W" --data "$TX/quality.psk.d" \
+      taskset -c "$(IFS=,; echo "${CORES[*]:0:8}")" $P run examples/coverage/llama3.psk --entry nll --dim T=128 --weights "$W" --data "$TX/quality.psk.d" \
         --from "$f" --samples "$B" --backend native --threads 8 --realize "$sp" --json --result-only --digits 17 > "$o.tmp" 2> "$o.err" < /dev/null \
         && mv "$o.tmp" "$o" && rm -f "$o.err" || { echo "the nll run $name from $f failed: $o.err"; exit 1; }
     done
@@ -355,7 +355,7 @@ PYEOF
 fi
 
 # --- time --------------------------------------------------------------------
-# RW9, alone on the machine (the paper session told before and after): each
+# RW9, alone on the machine: each
 # measurement a process of its own, three of each, one thread at batch 1
 # (nothing is divided there, D180).
 if want time; then
@@ -369,7 +369,7 @@ if want time; then
       o=$T/forward-$name-$round.txt
       fresh "$o" || continue
       say "time forward $name, round $round"
-      taskset -c 5 $P bench coverage/llama3.psk --entry Llama3.apply --dim B=1 --dim T=16 --weights "$W" --realize "$(spec "${name#solve-}")" \
+      taskset -c 5 $P bench examples/coverage/llama3.psk --entry Llama3.apply --dim B=1 --dim T=16 --weights "$W" --realize "$(spec "${name#solve-}")" \
         --native-only --threads 1 --warmup 1 --repeat 5 > "$o" 2>&1 < /dev/null || echo "bench $name failed: $o"
     done
     # The eighth solve's serve is the user's addition (2026-11-08, D190): in
@@ -379,7 +379,7 @@ if want time; then
       o=$T/serve-$name-$round.txt
       fresh "$o" || continue
       say "time serve $name, round $round"
-      { /usr/bin/time -f "%e s %M kB" taskset -c 5 $P serve coverage/llama3.psk --weights "$W" --prompt "$(cat "$T/prompt.txt")" --tokens 32 \
+      { /usr/bin/time -f "%e s %M kB" taskset -c 5 $P serve examples/coverage/llama3.psk --weights "$W" --prompt "$(cat "$T/prompt.txt")" --tokens 32 \
           --temperature 0 --backend native --realize "$(spec "${name#solve-}")" < /dev/null; } > "$o" 2>&1 || echo "serve $name failed: $o"
     done
   done

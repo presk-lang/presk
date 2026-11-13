@@ -22,7 +22,7 @@ fn presk(args: &[&str]) -> String {
 
 #[test]
 fn a_non_finite_difference_makes_the_gap_infinite() {
-    const FILE: &str = "tests/data/overflow.psk";
+    const FILE: &str = "examples/tests/data/overflow.psk";
     let dir = std::env::temp_dir().join(format!("presk-gap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (env, solved) = (dir.join("env.json"), dir.join("solved.json"));

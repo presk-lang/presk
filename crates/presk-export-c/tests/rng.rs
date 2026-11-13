@@ -259,7 +259,7 @@ fn raw(b: &Buf) -> (*const c_void, i32) {
 fn sample_draws_the_native_backends_tokens() {
     let t0 = Instant::now();
     let c = Stream::build("rng-sample");
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk");
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk");
     let mut m = Mix(13);
     let mut rows_drawn = 0;
     let mut special = 0;

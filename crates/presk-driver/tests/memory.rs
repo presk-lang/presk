@@ -1,5 +1,5 @@
 //! `presk memory` (plan 0.15.0 step 1, D148): M1's parts that hold of every
-//! recording, on the entries of `tests/plan/entries.txt` and the course GPT's
+//! recording, on the entries of `examples/tests/plan/entries.txt` and the course GPT's
 //! forward pass, gradient and optimizer step. The placed straight-line host
 //! and the C program's arena are `make c-conformance`'s (`presk-cli`'s
 //! `export_c` test).
@@ -23,7 +23,7 @@ struct Case {
 }
 
 fn cases() -> Vec<Case> {
-    let text = std::fs::read_to_string(root().join("tests/plan/entries.txt")).unwrap();
+    let text = std::fs::read_to_string(root().join("examples/tests/plan/entries.txt")).unwrap();
     let mut out: Vec<Case> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -36,17 +36,17 @@ fn cases() -> Vec<Case> {
                 match w[0] {
                     "--dim" => dims.push(w[1].to_string()),
                     "--const" => consts.push(w[1].to_string()),
-                    other => panic!("{other} in tests/plan/entries.txt"),
+                    other => panic!("{other} in examples/tests/plan/entries.txt"),
                 }
             }
             Case { file: file.into(), entry: entry.into(), dims, consts }
         })
         .collect();
     let gpt = |file: &str, entry: &str| Case { file: file.into(), entry: entry.into(), dims: vec!["B=2".into(), "T=16".into()], consts: vec!["D=64".into(), "H=2".into(), "L=2".into()] };
-    out.push(gpt("corpus/nlp/05_gpt.psk", "GPT.apply"));
-    out.push(gpt("corpus/nlp/05_gpt.psk", "loss"));
-    out.push(gpt("experiments/gpt_grad.psk", "loss_grad"));
-    out.push(gpt("corpus/nlp/05_gpt.psk", "adamw.step"));
+    out.push(gpt("examples/corpus/nlp/05_gpt.psk", "GPT.apply"));
+    out.push(gpt("examples/corpus/nlp/05_gpt.psk", "loss"));
+    out.push(gpt("examples/experiments/gpt_grad.psk", "loss_grad"));
+    out.push(gpt("examples/corpus/nlp/05_gpt.psk", "adamw.step"));
     out
 }
 
@@ -139,7 +139,7 @@ fn the_course_gpt_as_the_plan_measured_it() {
 /// `recompute` keeps less for the backward than `store`.
 #[test]
 fn the_training_step_s_terms() {
-    let file = root().join("corpus/nlp/05_gpt.psk");
+    let file = root().join("examples/corpus/nlp/05_gpt.psk");
     let consts: Vec<String> = vec!["D=64".into(), "H=2".into(), "L=2".into()];
     let dims: Vec<String> = vec!["B=2".into(), "T=16".into()];
     for (realize, bytes) in [("f64", 8), ("f32", 4)] {
@@ -183,9 +183,9 @@ fn the_polynomials_count_what_a_recording_counts() {
     let mut all = cases();
     all.truncate(11);
     let tiny = |file: &str, entry: &str, consts: &[&str]| Case { file: file.into(), entry: entry.into(), dims: vec!["B=2".into(), "T=16".into()], consts: consts.iter().map(|c| c.to_string()).collect() };
-    all.push(tiny("coverage/bert.psk", "BertSquad.apply", &["V=100", "D=32", "H=2", "L=2"]));
-    all.push(tiny("coverage/llama.psk", "Llama.apply", &["V=100", "D=32", "H=2", "G=2", "FF=64", "L=2"]));
-    all.push(tiny("corpus/nlp/05_gpt.psk", "loss", &["D=64", "H=2", "L=2"]));
+    all.push(tiny("examples/coverage/bert.psk", "BertSquad.apply", &["V=100", "D=32", "H=2", "L=2"]));
+    all.push(tiny("examples/coverage/llama.psk", "Llama.apply", &["V=100", "D=32", "H=2", "G=2", "FF=64", "L=2"]));
+    all.push(tiny("examples/corpus/nlp/05_gpt.psk", "loss", &["D=64", "H=2", "L=2"]));
     let mut checked = 0;
     for c in &all {
         let file = root().join(&c.file);

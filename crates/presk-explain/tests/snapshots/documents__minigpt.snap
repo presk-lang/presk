@@ -1,9 +1,9 @@
 ---
 source: crates/presk-explain/tests/documents.rs
-expression: "document(\"minigpt\", \"tests/examples/minigpt/minigpt.psk\", \"MiniGPT.apply\",\n&[\"B=2\", \"T=8\"], &[\"V=64\", \"D=16\", \"H=2\", \"L=2\"], (None, Some(\"f32\")),\n&[Target::Native])"
+expression: "document(\"minigpt\", \"examples/spec/minigpt/minigpt.psk\", \"MiniGPT.apply\",\n&[\"B=2\", \"T=8\"], &[\"V=64\", \"D=16\", \"H=2\", \"L=2\"], (None, Some(\"f32\")),\n&[Target::Native])"
 ---
 ---
-title: "`MiniGPT.apply` of `../../tests/examples/minigpt/minigpt.psk`, in f32, planned under the profile `data/x925-frozen.json`"
+title: "`MiniGPT.apply` of `../../examples/spec/minigpt/minigpt.psk`, in f32, planned under the profile `data/x925-frozen.json`"
 subtitle: "What the Presk compiler does to one program: `presk explain`"
 ---
 
@@ -11,7 +11,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 
 | Parameter | Value | Where it comes from |
 |-------------------|------------------------------------|------------------------------------|
-| Program | `../../tests/examples/minigpt/minigpt.psk` | the command line |
+| Program | `../../examples/spec/minigpt/minigpt.psk` | the command line |
 | Entry | `MiniGPT.apply` | `--entry MiniGPT.apply` |
 | Dimensions | `B = 2`, `T = 8` | `--dim B=2` `--dim T=8` |
 | Constants | `V = 64`, `D = 16`, `H = 2`, `HD = 8`, `L = 2` | `--const V=64` `--const D=16` `--const H=2` `--const L=2` |
@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.17.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.2. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -54,7 +54,7 @@ A *fact* is a property of the program or of the compilation; a *decision* is wha
 
 The entry's file and the files it imports, as the compiler reads them.
 
-**`../../tests/examples/minigpt/minigpt.psk`**
+**`../../examples/spec/minigpt/minigpt.psk`**
 
 ```text
   1  -- minigpt.psk — A decoder-only GPT, complete and typed.
@@ -155,7 +155,7 @@ The entry's file and the files it imports, as the compiler reads them.
  96  }
 ```
 
-**`../../tests/examples/minigpt/../layernorm/layernorm.psk`**
+**`../../examples/spec/minigpt/../layernorm/layernorm.psk`**
 
 ```text
   1  -- layernorm.psk — Layer normalization.
@@ -187,7 +187,7 @@ The entry's file and the files it imports, as the compiler reads them.
  27  }
 ```
 
-**`../../tests/examples/minigpt/../mlp/mlp.psk`**
+**`../../examples/spec/minigpt/../mlp/mlp.psk`**
 
 ```text
   1  -- mlp.psk — The smallest "complete" Presk program.
@@ -232,7 +232,7 @@ Diagnostics, as `presk check` reports them:
 
 ```text
 [W0001] Warning: implicit dimension `B`
-    ,-[ ../../tests/examples/minigpt/../mlp/mlp.psk:26:65 ]
+    ,-[ ../../examples/spec/minigpt/../mlp/mlp.psk:26:65 ]
     |
  26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
     |                                                                 |  
@@ -241,7 +241,7 @@ Diagnostics, as `presk check` reports them:
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [W0001] Warning: implicit dimension `B`
-    ,-[ ../../tests/examples/minigpt/../mlp/mlp.psk:34:35 ]
+    ,-[ ../../examples/spec/minigpt/../mlp/mlp.psk:34:35 ]
     |
  34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
     |                                   |  
@@ -251,14 +251,14 @@ Diagnostics, as `presk check` reports them:
 ----'
 ```
 
-*Command:* `presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2`
+*Command:* `presk check ../../examples/spec/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2`
 
 ## 2 Elaboration
 
 Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
 
 ```text
-== ../../tests/examples/minigpt/../layernorm/layernorm.psk
+== ../../examples/spec/minigpt/../layernorm/layernorm.psk
 module LayerNorm{D : dim} {
   param γ : ℝ[D]  init
   param β : ℝ[D]  init
@@ -268,7 +268,7 @@ module RMSNorm{D : dim} {
   param γ : ℝ[D]  init
   fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
 }
-== ../../tests/examples/minigpt/../mlp/mlp.psk
+== ../../examples/spec/minigpt/../mlp/mlp.psk
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init
   param b : ℝ[Out]  init
@@ -281,9 +281,9 @@ module MLP{D hidden : dim} {
 }
 fn mse{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[]   -- implicit dims: B
 fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D}   -- implicit dims: B
-== ../../tests/examples/minigpt/minigpt.psk (main)
-import norm = ../../tests/examples/minigpt/../layernorm/layernorm.psk
-import ff = ../../tests/examples/minigpt/../mlp/mlp.psk
+== ../../examples/spec/minigpt/minigpt.psk (main)
+import norm = ../../examples/spec/minigpt/../layernorm/layernorm.psk
+import ff = ../../examples/spec/minigpt/../mlp/mlp.psk
 const V = 64  (--const)
 const D = 16  (--const)
 const H = 2  (--const)
@@ -432,7 +432,7 @@ mse_grad.lambda0 : [x C∞, y C∞, θ C∞] uses none
 
 | Assertion | Where | Outcome |
 |----------------|------------------------------------|------------------------|
-| `D % H == 0` | `../../tests/examples/minigpt/minigpt.psk:15` | discharged: valid in Presburger arithmetic over the constants and the facts before it, then kept as a fact |
+| `D % H == 0` | `../../examples/spec/minigpt/minigpt.psk:15` | discharged: valid in Presburger arithmetic over the constants and the facts before it, then kept as a fact |
 
 **The parameters** of `MiniGPT.apply`, its first argument: 21 tensors, 8768 reals at these dimensions.
 
@@ -462,8 +462,8 @@ mse_grad.lambda0 : [x C∞, y C∞, θ C∞] uses none
 
 *Commands:*
 
-- `presk dump ../../tests/examples/minigpt/minigpt.psk --stage elab --const V=64 --const D=16 --const H=2 --const L=2`
-- `presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 --summary`
+- `presk dump ../../examples/spec/minigpt/minigpt.psk --stage elab --const V=64 --const D=16 --const H=2 --const L=2`
+- `presk check ../../examples/spec/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 --summary`
 
 ## 3 PSK-Core
 
@@ -572,7 +572,7 @@ fn MiniGPT.apply{B T}(θ : params MiniGPT, ids : idx[64][batch: B, seq: T]) -> �
 }
 ```
 
-*Command:* `presk dump ../../tests/examples/minigpt/minigpt.psk --stage core --const V=64 --const D=16 --const H=2 --const L=2`
+*Command:* `presk dump ../../examples/spec/minigpt/minigpt.psk --stage core --const V=64 --const D=16 --const H=2 --const L=2`
 
 ## 4 Differentiation
 
@@ -623,7 +623,7 @@ presk calibrate: the largest rounding error of each site's values (D155): 62 sit
 
 The envelope holds 69 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
 
-*Command:* `presk calibrate --precision ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --bits 128 --out $DOC/artifacts/envelope.json`
+*Command:* `presk calibrate --precision ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --bits 128 --out $DOC/artifacts/envelope.json`
 
 ### 6.2 The sensitivities
 
@@ -663,7 +663,7 @@ MiniGPT.apply/%9                    2.895e0     4.077e12     1.408e12           
 
 The sound rule (`cond`) bounds the error by 0.000e0, conditional on the envelope's 1 sample; the measurement is 0.000e0, 0.0e0× under it.
 
-*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/minigpt/minigpt.psk --realize f32 --model all --sites 8 --measure`
+*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../examples/spec/minigpt/minigpt.psk --realize f32 --model all --sites 8 --measure`
 
 ## 7 Fusion
 
@@ -695,7 +695,7 @@ Over one call, fusion takes 106 launches to 69.
 | `Block.apply/%14` | `%14 : ℝ[batch: B, seq: T, model: 16] = add x, %13` | alone | the function's result |
 | `Embedding.apply/%7` | `%7 : ℝ[batch: B, seq: T, 16] = add e, p` | alone | the function's result |
 
-*Command:* `presk dump ../../tests/examples/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/spec/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
 
 ## 8 The machine and the layout plan
 
@@ -883,7 +883,7 @@ SelfAttention.apply/%18 [2, 2, 8, 8] [2, 2, 8, 8] — 177 points, 2 within 1 + u
      tiled, tile [4, 8], kblock none, order JI, lanes 4, split (0, 5), no pack
 ```
 
-*Command:* `PRESK_THREADS=10 presk plan ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+*Command:* `PRESK_THREADS=10 presk plan ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
 
 ## 9 The kernels and the host
 
@@ -1028,7 +1028,7 @@ static void presk_SelfAttention_apply(presk_arena *arena, const float *theta_wq_
 
 *The first 60 of 200 lines; the whole in `listings/host.c`.*
 
-*Command:* `presk dump ../../tests/examples/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/spec/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
 
 ## 10 Targets
 
@@ -1156,23 +1156,23 @@ presk memory --symbolic: `MiniGPT.apply` in f32, in B and T: each buffer's bytes
 
 *Commands:*
 
-- `presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
-- `presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json --symbolic`
+- `presk memory ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json --symbolic`
 
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
 
 ```sh
-presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2
-presk dump ../../tests/examples/minigpt/minigpt.psk --stage elab --const V=64 --const D=16 --const H=2 --const L=2
-presk check ../../tests/examples/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 --summary
-presk dump ../../tests/examples/minigpt/minigpt.psk --stage core --const V=64 --const D=16 --const H=2 --const L=2
-presk calibrate --precision ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --bits 128 --out $DOC/artifacts/envelope.json
-presk check --precision $DOC/artifacts/envelope.json ../../tests/examples/minigpt/minigpt.psk --realize f32 --model all --sites 8 --measure
-presk dump ../../tests/examples/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
-PRESK_THREADS=10 presk plan ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
-presk dump ../../tests/examples/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
-presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
-presk memory ../../tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json --symbolic
+presk check ../../examples/spec/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2
+presk dump ../../examples/spec/minigpt/minigpt.psk --stage elab --const V=64 --const D=16 --const H=2 --const L=2
+presk check ../../examples/spec/minigpt/minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 --summary
+presk dump ../../examples/spec/minigpt/minigpt.psk --stage core --const V=64 --const D=16 --const H=2 --const L=2
+presk calibrate --precision ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --bits 128 --out $DOC/artifacts/envelope.json
+presk check --precision $DOC/artifacts/envelope.json ../../examples/spec/minigpt/minigpt.psk --realize f32 --model all --sites 8 --measure
+presk dump ../../examples/spec/minigpt/minigpt.psk --stage realize --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --realize f32 --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump ../../examples/spec/minigpt/minigpt.psk --stage kernel --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply --dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2 --plan @$DOC/artifacts/plan.json --symbolic
 ```

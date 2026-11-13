@@ -47,7 +47,7 @@ case $TEXT in
     *) echo "TEXT is travail or procedure_penale, not $TEXT"; exit 2 ;;
 esac
 URL=https://storage.gra.cloud.ovh.net/v1/AUTH_4d7d1bcd41914ee184ef80e2c75c4fb1/dila-legi-codes/$TEXT.md.zip
-D=corpus/nlp/data
+D=examples/corpus/nlp/data
 VOCAB=$D/civil_vocab.json
 JUDGE=out/${TEXT}_461_T256.psk.d
 N=461

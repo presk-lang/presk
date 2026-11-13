@@ -1,0 +1,8 @@
+-- bad_unbound.psk — step 2 of the tutorial: a name that is not in scope (E2001).
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
+    x · w + c
+}

@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_recursion_module.psk
+input_file: examples/tests/diag/shape_recursion_module.psk
 ---
 [E2016] Error: module `M` includes itself
-   ,-[ tests/diag/shape_recursion_module.psk:5:3 ]
+   ,-[ examples/tests/diag/shape_recursion_module.psk:5:3 ]
    |
  5 |   use inner : M
    |   ^^^^^^|^^^^^^  
@@ -13,7 +13,7 @@ input_file: tests/diag/shape_recursion_module.psk
    | Note: a module may not include itself, directly or through other modules: repetition is `stack{N}(M)`
 ---'
 [E2016] Error: module `A` includes itself through `B`
-    ,-[ tests/diag/shape_recursion_module.psk:9:3 ]
+    ,-[ examples/tests/diag/shape_recursion_module.psk:9:3 ]
     |
   9 |   use blocks : stack{2}(B)
     |   ^^^^^^^^^^^^|^^^^^^^^^^^  

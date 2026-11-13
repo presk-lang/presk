@@ -1,0 +1,5 @@
+-- bad_rand.psk — step 5 of the tutorial: `sample` in a function declared without `uses Rand` (E4001).
+dim B
+
+fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+  sample(key, logits)

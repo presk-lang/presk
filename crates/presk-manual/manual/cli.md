@@ -69,7 +69,7 @@ otherwise. The five example programs pass with only `W0001` warnings
 | `--summary` | print, for every function of the file and its imports, the inferred type of its body and of each `let` binding, then (after `-- regularity and effects --`) the class of its result with respect to each parameter and the effects it uses, then (after `-- training --`, when the file has a `training run`) the resolved run: model, objective, batch and sample types, pipeline, epochs, checkpoint, and the dimensions bound by the pipeline and the data file | implemented |
 | `--json` | machine-readable output on stdout: `{"file", "ok", "diagnostics": [{code, severity, message, labels: [{file, line, col, start, end, text}], notes, help}]}`; nothing is rendered on stderr; `--summary` is ignored | implemented |
 
-Example of `--summary` on `tests/examples/minigpt/minigpt.psk` (excerpt):
+Example of `--summary` on `examples/spec/minigpt/minigpt.psk` (excerpt):
 
 ```text
 minigpt.psk SelfAttention.apply : ℝ[batch: B, seq: T, 768]
@@ -84,7 +84,7 @@ MiniGPT.apply : [θ C∞, ids Disc] uses none
 MiniGPT.init : [key C∞] uses Rand
 ```
 
-`presk check --const H=7 tests/examples/minigpt/minigpt.psk` reports that
+`presk check --const H=7 examples/spec/minigpt/minigpt.psk` reports that
 `HD = D / H` is not a natural number and that `static assert D % H == 0`
 fails.
 
@@ -145,11 +145,11 @@ differentiation) runs first, then the entry point is called on synthesized
 inputs and its result printed.
 
 ```sh
-presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
-presk run tests/examples/layernorm/layernorm.psk --entry 'LayerNorm{8}.apply' --dim batch=3
-presk run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply \
+presk run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
+presk run examples/spec/layernorm/layernorm.psk --entry 'LayerNorm{8}.apply' --dim batch=3
+presk run examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
-presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
+presk run examples/spec/minigpt/train_minigpt.psk --entry loss \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 ```
 
@@ -215,10 +215,10 @@ with the parameters and sub-modules of the source under the same names,
 `language` chapter ("PyTorch export").
 
 ```sh
-presk export --target pytorch --mode readable tests/examples/mlp/mlp.psk -o out/mlp_pt
+presk export --target pytorch --mode readable examples/spec/mlp/mlp.psk -o out/mlp_pt
 presk export --target pytorch --mode readable --shapes=check \
      --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 \
-     tests/examples/minigpt/minigpt.psk -o out/minigpt_pt
+     examples/spec/minigpt/minigpt.psk -o out/minigpt_pt
 python3 -m py_compile out/minigpt_pt/*.py    # syntax; `pytest out/minigpt_pt` where PyTorch is installed
 ```
 
@@ -273,16 +273,16 @@ made, why its bits are the native backend's and what is checked; tutorial
 step 18 exports the tutorial's attention.
 
 ```sh
-presk export tests/examples/mlp/mlp.psk --target c --entry mse_grad --dim D=4 --dim B=2 -o out/mse_c
+presk export examples/spec/mlp/mlp.psk --target c --entry mse_grad --dim D=4 --dim B=2 -o out/mse_c
 make -C out/mse_c check      # builds it, runs it on conformance/, compares with the native backend
-presk export corpus/nlp/05_gpt.psk --target c --entry GPT.apply --dim B=1 --dim T=256 \
+presk export examples/corpus/nlp/05_gpt.psk --target c --entry GPT.apply --dim B=1 --dim T=256 \
      --realize bf16 --weights out/course_probe_f32/final.psk.d --no-exact -o out/gpt_c
-presk plan corpus/nlp/05_gpt.psk --entry GPT.apply --dim B=16 --dim T=256 \
+presk plan examples/corpus/nlp/05_gpt.psk --entry GPT.apply --dim B=16 --dim T=256 \
      --profile ~/presk-data/ra4-model-0.8.0/profile.json --out out/gpt16.json
-presk export corpus/nlp/05_gpt.psk --target c --entry GPT.apply --dim B=16 --dim T=256 \
+presk export examples/corpus/nlp/05_gpt.psk --target c --entry GPT.apply --dim B=16 --dim T=256 \
      --plan @out/gpt16.json --weights out/course_probe_f32/final.psk.d --no-exact -o out/gpt16_c
 OMP_NUM_THREADS=1 make -C out/gpt16_c check    # the same bits on one thread
-presk export tests/examples/minigpt/serve_minigpt.psk --target c --serve \
+presk export examples/spec/minigpt/serve_minigpt.psk --target c --serve \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim T=8 --weights out/ckpt/final.psk.d -o out/serve_c
 make -C out/serve_c          # model and generate
 out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --json
@@ -425,8 +425,9 @@ as it likes. The draw is the native backend's, in `f64`, with `presk_exp`.
 A key the program does not hold (split, or stacked) given to `sample` is
 refused (`E8006`). With `--serve`, `generate` runs `presk serve`'s loop,
 token `i` given the child `i` of the key `--seed` names, and its output is
-`presk serve --backend native`'s, byte for byte, `--json` included
-(statement C5):
+`presk serve --backend native`'s, byte for byte, `--json` included but for
+`presk serve`'s four fields of compiling and computing (statement C5;
+0.17.2 step 4, D200):
 
 ```sh
 out/serve_c/generate --weights W.psk.d --prompt "t1 t2 …" [--tokens N] [--temperature X] [--seed S] [--json]
@@ -463,7 +464,7 @@ is no host: the nests are what a polyhedral tool would transform, and the
 comparison of such a tool with RA4's ranking comes after 0.9.0.
 
 ```sh
-presk export tests/plan/minigpt_grad.psk --target c --mode scop --entry loss_grad \
+presk export examples/tests/plan/minigpt_grad.psk --target c --mode scop --entry loss_grad \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 --realize f32 -o out/loss_grad_scop
 make -C out/loss_grad_scop check     # every nest built on its own, run once, compared with the native backend
 make -C out/loss_grad_scop time      # each nest called eleven times: median and best, in µs
@@ -603,8 +604,8 @@ but the first, with its page faults; only the clock is read, and the run's weigh
 bytes with it and without.
 
 ```sh
-presk train tests/train/mlp_regression.psk --steps 200 --ckpt out/reg_ckpt
-presk train tests/examples/minigpt/train_minigpt.psk \
+presk train examples/tests/train/mlp_regression.psk --steps 200 --ckpt out/reg_ckpt
+presk train examples/spec/minigpt/train_minigpt.psk \
      --const V=64 --const D=16 --const H=2 --const L=2 --steps 20 --bits 64 --ckpt out/ckpt
 ```
 
@@ -622,8 +623,15 @@ not fixed by the prompt (`T` of a positional embedding), `--seed`, `--bits`,
 `--json`, `--opt`, `--profile`. A realization with a `quant` map serves its
 parameters as integers. The `serve` chapter has the loop and the rules.
 
+The summary line on standard error ends with the loop's time split in two
+(0.17.2 step 4, D200), and `--json` gives the same as `compile_s`,
+`compute_s`, `compilations` and `compiled_kernels`:
+- compiling: the context lengths prepared, and the kernels lowered and
+  compiled at their first launch inside the calls, with how many of each;
+- computing: the calls' time less that.
+
 ```sh
-presk serve tests/examples/minigpt/serve_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+presk serve examples/spec/minigpt/serve_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
      --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0 --backend native
 ```
 
@@ -958,7 +966,7 @@ runs a nest no plan states on one lane, where the native backend of `presk
 run`, `train` and `bench` gives it its type's natural width.
 
 ```sh
-presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 --const D=16 --const H=2 --const L=2 \
+presk bench examples/spec/minigpt/train_minigpt.psk --entry loss --const V=64 --const D=16 --const H=2 --const L=2 \
      --dim B=2 --dim T=8 --calibrate out/profile.json
 ```
 
@@ -998,16 +1006,41 @@ the kernels as `--calibrate` counts them (code, dispatch and threads) against
 the host. `make host-profile` runs it on the course GPT (`experiments`
 chapter).
 
+`--launches`, with `--host-profile` (0.17.2 step 4, D200), lists each launch
+of a call inside the call, in its order and its memory. `--calibrate` times
+a kernel alone instead. The listing comes after the table:
+- **A line on the huge pages.** The transparent huge pages' mode, and the
+  process's anonymous memory in huge pages after the calls, from
+  `/proc/self/smaps_rollup`.
+- **A row per launch.** Its place in the call, its kernel (`k12 dot`, the
+  kernel's place in the backend's list and what it computes), and its own
+  code's time in µs, the median and the fastest over the calls timed by
+  phase, as `kernels` counts it. Then its threads and its nest.
+- **A line per large buffer, under its launch.** Each input (`in0`,
+  `in1`, …) and the output of 64 KiB or more, with:
+  - its bytes;
+  - its virtual address in the last timed call;
+  - that address modulo 4 KiB, 64 KiB, and the set strides of the L1 data
+    cache and of the L2 of the CPU the process ran on. A stride is the sets
+    times the line, from Linux's sysfs: 16 KiB and 256 KiB on the X925.
+
+A line above the rows counts the launches whose large buffers sat at another
+address in another timed call. The addresses are virtual. Under 4 KiB pages
+only their low 12 bits are the physical address's, so the residues modulo
+64 KiB and the set strides say which sets a buffer falls in only under huge
+pages of 2 MiB, whose low 21 bits are. Without `--launches` nothing is timed
+per launch, and the output has 0.17.1's lines.
+
 ```sh
-presk bench corpus/nlp/05_gpt.psk --entry GPT.apply --dim B=16 --dim T=256 \
+presk bench examples/corpus/nlp/05_gpt.psk --entry GPT.apply --dim B=16 --dim T=256 \
      --plan @plans/forward.json --weights out/course_probe_f32/final.psk.d \
      --threads 10 --warmup 1 --repeat 7 --host-profile
 ```
 
 `--calibrate FILE.json --space calib` (0.7.0 step 4) calibrates the **layout
 cost model** instead (`optimization` chapter, "The layout cost model"). The
-entry must have one contraction: a GEMM (`experiments/gemm.psk`, `--dim
-N=…`), or a product of any shape (`experiments/matmul.psk`, `--dim I=… --dim
+entry must have one contraction: a GEMM (`examples/experiments/gemm.psk`, `--dim
+N=…`), or a product of any shape (`examples/experiments/matmul.psk`, `--dim I=… --dim
 K=… --dim J=…`). Since 0.8.0 step 3 (plan 0.8.0 §3.3) it is timed natively
 under 300 layouts that span the model's terms:
 - five register tiles, `[1, 4]`, `[1, 8]`, `[2, 8]`, `[2, 16]` and
@@ -1056,7 +1089,7 @@ one run: an existing `RA4_PROFILE` is first
 moved to `*-prev.json`, so that none of its samples stays in the fit.
 
 ```sh
-taskset -c 5-9,15-19 presk bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
+taskset -c 5-9,15-19 presk bench examples/experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
      --calibrate out/profile.json --space calib --repeat 5
 ```
 
@@ -1086,7 +1119,7 @@ without measuring it again:
 
 - Each sample's layout is read back from its key and lowered at the product
   its signature names, on the entry `--entry` of the program (`matmul` by
-  default, dimensions `I`, `K` and `J`; `experiments/matmul.psk`). The
+  default, dimensions `I`, `K` and `J`; `examples/experiments/matmul.psk`). The
   entry is captured once per product, its shapes only.
 - The kernel is costed on the profile's own machine description, not the
   machine the command runs on, under `--rules`: `none`, or among `lines`,
@@ -1109,7 +1142,7 @@ byte (0.8.0 step 8, D75).
 ```sh
 presk refit out/profile.json --compare
 presk refit out/profile.json --load-term group --combine sum --out out/profile-sum.json
-presk refit ~/presk-data/ra4-0.8.0-calibration/out/profile.json --recost experiments/matmul.psk \
+presk refit ~/presk-data/ra4-0.8.0-calibration/out/profile.json --recost examples/experiments/matmul.psk \
      --rules lines,overhead --out out/profile-rules.json
 ```
 
@@ -1183,7 +1216,7 @@ fresh sweeps (D74; `optimization` chapter, "What the fresh sweeps
 found").
 
 ```sh
-presk plan corpus/nlp/05_gpt.psk --entry SelfAttention.apply --dim B=16 --dim T=256 --realize f32 \
+presk plan examples/corpus/nlp/05_gpt.psk --entry SelfAttention.apply --dim B=16 --dim T=256 --realize f32 \
      --profile out/profile.json --out out/attn_plan.json
 ```
 
@@ -1316,10 +1349,10 @@ parameters and moments are live beside the old ones and the gradient,
 seven times the parameters' bytes in `f64`.
 
 ```sh
-presk memory corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --depth 3
-presk memory experiments/gpt_grad.psk --entry loss_grad --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --remat recompute
-presk memory corpus/nlp/05_gpt.psk --step --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16
-presk memory corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --symbolic
+presk memory examples/corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --depth 3
+presk memory examples/experiments/gpt_grad.psk --entry loss_grad --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --remat recompute
+presk memory examples/corpus/nlp/05_gpt.psk --step --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16
+presk memory examples/corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --symbolic
 ```
 
 ## `presk autotune FILE.psk --entry ENTRY --out DIR …`
@@ -1446,11 +1479,11 @@ O, the per-class table and the hybrid chooser of statement Q, in about
 3½ minutes. `FORMS` restricts it, for example `FORMS=group-pnorm`. D69
 records the result. A form `L-C+R` names rules of the planned cost too
 (0.8.0 step 4, 4c): the calibration is re-costed under them first (`presk
-refit --recost experiments/matmul.psk --rules R`), for example
+refit --recost examples/experiments/matmul.psk --rules R`), for example
 `FORMS="group-pnorm group-pnorm+lines group-pnorm+lines,overhead"`.
 
 ```sh
-presk reprice corpus/nlp/05_gpt.psk --entry SelfAttention.apply --day ~/presk-data/ra4-0.7.0/out/ra4/day1 \
+presk reprice examples/corpus/nlp/05_gpt.psk --entry SelfAttention.apply --day ~/presk-data/ra4-0.7.0/out/ra4/day1 \
      --profile out/profile.json --out out/dev/day1
 ```
 
@@ -1549,7 +1582,7 @@ differed from it), or no commit. Every run into a day adds its commit to
 `day.txt`, and every one is checked.
 
 `make ra4-small` runs the whole test at the daily size: `experiments/ra4.sh`
-sweeps the tutorial's attention (`tutorial/03_attention.psk`, entry
+sweeps the tutorial's attention (`examples/tutorial/03_attention.psk`, entry
 `attend`) at `B` = 1 and 16, `T` = 256, in `f32` and `f64`, twice — the first
 day checking every point on the kernel interpreter too — pinned to the cores
 of `RA4_CORES`, and ranks the two days into `out/ra4-small.md`, in about a
@@ -1573,7 +1606,7 @@ quiet machine:
   into `out/ra4.md`.
 
 ```sh
-taskset -c 5-9,15-19 presk autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 \
+taskset -c 5-9,15-19 presk autotune examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 \
      --space small --profile out/profile.json --interp --out out/ra4-small/day1
 presk rank out/ra4-small/day1 out/ra4-small/day2 --out out/ra4-small.md
 ```
@@ -1621,7 +1654,7 @@ without `--frozen`.
 
 ```sh
 make ra4-f2-day2 RA4_TRIAL=1 RA4_F2_DIR=out/ra4-f2-trial RA4_PROFILE_SMALL=out/ra4-f2-trial/profile-a725.json \
-     RA4_F2_SHAPES="B=1,T=256:2 B=16,T=256:8" RA4_F2_RUN='FILE=tutorial/03_attention.psk ENTRY=attend TYPES="f32 f64" SPACE=small'
+     RA4_F2_SHAPES="B=1,T=256:2 B=16,T=256:8" RA4_F2_RUN='FILE=examples/tutorial/03_attention.psk ENTRY=attend TYPES="f32 f64" SPACE=small'
 ```
 
 The fresh sweep **F1** (plan 0.8.0 §3.5, step 6, D73) measures new shapes
@@ -1661,7 +1694,7 @@ configuration's M inconclusive. A trial on a tiny configuration:
 
 ```sh
 make ra4-f1-day2 RA4_TRIAL=1 RA4_F1_DIR=out/ra4-f1-trial RA4_F1A=D=32,H=2:B=1,T=16 RA4_F1B=D=32,H=4:B=2,T=16 \
-     RA4_F1_RUN='FILE=corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=small'
+     RA4_F1_RUN='FILE=examples/corpus/nlp/05_gpt.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=small'
 ```
 
 Both sweeps were measured on 2026-09-25, each day's two runs on one date,
@@ -1682,7 +1715,7 @@ presk rank out/ra4-f1/day1 out/ra4-f1/day2 --frozen ra4-model-0.8.0 --check out/
 **T3** (plan 0.10.0 §3.5, step 2, D90) is RA4's third fresh test: the
 derivatives of `dot`, contraction nests since 0.10.0 step 1, which the
 frozen model has never seen. It sweeps the course GPT's gradient
-(`experiments/gpt_grad.psk`, entry `loss_grad`) at `B = 16`, `T = 256`, in
+(`examples/experiments/gpt_grad.psk`, entry `loss_grad`) at `B = 16`, `T = 256`, in
 `f32`, over the whole space, on the ten X925 cores, priced by the frozen
 model's profile itself (`RA4_T3_PROFILE`, by default `RA4_FROZEN`), neither
 changed nor refitted. A day is one sweep of the four nests `RA4_T3_NESTS`

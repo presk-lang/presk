@@ -1,6 +1,6 @@
 ---
 source: crates/presk-print-math/tests/listings.rs
-expression: "core_listing(\"tutorial/04_grad.psk\", Format::Latex)"
+expression: "core_listing(\"examples/tutorial/04_grad.psk\", Format::Latex)"
 ---
 % presk dump --stage core-after-ad --format latex: 04_grad.psk, PSK-Core after differentiation,
 % one equation per binding, in the notation of the language reference's chapter 3.

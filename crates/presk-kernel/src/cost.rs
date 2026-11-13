@@ -751,6 +751,10 @@ impl KernelExec for TimedExec {
         self.inner.parallel(n, f)
     }
 
+    fn compile_stats(&self) -> (u64, f64) {
+        self.inner.compile_stats()
+    }
+
     fn run(&mut self, idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()> {
         let t0 = Instant::now();
         let r = self.inner.run(idx, k, inputs, out);

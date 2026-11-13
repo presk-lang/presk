@@ -1,6 +1,6 @@
 #!/bin/bash
 # Every realization's validation loss on the held-out windows (D129): `loss`
-# of corpus/nlp/05_gpt.psk run natively under each realization on every
+# of examples/corpus/nlp/05_gpt.psk run natively under each realization on every
 # window of VAL at once (`presk run --data` binds the batch to them all), as
 # experiments/curve.sh's quality axis reads a model's validation loss, so
 # that each row of the margins' table has the accuracy figure beside its
@@ -16,7 +16,7 @@
 set -u -o pipefail
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 CONSTS=(${CONSTS:---const D=384 --const H=6 --const L=6})
 W=${W:-out/course_train_f64/final.psk.d}
 VAL=${VAL:-out/civil_val_T256.psk.d}

@@ -1,4 +1,4 @@
-//! The documents of `presk explain` on the examples of `tests/examples/`
+//! The documents of `presk explain` on the examples of `examples/spec/`
 //! and the tutorial's `07_train.psk`, as snapshots (plan 0.11.0 step 3): a
 //! change to any stage shows in them as a diff. The profile is the frozen
 //! X925 model's (`ra4-model-0.8.0`, D71) without its calibration samples,
@@ -61,22 +61,22 @@ fn written(name: &str, file: &str, entry: &str, dims: &[&str], consts: &[&str], 
 
 #[test]
 fn the_mlp_under_a_budget() {
-    insta::assert_snapshot!("mlp", document("mlp", "tests/examples/mlp/mlp.psk", "mse", &["D=4", "B=2"], &[], (Some(1e-3), None), &[Target::Native]));
+    insta::assert_snapshot!("mlp", document("mlp", "examples/spec/mlp/mlp.psk", "mse", &["D=4", "B=2"], &[], (Some(1e-3), None), &[Target::Native]));
 }
 
 #[test]
 fn the_layer_norm_of_a_module_entry() {
-    insta::assert_snapshot!("layernorm", document("layernorm", "tests/examples/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[], (None, Some("f32")), &[Target::Native]));
+    insta::assert_snapshot!("layernorm", document("layernorm", "examples/spec/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[], (None, Some("f32")), &[Target::Native]));
 }
 
 #[test]
 fn the_minigpt_in_f32() {
-    insta::assert_snapshot!("minigpt", document("minigpt", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"], (None, Some("f32")), &[Target::Native]));
+    insta::assert_snapshot!("minigpt", document("minigpt", "examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"], (None, Some("f32")), &[Target::Native]));
 }
 
 #[test]
 fn the_tutorial_loss_under_a_budget_to_every_target() {
-    insta::assert_snapshot!("tutorial", document("tutorial", "tutorial/07_train.psk", "loss", &["B=4"], &[], (Some(1e-3), None), &[Target::Native, Target::C, Target::Pytorch]));
+    insta::assert_snapshot!("tutorial", document("tutorial", "examples/tutorial/07_train.psk", "loss", &["B=4"], &[], (Some(1e-3), None), &[Target::Native, Target::C, Target::Pytorch]));
 }
 
 /// A realization given, one nest typed apart and two parameters stored in
@@ -85,7 +85,7 @@ fn the_tutorial_loss_under_a_budget_to_every_target() {
 /// its own type in the C program's arena.
 #[test]
 fn the_tutorial_loss_under_typed_parameters() {
-    insta::assert_snapshot!("tutorial-typed", document("tutorial-typed", "tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("@../../tests/plan/tutorial-typed.json")), &[Target::Native, Target::C]));
+    insta::assert_snapshot!("tutorial-typed", document("tutorial-typed", "examples/tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("@../../examples/tests/plan/tutorial-typed.json")), &[Target::Native, Target::C]));
 }
 
 /// Under the optimizer (plan 0.13.0 step 1, D134), which writes each
@@ -95,7 +95,7 @@ fn the_tutorial_loss_under_typed_parameters() {
 /// program, and named no fusion group and no kernel (D133's finding 2).
 #[test]
 fn the_tutorial_loss_under_the_optimizer() {
-    insta::assert_snapshot!("tutorial-opt", document_as("tutorial-opt", "tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("f32")), &[Target::Native, Target::C], true));
+    insta::assert_snapshot!("tutorial-opt", document_as("tutorial-opt", "examples/tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("f32")), &[Target::Native, Target::C], true));
 }
 
 /// The document again from `explain.json`'s values.
@@ -140,7 +140,7 @@ fn from_json(v: &serde_json::Value) -> presk_explain::doc::Document {
 #[test]
 fn the_json_holds_the_document_and_the_table() {
     for (name, how, opt) in [("tutorial-json", (Some(1e-3), None), false), ("tutorial-opt-json", (None, Some("f32")), true)] {
-        let (md, json) = written(name, "tutorial/07_train.psk", "loss", &["B=4"], &[], how, &[Target::Native, Target::C], opt, true);
+        let (md, json) = written(name, "examples/tutorial/07_train.psk", "loss", &["B=4"], &[], how, &[Target::Native, Target::C], opt, true);
         let json = json.expect("explain.json written");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["format"], 4);
@@ -189,7 +189,7 @@ fn the_json_holds_the_document_and_the_table() {
         // round-trip every last bit without its `float_roundtrip` feature.
         assert!(page[start..end].replace("<\\/", "</") == serde_json::to_string(&v).unwrap(), "{name}: the page's JSON is not explain.json's");
         let _: serde_json::Value = serde_json::from_str(&page[start..end]).unwrap();
-        let (_, again) = written(&format!("{name}-again"), "tutorial/07_train.psk", "loss", &["B=4"], &[], how, &[Target::Native, Target::C], opt, true);
+        let (_, again) = written(&format!("{name}-again"), "examples/tutorial/07_train.psk", "loss", &["B=4"], &[], how, &[Target::Native, Target::C], opt, true);
         assert!(again.as_deref() == Some(json.as_str()), "{name}: two runs write different JSON");
     }
 }
@@ -201,8 +201,8 @@ fn the_json_holds_the_document_and_the_table() {
 #[test]
 fn the_page_writes_the_mathematics() {
     for (name, file, entry, dims, how, ad) in [
-        ("tutorial-math", "tutorial/07_train.psk", "loss", &["B=4"][..], (Some(1e-3), None), false),
-        ("mlp-grad-math", "tests/examples/mlp/mlp.psk", "mse_grad", &["D=4", "B=2"][..], (None, Some("f32")), true),
+        ("tutorial-math", "examples/tutorial/07_train.psk", "loss", &["B=4"][..], (Some(1e-3), None), false),
+        ("mlp-grad-math", "examples/spec/mlp/mlp.psk", "mse_grad", &["D=4", "B=2"][..], (None, Some("f32")), true),
     ] {
         let (_, json) = written(name, file, entry, dims, &[], how, &[Target::Native], false, true);
         let v: serde_json::Value = serde_json::from_str(&json.expect("explain.json written")).unwrap();
@@ -248,7 +248,7 @@ fn the_page_writes_the_mathematics() {
 #[test]
 fn the_json_holds_the_machine_code() {
     for (name, targets) in [("tutorial-native", &[Target::Native, Target::C][..]), ("tutorial-no-native", &[Target::C][..])] {
-        let (_, json) = written(name, "tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("f32")), targets, false, true);
+        let (_, json) = written(name, "examples/tutorial/07_train.psk", "loss", &["B=4"], &[], (None, Some("f32")), targets, false, true);
         let v: serde_json::Value = serde_json::from_str(&json.expect("explain.json written")).unwrap();
         let stage = |s: &str| v["stages"].as_array().unwrap().iter().find(|x| x["stage"] == s).cloned();
         let kernels = stage("kernel").expect("kernels")["elements"].as_array().unwrap().clone();

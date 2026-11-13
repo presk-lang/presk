@@ -119,19 +119,19 @@ const GPT: &[(&str, u64)] = &[("V", 92), ("D", 16), ("H", 2), ("L", 2)];
 fn stored_residuals_give_the_recomputed_bits() {
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], &'static [bool]);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], &[false]),
-        ("tests/plan/minigpt_grad.psk", TINY, "loss_grad", &[("B", 2), ("T", 8)], &[false]),
-        ("experiments/gpt_grad.psk", GPT, "loss_grad", &[("B", 2), ("T", 8)], &[false, true]),
-        ("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)], &[false]),
-        ("tests/data/stack_grad.psk", &[], "scale_grad", &[("B", 2)], &[false]),
-        ("tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)], &[false]),
-        ("tests/data/dropout_grad.psk", &[], "loss_grad", &[("B", 2)], &[false, true]),
-        ("tests/data/stack_keys.psk", &[], "loss_grad", &[("B", 2)], &[false, true]),
-        ("tests/data/stack_dropout_grad.psk", &[], "loss_grad", &[("B", 8)], &[false, true]),
-        ("tests/data/merge_grad.psk", &[], "loss_grad", &[("B", 2)], &[false]),
-        ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)], &[false]),
-        ("tests/data/closure_grad.psk", &[], "d_two", &[], &[false]),
-        ("tests/data/closure_grad.psk", &[], "d_captured", &[], &[false]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], &[false]),
+        ("examples/tests/plan/minigpt_grad.psk", TINY, "loss_grad", &[("B", 2), ("T", 8)], &[false]),
+        ("examples/experiments/gpt_grad.psk", GPT, "loss_grad", &[("B", 2), ("T", 8)], &[false, true]),
+        ("examples/tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)], &[false]),
+        ("examples/tests/data/stack_grad.psk", &[], "scale_grad", &[("B", 2)], &[false]),
+        ("examples/tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)], &[false]),
+        ("examples/tests/data/dropout_grad.psk", &[], "loss_grad", &[("B", 2)], &[false, true]),
+        ("examples/tests/data/stack_keys.psk", &[], "loss_grad", &[("B", 2)], &[false, true]),
+        ("examples/tests/data/stack_dropout_grad.psk", &[], "loss_grad", &[("B", 8)], &[false, true]),
+        ("examples/tests/data/merge_grad.psk", &[], "loss_grad", &[("B", 2)], &[false]),
+        ("examples/tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)], &[false]),
+        ("examples/tests/data/closure_grad.psk", &[], "d_two", &[], &[false]),
+        ("examples/tests/data/closure_grad.psk", &[], "d_captured", &[], &[false]),
     ];
     let mut report = String::new();
     let free = |remat| Ad { remat, groups: false };
@@ -175,7 +175,7 @@ fn stored_residuals_give_the_recomputed_bits() {
 /// for its objective, `loss.fwd`'s, is `loss`'s own bit for bit.
 #[test]
 fn a_site_typed_apart_keeps_the_groups() {
-    let rel = "tests/plan/minigpt_grad.psk";
+    let rel = "examples/tests/plan/minigpt_grad.psk";
     let (prog, base) = lowered(rel, TINY);
     let mut r = Realization::uniform(Dtype::F32);
     let ln = base.funcs.iter().find(|f| f.name == "LayerNorm.apply").expect("LayerNorm.apply");

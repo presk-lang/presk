@@ -28,7 +28,7 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 DIMS=(--const D=64 --const H=2 --const L=2 --dim T=256)
 W=${W:-out/curve_train_f64/final.psk.d}
 VAL=${VAL:-out/civil_val_T256.psk.d}

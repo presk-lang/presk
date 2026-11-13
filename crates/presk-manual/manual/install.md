@@ -16,6 +16,17 @@
 - PyTorch is *not* needed to build or test the compiler; only to run the
   conformance tests that `presk export` generates.
 
+## Install
+
+The compiler is the crate `presk` on crates.io; the workspace's other crates
+are its dependencies (`presk-core`, `presk-interp`, …, every one of them
+published with it):
+
+```sh
+cargo install presk               # builds GMP and MPFR once: m4 and a C compiler needed
+presk --help
+```
+
 ## Build
 
 ```sh
@@ -25,15 +36,19 @@ make build                       # cargo build --workspace
 ```
 
 The binary is `target/debug/presk`. During development it is simplest to run
-it through cargo:
+it through cargo (`presk` is the name of the package in `crates/presk-cli`):
 
 ```sh
-cargo run -q -p presk -- check tests/examples/mlp/mlp.psk
-cargo run -q -p presk -- run tests/examples/mlp/mlp.psk --entry mse --dim D=4 --dim B=2
-cargo run -q -p presk -- dump --stage core tests/examples/mlp/mlp.psk
+cargo run -q -p presk -- check examples/spec/mlp/mlp.psk
+cargo run -q -p presk -- run examples/spec/mlp/mlp.psk --entry mse --dim D=4 --dim B=2
+cargo run -q -p presk -- dump --stage core examples/spec/mlp/mlp.psk
 ```
 
 Add `--release` for an optimized build (`target/release/presk`).
+
+The public repository, `github.com/presk-lang/presk`, holds one commit per
+version, exported from the development repository (`CONTRIBUTING.md`); the
+manual is served at `docs.presk-lang.org`.
 
 ## Tests
 
@@ -110,20 +125,27 @@ crates/presk-provenance      the provenance table: every element of every stage 
 crates/presk-driver          the pipeline as values, which the commands and presk explain share   (0.11.0 step 1)
 crates/presk-explain         presk explain: one compilation as a document, its JSON and its pipeline view   (0.11.0 steps 3–6, 0.13.0)
 crates/presk-print-math      the printer of the denotation: a program as the equations of the reference's chapter 3   (0.13.0 step 4)
-crates/presk-cli             the `presk` binary
+crates/presk-cli             the `presk` binary (the package is named `presk`)
 crates/presk-manual          this manual
-tests/examples               the example programs of presk-specs (do not edit here)
-tutorial                     the programs of the tutorial chapter
-tests/diag                   one erroneous program per diagnostic, with snapshots
-tests/data                   a token stream for the .psk.d tests
-tests/train                  regressions trained by presk train
-tests/quant                  a program of odd widths for the int4 kernels
-tests/plan                   realization plans, and the entries make plan-check compares
-tests/export_c               programs and a plan the C export's tests need beyond the test set
-corpus/nlp                   the corpus of an NLP course (manual chapter `corpus`)
-coverage                     the MLPerf transcriptions (manual chapter `coverage`)
+examples                     every Presk program of the repository, named in examples/README.md
+examples/spec                the language's example programs, the syntax's source of truth
+examples/tutorial            the programs of the tutorial chapter
+examples/corpus/nlp          the corpus of an NLP course (manual chapter `corpus`)
+examples/coverage            the MLPerf transcriptions (manual chapter `coverage`)
+examples/experiments         the programs of the experiments
+examples/tests/diag          one erroneous program per diagnostic, with snapshots
+examples/tests/data          a token stream for the .psk.d tests
+examples/tests/train         regressions trained by presk train
+examples/tests/quant         a program of odd widths for the int4 kernels
+examples/tests/plan          realization plans, and the entries make plan-check compares
+examples/tests/export_c      programs and a plan the C export's tests need beyond the test set
+tests/run                    golden outputs of presk run
 experiments                  the scripts behind make experiment, curve, quant-table, step-table, j-step, step-train, foil, bert, ra4*, c-speed, pytorch-baseline
 ```
 
-The example programs are refreshed from the specification repository with
-`make sync-examples` (variable `PRESK_SPECS_DIR`, default `../presk-specs`).
+Every program is under `examples/` since 0.17.2 (D198): `make
+check-examples` checks each but the diagnostics and the parser's ASCII
+spellings, and a test fails on a program anywhere else. The language's
+programs, `examples/spec/`, came from the specification's repository, which
+reads them from this directory from 0.17.2 on; they change only with the
+specification.

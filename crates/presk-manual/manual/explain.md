@@ -5,11 +5,11 @@ compilation, a budget or a realization, a machine profile, the targets, and
 writes what the compiler did as a document. Every stage's representation is
 shown, then the decisions taken there and the commands that print the same
 thing (0.11.0, D113). It is for a reader who wants to see the whole path from
-the source to the C program on one example, and for a reviewer who wants
+the source to the C program on one example, and for one who wants
 each figure of a result traced to the command that prints it.
 
 ```sh
-presk explain tutorial/07_train.psk --entry loss --dim B=4 --budget 1e-3 \
+presk explain examples/tutorial/07_train.psk --entry loss --dim B=4 --budget 1e-3 \
     --profile ~/presk-data/ra4-model-0.8.0/profile.json --threads 10 \
     --target native,c,pytorch --out out/explain/loss
 ```
@@ -234,7 +234,7 @@ given, the frozen profile, no exact reference (statement X5, D116; 43 s and
 12.4 GB at 0.12.0):
 
 ```sh
-presk explain coverage/llama.psk --entry loss --const G=32 --const L=1 --dim T=384 --dim B=1 \
+presk explain examples/coverage/llama.psk --entry loss --const G=32 --const L=1 --dim T=384 --dim B=1 \
     --realize @out/llama/compile_times_T384/llama-7b-L1_solved.json \
     --envelope out/llama/compile_times_T384/llama-7b-L1_env.json \
     --profile ~/presk-data/ra4-model-0.8.0/profile.json --threads 10 --no-exact \
@@ -386,7 +386,7 @@ network-figure` writes the course GPT at level 2 into the chapter
 `explain_network` of this manual (753 × 1 569 pt, to be read on a screen)
 and the exploded view into `out/network/gpt-exploded.svg`,
 and the report's two figures as TikZ (presk-specs `report/figures/`), each
-readable on paper, as the user decided on 2026-10-17: level 1, the GPT
+readable in print, as the user decided on 2026-10-17: level 1, the GPT
 with its stack of blocks folded (`network-gpt.tex`, 647 × 899 pt, on an A4
 page at 0.74 of its size), and `Block` opened by itself
 (`network-gpt-block.tex`, `--box blocks`, 705 × 808 pt, at 0.68), their

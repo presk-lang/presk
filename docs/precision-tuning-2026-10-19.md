@@ -1,14 +1,14 @@
-> A precision-tuning tool on the exported C (presk D154). The prompt was presk-project `docs/prompt-paper-tuning-2026-10-19.md`, item 6 of the paper's improvements, at the user's request through the paper session. Version 0.15.0 (presk `9e8d377`, `main` after !118, with the scripts at `a8b93a3`), on falicon, 2026-10-19 from 09:33 to 10:04: the solver 7 min, CRAFT 8 min, the searches on presk's space 11 min, the 461 windows 2 min. Nothing here is a timing of record. The tables come from `experiments/tuning/tuning.sh` (`make precision-tuning`): `out/precision-tuning-0.15.0/report.md` and `margins.md`, `craft/*/`, `search/*/`, `solver/`, `adapt/`. The outputs are in presk-project `data/precision-tuning-0.15.0.tar.xz`.
+> A precision-tuning tool on the exported C (presk D154). It was run at the user's request. Version 0.15.0 (presk `9e8d377`, `main` after !118, with the scripts at `a8b93a3`), on falicon, 2026-10-19 from 09:33 to 10:04: the solver 7 min, CRAFT 8 min, the searches on presk's space 11 min, the 461 windows 2 min. Nothing here is a timing of record. The tables come from `experiments/tuning/tuning.sh` (`make precision-tuning`): `out/precision-tuning-0.15.0/report.md` and `margins.md`, `craft/*/`, `search/*/`, `solver/`, `adapt/`. The outputs are in presk-project `data/precision-tuning-0.15.0.tar.xz`.
 
 # A precision-tuning tool on the exported C
 
-§7 of the paper sets the solver beside the precision-tuning tools. Precimonious, HiFPTuner, ADAPT and CRAFT/FloatSmith check a configuration against a run. FPTuner and Daisy decide from a bound. The paper says what separates the solver from them, and that argument rests on three things:
+The solver stands beside the precision-tuning tools. Precimonious, HiFPTuner, ADAPT and CRAFT/FloatSmith check a configuration against a run. FPTuner and Daisy decide from a bound. What separates the solver from them rests on three things:
 
 - the reference: the exact function of the whole program;
 - the criterion: a budget on the output, discharged by measurement;
 - the space: the program's stored values and its parameters' storage types.
 
-That is argued, not measured. This run measures it on the one form of the program a C tool can take, the C program the compiler exports, under the paper's criterion. Then it gives the tools' two searches the compiler's own space, and judges everything found on the 461 held-out windows.
+That is argued, not measured. This run measures it on the one form of the program a C tool can take, the C program the compiler exports, under the criterion of record. Then it gives the tools' two searches the compiler's own space, and judges everything found on the 461 held-out windows.
 
 **In one paragraph.**
 
@@ -35,7 +35,7 @@ That is argued, not measured. This run measures it on the one form of the progra
   Every buffer is a `double *` allocated from one arena (`presk_alloc(arena, N * sizeof(double))`), under a comment naming its site. The program makes 82 launches. C1 holds: its outputs are the native backend's bit for bit.
 - *Its conformance inputs* are the tokens `presk run --seed 0` synthesizes: two windows of random tokens, not text. The export ships the exact reference's outputs on them, rounded to `f64` (`conformance/exact.psk.d`).
 
-**The criterion** is the paper's: the largest elementwise gap of the logits to the exact reference's, at most **ε\*(10⁻³) = 4.67·10⁻⁴**, on the conformance inputs, against `exact.psk.d` (`experiments/tuning/criterion.py`).
+**The criterion** is that of record: the largest elementwise gap of the logits to the exact reference's, at most **ε\*(10⁻³) = 4.67·10⁻⁴**, on the conformance inputs, against `exact.psk.d` (`experiments/tuning/criterion.py`).
 - *Absolute, not relative.* The prompt says "relative to their magnitude". But ε\*(δ) is a number on the logits, the margin argument's, and V6 solved under it as `--budget-abs` (D124). So the criterion here is absolute, the solver's own. The relative figure, the gap over the largest |exact logit| (5.16 on these inputs, 5.21 on the 461 windows), is in tier A's table and in `margins.md`.
 - *Against the `f64` run too.* The gap to the export's `native.psk.d` is reported beside the gap to the exact outputs. At these budgets the two references agree: the `f64` run is 4.4·10⁻¹⁵ from the exact logits on these inputs.
 - *A second budget, 10⁻⁶,* is not in the prompt. At 4.67·10⁻⁴ every all-`float` program passes on the first trial (2.5·10⁻⁶), so a search over `double` and `float` has nothing to search. At 10⁻⁶, below every all-`f32`'s gap, the searches have to split. It is not a budget from the margins.
@@ -241,7 +241,7 @@ Each item is a fact of this run.
 - *It needs what the compiler supplies.* To run at all, the tool needed three things: the exact outputs, which only the compiler ships; a retyping script, the stand-in for TypeForge (a ROSE source-to-source tool not on this machine); and a statement of which variables exist, which here came from the compiler's comments.
 - *Search beats the solver's proposal on the compiler's own space.* Given that space and the exact reference, the tools' searches beat the solver's one-sweep proposal by 9 % of its traffic at ε\*(10⁻³), out of sample too. The cost is 43–2 858 trials and a budget spent to 79 %.
 
-  The paper should not claim that the solver's realization is the narrowest that passes. It can claim that the solver's realization comes from one sweep and one measurement, with an estimate and a bound, and that a search over the same space can narrow it further. Such a search needs the exact reference to test against, and held-out windows to tell an answer that holds (ε\*(10⁻³)) from one that overfits (10⁻⁶).
+  It cannot be claimed that the solver's realization is the narrowest that passes. What can be claimed is that the solver's realization comes from one sweep and one measurement, with an estimate and a bound, and that a search over the same space can narrow it further. Such a search needs the exact reference to test against, and held-out windows to tell an answer that holds (ε\*(10⁻³)) from one that overfits (10⁻⁶).
 
 **For §4's claim about the space.** "The program's stored values and the parameters' storage types, not a source's variable declarations": measured, the two spaces are not the same space.
 - *The C has more variables.* 63 against 52: the kernels' locals, and one stored value split over up to six declarations.

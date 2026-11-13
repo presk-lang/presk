@@ -5,7 +5,7 @@ semantics implemented: elaboration (names, constants, dimensions,
 assertions, module instances, signatures), shape typing of function bodies
 ("Typing"), regularity classes and effects, and the intermediate
 representation ("PSK-Core"). The reference programs are in
-`tests/examples/`; the normative text is the language reference of
+`examples/spec/`; the normative text is the language reference of
 `presk-specs` (`reference/presk-reference.tex`), whose Status paragraphs
 say where this compiler departs from it. Where the specification left a
 choice, the one made here is recorded in `docs/spec-questions.md`, and the
@@ -72,6 +72,7 @@ of its line and its body starts on the next line (there is no `in`).
 
 A file is a sequence of declarations.
 
+<!-- psk: none (an overview of the declarations; `effect` and `model` are the specification's only) -->
 ```text
 import "../mlp/mlp.psk" as ff          -- another file, under an alias
 const D : nat = 768                     -- hyperparameter (the type is optional)
@@ -91,10 +92,12 @@ inference serve { … }
 
 ### Modules
 
+<!-- psk: examples/tutorial/01_linear.psk#Linear -->
 ```text
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init = xavier_uniform
   param b : ℝ[Out]      init = zeros
+
   fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
     x · w + b
 }
@@ -158,6 +161,7 @@ Rules:
 
 ### Functions
 
+<!-- psk: none (two signatures, the body of `next_token` elided) -->
 ```text
 fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
                 y : ℝ[batch: B, model: D]) -> ℝ[] =
@@ -178,6 +182,7 @@ one expression.
 
 ### Configuration blocks
 
+<!-- psk: none (abridged from examples/spec/minigpt/train_minigpt.psk and serve_minigpt.psk: fields left out) -->
 ```text
 optimizer adamw {
   lr           : f64 = 3e-4
@@ -250,6 +255,7 @@ algorithm; `adamw` is the only one in 0.2.0 (`E2010` otherwise). For every
 over `P = params M`, visible with `presk dump --stage core` and runnable
 with `presk run --entry adamw.step`:
 
+<!-- psk: none (the signatures the optimizer block lowers to) -->
 ```text
 adamw.init(θ : P) -> (P, P)                              -- moments at zero
 adamw.lr(t : nat, total : nat) -> ℝ[]                    -- the schedule
@@ -336,7 +342,7 @@ All binary operators are left-associative except `^`.
   them (`E2014` with a counterexample otherwise, `E1007` for a bound that is
   not a dimension). Selectors of both kinds mix in one index, left to
   right, on real and on index tensors: `w[seq: 1..T + 1]` is the targets of
-  a window of `T + 1` tokens (`examples/concat/`).
+  a window of `T + 1` tokens (`examples/spec/concat/`).
 - **Ascription** `(expr : type)`.
 - **Tuples** `(a, b)`, `()`.
 - **Dimension arguments** on a name: `Linear{D, D}`.
@@ -566,7 +572,7 @@ responsible and where it is, and suggests a substitute:
 
 ```text
 [E3001] Error: cannot differentiate through `argmax`: the function is discontinuous (Disc) in `l`
-   ,-[ tests/diag/reg_argmax.psk:6:3 ]
+   ,-[ examples/tests/diag/reg_argmax.psk:6:3 ]
  4 |   mean(real(argmax(logits)))
    |             `------ `argmax` makes the result discontinuous in `l`
  6 |   grad(λ l. pick(l))(logits)
@@ -588,6 +594,7 @@ a product is already known; a gradient that keeps its residuals keeps the
 mask. `split_key(key)` gives two independent keys, so a function can drop
 more than once:
 
+<!-- psk: examples/snippets/language/split_key.psk#block -->
 ```text
 fn block(x : ℝ[batch: B, model: D], key : key) -> ℝ[batch: B, model: D] uses Rand =
   let (k1, k2) = split_key(key)
@@ -617,6 +624,7 @@ one key for all `L` blocks: every layer drops the same positions, silently.
 Carry it in the accumulator instead, which is the value the fold threads from
 one iteration to the next:
 
+<!-- psk: examples/snippets/language/stack_key.psk#acc -->
 ```text
 type Acc = (ℝ[batch: B, model: D], key)
 
@@ -630,7 +638,7 @@ module Block {
 
 The caller passes `(x, key)` and projects the result. Nothing new is needed
 for this, it differentiates through the ordinary fold adjoint, and
-`corpus/nlp/05_gpt.psk` uses it (D37).
+`examples/corpus/nlp/05_gpt.psk` uses it (D37).
 
 **Effects.** The only effect is `Rand`. A function *uses* `Rand`
 if it calls `sample`, `dropout`, `split_key` or an initializer, or calls a
@@ -650,6 +658,7 @@ first-order functional IR in A-normal form: every function body is a list of
 `name : type = operation` bindings followed by `return`. Excerpt for
 `mlp.psk`:
 
+<!-- psk: none (PSK-Core, as presk dump --stage core prints it) -->
 ```text
 fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
   w : ℝ[In, Out] = θ.w
@@ -742,6 +751,7 @@ Excerpt of `mlp.psk` after differentiation, as `presk dump --stage
 core-after-ad` prints it (below, the dead code it has lost since 0.10.0
 step 3):
 
+<!-- psk: none (PSK-Core after differentiation, as presk dump --stage core-after-ad prints it) -->
 ```text
 fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : ℝ[..., Out])
     -> (params Linear{In, Out}, ℝ[..., In]) {
@@ -778,7 +788,7 @@ fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : 
   cotangent times `heaviside(x1 − x2)` and `x2` the rest, so a tie goes to
   the second operand (`min` likewise with `heaviside(x2 − x1)`); a `concat`'s
   adjoint is two `slice`s of the cotangent, and a slice's is the cotangent
-  placed into zeros, `slice_vjp` (`tests/data/concat_grad.psk` checks them
+  placed into zeros, `slice_vjp` (`examples/tests/data/concat_grad.psk` checks them
   against finite differences at 512 bits).
 - **No adjoint** flows into hyperparameters (`nat`, `f64`), indices, keys, or
   through `argmax`/`sample`; the regularity analysis has already rejected
@@ -786,7 +796,7 @@ fn Linear.apply.vjp{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In], ct : 
 - **Lambdas applied in a differentiated body** (`let f = λ a. prod(a, y)`,
   then `f(x)`) are differentiated through the function they call, their
   captured values included (fixed in 0.10.0 step 3,
-  `tests/data/closure_grad.psk`).
+  `examples/tests/data/closure_grad.psk`).
 - **Not supported** (`E6001`/`E6002`): second-order differentiation
   (`grad` inside a differentiated function, derivatives of the adjoint
   primitives), `grad` of a function value that is not a lambda of the same
@@ -861,8 +871,8 @@ c`, `f32`):
 | Gradient | Launches before | After | Of them dead before, after |
 |---|---|---|---|
 | `mse_grad` (`mlp.psk`, `D = 4`, `B = 2`) | 46 | 28 | 15, 2 |
-| `loss_grad` (`tests/plan/minigpt_grad.psk`, the tiny constants) | 767 | 583 | 125, 4 |
-| `loss_grad` (`experiments/gpt_grad.psk`, the course GPT) | 2 220 | 1 616 | 386, 12 |
+| `loss_grad` (`examples/tests/plan/minigpt_grad.psk`, the tiny constants) | 767 | 583 | 125, 4 |
+| `loss_grad` (`examples/experiments/gpt_grad.psk`, the course GPT) | 2 220 | 1 616 | 386, 12 |
 
 More goes than the recorder counted dead, since it counts a read for a
 shape as a read. What it still counts dead is what the pass holds for a
@@ -900,6 +910,7 @@ gone (`presk_core::ad::store`), each `.vjp` is split in two:
   `presk train`'s `objective.value_vjp` is `f.fwd`'s value and `f.bwd`'s
   cotangents: the loss it logs is `f.fwd`'s, computed as `f` computes it.
 
+<!-- psk: none (PSK-Core after differentiation, as presk dump --stage core-after-ad prints it) -->
 ```text
 fn MLP.apply.fwd{D hidden}(θ : params MLP{D, hidden}, x : ℝ[..., D])
     -> (ℝ[..., D], (ℝ[..., hidden], ℝ[..., hidden])) {
@@ -929,7 +940,7 @@ key in the accumulator is stacked as the sequence of the layers' keys, as
 a tensor is stacked as its slices: until 0.10.0 step 4 a stack kept the
 first key for every layer, and the backward fold of a stacked module that
 drops gave every layer layer 0's key, a wrong gradient under training
-(`tests/data/stack_dropout_grad.psk`).
+(`examples/tests/data/stack_dropout_grad.psk`).
 
 **The same bits.** Every gradient is bit-identical under `store` and
 `recompute`, in `f64`, `f32` and `bf16`. A realization that can see a
@@ -946,7 +957,7 @@ any other realization (since 0.10.0 step 4b) a group changes no bit, and
 `f.fwd` shares every residual with `f`'s computation, reading it where
 `f`'s groups kept it inside: nothing is computed apart. A `.vjp` whose
 split cannot be made exact keeps recomputing: one whose fold's body is
-generic in its leading axes (`...`, `tests/data/stack_prefix_grad.psk`'s
+generic in its leading axes (`...`, `examples/tests/data/stack_prefix_grad.psk`'s
 tower), since no zeros have the first slot's shape, and a function that
 reaches itself.
 
@@ -956,8 +967,8 @@ Launches, counted by the C export's recorder, keeping the groups (what
 | Gradient | `recompute`, `bf16` | `store`, `bf16` | `recompute`, `f32` | `store`, `f32` |
 |---|---|---|---|---|
 | `mse_grad` (`mlp.psk`, `D = 4`, `B = 2`) | 28 | 24 | 26 | 23 |
-| `loss_grad` (`tests/plan/minigpt_grad.psk`, the tiny constants) | 577 | 412 | 563 | 385 |
-| `loss_grad` (`experiments/gpt_grad.psk`, the course GPT) | 1 598 | 1 140 | 1 548 | 1 012 |
+| `loss_grad` (`examples/tests/plan/minigpt_grad.psk`, the tiny constants) | 577 | 412 | 563 | 385 |
+| `loss_grad` (`examples/experiments/gpt_grad.psk`, the course GPT) | 1 598 | 1 140 | 1 548 | 1 012 |
 
 What a realization states by function names the functions of the program
 as it is: `presk solve --step` names `.fwd` and `.bwd` functions under
@@ -975,7 +986,7 @@ program denotes, as the language reference's chapter 3 writes it (its
 section 3.10, "Programs as equations"; 0.13.0 step 4, D137): each function
 is the equations of its `let`s, then its value `⟦f⟧(x₁, …)`. Nothing is
 rounded and no order of summation is chosen: it is the mathematics the
-realizations are measured against. For `tutorial/03_attention.psk`:
+realizations are measured against. For `examples/tutorial/03_attention.psk`:
 
 ```text
 scores, of q : Q,  k : Q
@@ -1000,7 +1011,7 @@ that rebinds a name is primed: `let x = x + …` is `x' = x + …`.
 `--stage core-after-ad` does the same for PSK-Core after
 differentiation, one equation per binding, and says what each binding of a
 generated function was made for, read off the provenance table (D134). The
-reverse sweep of `Linear.apply`, from `tutorial/04_grad.psk`:
+reverse sweep of `Linear.apply`, from `examples/tutorial/04_grad.psk`:
 
 ```text
 Linear.apply.bwd, of θ : params Linear{In, Out},  x : ℝ[…, In],  ct : ℝ[…, Out]

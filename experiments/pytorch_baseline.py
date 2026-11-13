@@ -21,7 +21,7 @@ writes experiments/pytorch_baseline.sh's report from what it left in OUT.
 
 `--model llama` (D107, experiments/pytorch_decoder.sh) builds the Llama 2
 decoder instead, `llama.Llama(T)` as `presk export --target pytorch` writes
-coverage/llama.psk, with its own initialization (every matrix normal(std =
+examples/coverage/llama.psk, with its own initialization (every matrix normal(std =
 0.02), every γ ones, the distributions presk draws from) after
 `torch.manual_seed(0)`, on token indices drawn by `torch.randint(0, 32000,
 (B, T))` from a generator seeded 0: no checkpoint and no inputs file, since
@@ -205,7 +205,7 @@ def flops(a):
     print(f"pytorch flops: forward {fwd} ({fwd / 1e9:.3f} GFLOP), forward and backward of the loss {step} ({step / 1e9:.3f} GFLOP)")
 
 
-# The course GPT's constants (corpus/nlp/05_gpt.psk) at the timed size.
+# The course GPT's constants (examples/corpus/nlp/05_gpt.psk) at the timed size.
 B, T, L, D, H, HD, V = 16, 256, 6, 384, 6, 64, 92
 
 
@@ -253,7 +253,7 @@ def report(a):
     waited = lambda k: f"{k}.w" if wait and f"{k}.w" in res else k
     print(f"# The course GPT on three sides: {version} against PyTorch")
     print()
-    print(f"The course GPT (`corpus/nlp/05_gpt.psk`, D = {D}, {H} heads, {L} blocks, V = {V}) at B = {B}, T = {T}, `f32` on every side, with the checkpoint `out/course_probe_f32/final.psk.d` and the token indices the C export synthesizes; {date}, presk `{rev}`, `experiments/pytorch_baseline.sh`. Three sides: presk's native backend (`presk bench --plan-only`, `presk train`), the C program `presk export --target c` writes ({gcc}, `{flags}`, OpenMP), and PyTorch {torch.__version__} running the model `presk export --target pytorch` writes. Each time is the median of seven calls or steps, the first call or step, which compiles natively, left out on the native and PyTorch sides; the C program's seven calls are all counted.")
+    print(f"The course GPT (`examples/corpus/nlp/05_gpt.psk`, D = {D}, {H} heads, {L} blocks, V = {V}) at B = {B}, T = {T}, `f32` on every side, with the checkpoint `out/course_probe_f32/final.psk.d` and the token indices the C export synthesizes; {date}, presk `{rev}`, `experiments/pytorch_baseline.sh`. Three sides: presk's native backend (`presk bench --plan-only`, `presk train`), the C program `presk export --target c` writes ({gcc}, `{flags}`, OpenMP), and PyTorch {torch.__version__} running the model `presk export --target pytorch` writes. Each time is the median of seven calls or steps, the first call or step, which compiles natively, left out on the native and PyTorch sides; the C program's seven calls are all counted.")
     print()
     if wait:
         print(f"**The C program's threads.** Each C program is timed twice: under the OpenMP runtime's default, by which an idle worker sleeps after about 0.1 ms (libgomp's 300 000 spins on these cores), and with `{wait}`, by which it spins about 2 ms before it sleeps, as the native backend's pool does (presk D97's addendum). T4 compares the native backend with the second, both sides waiting alike; T2 compares PyTorch, at its own runtime's default, with the first. The same bits either way.")

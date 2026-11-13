@@ -25,10 +25,10 @@ fn program(file: &Path, consts: &[String]) -> (presk_syntax::SourceMap, presk_ty
 #[test]
 fn kernels_from_shapes_are_the_run_s() {
     let cases: [(&str, &str, &[&str], &[&str]); 4] = [
-        ("tests/examples/mlp/mlp.psk", "mse_grad", &["D=4", "B=2"], &[]),
-        ("tests/examples/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[]),
-        ("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"]),
-        ("tutorial/07_train.psk", "loss", &["B=4"], &[]),
+        ("examples/spec/mlp/mlp.psk", "mse_grad", &["D=4", "B=2"], &[]),
+        ("examples/spec/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[]),
+        ("examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"]),
+        ("examples/tutorial/07_train.psk", "loss", &["B=4"], &[]),
     ];
     for (file, entry, dims, consts) in cases {
         let consts: Vec<String> = consts.iter().map(|c| c.to_string()).collect();
@@ -51,7 +51,7 @@ fn kernels_from_shapes_are_the_run_s() {
 /// The solver's breakdown: its terms are the estimate, site by site.
 #[test]
 fn breakdown_sums_to_the_estimate() {
-    let file = root().join("tutorial/07_train.psk");
+    let file = root().join("examples/tutorial/07_train.psk");
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
@@ -78,7 +78,7 @@ fn breakdown_sums_to_the_estimate() {
 fn the_measured_rounding_is_at_most_the_unit_term() {
     use presk_precision::solve::{Narrow, Options, RoundingTerm};
     use presk_rt::Dtype;
-    let file = root().join("tutorial/07_train.psk");
+    let file = root().join("examples/tutorial/07_train.psk");
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
@@ -110,11 +110,11 @@ fn the_measured_rounding_is_at_most_the_unit_term() {
 /// the parameter of path ``, which no executor runs in a type of its own:
 /// every measurement narrowing it failed, read as an infinite gap, and the
 /// solver widened every other site back before it came to that one. On the
-/// attention row of experiments/widening.psk, by the softmax primitive, the
+/// attention row of examples/experiments/widening.psk, by the softmax primitive, the
 /// proposal is accepted as it stands.
 #[test]
 fn a_tensor_first_argument_is_no_parameter() {
-    let file = root().join("experiments/widening.psk");
+    let file = root().join("examples/experiments/widening.psk");
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
@@ -133,7 +133,7 @@ fn a_tensor_first_argument_is_no_parameter() {
 #[test]
 fn roles_of_the_tutorial() {
     use presk_precision::solve::{Role, Roles};
-    let (_, _, core) = program(&root().join("tutorial/07_train.psk"), &[]);
+    let (_, _, core) = program(&root().join("examples/tutorial/07_train.psk"), &[]);
     let roles = Roles::of(&core);
     let follows = |s: &str| Role::Follows(vec![s.to_string()]);
     for (site, role) in [
@@ -155,7 +155,7 @@ fn roles_of_the_tutorial() {
 #[test]
 fn parameter_reads_of_the_tutorial() {
     use std::collections::BTreeSet;
-    let (_, prog, core) = program(&root().join("tutorial/07_train.psk"), &[]);
+    let (_, prog, core) = program(&root().join("examples/tutorial/07_train.psk"), &[]);
     let (entry, _, _) = presk_interp::run::resolve_entry(&core, &prog, "loss").unwrap();
     let reads = presk_precision::solve::param_reads(&core, entry);
     let set = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<BTreeSet<String>>();
@@ -180,15 +180,15 @@ fn module_entry_bound_is_the_wrapper_s() {
         let Ok(b) = presk_driver::precision::bound(&core, &prog, &env, &realize, &[presk_precision::propagate::Model::Worst, presk_precision::propagate::Model::Conditioned], false) else { panic!("{entry} is bounded") };
         (b.runs[0].output.err, b.runs[1].output.err)
     };
-    let direct = bound("tests/examples/layernorm/layernorm.psk", "LayerNorm{8}.apply", &[]);
-    let wrapped = bound("experiments/gappa_layernorm.psk", "Norm.apply", &["D=8".to_string()]);
+    let direct = bound("examples/spec/layernorm/layernorm.psk", "LayerNorm{8}.apply", &[]);
+    let wrapped = bound("examples/experiments/gappa_layernorm.psk", "Norm.apply", &["D=8".to_string()]);
     assert_eq!(direct, wrapped);
 }
 
 /// The sensitivities' sweep is a program of its own, its `.vjp` first.
 #[test]
 fn sensitivity_program_is_printable() {
-    let (_, prog, mut core) = program(&root().join("tutorial/07_train.psk"), &[]);
+    let (_, prog, mut core) = program(&root().join("examples/tutorial/07_train.psk"), &[]);
     let (entry, _, _) = presk_interp::run::resolve_entry(&core, &prog, "loss").unwrap();
     let (added, diags) = presk_driver::precision::sensitivity_program(&mut core, entry);
     assert!(!presk_syntax::diag::has_errors(&diags));
@@ -204,7 +204,7 @@ fn sensitivity_program_is_printable() {
 #[test]
 fn one_menu_offers_the_matrices_their_integers() {
     use presk_precision::solve::{Menu, Rung};
-    let file = root().join("tutorial/07_train.psk");
+    let file = root().join("examples/tutorial/07_train.psk");
     let (_, prog, mut core) = program(&file, &[]);
     let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
@@ -243,11 +243,11 @@ fn one_menu_offers_the_matrices_their_integers() {
 #[test]
 fn given_params_have_the_drawn_tree() {
     let cases: [(&str, &str, &[&str], &[&str]); 5] = [
-        ("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"]),
-        ("tests/examples/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[]),
-        ("coverage/llama3.psk", "Llama3.apply", &["B=1", "T=8"], &["V=50", "D=32", "H=4", "G=2", "FF=64", "L=2"]),
-        ("coverage/llama.psk", "Llama.apply", &["B=2", "T=16"], &["V=100", "D=32", "H=2", "G=2", "FF=64", "L=2"]),
-        ("coverage/bert.psk", "BertSquad.apply", &["B=2", "T=16"], &["V=100", "D=32", "H=2", "L=2"]),
+        ("examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &["B=2", "T=8"], &["V=64", "D=16", "H=2", "L=2"]),
+        ("examples/spec/layernorm/layernorm.psk", "LayerNorm{8}.apply", &["batch=3"], &[]),
+        ("examples/coverage/llama3.psk", "Llama3.apply", &["B=1", "T=8"], &["V=50", "D=32", "H=4", "G=2", "FF=64", "L=2"]),
+        ("examples/coverage/llama.psk", "Llama.apply", &["B=2", "T=16"], &["V=100", "D=32", "H=2", "G=2", "FF=64", "L=2"]),
+        ("examples/coverage/bert.psk", "BertSquad.apply", &["B=2", "T=16"], &["V=100", "D=32", "H=2", "L=2"]),
     ];
     for (file, entry, dims, consts) in cases {
         let consts: Vec<String> = consts.iter().map(|c| c.to_string()).collect();
@@ -299,7 +299,7 @@ fn decided(moves: &[presk_precision::solve::Move]) -> Vec<String> {
 
 /// D185 (plan 0.17.1 §4): the sweep in binary64 and the measurements on the
 /// native backend change no decision. On the tutorial's loss and on a small
-/// `coverage/llama3.psk` under the one menu, narrowed by measurement, the
+/// `examples/coverage/llama3.psk` under the one menu, narrowed by measurement, the
 /// solve under either option and under both returns the default's
 /// realization, its decisions and every measured gap bit for bit; the
 /// sweep's sensitivities are the exact sweep's to binary64's rounding.
@@ -308,8 +308,8 @@ fn the_executors_change_no_decision() {
     use presk_driver::precision::{Measure, SolveExec, Sweep};
     use presk_precision::solve::{Narrow, Options};
     let cases: [(&str, &str, &[(&str, u64)], &[&str]); 2] = [
-        ("tutorial/07_train.psk", "loss", &[("B", 4)], &[]),
-        ("coverage/llama3.psk", "Llama3.apply", &[("B", 2), ("T", 8)], &["V=64", "D=32", "H=4", "G=2", "FF=64", "L=2"]),
+        ("examples/tutorial/07_train.psk", "loss", &[("B", 4)], &[]),
+        ("examples/coverage/llama3.psk", "Llama3.apply", &[("B", 2), ("T", 8)], &["V=64", "D=32", "H=4", "G=2", "FF=64", "L=2"]),
     ];
     for (file, entry, dims, consts) in cases {
         let file = root().join(file);
@@ -340,7 +340,7 @@ fn the_executors_change_no_decision() {
     }
 }
 
-/// Plan 0.17.1 (D185): `nll` of `coverage/llama3.psk` is the next-token
+/// Plan 0.17.1 (D185): `nll` of `examples/coverage/llama3.psk` is the next-token
 /// cross-entropy of `Llama3.apply`'s logits on the window's first T tokens,
 /// at each position: on the reference at 128 bits, at a small width, its
 /// value is log Σ exp z − z[target] computed in binary64 from the logits
@@ -348,7 +348,7 @@ fn the_executors_change_no_decision() {
 #[test]
 fn llama3_nll_is_the_cross_entropy_of_its_logits() {
     use presk_interp::Value as I;
-    let file = root().join("coverage/llama3.psk");
+    let file = root().join("examples/coverage/llama3.psk");
     let consts: Vec<String> = ["V=64", "D=32", "H=4", "G=2", "FF=64", "L=2"].iter().map(|c| c.to_string()).collect();
     let (_, prog, core) = program(&file, &consts);
     let (b, t, v) = (2usize, 8usize, 64usize);

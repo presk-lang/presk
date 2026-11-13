@@ -33,7 +33,7 @@ fn written(rel: &str) -> presk_core::Program {
 #[test]
 fn a_mask_takes_its_operand_s_type() {
     // `dropout(0.3, key, tanh(x · w1))` in `M.apply`.
-    let core = written("tests/data/dropout_grad.psk");
+    let core = written("examples/tests/data/dropout_grad.psk");
     let m = presk_core::inference::masks(&core);
     assert_eq!(m.len(), 1);
     let m = &m[0];

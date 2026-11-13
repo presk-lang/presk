@@ -314,7 +314,7 @@ fn check(name: &str, d: &presk_explain::Network) -> Vec<String> {
 /// `make plan-check`'s entries, the coverage models at `make coverage`'s
 /// tiny constants, and the course GPT at D = 64.
 fn entries() -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = std::fs::read_to_string(root().join("tests/plan/entries.txt"))
+    let mut out: Vec<(String, String, String)> = std::fs::read_to_string(root().join("examples/tests/plan/entries.txt"))
         .unwrap()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -323,9 +323,9 @@ fn entries() -> Vec<(String, String, String)> {
             (p[0].to_string(), p[1].to_string(), p[2].to_string())
         })
         .collect();
-    out.push(("coverage/bert.psk".into(), "BertSquad.apply".into(), "--const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
-    out.push(("coverage/llama.psk".into(), "Llama.apply".into(), "--const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16".into()));
-    out.push(("corpus/nlp/05_gpt.psk".into(), "loss".into(), "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
+    out.push(("examples/coverage/bert.psk".into(), "BertSquad.apply".into(), "--const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
+    out.push(("examples/coverage/llama.psk".into(), "Llama.apply".into(), "--const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16".into()));
+    out.push(("examples/corpus/nlp/05_gpt.psk".into(), "loss".into(), "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
     out
 }
 
@@ -337,7 +337,7 @@ fn slug(s: &str) -> String {
 /// outline, every box's graph and the default opening's positions.
 #[test]
 fn the_course_gpt() {
-    let d = diagram("gpt", "corpus/nlp/05_gpt.psk", "loss", "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16", false, (None, Some("f64")), true);
+    let d = diagram("gpt", "examples/corpus/nlp/05_gpt.psk", "loss", "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16", false, (None, Some("f64")), true);
     let bad = check("gpt", &d);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
     insta::assert_snapshot!("network-gpt", presk_diagram::text::outline(d.network.as_ref().unwrap()));
@@ -364,13 +364,13 @@ fn the_snapshot_documents_and_the_envelopes() {
     let mut bad = Vec::new();
     let mut compared = 0;
     for (name, file, entry, flags, how, opt) in [
-        ("mlp", "tests/examples/mlp/mlp.psk", "mse", "--dim D=4 --dim B=2", (Some(1e-3), None), false),
-        ("layernorm", "tests/examples/layernorm/layernorm.psk", "LayerNorm{8}.apply", "--dim batch=3", (None, Some("f32")), false),
-        ("minigpt", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", "--dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2", (None, Some("f32")), false),
-        ("tutorial", "tutorial/07_train.psk", "loss", "--dim B=4", (Some(1e-3), None), false),
-        ("tutorial-typed", "tutorial/07_train.psk", "loss", "--dim B=4", (None, Some("@../../tests/plan/tutorial-typed.json")), false),
-        ("tutorial-opt", "tutorial/07_train.psk", "loss", "--dim B=4", (None, Some("f32")), true),
-        ("mlp-grad", "tests/examples/mlp/mlp.psk", "mse_grad", "--dim D=4 --dim B=2", (None, Some("f32")), false),
+        ("mlp", "examples/spec/mlp/mlp.psk", "mse", "--dim D=4 --dim B=2", (Some(1e-3), None), false),
+        ("layernorm", "examples/spec/layernorm/layernorm.psk", "LayerNorm{8}.apply", "--dim batch=3", (None, Some("f32")), false),
+        ("minigpt", "examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", "--dim B=2 --dim T=8 --const V=64 --const D=16 --const H=2 --const L=2", (None, Some("f32")), false),
+        ("tutorial", "examples/tutorial/07_train.psk", "loss", "--dim B=4", (Some(1e-3), None), false),
+        ("tutorial-typed", "examples/tutorial/07_train.psk", "loss", "--dim B=4", (None, Some("@../../examples/tests/plan/tutorial-typed.json")), false),
+        ("tutorial-opt", "examples/tutorial/07_train.psk", "loss", "--dim B=4", (None, Some("f32")), true),
+        ("mlp-grad", "examples/spec/mlp/mlp.psk", "mse_grad", "--dim D=4 --dim B=2", (None, Some("f32")), false),
     ] {
         let d = diagram(name, file, entry, flags, opt, how, false);
         if how.0.is_some() {
@@ -392,7 +392,7 @@ fn the_snapshot_documents_and_the_envelopes() {
 fn as_dumped() -> presk_diagram::Network {
     let (dims, consts) = args("--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16");
     let o = Options {
-        file: root().join("corpus/nlp/05_gpt.psk"),
+        file: root().join("examples/corpus/nlp/05_gpt.psk"),
         entry: "loss".into(),
         dims,
         consts,
@@ -479,7 +479,7 @@ fn the_manual_holds_the_course_gpt_s_network() {
     let n = as_dumped();
     let v = &view(&n, &level(&n, 2));
     let path = root().join("crates/presk-manual/manual/explain_network.md");
-    let head = "# The course GPT's network\n\nThe network diagram of `corpus/nlp/05_gpt.psk`'s `loss` at `D = 64`, `H = 2`, `L = 2`, `B = 2`, `T = 16`, in `f64`, at level 2: `GPT.apply` opened and its stack of blocks opened to one layer, as the page's Network tab draws it, composed from each box's frame (plan 0.14.0 step 3, plan 0.14.1). Generated by `make network-figure`, that is\n\n```text\npresk dump corpus/nlp/05_gpt.psk --stage network --entry loss --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --level 2 --format svg\n```\n\nand held current by a test of `presk-explain`. Each box carries its function's formula in the printer's Unicode form, its parameters and the cost model's W and Q, a layer's inside the stack; each arrow is coloured by its realized type, its width by its bytes; the random keys are left out. The report's two figures (presk-specs `report/figures/network-gpt.tex` and `network-gpt-block.tex`) are level 1 and `Block` alone, by the same layout in TikZ; the page opens any set of boxes, and `--level all` every one.\n\n";
+    let head = "# The course GPT's network\n\nThe network diagram of `examples/corpus/nlp/05_gpt.psk`'s `loss` at `D = 64`, `H = 2`, `L = 2`, `B = 2`, `T = 16`, in `f64`, at level 2: `GPT.apply` opened and its stack of blocks opened to one layer, as the page's Network tab draws it, composed from each box's frame (plan 0.14.0 step 3, plan 0.14.1). Generated by `make network-figure`, that is\n\n```text\npresk dump examples/corpus/nlp/05_gpt.psk --stage network --entry loss --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --level 2 --format svg\n```\n\nand held current by a test of `presk-explain`. Each box carries its function's formula in the printer's Unicode form, its parameters and the cost model's W and Q, a layer's inside the stack; each arrow is coloured by its realized type, its width by its bytes; the random keys are left out. The report's two figures (presk-specs `report/figures/network-gpt.tex` and `network-gpt-block.tex`) are level 1 and `Block` alone, by the same layout in TikZ; the page opens any set of boxes, and `--level all` every one.\n\n";
     let want = format!("{head}{}", presk_diagram::svg::svg(&n, v, false));
     if std::env::var("PRESK_UPDATE_MANUAL").is_ok() {
         std::fs::write(&path, &want).unwrap();
@@ -494,7 +494,7 @@ fn the_manual_holds_the_course_gpt_s_network() {
 /// TikZ, each box's on its header, and leaves the plain drawing as it was.
 #[test]
 fn the_memory_overlay_colours_the_boxes_by_their_share() {
-    let mut d = diagram("gpt-memory", "corpus/nlp/05_gpt.psk", "loss", "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16", false, (None, Some("f64")), true);
+    let mut d = diagram("gpt-memory", "examples/corpus/nlp/05_gpt.psk", "loss", "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16", false, (None, Some("f64")), true);
     let n = d.network.as_mut().unwrap();
     assert!(!d.memory.is_empty(), "no shares");
     for (id, f) in &d.memory {

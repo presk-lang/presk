@@ -1,8 +1,8 @@
-> The certificate off-sample against the size of the calibration sample (presk D156). The prompt was presk-project `docs/prompt-certificate-off-sample-2026-10-19.md`, item 7 of the paper's improvements, written by the paper session on the user's word ("va pour 7"). Version 0.15.0 at presk `c162dbf`, nothing in the compiler changed; on falicon, 2026-10-19 from 12:22 to 13:58, nothing timed of record. The tables come from `experiments/off_sample.sh` (`make off-sample`): `out/off-sample/report.md`, `report.json`, `env/`, `solve/`, `realizations.tsv`, `margins/`. The outputs are in presk-project `data/certificate-off-sample-0.15.0.tar.xz`.
+> The certificate off-sample against the size of the calibration sample (presk D156). The prompt was presk-project `docs/prompt-certificate-off-sample-2026-10-19.md`, written on the user's word. Version 0.15.0 at presk `c162dbf`, nothing in the compiler changed; on falicon, 2026-10-19 from 12:22 to 13:58, nothing timed of record. The tables come from `experiments/off_sample.sh` (`make off-sample`): `out/off-sample/report.md`, `report.json`, `env/`, `solve/`, `realizations.tsv`, `margins/`. The outputs are in presk-project `data/certificate-off-sample-0.15.0.tar.xz`.
 
 # The certificate off-sample against the size of the calibration sample
 
-Every claim the solver measures is a claim on a sample. The envelope's magnitudes, the estimate, the measured gap and the realization are all taken on the few held-out windows the envelope was calibrated on: the first 4 at D = 64 for V6 and D154–D155, 4 at course scale for D129. The paper then judges the realization on the 461 held-out windows and quotes the ratio: 2.3× at D = 64 (V6) and 4.8× at course scale (D129).
+Every claim the solver measures is a claim on a sample. The envelope's magnitudes, the estimate, the measured gap and the realization are all taken on the few held-out windows the envelope was calibrated on: the first 4 at D = 64 for V6 and D154–D155, 4 at course scale for D129. Judged on the 461 held-out windows, the realization is 2.3× further from the exact logits than on its sample at D = 64 (V6), and 4.8× at course scale (D129).
 
 This run asks how that ratio depends on the size of the sample. It also asks whether D155's narrowing by measurement, which overfit four windows at 10⁻⁶, becomes safe once the sample is larger.
 - *The method.* The envelope of the logits at D = 64 is calibrated on the first N = 1, 2, 4, 8, 16, 32 held-out windows, and on all 461. The solver runs on each envelope at ε\*(10⁻³) = 4.67·10⁻⁴ and at 10⁻⁶, in three forms.
@@ -133,7 +133,7 @@ Out/in falls below 1 once the sample holds the population's worst window: the ot
 ## The sentences
 
 **(a) How the out-of-sample ratio falls with N, for the solver of record.**
-- *At ε\*.* 1.72× at one and two windows (another realization, at the same 1.97×), 2.30× at 4 and 8 (V6's, the paper's 2.3×), and 1.92× at 16 and 32.
+- *At ε\*.* 1.72× at one and two windows (another realization, at the same 1.97×), 2.30× at 4 and 8 (V6's 2.3×), and 1.92× at 16 and 32.
 - *At 10⁻⁶.* 3.76×, 2.57×, 2.48×, 1.74×, 1.53× and 1.53×.
 - *Not within 1.5× in this run.* It never comes within 1.5× up to 32 windows; at 10⁻⁶ it comes within 1.53×.
 - *Held fixed.* V6's realization at ε\* comes within 1.5× only at 256 windows (1.15×), and within 1.1× only once the sample holds window 402. At 10⁻⁶ it comes within 1.5× at 64 windows and below 1 from 128, once the sample holds window 121.
@@ -172,20 +172,10 @@ Out/in falls below 1 once the sample holds the population's worst window: the ot
 - *What a gap on the envelope's four windows promises.* For this model and this text, elsewhere it is at most 2.5× that for the solver of record, and at most 2.7× in any form. From one window it can be 3.8×, from 32 windows still 1.9×.
 - *The factor does not carry across models.* D129's 4.8× at course scale is above every ratio here.
 
-## For the paper
-
-**§4, beside "4.8× out of sample".**
-
-> How the ratio depends on the sample was measured at D = 64 (presk D156). Solved on the first N = 1 to 32 held-out windows and judged on the 461 − N others, the solver of record's realization is 1.5× to 3.8× further from the exact logits out of sample than in. It is 2.3× at the four windows of record, and at 32 windows it is still 1.9× at ε\* and 1.5× at 10⁻⁶. The realization itself is the same, decision for decision, from 4 to 32 windows: the sample sets the gap the solver measures, not the realization it picks. The out-of-sample gap is one window's. The realization of record's largest gap over the 461 windows is in window 402, no other comes within 10 % of it, and a sample's maximum approaches it only when the sample reaches that window. No realization inside ε\* out of sample changed a decision on the windows it was not calibrated on.
-
-**Threats.**
-
-> A measured gap is a claim on the envelope's windows. At D = 64 the same realization's gap on the other held-out windows is up to 2.5× larger from four windows (3.8× from one, 1.9× from 32), and 4.8× at course scale. Narrowing decided by that measurement (`presk solve --narrow measured`, off by default) fails the budget out of sample at 10⁻⁶ from every sample size up to 32 windows, while flipping no decision. It is safe only behind a held-out check, whatever the sample's size.
-
 ## What it does not say
 
 - **One program, one entry, one scale.** It covers the logits of the course GPT at D = 64 on one trained model, on the Code civil's 461 held-out windows. The ratio at course scale (D129's 4.8×) is not re-measured here.
-- **The windows are not independent draws.** They are consecutive 256-token windows of one text, and the first N are its opening. The out-of-sample gap is the rest of the same text, and a sample's maximum reaches the worst window only by covering the text up to it. The bootstrap's caveat of D118 and §4 applies. A random draw of N windows would have other ratios.
+- **The windows are not independent draws.** They are consecutive 256-token windows of one text, and the first N are its opening. The out-of-sample gap is the rest of the same text, and a sample's maximum reaches the worst window only by covering the text up to it. The bootstrap's caveat of D118 applies. A random draw of N windows would have other ratios.
 - **The sample sizes stop at 32.** The population, 461, was calibrated for the envelopes' agreement, and no solve was run on it.
 - **Two budgets, three forms.** `--rounding unit --narrow measured` was not run; D155 found it reaches the same realizations as `measured/narrow` at N = 4.
 - **Nothing timed.** The calibration and solve times are notes, 12 jobs at once on falicon's 20 cores. Nothing changed in the compiler, and the defaults stay as the user decided on D155.

@@ -16,14 +16,14 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 # The dimensions the weights were trained at: `pos : ℝ[T, D]` makes T part of
 # the parameters, and a checkpoint opened at another T is refused (D48).
 # Two windows of the Code civil: a trained model's loss on random tokens is not
 # the loss it was trained for. The run saw every window during training (three
 # epochs), so this is a statement about numerics, not about generalisation.
 ARGS=(--entry loss --const D=64 --const H=2 --const L=2 --dim T=256
-      --data corpus/nlp/data/civil_T256.psk.d --samples 2 --from 4000)
+      --data examples/corpus/nlp/data/civil_T256.psk.d --samples 2 --from 4000)
 W=${W:-out/gpt_trained/final.psk.d}
 OUT=${1:-out/quant_table.md}
 MATS='["tok","pos","head","blocks.attn.wq.w","blocks.attn.wk.w","blocks.attn.wv.w","blocks.attn.wo.w","blocks.ff.up.w","blocks.ff.down.w"]'

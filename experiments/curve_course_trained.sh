@@ -28,7 +28,7 @@ set -u -o pipefail
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
 REMAT=${REMAT:-store}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 CONSTS=(--const D=384 --const H=6 --const L=6)
 DIMS=(--dim B=2 --dim T=256)
 ENV=out/curve-course-trained_env.json

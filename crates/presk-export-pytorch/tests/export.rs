@@ -52,7 +52,7 @@ fn export_examples() {
         ("minigpt/train_minigpt.psk", Options::default()),
         ("minigpt/serve_minigpt.psk", Options { shapes_check: false, stack: StackMode::Unroll }),
     ] {
-        let files = generated(&format!("tests/examples/{rel}"), &opts);
+        let files = generated(&format!("examples/spec/{rel}"), &opts);
         let stem = Path::new(rel).file_stem().unwrap().to_str().unwrap();
         let dir = tmp.join(stem);
         std::fs::create_dir_all(&dir).unwrap();
@@ -76,7 +76,7 @@ fn training_and_graph_files() {
     assert!(schedule_py(&Schedule::Linear { warmup: 0 }).starts_with("1.0 * (1.0 - "));
     assert!(schedule_py(&Schedule::Cosine { warmup: 2000 }).starts_with("min(1.0, t / 2000) * 0.5 * (1.0 + math.cos("));
     let spec = TrainSpec {
-        source: "tests/examples/minigpt/train_minigpt.psk".into(),
+        source: "examples/spec/minigpt/train_minigpt.psk".into(),
         model_stem: "minigpt".into(),
         ctor: "MiniGPT(8)".into(),
         objective_stem: "train_minigpt".into(),
@@ -107,7 +107,7 @@ fn training_and_graph_files() {
     let tree = ParamsTree::Node(vec![("head".into(), leaf()), ("blocks".into(), ParamsTree::Stacked { n: presk_types::dim::DimExpr::constant(presk_types::dim::rat(2)), inner: Box::new(ParamsTree::Node(vec![("w".into(), leaf())])) })]);
     assert_eq!(layout_py(&tree), r#"{"head": None, "blocks": ["stack", {"w": None}]}"#);
     let sspec = ServeSpec {
-        source: "tests/examples/minigpt/serve_minigpt.psk".into(),
+        source: "examples/spec/minigpt/serve_minigpt.psk".into(),
         model_stem: "minigpt".into(),
         class: "MiniGPT".into(),
         ctor_dims: vec!["T".into()],

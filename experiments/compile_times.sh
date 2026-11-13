@@ -1,7 +1,6 @@
 #!/bin/bash
-# The time the compiler's commands take per model, for the paper's setup table
-# (presk-paper-001, docs/results-2026-10-02.md §5, "compile and solve times",
-# owed): `presk check`, `presk calibrate --precision` (the magnitude envelope,
+# The time the compiler's commands take per model: `presk check`,
+# `presk calibrate --precision` (the magnitude envelope,
 # measured on the exact interpreter), `presk solve` (a realization under a
 # 1e-3 budget, verified by measurement) and the exact reference alone (`presk
 # run --bits 128` on one sample), each a wall time of one command, start-up
@@ -15,15 +14,14 @@
 #                  initialization, on its SQuAD loss (`squad_loss`, a scalar for `presk
 #                  solve`, D101) over SQuAD-shaped features (experiments/bert.sh's) with
 #                  an answer's span (bert_features.py --span)
-#   llama-7b-L<N>  the Llama 2 decoder of coverage/llama.psk at the 7B configuration's width
+#   llama-7b-L<N>  the Llama 2 decoder of examples/coverage/llama.psk at the 7B configuration's width
 #                  (G = 32), N of its 32 blocks, at its initialization, on its next-token
 #                  loss (`loss`) over random token ids (experiments/llama.sh's, T = LLAMA_T,
 #                  default 384; D104)
 #
 # It is a measurement: run it on the measurement machine when it is quiet, like
 # `make j-step`, and never while another experiment runs. The report goes to
-# docs/compile-times-<date>.md (the paper's tables/setup.py reads it by the
-# model key in its first column).
+# docs/compile-times-<date>.md (by the model key in its first column).
 #
 #   MODELS="gpt-reduced minigpt" ./experiments/compile_times.sh   a subset
 #   SAMPLES=2                                                      the envelope's batch (default 2)
@@ -39,8 +37,8 @@ D=${CT_OUT:-out/compile_times}
 mkdir -p "$D"
 [ -x "$PRESK" ] || { echo "no $PRESK: cargo build --release -p presk"; exit 1; }
 
-GPT=corpus/nlp/05_gpt.psk
-CIVIL=corpus/nlp/data/civil_T256.psk.d
+GPT=examples/corpus/nlp/05_gpt.psk
+CIVIL=examples/corpus/nlp/data/civil_T256.psk.d
 W=out/gpt_trained/final.psk.d
 TINY=(--const V=64 --const D=16 --const H=2 --const L=2)
 
@@ -72,11 +70,11 @@ describe() {
         gpt-reduced)   FILE=$GPT; CONSTS=(--const D=64 --const H=2 --const L=2); ENTRY=loss; DIMS=(--dim T=256); DATA=$CIVIL;
                        WEIGHTS=$([ -s "$W" ] && echo "$W" || echo -);
                        LABEL="the course GPT, reduced constants (D = 64, H = 2, L = 2, T = 256)$([ "$WEIGHTS" != - ] && echo ', trained weights')";;
-        minigpt)       FILE=tests/examples/minigpt/train_minigpt.psk; CONSTS=("${TINY[@]}"); ENTRY=loss; DIMS=(--dim B=2 --dim T=8); DATA=-; WEIGHTS=-;
+        minigpt)       FILE=examples/spec/minigpt/train_minigpt.psk; CONSTS=("${TINY[@]}"); ENTRY=loss; DIMS=(--dim B=2 --dim T=8); DATA=-; WEIGHTS=-;
                        LABEL="the tiny MiniGPT (V = 64, D = 16, H = 2, L = 2, B = 2, T = 8)";;
-        bert-large-L2) FILE=coverage/bert.psk; CONSTS=(--const L=2); ENTRY=squad_loss; DIMS=(--dim T=384); DATA=out/bert/features_loss.psk.d; WEIGHTS=-;
+        bert-large-L2) FILE=examples/coverage/bert.psk; CONSTS=(--const L=2); ENTRY=squad_loss; DIMS=(--dim T=384); DATA=out/bert/features_loss.psk.d; WEIGHTS=-;
                        LABEL="BERT-large at MLPerf's constants, L = 2 of 24, one feature, its SQuAD loss";;
-        llama-7b-L*)   FILE=coverage/llama.psk; CONSTS=(--const G="${LLAMA_G:-32}" --const L="${1#llama-7b-L}" ${LLAMA_CONSTS:-}); ENTRY=loss; DIMS=(--dim T="${LLAMA_T:-384}");
+        llama-7b-L*)   FILE=examples/coverage/llama.psk; CONSTS=(--const G="${LLAMA_G:-32}" --const L="${1#llama-7b-L}" ${LLAMA_CONSTS:-}); ENTRY=loss; DIMS=(--dim T="${LLAMA_T:-384}");
                        DATA=${LLAMA_OUT:-out/llama}/ids_loss_T${LLAMA_T:-384}.psk.d; WEIGHTS=-;
                        LABEL="the Llama 2 decoder at the 7B configuration's width, L = ${1#llama-7b-L} of 32, T = ${LLAMA_T:-384}, its next-token loss";;
         *) echo "unknown model $1"; exit 1;;
@@ -109,7 +107,7 @@ done
   echo "> \`presk calibrate --precision\` (the magnitude envelope of the entry on $SAMPLES sample(s) at 128 bits);"
   echo "> \`presk solve --budget 1e-3\` (a realization proposed and verified by measurement against the reference"
   echo "> at 128 bits); and the exact reference alone, \`presk run --bits 128\` on one sample. The first column is"
-  echo "> the model's key, which the paper's \`tables/setup.py\` reads."
+  echo "> the model's key."
   echo
   echo "# Compile and solve times, $DATE"
   echo
@@ -120,7 +118,7 @@ done
   done
   echo
   echo "The outputs of every command are under \`$D/\` (not committed). A time is of the"
-  echo "command as the paper's reader would run it, the front end, the JIT and the reading of the data"
+  echo "command as a reader would run it, the front end, the JIT and the reading of the data"
   echo "included; \`presk solve\` includes the reference run it verifies against."
 } > "$OUT"
 echo

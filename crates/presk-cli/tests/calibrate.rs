@@ -15,7 +15,7 @@ fn presk(args: &[&str]) -> Output {
 
 fn calibrate(profile: &Path, plan_only: bool) -> serde_json::Value {
     let p = profile.to_str().unwrap();
-    let mut args = vec!["bench", "tests/plan/minigpt_grad.psk", "--entry", "loss_grad", "--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2", "--dim", "B=2", "--dim", "T=8", "--plan", "@tests/plan/default.json", "--threads", "2", "--repeat", "2"];
+    let mut args = vec!["bench", "examples/tests/plan/minigpt_grad.psk", "--entry", "loss_grad", "--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2", "--dim", "B=2", "--dim", "T=8", "--plan", "@examples/tests/plan/default.json", "--threads", "2", "--repeat", "2"];
     if plan_only {
         args.push("--plan-only");
     }

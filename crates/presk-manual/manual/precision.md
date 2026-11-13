@@ -45,9 +45,9 @@ unbounded and intervals grow with depth until they say nothing. So the
 magnitudes are **measured**, on the exact interpreter:
 
 ```sh
-presk calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+presk calibrate --precision examples/corpus/nlp/05_gpt.psk --entry loss \
     --const D=32 --const H=2 --const L=2 --dim T=256 \
-    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 \
+    --data examples/corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 \
     --out out/envelope_a.json
 ```
 
@@ -105,8 +105,8 @@ calibrate --weights`, from 0.6.0 step 6 on).
 envelope was measured on, under a given realization:
 
 ```sh
-presk check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f32 --sites 6
-presk check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize f32 --model all --measure
+presk check --precision out/envelope_a.json examples/corpus/nlp/05_gpt.psk --realize f32 --sites 6
+presk check --precision out/gpt_env.json examples/corpus/nlp/05_gpt.psk --realize f32 --model all --measure
 ```
 
 Each value carries a pair: a ceiling on `|v|`, read from the envelope, and a
@@ -138,7 +138,7 @@ difference over the output's elements, and +∞ when one of them is not
 finite, as the language reference defines it: since 0.10.0 step 8, `presk
 check --measure`, `presk solve` and `presk quantize` no longer leave such
 an element out, which let a realization that overflowed pass on the
-others; `tests/data/overflow.psk`.)
+others; `examples/tests/data/overflow.psk`.)
 
 Whether it is *tight* is another question, and the answer on a real model is
 no:
@@ -283,7 +283,7 @@ perturbation per site is needed; only a record of where each adjoint ended
 up.
 
 ```sh
-presk dump --stage sensitivity --entry loss corpus/nlp/05_gpt.psk     --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=32     --weights out/gpt_tiny/final.psk.d
+presk dump --stage sensitivity --entry loss examples/corpus/nlp/05_gpt.psk     --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=32     --weights out/gpt_tiny/final.psk.d
 ```
 
 **A ranking taken at initialization is vacuous, and finding that out is part
@@ -342,9 +342,9 @@ means by calling precision assignment an inverse Herbie.
 ## A budget in, a realization out
 
 ```sh
-presk solve corpus/nlp/05_gpt.psk --precision out/envelope_a.json \
+presk solve examples/corpus/nlp/05_gpt.psk --precision out/envelope_a.json \
     --budget 1e-3 --weights out/gpt_tiny/final.psk.d --out out/solved.json
-presk run corpus/nlp/05_gpt.psk --entry loss --realize @out/solved.json …
+presk run examples/corpus/nlp/05_gpt.psk --entry loss --realize @out/solved.json …
 ```
 
 The solver chooses one machine type per site to minimise **traffic** subject

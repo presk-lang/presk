@@ -1,17 +1,17 @@
 ---
 source: crates/presk-syntax/tests/snapshots.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/parse_bad_char.psk
+input_file: examples/tests/diag/parse_bad_char.psk
 ---
 [E0002] Error: unexpected character `§` (U+00A7)
-   ,-[ tests/diag/parse_bad_char.psk:2:21 ]
+   ,-[ examples/tests/diag/parse_bad_char.psk:2:21 ]
    |
  2 | const D : nat = 768 § 2
    |                     |  
    |                     `-- not part of the Presk syntax
 ---'
 [E0010] Error: expected end of line, found number `2`
-   ,-[ tests/diag/parse_bad_char.psk:2:23 ]
+   ,-[ examples/tests/diag/parse_bad_char.psk:2:23 ]
    |
  2 | const D : nat = 768 § 2
    |                       |  

@@ -24,7 +24,7 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-MODEL=coverage/bert.psk
+MODEL=examples/coverage/bert.psk
 L=${L:-24}
 STAGES=${STAGES-exact gaps split time}
 OUT=${1:-out/bert.md}

@@ -114,7 +114,7 @@ fn counts(t: &Table) -> String {
 /// `make plan-check`'s entries, the coverage models at `make coverage`'s
 /// tiny constants, and the course GPT at D = 64.
 fn entries() -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = std::fs::read_to_string(root().join("tests/plan/entries.txt"))
+    let mut out: Vec<(String, String, String)> = std::fs::read_to_string(root().join("examples/tests/plan/entries.txt"))
         .unwrap()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -123,9 +123,9 @@ fn entries() -> Vec<(String, String, String)> {
             (p[0].to_string(), p[1].to_string(), p[2].to_string())
         })
         .collect();
-    out.push(("coverage/bert.psk".into(), "BertSquad.apply".into(), "--const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
-    out.push(("coverage/llama.psk".into(), "Llama.apply".into(), "--const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16".into()));
-    out.push(("corpus/nlp/05_gpt.psk".into(), "loss".into(), "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
+    out.push(("examples/coverage/bert.psk".into(), "BertSquad.apply".into(), "--const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
+    out.push(("examples/coverage/llama.psk".into(), "Llama.apply".into(), "--const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16".into()));
+    out.push(("examples/corpus/nlp/05_gpt.psk".into(), "loss".into(), "--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16".into()));
     out
 }
 
@@ -149,7 +149,7 @@ fn every_element_of_every_stage_has_a_parent() {
 #[test]
 fn every_program_of_the_test_set_through_its_front_stages() {
     let mut bad = Vec::new();
-    for file in ["tests/examples/mlp/mlp.psk", "tests/examples/layernorm/layernorm.psk", "tests/examples/minigpt/minigpt.psk", "tests/examples/minigpt/train_minigpt.psk", "tests/examples/minigpt/serve_minigpt.psk"] {
+    for file in ["examples/spec/mlp/mlp.psk", "examples/spec/layernorm/layernorm.psk", "examples/spec/minigpt/minigpt.psk", "examples/spec/minigpt/train_minigpt.psk", "examples/spec/minigpt/serve_minigpt.psk"] {
         let mut report = Collect::default();
         let (sm, prog, typed, core, lowered) = presk_driver::front::typed_core_traced(&root().join(file), &[], false, &mut report).unwrap_or_else(|s| panic!("{file}: {s:?}"));
         let mut ad = core.clone();
@@ -192,10 +192,10 @@ fn every_program_of_the_test_set_through_its_front_stages() {
 fn the_precision_stages_link_to_the_differentiated_program() {
     let mut bad = Vec::new();
     for (file, entry, flags, how, opt) in [
-        ("tests/examples/mlp/mlp.psk", "mse_grad", "--dim D=4 --dim B=2", (None, Some("f32")), false),
-        ("tests/examples/mlp/mlp.psk", "mse_grad", "--dim D=4 --dim B=2", (None, Some("f32")), true),
-        ("tests/examples/mlp/mlp.psk", "mse", "--dim D=4 --dim B=2", (Some(1e-3), None), false),
-        ("tutorial/07_train.psk", "loss", "--dim B=4", (Some(1e-3), None), false),
+        ("examples/spec/mlp/mlp.psk", "mse_grad", "--dim D=4 --dim B=2", (None, Some("f32")), false),
+        ("examples/spec/mlp/mlp.psk", "mse_grad", "--dim D=4 --dim B=2", (None, Some("f32")), true),
+        ("examples/spec/mlp/mlp.psk", "mse", "--dim D=4 --dim B=2", (Some(1e-3), None), false),
+        ("examples/tutorial/07_train.psk", "loss", "--dim B=4", (Some(1e-3), None), false),
     ] {
         let name = format!("{file}:{entry}");
         let t = table_as(&format!("{}-exact", name.replace(['/', ':'], "_")), file, entry, flags, opt, false, how);

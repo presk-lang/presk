@@ -1,0 +1,10 @@
+
+-- Appended by experiments/delta_p.sh (D98): the logits with the batch last,
+-- so that `presk run --data` fills it, and the gradient of `loss` as an
+-- entry, so that `presk run` prints it at --digits.
+fn logits(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[batch: B, seq: T, vocab: V] uses Rand =
+  let (x, y) = batch
+  GPT.apply(θ, x, k)
+
+fn loss_grad(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> params GPT uses Rand =
+  grad(λ θ. loss(θ, k, batch))(θ)

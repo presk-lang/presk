@@ -1,7 +1,7 @@
 #!/bin/bash
 # A precision-tuning tool on the exported C (D154): what CRAFT, the one of
 # the C tools that runs here, finds on the C program `presk export` writes
-# for the logits of the course GPT at D = 64, under the paper's criterion,
+# for the logits of the course GPT at D = 64, under the ε*(1e-3) criterion,
 # beside what the solver finds; the searches of Precimonious and CRAFT
 # reimplemented on the compiler's own space; and everything they found
 # judged by the compiler on the 461 held-out windows of `make margins`.
@@ -47,7 +47,7 @@ MARGINS=${MARGINS:-out/margins}
 BUDGETS=${BUDGETS:-4.67e-4 1e-6}
 CORE=${CORE:-5}
 TOOLS=${TOOLS:-.tuning}
-FILE=experiments/margins.psk
+FILE=examples/experiments/margins.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 T=experiments/tuning
 mkdir -p "$OUT"

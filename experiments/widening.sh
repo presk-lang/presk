@@ -1,6 +1,6 @@
 #!/bin/bash
 # Where the measurement changes the solver's decision (D128): the six
-# entries of experiments/widening.psk, three pairs, each solved at seven
+# entries of examples/experiments/widening.psk, three pairs, each solved at seven
 # budgets and verified against the exact reference, beside the four rules'
 # bounds and the measured gap under each uniform type.
 #
@@ -33,7 +33,7 @@ set -u -o pipefail
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
 OUT=${OUT:-out/widening}
-FILE=experiments/widening.psk
+FILE=examples/experiments/widening.psk
 BUDGETS=${BUDGETS:-"1e-1 3e-2 1e-2 1e-3 1e-4 1e-5 1e-6"}
 # entry:rows. The attention row and the long sums at a few rows; the
 # standard deviation at 64, where the row of the smallest variance, whose

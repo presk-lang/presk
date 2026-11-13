@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_dim_mismatch.psk
+input_file: examples/tests/diag/shape_dim_mismatch.psk
 ---
 [E2006] Error: dimension mismatch: `2*D` vs `D`
-   ,-[ tests/diag/shape_dim_mismatch.psk:5:5 ]
+   ,-[ examples/tests/diag/shape_dim_mismatch.psk:5:5 ]
    |
  5 |     x · w
    |     ^^|^^  

@@ -45,12 +45,12 @@ fn mask_count(core: &presk_core::Program) -> usize {
 }
 
 const DROPS: [(&str, usize); 6] = [
-    ("corpus/nlp/05_gpt.psk", 4),
-    ("experiments/margins.psk", 4),
-    ("tests/train/dropout_reg.psk", 2),
-    ("tests/data/dropout_grad.psk", 1),
-    ("tests/data/stack_keys.psk", 2),
-    ("tests/data/stack_dropout_grad.psk", 1),
+    ("examples/corpus/nlp/05_gpt.psk", 4),
+    ("examples/experiments/margins.psk", 4),
+    ("examples/tests/train/dropout_reg.psk", 2),
+    ("examples/tests/data/dropout_grad.psk", 1),
+    ("examples/tests/data/stack_keys.psk", 2),
+    ("examples/tests/data/stack_dropout_grad.psk", 1),
 ];
 
 #[test]

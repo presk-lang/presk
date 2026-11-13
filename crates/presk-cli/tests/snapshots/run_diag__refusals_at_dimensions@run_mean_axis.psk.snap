@@ -2,11 +2,11 @@
 source: crates/presk-cli/tests/run_diag.rs
 assertion_line: 74
 expression: snap
-input_file: tests/diag/run_mean_axis.psk
+input_file: examples/tests/diag/run_mean_axis.psk
 ---
-$ presk run tests/diag/run_mean_axis.psk --entry center --dim B=2 --dim D=0
+$ presk run examples/tests/diag/run_mean_axis.psk --entry center --dim B=2 --dim D=0
 [E7003] Error: `center` is refused at the dimensions given: in `norm`, `mean axis model` averages over the axis `model`, of length 0 (`D` = 0)
-   ,-[ tests/diag/run_mean_axis.psk:7:57 ]
+   ,-[ examples/tests/diag/run_mean_axis.psk:7:57 ]
    |
  7 | fn norm(x : ℝ[..., model: D]) -> ℝ[..., model: D] = x - mean(axis model, x)
    |                                                         ^^^^^^^^^|^^^^^^^^^  

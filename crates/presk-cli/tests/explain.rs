@@ -37,7 +37,7 @@ fn quoted(doc: &str, out: &str, what: &str, skip: impl Fn(&str) -> bool) {
 
 #[test]
 fn the_document_quotes_the_commands() {
-    const FILE: &str = "tutorial/07_train.psk";
+    const FILE: &str = "examples/tutorial/07_train.psk";
     const PROFILE: &str = "crates/presk-explain/tests/data/x925-frozen.json";
     let dir = std::env::temp_dir().join(format!("presk-explain-x3-{}", std::process::id()));
     let (a, b) = (dir.join("a"), dir.join("b"));
@@ -60,8 +60,8 @@ fn the_document_quotes_the_commands() {
     // 0.12.0 the tutorial's space, with its four parameters, is past the
     // search's size; the MLP's is not.
     let mlp_env = dir.join("mlp_env.json");
-    presk(&["calibrate", "--precision", "tests/examples/mlp/mlp.psk", "--entry", "mse", "--dim", "D=4", "--dim", "B=2", "--bits", "128", "--out", mlp_env.to_str().unwrap()], false);
-    let mlp = presk(&["solve", "tests/examples/mlp/mlp.psk", "--precision", mlp_env.to_str().unwrap(), "--budget", "1e-3", "--profile", PROFILE, "--sites", "0"], false);
+    presk(&["calibrate", "--precision", "examples/spec/mlp/mlp.psk", "--entry", "mse", "--dim", "D=4", "--dim", "B=2", "--bits", "128", "--out", mlp_env.to_str().unwrap()], false);
+    let mlp = presk(&["solve", "examples/spec/mlp/mlp.psk", "--precision", mlp_env.to_str().unwrap(), "--budget", "1e-3", "--profile", PROFILE, "--sites", "0"], false);
     assert!(mlp.contains(" s by exhaustive search") && !mlp.contains("0.000x"), "{mlp}");
     let check = presk(&["check", "--precision", &env, FILE, "--realize", &realization, "--model", "all", "--sites", "8", "--measure"], false);
     quoted(&doc, &check, "presk check --precision", |l| l.starts_with("  envelope "));
@@ -84,7 +84,7 @@ fn the_document_quotes_the_commands() {
 /// traced through every stage.
 #[test]
 fn the_measured_gap_is_the_solver_s() {
-    const FILE: &str = "tutorial/07_train.psk";
+    const FILE: &str = "examples/tutorial/07_train.psk";
     const PROFILE: &str = "crates/presk-explain/tests/data/x925-frozen.json";
     let dir = std::env::temp_dir().join(format!("presk-explain-measure-{}", std::process::id()));
     presk(&["explain", FILE, "--entry", "loss", "--dim", "B=4", "--budget", "1e-3", "--profile", PROFILE, "--threads", "2", "--measure", "--site", "Linear.apply/%3", "--out", dir.to_str().unwrap()], false);
@@ -104,7 +104,7 @@ fn the_measured_gap_is_the_solver_s() {
 #[test]
 fn the_manual_holds_the_tutorial_s_document() {
     let dir = std::env::temp_dir().join(format!("presk-explain-manual-{}", std::process::id()));
-    presk(&["explain", "tutorial/07_train.psk", "--entry", "loss", "--dim", "B=4", "--budget", "1e-3", "--profile", "crates/presk-explain/tests/data/x925-frozen.json", "--threads", "10", "--target", "native,c,pytorch", "--out", dir.to_str().unwrap()], false);
+    presk(&["explain", "examples/tutorial/07_train.psk", "--entry", "loss", "--dim", "B=4", "--budget", "1e-3", "--profile", "crates/presk-explain/tests/data/x925-frozen.json", "--threads", "10", "--target", "native,c,pytorch", "--out", dir.to_str().unwrap()], false);
     let doc = std::fs::read_to_string(dir.join("explain.md")).unwrap();
     let body = doc.strip_prefix("---\n").and_then(|d| d.split_once("\n---\n")).map(|(meta, body)| (meta.to_string(), body.to_string())).expect("a metadata block");
     let field = |name: &str| body.0.lines().find_map(|l| l.strip_prefix(&format!("{name}: \""))).and_then(|v| v.strip_suffix('"')).unwrap_or("").replace("\\\"", "\"");
@@ -135,7 +135,7 @@ fn the_json_is_the_same_from_one_run_to_the_next() {
     for k in ["a", "b"] {
         let out = base.join(k);
         let o = out.to_str().unwrap();
-        presk(&["explain", "tutorial/07_train.psk", "--entry", "loss", "--dim", "B=4", "--realize", "f32", "--no-exact", "--target", "native", "--format", "json", "--out", o], false);
+        presk(&["explain", "examples/tutorial/07_train.psk", "--entry", "loss", "--dim", "B=4", "--realize", "f32", "--no-exact", "--target", "native", "--format", "json", "--out", o], false);
         texts.push(std::fs::read_to_string(out.join("explain.json")).unwrap());
     }
     assert!(texts[0].contains("\"relocs\": [\n") || texts[0].contains("\"relocs\""), "no relocations recorded");

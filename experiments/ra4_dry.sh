@@ -22,7 +22,7 @@ set -u -o pipefail
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
 CORES=${RA4_CORES:-5-9,15-19}
-FILE=${FILE:-experiments/ra4_attention.psk}
+FILE=${FILE:-examples/experiments/ra4_attention.psk}
 ENTRY=${ENTRY:-SelfAttention.apply}
 CONSTS=${CONSTS:-}
 SHAPES=${SHAPES:-B=1,T=256 B=16,T=256}

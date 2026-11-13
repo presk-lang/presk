@@ -48,7 +48,7 @@ fn tmp(name: &str) -> PathBuf {
 /// y = 2·x₀ − x₁ + 0.5 is learnt by a linear layer under AdamW in 200 steps.
 #[test]
 fn regression_converges_and_checkpoints_round_trip() {
-    let (prog, typed, mut core) = prepare("tests/train/mlp_regression.psk", &[]);
+    let (prog, typed, mut core) = prepare("examples/tests/train/mlp_regression.psk", &[]);
     let ckpt = tmp("reg");
     let opts = TrainOptions { data: None, steps: Some(200), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: Some(ckpt.clone()), checkpoints: true };
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
@@ -87,7 +87,7 @@ fn regression_converges_and_checkpoints_round_trip() {
 /// decreases, and the log is a golden output.
 #[test]
 fn minigpt_twenty_steps() {
-    let (prog, typed, mut core) = prepare("tests/examples/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)]);
+    let (prog, typed, mut core) = prepare("examples/spec/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)]);
     // The example's `checkpoint every 1000 steps to "ckpt/"` would write next to the
     // example file: redirect to a temporary directory.
     let ckpt = tmp("minigpt");
@@ -109,7 +109,7 @@ fn minigpt_twenty_steps() {
 /// the same model evaluated outside training is its own expectation.
 #[test]
 fn dropout_trains_from_a_per_step_key() {
-    let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
+    let (prog, typed, mut core) = prepare("examples/tests/train/dropout_reg.psk", &[]);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     assert!(fns.key, "the objective takes a key between θ and the batch");
     let opts = TrainOptions { data: None, steps: Some(120), epochs: None, seed: 0, bits: 256, realize: Realization::uniform(Dtype::F64), ckpt: None, checkpoints: false };
@@ -138,7 +138,7 @@ fn dropout_trains_from_a_per_step_key() {
 #[test]
 fn a_quantised_realization_runs_on_dequantised_weights() {
     use presk_rt::{AxisRef, Quant, QuantScheme};
-    let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
+    let (prog, typed, mut core) = prepare("examples/tests/train/dropout_reg.psk", &[]);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let mut r = Realization::uniform(Dtype::F64);
     for (path, bits) in [("l1.w", 8u8), ("l2.w", 4)] {
@@ -181,7 +181,7 @@ fn a_quantised_realization_runs_on_dequantised_weights() {
 /// step updates master weights in the default type (the plan's §5).
 #[test]
 fn training_refuses_parameters_in_their_own_types() {
-    let (prog, typed, mut core) = prepare("tests/train/dropout_reg.psk", &[]);
+    let (prog, typed, mut core) = prepare("examples/tests/train/dropout_reg.psk", &[]);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let mut r = Realization::uniform(Dtype::F64);
     r.params.insert("l1.w".into(), Dtype::Bf16);

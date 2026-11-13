@@ -36,7 +36,7 @@ case $CKPT in /*) ;; *) CKPT=$ROOT/$CKPT ;; esac
 REPEAT=${REPEAT:-7}
 CORE=${CORE:-5}
 OUT=${1:?usage: experiments/c_speed.sh OUT}
-FILE=corpus/nlp/05_gpt.psk
+FILE=examples/corpus/nlp/05_gpt.psk
 DIMS=(--dim B=16 --dim T=256)
 
 mkdir -p "$OUT"

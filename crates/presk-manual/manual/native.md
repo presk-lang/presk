@@ -241,7 +241,7 @@ primitives sharing one loop nest (`realize` chapter). `presk dump --stage
 kernel` runs an entry and prints the kernels it launched:
 
 ```sh
-presk dump tutorial/01_linear.psk --stage kernel --entry 'Linear{3, 2}.apply' --dim batch=4 --realize f32
+presk dump examples/tutorial/01_linear.psk --stage kernel --entry 'Linear{3, 2}.apply' --dim batch=4 --realize f32
 ```
 
 ```text
@@ -322,7 +322,7 @@ odd-width `bf16` `dot` began accumulating in `f32`, 0.7.0 step 2):
 The `f64` and `f32` columns are those of 0.4.0, digit for digit: making the
 realization an object changed no arithmetic, and neither did 0.7.0's layout
 space. The bands are asserted on the examples in all three types, and on the
-compiler's own test programs (`tests/data`, `tests/train`, the MLPerf
+compiler's own test programs (`examples/tests/data`, `examples/tests/train`, the MLPerf
 transcription) in `f64` and `f32`; their `bf16` gaps are reported. On the
 gradient of `stack_prefix_grad`, a small result left over from larger terms
 cancelling crosses the `bf16` band on some inputs and not others, with 0.6.0's
@@ -489,7 +489,7 @@ lanes change no bit (statement H). The functions are the export's,
 bit-identical to the `libm` crate (D78). Three checks hold:
 - `cargo test -p presk-llvm`: the C export's test set in four realizations,
   with both sets of weights, on one worker and on four, and under
-  `tests/plan`'s plans;
+  `examples/tests/plan`'s plans;
 - `out/x1`'s native runs, repeated on LLVM;
 - `make llvm-conformance`: the C export's programs, each checked against the
   LLVM backend's run (`presk export --llvm`), which with `make
@@ -541,7 +541,7 @@ The same seed gives the same `θ₀` and the same batches on every backend, so
 a native run is comparable to the reference digit for digit.
 
 Two measurements. `crates/presk-cranelift/tests/native.rs` trains the
-regression (`tests/train/mlp_regression.psk`) for 200 steps on the reference
+regression (`examples/tests/train/mlp_regression.psk`) for 200 steps on the reference
 at 256 bits and natively, and compares the final parameters:
 
 | Realization | Worst relative gap after 200 AdamW steps |
@@ -661,7 +661,7 @@ two workers:
 ```
 
 ```sh
-presk dump tutorial/03_attention.psk --stage kernel --entry scores --dim B=1 --dim T=4 --plan @pack.json
+presk dump examples/tutorial/03_attention.psk --stage kernel --entry scores --dim B=1 --dim T=4 --plan @pack.json
 ```
 
 ```text

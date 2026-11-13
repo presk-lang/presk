@@ -444,6 +444,15 @@ pub fn host_profile(entry: &str, realize: &str, planned: bool, h: &crate::bench:
         out.push_str(&format!("-- without the timers, {:.0} minor page faults a call\n", h.plain_faults.iter().sum::<u64>() as f64 / h.plain_faults.len() as f64));
     }
     out.push_str(&presk_kernel::profile::table(&h.timed, "call"));
+    if let Some(l) = &h.listing {
+        let (mode, anon) = &l.huge_pages;
+        out.push_str(&format!(
+            "-- transparent huge pages: {}; the process's anonymous memory in huge pages after the calls: {}\n",
+            mode.as_deref().unwrap_or("unknown"),
+            anon.map_or("unknown".to_string(), |k| format!("{k} kB"))
+        ));
+        out.push_str(&presk_kernel::profile::launch_table(&h.timed, &l.kernels, l.strides));
+    }
     out
 }
 

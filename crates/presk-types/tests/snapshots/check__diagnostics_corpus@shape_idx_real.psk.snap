@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_idx_real.psk
+input_file: examples/tests/diag/shape_idx_real.psk
 ---
 [E2009] Error: `+` between an index tensor and a real
-   ,-[ tests/diag/shape_idx_real.psk:4:3 ]
+   ,-[ examples/tests/diag/shape_idx_real.psk:4:3 ]
    |
  4 |   x + t
    |   ^^|^^  

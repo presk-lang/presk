@@ -12,7 +12,7 @@ fn root() -> PathBuf {
 }
 
 fn run(args: &[&str]) -> String {
-    let o = Command::new(env!("CARGO_BIN_EXE_presk")).current_dir(root()).arg("run").arg("tests/data/masks.psk").args(args).env("NO_COLOR", "1").output().expect("running presk");
+    let o = Command::new(env!("CARGO_BIN_EXE_presk")).current_dir(root()).arg("run").arg("examples/tests/data/masks.psk").args(args).env("NO_COLOR", "1").output().expect("running presk");
     assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
     String::from_utf8_lossy(&o.stdout).to_string()
 }
@@ -34,7 +34,7 @@ fn a_mask_is_printed_as_truth_values() {
             // to the six digits printed.
             assert_eq!(run(&b).replace(" at 64 bits", " at 256 bits").replace("\"bits\": 64", "\"bits\": 256"), out, "{b:?}");
         }
-        text.push_str(&format!("$ presk run tests/data/masks.psk {}\n{out}\n", args.join(" ")));
+        text.push_str(&format!("$ presk run examples/tests/data/masks.psk {}\n{out}\n", args.join(" ")));
     }
     insta::assert_snapshot!(text);
 }

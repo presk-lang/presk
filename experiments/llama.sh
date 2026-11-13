@@ -1,7 +1,7 @@
 #!/bin/bash
 # The Llama 2 decoder at the 7B configuration's width, run (D104): the
-# second model of the paper's RQ5, by BERT-large's protocol (bert.sh, D53).
-# coverage/llama.psk with G = 32, so that the width (4096), the heads (32,
+# second model with a budget, by BERT-large's protocol (bert.sh, D53).
+# examples/coverage/llama.psk with G = 32, so that the width (4096), the heads (32,
 # each its own key head), SwiGLU's width (11008) and the vocabulary (32 000)
 # are Llama 2 7B's published configuration; L of its 32 blocks, as the
 # machine affords them; a learned position table in place of RoPE, which
@@ -38,7 +38,7 @@
 #        files, int8 but `wo`, are read too)
 # solve  `make compile-times`' four commands on the next-token loss
 #        (`loss`, a scalar): check, the envelope, `presk solve --budget
-#        1e-3` and the reference, timed for the paper's setup table (model
+#        1e-3` and the reference, timed for the compile times (model
 #        key llama-7b-L<L>; their outputs in out/llama/compile_times_T<T>/),
 #        then `presk check --precision` on the solved realization for the
 #        bound beside its measured gap
@@ -58,7 +58,7 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-MODEL=coverage/llama.psk
+MODEL=examples/coverage/llama.psk
 L=${L:-1}
 SPLIT_L=${SPLIT_L:-1}
 T=${T:-384}

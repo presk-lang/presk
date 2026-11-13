@@ -11,7 +11,7 @@
 # ten-core days under it into OUT/L-C (its twenty-core day is left out,
 # D68). A form L-C+R names rules of the planned cost too (step 4, 4c): the
 # calibration is first costed again under them, its times kept (`presk
-# refit --recost experiments/matmul.psk --rules R`), then refitted in L-C.
+# refit --recost examples/experiments/matmul.psk --rules R`), then refitted in L-C.
 # OUT/0.7.0 is priced by 0.7.0's profile, and must reproduce
 # docs/ra4-2026-09-24.md. experiments/ra4_ablation.py then gathers the
 # reports and the re-priced lines into OUT/ablation.md.
@@ -30,7 +30,7 @@ RA4_DEV=$RA4_DEV PROFILE=$RA4_DEV/out/profile.json PROFILE_20= experiments/ra4_d
 for f in $FORMS; do
   form=${f%%+*}
   recost=()
-  [ "$form" != "$f" ] && recost=(--recost experiments/matmul.psk --rules "${f#*+}")
+  [ "$form" != "$f" ] && recost=(--recost examples/experiments/matmul.psk --rules "${f#*+}")
   "$PRESK" refit "$CALIBRATION" "${recost[@]}" --load-term "${form%-*}" --combine "${form#*-}" --out "$OUT/profile-$f.json" | grep -E '^-- (fit|uncertainty|[0-9]+ samples re-costed)' || exit 1
   RA4_DEV=$RA4_DEV PROFILE=$OUT/profile-$f.json PROFILE_20= experiments/ra4_dev.sh "$OUT/$f" | tail -1 || exit 1
 done

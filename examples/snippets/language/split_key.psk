@@ -1,0 +1,13 @@
+-- split_key.psk — the `language` chapter's "Dropout takes a key": a function
+-- that drops twice, from two keys split from one. Its part is the
+-- declaration `block`; `attn` and `ff` stand for any function of the shape.
+const D : nat = 8
+dim B
+
+fn attn(x : ℝ[batch: B, model: D]) -> ℝ[batch: B, model: D] = x
+fn ff(x : ℝ[batch: B, model: D]) -> ℝ[batch: B, model: D] = relu(x)
+
+fn block(x : ℝ[batch: B, model: D], key : key) -> ℝ[batch: B, model: D] uses Rand =
+  let (k1, k2) = split_key(key)
+  let h = dropout(0.1, k1, attn(x))
+  dropout(0.1, k2, ff(h))

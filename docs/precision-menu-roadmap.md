@@ -28,7 +28,7 @@ They cannot trade one kind of move against the other. A weight in `int8`
 and a nest in `bf16` are never weighed in one order: the integer pass
 spends what the float pass left of the budget. On a model where a weight
 in `int8` would buy more per unit of error than a nest in `bf16`, the
-float pass takes the nest first. Neither the paper's statements nor plan
+float pass takes the nest first. Neither the statements of record nor plan
 0.12.0's measured this; the curve and the decoder's solve ran without
 `--quant`.
 
@@ -75,7 +75,7 @@ so an estimate that ranks well matters more than one that bounds.
   estimate of `√Σ (g_i·v_i)²` per site;
 - one move list in `presk_precision::solve` with both kinds of rung, the
   widening order unchanged (D41);
-- the solves of the paper and the decoder run again: the course GPT, the
+- the solves of record and the decoder run again: the course GPT, the
   curve, BERT-large's two blocks and the decoder, with and without
   `--quant`;
 - an X1-style check that a realization without `quant` gives the bits it

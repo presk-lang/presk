@@ -1731,7 +1731,7 @@ fn measure(o: &Options, core: &Program, prog: &ElabProgram, dims: &[(String, u64
     let gap = exact.as_ref().map(|e| presk_driver::gap::leaf_gap(e, &native));
     let call = with_backend(BackendKind::Native, core, prog, o.bits, plan, report, |b| presk_driver::bench::time_call(b, func, &fdims, realize, &args, warmup, repeat).ok());
     let kernels = presk_driver::bench::kernel_times(core, prog, func, &fdims, &args, plan, repeat);
-    let host = presk_driver::bench::host_profile(core, prog, func, &fdims, &args, plan, planned, repeat, warmup);
+    let host = presk_driver::bench::host_profile(core, prog, func, &fdims, &args, plan, planned, repeat, warmup, false);
     Ok(Measured { load: (before, load_average()), exact, native, gap, call, warmup, repeat, workers, kernels, host })
 }
 

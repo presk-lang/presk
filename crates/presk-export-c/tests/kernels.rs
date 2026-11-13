@@ -95,7 +95,7 @@ fn native_backend<'p>(core: &'p presk_core::Program, prog: &'p ElabProgram, r: &
 /// review.
 #[test]
 fn c_of_a_linear_layer() {
-    let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
+    let (prog, core) = prepare("examples/tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{4, 8}.apply".into(), dims: vec![("batch".into(), 2)], seed: 0, bits: 64, digits: 12 };
     let mut text = String::new();
     let mut all: Vec<Kernel> = Vec::new();
@@ -235,7 +235,7 @@ fn cases() -> &'static [(presk_core::PrimOp, Vec<IValue>)] {
 #[test]
 fn the_primitives_are_bit_identical_to_the_native_backend() {
     let started = Instant::now();
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     assert_eq!(cases().len(), 47);
     let (runs, kernels) = primitive_runs(&prog, &core, cases());
     let lib = Arc::new(CLib::build("primitives", &kernels));
@@ -270,7 +270,7 @@ fn the_primitives_are_bit_identical_to_the_native_backend() {
 #[test]
 fn the_primitives_as_scops_are_bit_identical_to_the_native_backend() {
     use presk_export_c::scop;
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let zero = Layout { lanes: Some(1), split: Some(Split::None), pack: Some(false), ..Layout::default() };
     let mut kernels: Vec<Kernel> = Vec::new();
     for d in DTYPES {
@@ -346,7 +346,7 @@ fn the_primitives_as_scops_are_bit_identical_to_the_native_backend() {
 /// rule; elsewhere it reports what moved.
 #[test]
 fn contraction_moves_bits_in_gccs_gnu_mode() {
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let (runs, kernels) = primitive_runs(&prog, &core, cases());
     let mut flags = vec!["-std=gnu11", "-O2"];
     flags.extend_from_slice(presk_export_c::WARNINGS);
@@ -406,7 +406,7 @@ fn check_layouts(tag: &str, every: usize) {
 /// every `every`-th of those.
 fn check_layouts_with(tag: &str, stride: usize, every: usize, quant: Option<u8>) {
     let started = Instant::now();
-    let (prog, core) = prepare("tests/plan/contractions.psk", &[]);
+    let (prog, core) = prepare("examples/tests/plan/contractions.psk", &[]);
     struct Run {
         nest: String,
         d: Dtype,
@@ -523,7 +523,7 @@ fn every_layout_on_integer_weights_is_bit_identical_to_the_native_backend() {
 #[test]
 fn the_primitives_on_integer_weights_are_bit_identical_to_the_native_backend() {
     let started = Instant::now();
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     // A primitive run as `PrimRun`, with what was quantized how.
     let mut runs: Vec<(PrimRun, String)> = Vec::new();
     let mut kernels: Vec<Kernel> = Vec::new();

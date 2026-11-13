@@ -6,7 +6,7 @@ beside new: the standard library only, nothing run.
 
 Reads 0.16.0's solves and realizations (moved to out/pre-0.16.1/, or kept in
 their own directories: out/v6-0.16.0, out/margins-course-0.16.0/logits,
-out/paper-0.16.0) and 0.16.1's (out/step2-0.16.1/phaseA.sh's), and the
+the 0.16.0 rows' own) and 0.16.1's (out/step2-0.16.1/phaseA.sh's), and the
 margins rows on both texts of record (the Code civil's 461 held-out windows,
 the Code pénal's first 461, D168) at each version. For every row:
 

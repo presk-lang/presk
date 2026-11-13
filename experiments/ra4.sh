@@ -24,13 +24,13 @@
 # course GPT at its constants (D = 384, H = 6), T = 256, B ∈ {1, 16}, f32
 # and f64, the whole space; the attention as the sweeps measured it, its
 # mask a real tensor added to the scores, frozen in
-# experiments/ra4_attention.psk since plan 0.10.0 step 7b (D99). Needs a
+# examples/experiments/ra4_attention.psk since plan 0.10.0 step 7b (D99). Needs a
 # quiet machine and a calibrated profile (`make calibrate-ra4`).
 set -u -o pipefail
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
 CORES=${RA4_CORES:-5-9,15-19}
-FILE=${FILE:-experiments/ra4_attention.psk}
+FILE=${FILE:-examples/experiments/ra4_attention.psk}
 ENTRY=${ENTRY:-SelfAttention.apply}
 CONSTS=${CONSTS:-}                       # e.g. "D=1024 H=16"
 SHAPES=${SHAPES:-B=1,T=256 B=16,T=256}   # one --dim set per word

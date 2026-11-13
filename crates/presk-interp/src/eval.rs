@@ -208,7 +208,7 @@ impl<'p, R: Real> Interp<'p, R> {
             // A parameter has its declared type, axis names included, as a
             // `let` has its own and as the kernel backends' host gives it: an
             // argument with an unnamed axis takes the parameter's name (plan
-            // 0.17.0 step 7, D180; `heads` in coverage/llama3.psk).
+            // 0.17.0 step 7, D180; `heads` in examples/coverage/llama3.psk).
             let a = self.retag(a, &p.ty, &dims);
             self.bind(&mut env, p.var, a);
         }

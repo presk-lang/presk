@@ -49,7 +49,7 @@ JOBS=${JOBS:-12}
 # by default, so the forms of record pass 1.
 NARROW_MARGIN=${NARROW_MARGIN:-1}
 CHUNK=32
-FILE=experiments/margins.psk
+FILE=examples/experiments/margins.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 mkdir -p "$OUT/env" "$OUT/solve"
 say() { echo "== $(date +%H:%M:%S) $*"; }

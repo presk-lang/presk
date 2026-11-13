@@ -1,0 +1,5 @@
+-- gemm_1024.psk — a 1024 × 1024 × 1024 product, `make realize`'s matmul at
+-- one thread and at all cores (written by the Makefile into out/gemm.psk
+-- until D199).
+const N : nat = 1024
+fn gemm(a : ℝ[N, N], b : ℝ[N, N]) -> ℝ[N, N] = a · b

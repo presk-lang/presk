@@ -2,7 +2,7 @@
 source: crates/presk-types/tests/elab.rs
 expression: "format!(\"{}\\n-- diagnostics --\\n{}\", elab::dump(&prog),\nrender_all(&diags, &sm, false))"
 ---
-== tests/examples/layernorm/layernorm.psk (main)
+== examples/spec/layernorm/layernorm.psk (main)
 module LayerNorm{D : dim} {
   param γ : ℝ[D]  init
   param β : ℝ[D]  init

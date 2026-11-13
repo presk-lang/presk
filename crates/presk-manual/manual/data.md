@@ -107,15 +107,15 @@ Text to a trainable dataset is the three-step chain, here on the 1.18 MB of
 Code civil the NLP corpus uses (`corpus` directory):
 
 ```sh
-presk data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
-presk data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
-presk data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
+presk data chars examples/corpus/nlp/data/civil.md -o examples/corpus/nlp/data/civil_vocab.json
+presk data encode examples/corpus/nlp/data/civil.md --vocab examples/corpus/nlp/data/civil_vocab.json -o examples/corpus/nlp/data/civil_tokens.txt
+presk data lm-windows --vocab 92 --seq 256 examples/corpus/nlp/data/civil_tokens.txt -o examples/corpus/nlp/data/civil_T256.psk.d
 ```
 
 ```text
-presk data: wrote corpus/nlp/data/civil_vocab.json (92 characters over 1182121 of text)
-presk data: wrote corpus/nlp/data/civil_tokens.txt (1182121 tokens over a vocabulary of 92)
-presk data: wrote corpus/nlp/data/civil_T256.psk.d (4617 windows of type (idx[92][seq: 256], idx[92][seq: 256]) from 1182121 tokens)
+presk data: wrote examples/corpus/nlp/data/civil_vocab.json (92 characters over 1182121 of text)
+presk data: wrote examples/corpus/nlp/data/civil_tokens.txt (1182121 tokens over a vocabulary of 92)
+presk data: wrote examples/corpus/nlp/data/civil_T256.psk.d (4617 windows of type (idx[92][seq: 256], idx[92][seq: 256]) from 1182121 tokens)
 ```
 
 At the default stride the windows do not overlap, so a million tokens make a
@@ -126,7 +126,7 @@ of `presk train` is that of the model and its batch, not of the dataset —
 measured identical at 3 and at 12 steps on the corpus GPT.
 
 ```sh
-presk data lm-windows --vocab 64 --seq 8 tests/data/tokens.txt -o out/tokens.psk.d
+presk data lm-windows --vocab 64 --seq 8 examples/tests/data/tokens.txt -o out/tokens.psk.d
 presk data info out/tokens.psk.d --samples 2
 ```
 

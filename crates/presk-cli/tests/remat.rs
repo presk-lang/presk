@@ -33,7 +33,7 @@ fn a_realization_typing_a_stored_vjp_is_warned_of() {
     let train = |r: &Path, remat: &str| {
         let spec = format!("@{}", r.display());
         let ckpt = d.join(format!("ckpt-{remat}"));
-        let o = presk(&["train", "tests/train/mlp_regression.psk", "--steps", "2", "--backend", "native", "--realize", &spec, "--remat", remat, "--ckpt", ckpt.to_str().unwrap()]);
+        let o = presk(&["train", "examples/tests/train/mlp_regression.psk", "--steps", "2", "--backend", "native", "--realize", &spec, "--remat", remat, "--ckpt", ckpt.to_str().unwrap()]);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         String::from_utf8_lossy(&o.stderr).into_owned()
     };

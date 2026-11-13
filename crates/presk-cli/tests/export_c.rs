@@ -10,7 +10,7 @@
 //!   integer weight until step 7), a scalar in the result (`E8008`), and
 //!   with `--serve` a model whose parameters do not fix the context's length
 //!   (`E8009`). `sample` was refused (`E8005`) until step 6.
-//! - Statements C1 and C2 (§3.8): every entry of `tests/plan/entries.txt`
+//! - Statements C1 and C2 (§3.8): every entry of `examples/tests/plan/entries.txt`
 //!   (`next_token`, which samples, since step 6), in `f64`, `f32` and
 //!   `bf16`, exported, built by its own
 //!   `Makefile` and run by its own `conformance/check.sh` as a subprocess,
@@ -30,7 +30,7 @@
 //!   program with a launch divided among threads also on one thread
 //!   (`OMP_NUM_THREADS=1`): the same bits each time (step 5).
 //! - Threads through the binary (step 5): MiniGPT's forward pass under a
-//!   plan stating splits at three depths (`tests/export_c/minigpt-splits.json`),
+//!   plan stating splits at three depths (`examples/tests/export_c/minigpt-splits.json`),
 //!   and at a size where the native backend divides kernels by its own rule
 //!   (`--threads 4`).
 //! - Statement C5 (step 6): `presk export --serve` of `serve_minigpt.psk`,
@@ -41,7 +41,7 @@
 //!   changes the tokens: each token given the key of the token before (plan
 //!   0.10.0 step 7b), every token given the first one's, the window one
 //!   token behind.
-//! - Integer weights (step 7, D84): C1 on `tests/quant/odd.psk` in `int8`
+//! - Integer weights (step 7, D84): C1 on `examples/tests/quant/odd.psk` in `int8`
 //!   and `int4`, `absmax` and `pow2`, in the three types; on MiniGPT's
 //!   forward pass and `next_token` with the head, the embeddings and every
 //!   matrix quantized, its gradient and an optimizer step, on synthesized
@@ -109,15 +109,15 @@ fn the_options_of_the_c_target_are_checked_before_anything_is_written() {
     let out = scratch("options");
     let o = out.to_str().unwrap();
     let cases: &[(&[&str], &str)] = &[
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "c", "-o", o], "--entry is required"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--plan", "@absent.json", "-o", o], "presk: absent.json: No such file"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--plan", "@absent.json", "--realize", "f32", "-o", o], "cannot be used with"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--mode", "graph", "-o", o], "`--mode graph` is a mode of the PyTorch export"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--conformance-entry", "mse", "-o", o], "`--conformance-entry` is an option of the PyTorch export"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--train", "-o", o], "`--train` is an option of the PyTorch export"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "pytorch", "--entry", "mse", "-o", o], "`--entry` is an option of --target c"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "pytorch", "--realize", "f32", "-o", o], "`--realize` is an option of --target c"),
-        (&["export", "tests/examples/mlp/mlp.psk", "--target", "pytorch", "--straight-line", "-o", o], "`--straight-line` is an option of --target c"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "c", "-o", o], "--entry is required"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--plan", "@absent.json", "-o", o], "presk: absent.json: No such file"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--plan", "@absent.json", "--realize", "f32", "-o", o], "cannot be used with"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--mode", "graph", "-o", o], "`--mode graph` is a mode of the PyTorch export"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--conformance-entry", "mse", "-o", o], "`--conformance-entry` is an option of the PyTorch export"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "c", "--entry", "mse", "--train", "-o", o], "`--train` is an option of the PyTorch export"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "pytorch", "--entry", "mse", "-o", o], "`--entry` is an option of --target c"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "pytorch", "--realize", "f32", "-o", o], "`--realize` is an option of --target c"),
+        (&["export", "examples/spec/mlp/mlp.psk", "--target", "pytorch", "--straight-line", "-o", o], "`--straight-line` is an option of --target c"),
         (&["export", SERVE, "--target", "c", "--serve", "--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2", "--dim", "B=2", "--dim", "T=8", "-o", o], "presk serve generates one sequence"),
     ];
     for (args, expected) in cases {
@@ -132,7 +132,7 @@ fn the_options_of_the_c_target_are_checked_before_anything_is_written() {
 #[test]
 fn a_program_with_errors_reports_them_and_writes_nothing() {
     let out = scratch("bad");
-    let r = presk(&["export", "tests/diag/shape_rank.psk", "--target", "c", "--entry", "f", "-o", out.to_str().unwrap()]);
+    let r = presk(&["export", "examples/tests/diag/shape_rank.psk", "--target", "c", "--entry", "f", "-o", out.to_str().unwrap()]);
     let err = stderr(&r);
     assert_eq!(r.status.code(), Some(1), "{err}");
     assert!(err.contains("[E2003]"), "{err}");
@@ -146,17 +146,17 @@ fn an_entry_the_c_program_cannot_run_is_refused_with_its_code() {
     let q8 = scratch("q8.json");
     std::fs::write(&q8, r#"{"default":"f32","order":{"kind":"sequential"},"quant":{"w":{"bits":8,"over":0}}}"#).unwrap();
     let q8 = format!("@{}", q8.display());
-    let quant = "tests/diag/export_c_quant.psk";
+    let quant = "examples/tests/diag/export_c_quant.psk";
     let cases: Vec<(Vec<&str>, &str)> = vec![
-        (vec!["tests/examples/mlp/mlp.psk", "--entry", "mse", "--dim", "D=4"], "[E8003] Error: `mse` is exported at bound dimensions only: unbound dimension B"),
-        (vec!["tests/examples/mlp/mlp.psk", "--entry", "Linear{4,4}.init"], "[E8004] Error: the entry calls the initializer `xavier_uniform`"),
-        (vec!["tests/diag/export_c_key.psk", "--entry", "halves"], "[E8006] Error: a key reaches the entry's result"),
+        (vec!["examples/spec/mlp/mlp.psk", "--entry", "mse", "--dim", "D=4"], "[E8003] Error: `mse` is exported at bound dimensions only: unbound dimension B"),
+        (vec!["examples/spec/mlp/mlp.psk", "--entry", "Linear{4,4}.init"], "[E8004] Error: the entry calls the initializer `xavier_uniform`"),
+        (vec!["examples/tests/diag/export_c_key.psk", "--entry", "halves"], "[E8006] Error: a key reaches the entry's result"),
         (vec![quant, "--entry", "L.same", "--realize", &q8], "[E8007] Error: the entry's result holds integer weights"),
         (vec![quant, "--entry", "L.flat", "--realize", &q8], "[E8007] Error: `merge r, c` reshapes integer weights"),
-        (vec!["tests/diag/export_c_scalar.psk", "--entry", "next"], "[E8008] Error: the entry's result holds a nat"),
+        (vec!["examples/tests/diag/export_c_scalar.psk", "--entry", "next"], "[E8008] Error: the entry's result holds a nat"),
         // Without `--dim T` (0.17.0 step 7: with it the context is padded,
         // `a_context_the_parameters_do_not_fix_is_padded`).
-        (vec!["tests/export_c/serve_untied.psk", "--serve"], "[E8009] Error: `next` is served over the whole context"),
+        (vec!["examples/tests/export_c/serve_untied.psk", "--serve"], "[E8009] Error: `next` is served over the whole context"),
     ];
     for (args, expected) in cases {
         let out = scratch("refused");
@@ -532,7 +532,7 @@ struct Case {
 }
 
 fn test_set() -> Vec<Case> {
-    let text = std::fs::read_to_string(root().join("tests/plan/entries.txt")).unwrap();
+    let text = std::fs::read_to_string(root().join("examples/tests/plan/entries.txt")).unwrap();
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -588,7 +588,7 @@ fn assert_c1_c2(rows: &[Checked]) {
 /// A realization of MiniGPT's programs with seven sites of other types
 /// than its default `f32`: `f64` and `bf16` buffers meet at kernels'
 /// edges, where the host converts them.
-const MIXED: &str = "@tests/plan/mixed-realization.json";
+const MIXED: &str = "@examples/tests/plan/mixed-realization.json";
 
 /// C1 and C2 on the test set: every entry, three types, on the synthesized
 /// parameters and with their zeros drawn; MiniGPT's five entries also under
@@ -650,11 +650,11 @@ fn launches_divided_among_threads_compute_the_native_backends_bits() {
     let t0 = Instant::now();
     let base = scratch("threads");
     let minigpt = |dims: &[&str]| Case {
-        file: "tests/examples/minigpt/minigpt.psk".into(),
+        file: "examples/spec/minigpt/minigpt.psk".into(),
         entry: "MiniGPT.apply".into(),
         args: ["--const", "V=64", "--const", "H=2", "--const", "L=2"].iter().chain(dims).map(|s| s.to_string()).collect(),
     };
-    let plan = root().join("tests/export_c/minigpt-splits.json");
+    let plan = root().join("examples/tests/export_c/minigpt-splits.json");
     let jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = vec![
         {
             let (base, plan) = (base.clone(), plan.clone());
@@ -690,14 +690,14 @@ fn a_product_and_its_epilogue_compute_the_native_backends_bits() {
     // (what, file, entry, args, realization, the product's layout, extra flags)
     type Case7<'a> = (&'a str, &'a str, &'a str, Vec<&'a str>, &'a str, &'a str, Vec<&'a str>);
     let cases: Vec<Case7> = vec![
-        ("mse_grad f64, row-wise", "tests/examples/mlp/mlp.psk", "mse_grad", vec!["--dim", "D=4", "--dim", "B=2"], "f64", r#""Linear.apply/%3": { "form": "row-wise", "epilogue": true }"#, vec![]),
-        ("loss_grad f32, lanes", "tests/plan/minigpt_grad.psk", "loss_grad", minigpt.to_vec(), "f32", r#""Linear.apply/%3": { "tile": [2, 16], "lanes": 4, "epilogue": true }"#, vec![]),
-        ("MiniGPT.apply bf16, the sum stored and read back", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", minigpt.to_vec(), "bf16", r#""Linear.apply/%3": { "tile": [2, 8], "lanes": 1, "epilogue": true }"#, vec![]),
-        ("linear f32, a spill", "tests/plan/epilogue.psk", "linear", vec![], "f32", r#""linear/%3": { "tile": [4, 16], "kblock": 32, "order": "IKJ", "lanes": 4, "epilogue": true }"#, vec![]),
-        ("bias_first f64, the blocks of K outermost", "tests/plan/epilogue.psk", "bias_first", vec![], "f64", r#""bias_first/%3": { "tile": [2, 8], "kblock": 32, "order": "KJI", "lanes": 2, "epilogue": true }"#, vec![]),
-        ("rows f32, an operand constant along J", "tests/plan/epilogue.psk", "rows", vec![], "f32", r#""rows/%3": { "tile": [1, 16], "lanes": 4, "epilogue": true }"#, vec![]),
-        ("scores bf16, packed", "tests/plan/epilogue.psk", "scores", vec![], "bf16", r#""scores/%3": { "tile": [2, 16], "pack": true, "lanes": 1, "epilogue": true }"#, vec![]),
-        ("values f32, split", "tests/plan/epilogue.psk", "values", vec![], "f32", r#""values/%3": { "tile": [4, 8], "lanes": 4, "split": { "depth": 1, "workers": 4 }, "epilogue": true }"#, vec!["--threads", "4"]),
+        ("mse_grad f64, row-wise", "examples/spec/mlp/mlp.psk", "mse_grad", vec!["--dim", "D=4", "--dim", "B=2"], "f64", r#""Linear.apply/%3": { "form": "row-wise", "epilogue": true }"#, vec![]),
+        ("loss_grad f32, lanes", "examples/tests/plan/minigpt_grad.psk", "loss_grad", minigpt.to_vec(), "f32", r#""Linear.apply/%3": { "tile": [2, 16], "lanes": 4, "epilogue": true }"#, vec![]),
+        ("MiniGPT.apply bf16, the sum stored and read back", "examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", minigpt.to_vec(), "bf16", r#""Linear.apply/%3": { "tile": [2, 8], "lanes": 1, "epilogue": true }"#, vec![]),
+        ("linear f32, a spill", "examples/tests/plan/epilogue.psk", "linear", vec![], "f32", r#""linear/%3": { "tile": [4, 16], "kblock": 32, "order": "IKJ", "lanes": 4, "epilogue": true }"#, vec![]),
+        ("bias_first f64, the blocks of K outermost", "examples/tests/plan/epilogue.psk", "bias_first", vec![], "f64", r#""bias_first/%3": { "tile": [2, 8], "kblock": 32, "order": "KJI", "lanes": 2, "epilogue": true }"#, vec![]),
+        ("rows f32, an operand constant along J", "examples/tests/plan/epilogue.psk", "rows", vec![], "f32", r#""rows/%3": { "tile": [1, 16], "lanes": 4, "epilogue": true }"#, vec![]),
+        ("scores bf16, packed", "examples/tests/plan/epilogue.psk", "scores", vec![], "bf16", r#""scores/%3": { "tile": [2, 16], "pack": true, "lanes": 1, "epilogue": true }"#, vec![]),
+        ("values f32, split", "examples/tests/plan/epilogue.psk", "values", vec![], "f32", r#""values/%3": { "tile": [4, 8], "lanes": 4, "split": { "depth": 1, "workers": 4 }, "epilogue": true }"#, vec!["--threads", "4"]),
     ];
     let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
     for (n, (what, file, entry, args, realize, layout, extra)) in cases.into_iter().enumerate() {
@@ -856,7 +856,7 @@ fn every_entry_under_its_plan_computes_the_native_backends_bits() {
 fn the_course_gpt_computes_the_native_backends_bits() {
     let t0 = Instant::now();
     let base = scratch("course");
-    let file = "corpus/nlp/05_gpt.psk";
+    let file = "examples/corpus/nlp/05_gpt.psk";
     let ckpt = root().join("out/course_probe_f32/final.psk.d");
     let small: Vec<String> = ["--dim", "B=1", "--dim", "T=8"].iter().map(|s| s.to_string()).collect();
     let full: Vec<String> = ["--dim", "B=1", "--dim", "T=256"].iter().map(|s| s.to_string()).collect();
@@ -912,7 +912,7 @@ fn the_course_gpt_computes_the_native_backends_bits() {
 
 /// The generation example, its tiny constants, and a prompt longer than the
 /// window `T = 8`, so that a window one token behind still lies in it.
-const SERVE: &str = "tests/examples/minigpt/serve_minigpt.psk";
+const SERVE: &str = "examples/spec/minigpt/serve_minigpt.psk";
 const TINY: [&str; 8] = ["--const", "V=64", "--const", "D=16", "--const", "H=2", "--const", "L=2"];
 const PROMPT: &str = "5 1 4 1 5 9 2 6 5 3 5 8";
 
@@ -946,7 +946,7 @@ fn build_generate(dir: &Path) {
     assert!(make.status.success() && !err.contains("warning"), "make in {}: {err}", dir.display());
 }
 
-/// `presk serve --backend native --json`, as a document.
+/// `presk serve --backend native --json`, as a document, without its times.
 fn serve_json(realize: &str, weights: &Path, temperature: &str, seed: u64) -> String {
     let seed = seed.to_string();
     let w = weights.display().to_string();
@@ -955,7 +955,7 @@ fn serve_json(realize: &str, weights: &Path, temperature: &str, seed: u64) -> St
     all.extend(["--weights", &w, "--prompt", PROMPT, "--tokens", TOKENS, "--temperature", temperature, "--seed", &seed, "--backend", "native", "--realize", realize, "--dim", "T=8", "--json"]);
     let r = presk(&all);
     assert!(r.status.success(), "presk serve: {}", stderr(&r));
-    String::from_utf8(r.stdout).unwrap()
+    untimed(&String::from_utf8(r.stdout).unwrap())
 }
 
 /// The exported program's `generate --json`, as a document.
@@ -967,6 +967,16 @@ fn run_generate(program: &Path, weights: &Path, temperature: &str, seed: u64) ->
     let r = Command::new(program).current_dir(root()).args(["--weights", &weights.display().to_string(), "--prompt", PROMPT, "--tokens", TOKENS, "--temperature", temperature, "--seed", &seed.to_string(), "--json"]).output().unwrap();
     assert!(r.status.success(), "{}: {}", program.display(), String::from_utf8_lossy(&r.stderr));
     String::from_utf8(r.stdout).unwrap()
+}
+
+/// `presk serve --json`'s document without its times and counts of
+/// compiling (plan 0.17.2 step 4, D200), which `generate.c` does not print.
+fn untimed(json: &str) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}: {json}"));
+    for k in ["compile_s", "compute_s", "compilations", "compiled_kernels"] {
+        assert!(v.as_object_mut().unwrap().remove(k).is_some(), "no `{k}` in {json}");
+    }
+    serde_json::to_string_pretty(&v).unwrap() + "\n"
 }
 
 /// The tokens of a `--json` document.
@@ -1124,7 +1134,7 @@ const MINI_MATRICES: [(&str, i64); 9] = [("head", 0), ("emb.tok", 0), ("emb.pos"
 /// norm's fusion group reads their values.
 const MINI_BIASES: [(&str, i64); 11] = [("blocks.attn.wq.b", -1), ("blocks.attn.wk.b", -1), ("blocks.attn.wv.b", -1), ("blocks.attn.wo.b", -1), ("blocks.mlp.l1.b", -1), ("blocks.mlp.l2.b", -1), ("blocks.ln1.γ", -1), ("blocks.ln1.β", -1), ("blocks.ln2.γ", -1), ("blocks.ln2.β", -1), ("lnf.γ", -1)];
 
-/// The same of `tests/plan/minigpt_grad.psk`, whose model names its
+/// The same of `examples/tests/plan/minigpt_grad.psk`, whose model names its
 /// embeddings `tok` and `pos`.
 const GRAD_MATRICES: [(&str, i64); 9] = [("head", 0), ("tok", 0), ("pos", 0), ("blocks.attn.wq.w", -2), ("blocks.attn.wk.w", -2), ("blocks.attn.wv.w", -2), ("blocks.attn.wo.w", -2), ("blocks.mlp.l1.w", -2), ("blocks.mlp.l2.w", -2)];
 
@@ -1170,7 +1180,7 @@ fn integer_weights_compute_the_native_backends_bits() {
             let realize = quantizing(&r, &format!("odd-{bits}-{scheme}-{d}.json"), d, bits, scheme, &[("w", 0)]);
             let dir = base.join(format!("odd-{bits}-{scheme}-{d}"));
             let what = format!("L.apply int{bits}/{scheme} {d}");
-            jobs.push(Box::new(move || vec![export_and_check(&what, "tests/quant/odd.psk", "L.apply", &["--dim".into(), "B=3".into()], &realized(&realize), &[], &dir)]));
+            jobs.push(Box::new(move || vec![export_and_check(&what, "examples/tests/quant/odd.psk", "L.apply", &["--dim".into(), "B=3".into()], &realized(&realize), &[], &dir)]));
         }
     }
     // MiniGPT: its forward pass and a sampled step, both widths.
@@ -1178,7 +1188,7 @@ fn integer_weights_compute_the_native_backends_bits() {
         for d in ["f64", "f32", "bf16"] {
             let realize = quantizing(&r, &format!("mini-{bits}-{d}.json"), d, bits, scheme, &MINI_MATRICES);
             let (dir, args) = (base.join(format!("mini-{bits}-{d}")), mini(&[]));
-            let case = Case { file: "tests/examples/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args };
+            let case = Case { file: "examples/spec/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args };
             let what = format!("MiniGPT.apply int{bits}/{scheme} {d}");
             let under = realized(&realize);
             jobs.push(Box::new(move || both_weights(&what, &case, &Under { band: d.into(), ..under }, &[], &dir)));
@@ -1191,7 +1201,7 @@ fn integer_weights_compute_the_native_backends_bits() {
         jobs.push(Box::new(move || both_weights(&what, &case, &Under { band: d.into(), ..under }, &[], &dir)));
     }
     // A gradient and an optimizer step on integer weights.
-    for (file, entry, params) in [("tests/plan/minigpt_grad.psk", "loss_grad", &GRAD_MATRICES), ("tests/examples/minigpt/train_minigpt.psk", "adamw.step", &MINI_MATRICES)] {
+    for (file, entry, params) in [("examples/tests/plan/minigpt_grad.psk", "loss_grad", &GRAD_MATRICES), ("examples/spec/minigpt/train_minigpt.psk", "adamw.step", &MINI_MATRICES)] {
         let realize = quantizing(&r, &format!("{entry}-8-f32.json"), "f32", 8, "absmax", params);
         let case = Case { file: file.into(), entry: entry.into(), args: mini(&[]) };
         let (dir, what, under) = (base.join(entry.replace('.', "_")), format!("{entry} int8/absmax f32"), realized(&realize));
@@ -1202,27 +1212,27 @@ fn integer_weights_compute_the_native_backends_bits() {
     for d in ["f32", "bf16"] {
         let realize = quantizing(&r, &format!("odd-layers-{d}.json"), d, 4, "absmax", &MINI_MATRICES);
         let args: Vec<String> = ["--const", "V=64", "--const", "D=9", "--const", "H=3", "--const", "L=2", "--dim", "B=2", "--dim", "T=8"].iter().map(|s| s.to_string()).collect();
-        let case = Case { file: "tests/examples/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args };
+        let case = Case { file: "examples/spec/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args };
         let (dir, what, under) = (base.join(format!("odd-layers-{d}")), format!("MiniGPT.apply D=9 H=3 int4 {d}"), realized(&realize));
         jobs.push(Box::new(move || both_weights(&what, &case, &Under { band: d.into(), ..under }, &[], &dir)));
     }
     // The biases and the norms' parameters.
     for d in ["f32", "bf16"] {
         let realize = quantizing(&r, &format!("biases-{d}.json"), d, 8, "absmax", &MINI_BIASES);
-        let case = Case { file: "tests/examples/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args: mini(&[]) };
+        let case = Case { file: "examples/spec/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args: mini(&[]) };
         let (dir, what, under) = (base.join(format!("biases-{d}")), format!("MiniGPT.apply biases and norms int8 {d}"), realized(&realize));
         jobs.push(Box::new(move || both_weights(&what, &case, &Under { band: d.into(), ..under }, &[], &dir)));
     }
     // Under a plan stating splits at three depths, its realization
     // quantizing the matrices.
     {
-        let mut plan: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root().join("tests/export_c/minigpt-splits.json")).unwrap()).unwrap();
+        let mut plan: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root().join("examples/tests/export_c/minigpt-splits.json")).unwrap()).unwrap();
         let q = quantizing(&r, "splits-quant.json", "f32", 8, "absmax", &MINI_MATRICES);
         let quant: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(q.trim_start_matches('@')).unwrap()).unwrap();
         plan["realization"]["quant"] = quant["quant"].clone();
         let path = r.join("splits-plan.json");
         std::fs::write(&path, serde_json::to_string_pretty(&plan).unwrap()).unwrap();
-        let case = Case { file: "tests/examples/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args: mini(&[]) };
+        let case = Case { file: "examples/spec/minigpt/minigpt.psk".into(), entry: "MiniGPT.apply".into(), args: mini(&[]) };
         let dir = base.join("splits");
         jobs.push(Box::new(move || both_weights("MiniGPT.apply int8 f32, splits stated", &case, &planned(&path, "f32"), &["--threads", "4"], &dir)));
     }
@@ -1297,7 +1307,7 @@ fn a_program_on_integer_weights_that_departs_from_presk_rt_fails_c1() {
                 // The program on the parameters' zeros drawn (or tied, for
                 // the scale's rounding), checked as it is exported.
                 let args: Vec<String> = MINI.iter().map(|s| s.to_string()).collect();
-                let file_psk = "tests/examples/minigpt/minigpt.psk";
+                let file_psk = "examples/spec/minigpt/minigpt.psk";
                 let (ok, log) = export_one(what, file_psk, "MiniGPT.apply", &args, &realized(&realize), &[], &dir);
                 assert!(ok, "{what}: {log}");
                 let weights = dir.with_extension("weights.psk.d");
@@ -1375,7 +1385,7 @@ fn trained_models_on_integer_weights_compute_the_native_backends_bits() {
     let mini: Vec<String> = MINI.iter().map(|s| s.to_string()).collect();
     for (bits, scheme, d) in [(8u8, "absmax", "f64"), (8, "absmax", "f32"), (4, "pow2", "f32"), (8, "absmax", "bf16")] {
         let realize = quantizing(&r, &format!("mini-{bits}-{d}.json"), d, bits, scheme, &MINI_MATRICES);
-        for (file, entry) in [("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply"), (SERVE, "next_token")] {
+        for (file, entry) in [("examples/spec/minigpt/minigpt.psk", "MiniGPT.apply"), (SERVE, "next_token")] {
             let (base, tiny, mini, realize) = (base.clone(), tiny.clone(), mini.clone(), realize.clone());
             jobs.push(Box::new(move || {
                 let dir = base.join(format!("{}-{bits}-{d}", entry.replace('.', "_")));
@@ -1395,7 +1405,7 @@ fn trained_models_on_integer_weights_compute_the_native_backends_bits() {
         let (base, course) = (base.clone(), course.clone());
         jobs.push(Box::new(move || {
             let full: Vec<String> = ["--dim", "B=1", "--dim", "T=256"].iter().map(|s| s.to_string()).collect();
-            vec![export_and_check(&format!("GPT.apply int8 {d}, B=1 T=256, trained"), "corpus/nlp/05_gpt.psk", "GPT.apply", &full, &Under { band: d.into(), ..realized(&realize) }, &["--weights", course.to_str().unwrap(), "--no-exact"], &base.join(format!("gpt-8-{d}")))]
+            vec![export_and_check(&format!("GPT.apply int8 {d}, B=1 T=256, trained"), "examples/corpus/nlp/05_gpt.psk", "GPT.apply", &full, &Under { band: d.into(), ..realized(&realize) }, &["--weights", course.to_str().unwrap(), "--no-exact"], &base.join(format!("gpt-8-{d}")))]
         }));
     }
     for d in ["f64", "f32"] {
@@ -1404,10 +1414,10 @@ fn trained_models_on_integer_weights_compute_the_native_backends_bits() {
         jobs.push(Box::new(move || {
             let dir = base.join(format!("planned-{d}"));
             let plan = dir.with_extension("plan.json");
-            plan_of("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &mini, &realize, &plan);
+            plan_of("examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &mini, &realize, &plan);
             let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&plan).unwrap()).unwrap();
             assert!(json["realization"]["quant"].as_object().is_some_and(|q| q.len() == MINI_MATRICES.len()), "presk plan dropped the quant map");
-            vec![export_and_check(&format!("MiniGPT.apply int8 {d}, trained, planned"), "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &mini, &planned(&plan, d), &["--weights", tiny.to_str().unwrap()], &dir)]
+            vec![export_and_check(&format!("MiniGPT.apply int8 {d}, trained, planned"), "examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &mini, &planned(&plan, d), &["--weights", tiny.to_str().unwrap()], &dir)]
         }));
     }
     let rows: Vec<Checked> = parallel(jobs).into_iter().flatten().collect();
@@ -1476,7 +1486,7 @@ fn typed_parameters_compute_the_native_backends_bits() {
         format!("@{}", path.display())
     };
     let mini: Vec<String> = MINI.iter().map(|s| s.to_string()).collect();
-    for (file, entry) in [("tests/examples/minigpt/minigpt.psk", "MiniGPT.apply"), (SERVE, "next_token")] {
+    for (file, entry) in [("examples/spec/minigpt/minigpt.psk", "MiniGPT.apply"), (SERVE, "next_token")] {
         let (base, mini, realize) = (base.clone(), mini.clone(), mixed.clone());
         let case = Case { file: file.into(), entry: entry.into(), args: mini };
         jobs.push(Box::new(move || both_weights(&format!("{entry} params bf16 and int8 biases under f32"), &case, &Under { band: "f32".into(), ..realized(&realize) }, &[], &base.join(format!("{}-both", entry.replace('.', "_"))))));
@@ -1522,7 +1532,7 @@ fn generate_on_typed_parameters_gives_presk_serves_tokens() {
 }
 
 /// A model whose parameters do not fix the context's length (plan 0.17.0
-/// step 7, D180): `coverage/llama3.psk`, RoPE and no position table, at
+/// step 7, D180): `examples/coverage/llama3.psk`, RoPE and no position table, at
 /// small constants. Without `--dim T` the export is refused (`E8009`); with
 /// it the program is exported at that length, the context padded after its
 /// last token, and `generate.c` gives presk serve's tokens over the whole,
@@ -1533,12 +1543,12 @@ fn a_context_the_parameters_do_not_fix_is_padded() {
     let base = scratch("padded");
     std::fs::create_dir_all(&base).unwrap();
     let consts = ["--const", "V=50", "--const", "D=32", "--const", "H=4", "--const", "G=2", "--const", "FF=64", "--const", "L=2"];
-    let refused = presk(&[&["export", "coverage/llama3.psk", "--target", "c", "--serve", "--no-exact", "-o", base.join("refused").to_str().unwrap()][..], &consts[..]].concat());
+    let refused = presk(&[&["export", "examples/coverage/llama3.psk", "--target", "c", "--serve", "--no-exact", "-o", base.join("refused").to_str().unwrap()][..], &consts[..]].concat());
     assert!(!refused.status.success() && stderr(&refused).contains("E8009") && stderr(&refused).contains("--dim T=N"), "{}", stderr(&refused));
     let prompt = "1 7 3 49 0 12";
     for realize in ["f32", "bf16"] {
         let dir = base.join(realize);
-        let o = presk(&[&["export", "coverage/llama3.psk", "--target", "c", "--serve", "--dim", "T=10", "--realize", realize, "-o", dir.to_str().unwrap()][..], &consts[..]].concat());
+        let o = presk(&[&["export", "examples/coverage/llama3.psk", "--target", "c", "--serve", "--dim", "T=10", "--realize", realize, "-o", dir.to_str().unwrap()][..], &consts[..]].concat());
         assert!(o.status.success(), "{realize}: {}", stderr(&o));
         let check = Command::new("sh").arg(dir.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
         assert!(String::from_utf8_lossy(&check.stdout).contains("C1 holds"), "{realize}: {}", String::from_utf8_lossy(&check.stderr));
@@ -1556,9 +1566,9 @@ fn a_context_the_parameters_do_not_fix_is_padded() {
                 assert_eq!(ours.len(), 5, "{realize}: the positions full, generation stops: {c}");
                 continue;
             }
-            let s = presk(&[&["serve", "coverage/llama3.psk", "--weights", weights.to_str().unwrap(), "--prompt", prompt, "--tokens", tokens, "--temperature", temperature, "--seed", "3", "--backend", "native", "--realize", realize, "--json"][..], &consts[..]].concat());
+            let s = presk(&[&["serve", "examples/coverage/llama3.psk", "--weights", weights.to_str().unwrap(), "--prompt", prompt, "--tokens", tokens, "--temperature", temperature, "--seed", "3", "--backend", "native", "--realize", realize, "--json"][..], &consts[..]].concat());
             assert!(s.status.success(), "{realize}: {}", stderr(&s));
-            assert_eq!(c, String::from_utf8_lossy(&s.stdout), "{realize} at temperature {temperature}: generate.c is not presk serve");
+            assert_eq!(c, untimed(&String::from_utf8_lossy(&s.stdout)), "{realize} at temperature {temperature}: generate.c is not presk serve");
             assert!(c.contains("\"window\": null"), "{c}");
         }
     }

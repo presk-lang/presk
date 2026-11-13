@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/elab.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/elab_implicit_dim.psk
+input_file: examples/tests/diag/elab_implicit_dim.psk
 ---
 [W0001] Warning: implicit dimension `B`
-   ,-[ tests/diag/elab_implicit_dim.psk:2:19 ]
+   ,-[ examples/tests/diag/elab_implicit_dim.psk:2:19 ]
    |
  2 | fn f(x : ℝ[batch: B, model: 4]) -> ℝ[batch: B, model: 4] = x
    |                   |  

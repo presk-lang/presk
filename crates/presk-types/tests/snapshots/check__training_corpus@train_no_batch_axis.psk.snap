@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/train_no_batch_axis.psk
+input_file: examples/tests/diag/train_no_batch_axis.psk
 ---
 [E2010] Error: `objective` `loss`: a tensor of the batch has no axis named `batch`
-    ,-[ tests/diag/train_no_batch_axis.psk:13:15 ]
+    ,-[ examples/tests/diag/train_no_batch_axis.psk:13:15 ]
     |
  13 |   objective = loss
     |               ^^|^  

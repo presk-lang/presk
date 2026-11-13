@@ -28,7 +28,7 @@ fn frozen_profile() -> PathBuf {
 
 fn plan(mode: &str, out: &Path) -> serde_json::Map<String, serde_json::Value> {
     let profile = frozen_profile();
-    let o = presk(&["plan", "tests/train/dropout_reg_grad.psk", "--entry", "loss_grad", "--dim", "B=16", "--realize", "f32", "--mode", mode, "--profile", profile.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+    let o = presk(&["plan", "examples/tests/train/dropout_reg_grad.psk", "--entry", "loss_grad", "--dim", "B=16", "--realize", "f32", "--mode", mode, "--profile", profile.to_str().unwrap(), "--out", out.to_str().unwrap()]);
     assert!(o.status.success(), "presk plan --mode {mode}: {}", stderr(&o));
     let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
     json["layout"].as_object().cloned().unwrap_or_default()
@@ -48,7 +48,7 @@ fn a_training_run_takes_the_plan_of_its_own_program() {
         let plan = format!("@{}", p.display());
         let ckpt = d.join("ckpt");
         let _ = std::fs::remove_dir_all(&ckpt);
-        presk(&["train", "tests/train/dropout_reg.psk", "--steps", "2", "--backend", "native", "--plan", &plan, "--ckpt", ckpt.to_str().unwrap()])
+        presk(&["train", "examples/tests/train/dropout_reg.psk", "--steps", "2", "--backend", "native", "--plan", &plan, "--ckpt", ckpt.to_str().unwrap()])
     };
     let o = run(&d.join("training.json"));
     assert!(o.status.success(), "presk train under the training plan: {}", stderr(&o));

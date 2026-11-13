@@ -2,10 +2,15 @@
 
 Compiler for Presk, a domain-specific language for describing, training and
 running neural networks with exact real semantics. The language is specified
-in the `presk-specs` repository; its `examples/*.psk` are the reference
-programs (copied under `tests/examples/`).
+in the `presk-specs` repository, and its reference programs are kept here,
+in `examples/spec/`, with every other Presk program of the repository
+(`examples/README.md`). The project's site is
+[presk-lang.org](https://presk-lang.org), the manual
+[docs.presk-lang.org](https://docs.presk-lang.org); the compiler is the
+crate `presk` on crates.io (`cargo install presk`), under the Apache
+License 2.0 (`LICENSE`, `NOTICE`); how to cite it is in `CITATION.cff`.
 
-**Version 0.11.0**: the front-end (`presk check`); an arbitrary-precision
+**Version 0.17.2**: the front-end (`presk check`); an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), the oracle
 every other executor is measured against; a native backend — PSK-Kernel v0
 compiled by Cranelift, with fusion groups, threads, blocked contractions and
@@ -31,9 +36,9 @@ the native run, under a plan and on OpenMP threads, sampling and `presk
 serve`'s loop, integer weights — that computes the native backend's bits
 with musl's transcendental functions shipped, and a SCoP mode that writes
 each loop nest for polyhedral tools (`presk export --target c`). A
-corpus of real models (`corpus/nlp/`, the ladder of an NLP course on the
+corpus of real models (`examples/corpus/nlp/`, the ladder of an NLP course on the
 French civil code) and transcriptions of the MLPerf architectures
-(`coverage/`, BERT-large running at MLPerf's constants) come with it. Every
+(`examples/coverage/`, BERT-large running at MLPerf's constants) come with it. Every
 optimization is *exact* — one step of a course-scale GPT went from 289 s to
 39.8 s in 0.4.0 without changing a number — and every narrowing is measured: a
 training step solved under a 10⁻³ budget on its update runs 1.99× faster than
@@ -62,10 +67,47 @@ decoder at the 7B configuration's width, at the same bits as before. And
 stage's representation, every decision with its reason, the commands that
 print each figure, the PDF by `make explain-pdf`; beneath it a driver takes
 the orchestration out of the command line, and the solver offers only the
-values the program stores. See
-`CHANGELOG.md` and the
-user manual (`make doc`); its tutorial chapter (programs in `tutorial/`,
-commands in `make tutorial`) is the place to start.
+values the program stores. A weight has its own type at rest (0.12.0): a
+realization types a parameter's storage as it types a value, the solver
+offers a function's result and a parameter, and a budget can be set on a
+tensor entry. One compilation is drawn (0.13.0, 0.14.0, 0.14.1): the
+pipeline view, a column per stage from the source to the machine code with
+the provenance of every element, and the network diagram, the program as
+boxes and arrows with its formulas, shapes, bytes and costs, opened box by
+box (`presk explain --format html`, `presk dump --stage network`). What a
+program needs in memory is counted from the program (0.15.0, `presk
+memory`). The solver's defaults are the measured ones (0.16.0): its
+rounding term is the envelope's, its cost one sample's traffic, dropout
+outside a training run is the identity, and every row of record was
+solved and timed again; two rules then refuse a value of one element and a
+narrowing that saves under 10⁻³ of the traffic, and the certificate holds
+on three texts it was not calibrated on (0.16.1). The native backend
+reaches GCC on its own kernels (0.17.0): Cranelift at 0.994× the C
+program's training step, a second backend through `clang` (`--backend
+llvm`) at 0.871×; `int8` and `int4` enter the solver's menu (`--menu`), the
+training step is budgeted per stored value (`--grain value`), and real
+weights run — slices, `concat`, RoPE, `.psk.d` version 2, Llama 3.2 1B on
+its published checkpoint. And Llama 3.2 1B is solved whole (0.17.1) under
+a budget read off a quality target, the share of the exact model's
+decisions that may change, against llama.cpp's and `transformers`'
+recipes measured on the same exact scale: the solver returns the
+checkpoint's `bf16` weights with `f32` arithmetic and twelve stored values
+in `bf16`, certified on 1 024 held-out decisions at the practitioner's
+bytes and 1.47× `f32`'s serving time, where the recipes that change as few
+decisions have gaps 37–43 times the budget and no certificate (`presk solve
+--sweep f64 --measure native`, `make llama3-budget`). Version 0.17.2 keeps
+that code but for two timers, `presk serve`'s time split into compiling and
+computing and `presk bench --host-profile --launches`, each launch of a call
+with its large buffers' addresses; it moves every Presk program under
+`examples/` and times the serving rows of record again on its own binary:
+serving the 1B model is computing, compiling under 0.1 % of it (`make
+sr5`). See `CHANGELOG.md`
+and the user manual (`make doc`, or docs.presk-lang.org); its tutorial
+chapter (programs in `examples/tutorial/`, commands in `make tutorial`) is the place
+to start.
+
+Install the released compiler with `cargo install presk` (GMP and MPFR are
+built once; `m4` and a C compiler are needed), or build from source:
 
 ```sh
 make build                                   # cargo build --workspace (first build compiles GMP/MPFR, a few minutes)
@@ -142,20 +184,20 @@ presk dump FILE.psk --stage tokens|ast|elab|core|core-after-ad|core-opt|realize|
 Examples:
 
 ```sh
-presk check tests/examples/minigpt/minigpt.psk --summary
-presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
-presk train tests/examples/minigpt/train_minigpt.psk \
+presk check examples/spec/minigpt/minigpt.psk --summary
+presk run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
+presk train examples/spec/minigpt/train_minigpt.psk \
      --const V=64 --const D=16 --const H=2 --const L=2 --steps 20 --bits 64 --ckpt out/ckpt
-presk export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable --train \
+presk export examples/spec/minigpt/train_minigpt.psk --target pytorch --mode readable --train \
      --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/train_pt
-presk export tests/examples/minigpt/minigpt.psk --target pytorch --mode graph \
+presk export examples/spec/minigpt/minigpt.psk --target pytorch --mode graph \
      --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/graph_pt
-presk calibrate --step tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d --warmup 20 --samples 8 --out out/tut_step.json
-presk solve --step tutorial/07_train.psk --precision out/tut_step.json --budget 1e-3 --out out/tut_step_solved.json
-presk train tutorial/07_train.psk --backend native --realize @out/tut_step_solved.json
-presk plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --profile out/tut_layout.json --out out/tut_plan.json
-presk run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native --plan @out/tut_plan.json
-presk export tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 --plan @out/tut_plan.json -o out/tut_c16
+presk calibrate --step examples/tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d --warmup 20 --samples 8 --out out/tut_step.json
+presk solve --step examples/tutorial/07_train.psk --precision out/tut_step.json --budget 1e-3 --out out/tut_step_solved.json
+presk train examples/tutorial/07_train.psk --backend native --realize @out/tut_step_solved.json
+presk plan examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --profile out/tut_layout.json --out out/tut_plan.json
+presk run examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native --plan @out/tut_plan.json
+presk export examples/tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 --plan @out/tut_plan.json -o out/tut_c16
 make -C out/tut_c16 check
 ```
 
@@ -174,4 +216,15 @@ are not needed to build or test the compiler; `make venv` installs them in
 (without `uv`: `python3 -m venv .venv`, then `pip install` the packages the
 target names).
 
-Layout, commands and conventions for contributors: `CONTRIBUTING.md`.
+## Contributing, and how the code was written
+
+Layout, commands and conventions for contributors: `CONTRIBUTING.md`, and
+the manual's `install` chapter. The public repository holds one commit per
+version, exported from the development repository; pull requests are taken
+there and appear in the next release.
+
+The compiler was written by its author with AI coding assistants (Claude
+Code, OpenAI Codex, Mistral Vibe and Google's Antigravity), under the
+author's direction and review; every claim about its behaviour is checked
+by the test suite and by the experiments' scripts, whose outputs are the
+records `CHANGELOG.md` cites (`CONTRIBUTING.md`).

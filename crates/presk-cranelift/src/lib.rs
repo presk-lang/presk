@@ -104,6 +104,10 @@ pub struct NativeExec {
     last_size: usize,
     /// The compiler used in place of Cranelift, when there is one.
     external: Option<Box<dyn KernelCompiler>>,
+    /// The seconds compiling took, timed whether the host profiles or not
+    /// (plan 0.17.2 step 4, D200), and the kernels compiled by `run`.
+    compile_s: f64,
+    compiles: u64,
 }
 
 /// The machine code of a compiled kernel (plan 0.13.0 step 5, D138): its
@@ -186,7 +190,7 @@ impl NativeExec {
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
             .unwrap_or(1)
             .max(1);
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0, external: None })
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0, external: None, compile_s: 0.0, compiles: 0 })
     }
 
     /// The executor with `c` compiling its kernels in place of Cranelift.
@@ -1490,6 +1494,10 @@ impl KernelExec for NativeExec {
         self.last
     }
 
+    fn compile_stats(&self) -> (u64, f64) {
+        (self.compiles, self.compile_s)
+    }
+
     /// The host's own work in pieces (a training dropout mask, plan 0.10.0
     /// step 6), on the pool, the first piece on the calling thread.
     fn parallel(&mut self, n: usize, f: &(dyn Fn(usize) + Sync)) {
@@ -1512,13 +1520,16 @@ impl KernelExec for NativeExec {
         let f = match self.compiled[idx] {
             Some(f) => f,
             None => {
-                let t = self.profiling.then(std::time::Instant::now);
+                let t = std::time::Instant::now();
                 let f = match &mut self.external {
                     Some(c) => c.compile(k)?,
                     None => self.compile(idx, k)?,
                 };
-                if let Some(t) = t {
-                    compile = t.elapsed().as_secs_f64();
+                let s = t.elapsed().as_secs_f64();
+                self.compile_s += s;
+                self.compiles += 1;
+                if self.profiling {
+                    compile = s;
                 }
                 self.compiled[idx] = Some(f);
                 f

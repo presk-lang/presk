@@ -9,7 +9,7 @@
 #   experiments/host_profile.sh OUT
 #
 # Four workloads: the forward pass (`GPT.apply` with the checkpoint CKPT),
-# the gradient (`loss_grad` of experiments/gpt_grad.psk), the optimizer's
+# the gradient (`loss_grad` of examples/experiments/gpt_grad.psk), the optimizer's
 # step (`adamw.step`), each by `presk bench --host-profile` (REPEAT calls
 # timed by phase and REPEAT not, alternated, after one warm-up call, the
 # outputs of the two kinds of call compared bit for bit); and the training
@@ -38,9 +38,9 @@ CORES=${CORES:-5-9,15-19}
 REPEAT=${REPEAT:-7}
 STEPS=${STEPS:-8}
 OUT=${1:?usage: experiments/host_profile.sh OUT}
-FILE=corpus/nlp/05_gpt.psk
-GRAD=experiments/gpt_grad.psk
-DATA=corpus/nlp/data/civil_T256.psk.d
+FILE=examples/corpus/nlp/05_gpt.psk
+GRAD=examples/experiments/gpt_grad.psk
+DATA=examples/corpus/nlp/data/civil_T256.psk.d
 DIMS=(--dim B=16 --dim T=256)
 read -r -a CONFIGS <<< "${CONFIGS:-10 20 10-heap}"
 HEAP=${HEAP:-glibc.malloc.mmap_max=0:glibc.malloc.trim_threshold=1099511627776}

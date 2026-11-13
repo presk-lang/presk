@@ -37,9 +37,9 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 W=${W:-out/gpt_trained/final.psk.d}
-DATA=corpus/nlp/data/civil_T256.psk.d
+DATA=examples/corpus/nlp/data/civil_T256.psk.d
 OUT=${OUT:-out/delta_p}
 SAMPLES=${SAMPLES:-8}
 DIGITS=${DIGITS:-330}
@@ -49,27 +49,14 @@ BITS_STEP=${BITS_STEP:-"128 256 512 1000"}
 [ -f "$W" ] || { echo "no trained weights at $W: make gpt-trained"; exit 1; }
 [ -f "$DATA" ] || { echo "no data at $DATA: make corpus-gpt"; exit 1; }
 mkdir -p "$OUT"
-# The two entries the program lacks, appended to a copy of it: the logits
-# with the batch as the last argument, so that --data fills it, and the
-# gradient of `loss` as a value `presk run` prints.
+# The two entries the program lacks, appended to a copy of it
+# (examples/experiments/delta_p_entries.psk-part, D199): the logits with the
+# batch as the last argument, so that --data fills it, and the gradient of
+# `loss` as a value `presk run` prints.
 WRAP=$OUT/gpt_delta_p.psk
-{
-    cat "$MODEL"
-    cat <<'EOF'
-
--- Appended by experiments/delta_p.sh (D98): the logits with the batch last,
--- so that `presk run --data` fills it, and the gradient of `loss` as an
--- entry, so that `presk run` prints it at --digits.
-fn logits(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> ℝ[batch: B, seq: T, vocab: V] uses Rand =
-  let (x, y) = batch
-  GPT.apply(θ, x, k)
-
-fn loss_grad(θ : params GPT, k : key, batch : (Tokens, Tokens)) -> params GPT uses Rand =
-  grad(λ θ. loss(θ, k, batch))(θ)
-EOF
-} > "$WRAP"
+cat "$MODEL" examples/experiments/delta_p_entries.psk-part > "$WRAP"
 # The copy reads the training run's data path relative to itself.
-[ -e "$OUT/data" ] || ln -s ../../corpus/nlp/data "$OUT/data"
+[ -e "$OUT/data" ] || ln -s ../../examples/corpus/nlp/data "$OUT/data"
 ARGS=(--const D=64 --const H=2 --const L=2 --dim T=256 --weights "$W" --data "$DATA" --samples "$SAMPLES")
 # timed NAME CMD...: runs CMD, its stdout to $OUT/NAME.json, its wall time
 # in seconds and peak resident set in kB to $OUT/NAME.time.

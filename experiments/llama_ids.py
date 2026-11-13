@@ -1,4 +1,4 @@
-"""Token sequences for the `Llama.apply` and `loss` entries of coverage/llama.psk.
+"""Token sequences for the `Llama.apply` and `loss` entries of examples/coverage/llama.psk.
 
 Usage: llama_ids.py V T N SEED [--shift] > ids.txt, then
 presk data pack --type 'idx[V][seq: T]'

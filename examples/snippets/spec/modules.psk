@@ -1,0 +1,71 @@
+-- modules.psk — The listings of the specification's section 4, "Syntax:
+-- modules and models" (presk-specs' report/chapters/02-spec.tex), which the
+-- report prints from here: each is the lines between `-- quote: NAME` and
+-- the next `-- end quote`. The lines outside them declare what a listing
+-- presupposes, so that the file is a program `presk check` accepts.
+
+-- quote: module
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
+    x · w + b            -- "·" = contraction over the last axis
+}
+-- end quote
+
+-- quote: composition
+module MLP{D : dim, hidden : dim} {
+  use l1 : Linear{D, hidden}
+  use l2 : Linear{hidden, D}
+
+  fn apply(x : ℝ[..., D]) -> ℝ[..., D] =
+    l2.apply(gelu(l1.apply(x)))
+}
+-- end quote
+
+-- The layer norm of spec/layernorm/layernorm.psk without its comments, and
+-- the dimensions the block's types name.
+module LayerNorm{D : dim} {
+  param γ : ℝ[D]  init = ones
+  param β : ℝ[D]  init = zeros
+
+  fn apply(x : ℝ[..., model: D], eps : f64 = 1e-5) -> ℝ[..., model: D] =
+    let μ  = mean(axis model, x)
+    let σ2 = mean(axis model, (x - μ)^2)
+    let x̂  = (x - μ) / sqrt(σ2 + real(eps))
+    x̂ * γ + β
+}
+
+dim B
+dim T
+
+-- quote: transformer
+const D : nat = 768
+const H : nat = 12
+const HD : nat = D / H          -- checked: D % H == 0
+
+module SelfAttention {
+  use wq, wk, wv, wo : Linear{D, D}
+
+  fn apply(x : ℝ[batch: B, seq: T, model: D],
+           mask : bool[seq: T, seq2: T]) -> ℝ[batch: B, seq: T, model: D] =
+    let q = split_heads(wq.apply(x))   -- ℝ[batch, heads: H, seq, hd: HD]
+    let k = split_heads(wk.apply(x))
+    let v = split_heads(wv.apply(x))
+    let s = ein[batch, heads, seq, seq2](q * k) / sqrt(HD : ℝ)
+    let a = softmax(axis seq2, s, where = mask)
+    let o = ein[batch, heads, seq, hd](a * v)
+    wo.apply(merge_heads(o))
+}
+
+module Block {
+  use attn : SelfAttention
+  use mlp  : MLP{D, 4*D}
+  use ln1, ln2 : LayerNorm{D}
+
+  fn apply(x, mask) =
+    let x = x + attn.apply(ln1.apply(x), mask)
+    x + mlp.apply(ln2.apply(x))
+}
+-- end quote

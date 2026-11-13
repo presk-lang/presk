@@ -12,7 +12,7 @@
 # The model and the data are `make foil`'s: the all-f64 run of `make curve`
 # (600 steps on 90 % of the Code civil), the 461 held-out windows of 256,
 # 118 016 positions. Then
-#   1. the exact logits, `logits` of experiments/margins.psk on the reference
+#   1. the exact logits, `logits` of examples/experiments/margins.psk on the reference
 #      at 128 bits, once, by chunks of CHUNK windows, JOBS at a time; their
 #      margins, ε*(δ) and the fraction of margins below 2ε;
 #   2. per realization (the foil's rows and the curve's seven), the native
@@ -34,8 +34,8 @@ set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
 PY=${PY:-python3}
-FILE=experiments/margins.psk
-MODEL=corpus/nlp/05_gpt.psk
+FILE=examples/experiments/margins.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 DIMS=(--const D=64 --const H=2 --const L=2 --dim T=256)
 W=${W:-out/curve_train_f64/final.psk.d}
 VAL=${VAL:-out/civil_val_T256.psk.d}

@@ -15,7 +15,7 @@
 set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-./target/release/presk}
-FILE=${FILE:-experiments/ra4_attention.psk}
+FILE=${FILE:-examples/experiments/ra4_attention.psk}
 ENTRY=${ENTRY:-SelfAttention.apply}
 CONSTS=${CONSTS:-}
 SHAPES=${SHAPES:-B=1,T=256 B=16,T=256}

@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_slice_bound.psk
+input_file: examples/tests/diag/shape_slice_bound.psk
 ---
 [E1007] Error: the bound of a slice is not a dimension
-   ,-[ tests/diag/shape_slice_bound.psk:2:46 ]
+   ,-[ examples/tests/diag/shape_slice_bound.psk:2:46 ]
    |
  2 | fn f(x : ℝ[a: 4], i : nat) -> ℝ[a: 1] = x[a: i..i + 1]
    |                                              |  

@@ -118,12 +118,25 @@ pub struct HostProfiled {
     pub same: bool,
     pub workers: usize,
     pub warmup: usize,
+    /// With `launches`, what the list of launches is read with.
+    pub listing: Option<Listing>,
+}
+
+/// What `--launches` lists the launches with (plan 0.17.2 step 4, D200),
+/// read after the calls: the kernels' names by place, the set strides of the
+/// CPU the process ran on, the transparent huge pages' mode and the
+/// process's anonymous memory in huge pages, in kB.
+pub struct Listing {
+    pub kernels: Vec<String>,
+    pub strides: Option<presk_kernel::profile::SetStrides>,
+    pub huge_pages: (Option<String>, Option<u64>),
 }
 
 /// The host of `func` by phase, on the native backend under `plan` (its
-/// layouts when `planned`), `repeat` calls of each kind.
+/// layouts when `planned`), `repeat` calls of each kind; `launches`: each
+/// call timed by phase lists its launches too.
 #[allow(clippy::too_many_arguments)]
-pub fn host_profile(core: &presk_core::Program, prog: &ElabProgram, func: FuncId, fdims: &Dims, args: &[Value], plan: &Plan, planned: bool, repeat: usize, warmup: usize) -> Result<HostProfiled, String> {
+pub fn host_profile(core: &presk_core::Program, prog: &ElabProgram, func: FuncId, fdims: &Dims, args: &[Value], plan: &Plan, planned: bool, repeat: usize, warmup: usize, launches: bool) -> Result<HostProfiled, String> {
     use presk_kernel::profile::{Phase, minor_faults, same_bits, value_bytes};
     let realize = &plan.realization;
     let mut b = presk_cranelift::native_backend(core, prog, realize).map_err(|e| format!("native backend unavailable: {}", e.message))?;
@@ -138,6 +151,9 @@ pub fn host_profile(core: &presk_core::Program, prog: &ElabProgram, func: FuncId
     #[allow(clippy::type_complexity)]
     let call = |b: &mut presk_kernel::KernelBackend, timed: bool, keep: bool| -> Result<(f64, Option<HostProfile>, Option<Value>, Option<u64>), String> {
         b.set_host_profile(timed.then(|| profile.clone()));
+        if timed && launches {
+            profile.borrow_mut().rows = Some(Vec::new());
+        }
         let f0 = minor_faults();
         let t0 = std::time::Instant::now();
         let a = args.clone();
@@ -184,5 +200,6 @@ pub fn host_profile(core: &presk_core::Program, prog: &ElabProgram, func: FuncId
         _ => false,
     };
     let workers = presk_kernel::KernelExec::workers(&*b.exec).unwrap_or(1);
-    Ok(HostProfiled { plain, timed, plain_faults, same, workers, warmup: warmup.max(1) })
+    let listing = launches.then(|| Listing { kernels: b.kernels.iter().map(|k| k.name.clone()).collect(), strides: presk_kernel::profile::set_strides(), huge_pages: presk_kernel::profile::huge_pages() });
+    Ok(HostProfiled { plain, timed, plain_faults, same, workers, warmup: warmup.max(1), listing })
 }

@@ -5,8 +5,9 @@ run on falicon by `experiments/llama/llama3_budget.sh` (`make
 llama3-budget`), its outputs in `out/llama3-budget/`. Each step's decision
 holds the details: D185 (the version opened, the options, OP1), D186 (the
 exact logits and ε\*(δ)), D187 (the envelope and the solves, RW5), D188 (the
-measurements, RW6 and RW7), D189 (perplexity, RW8), D190 (time, RW9), D191
-(the version). This file gathers the figures as each step lands.
+measurements, RW6 and RW7), D189 (perplexity, RW8, and its addendum: `nll` in `f64` for the six rows
+whose default is `f32`), D190 (time, RW9), D191 (the version). This file
+gathers the figures as each step lands.
 
 ## 1. The samples
 
@@ -284,6 +285,46 @@ figure at `-b 128` for all four GGUFs: 16.5726, 16.5793, 16.9761 and
 18.5607. At its default `-b 2048` it prints 16.5639, 16.5911, 17.0154 and
 18.5478 (D186: its figure follows the micro-batch).
 
+### D189's addendum: `nll`'s sites in `f64` (2026-11-08, after D191)
+
+The user asked, after step 6, for the six rows whose default is `f32` to
+be run again with `nll`'s own sites typed `f64` by per-site storage
+(`{"nll/%3": "f64", "nll/%5": "f64"}`: the logits `nll` receives and its
+`cross_entropy`). `Llama3.apply`'s kernels do not change; the
+log-softmax of the row's `f32` logits is then taken in binary64, as the
+field's is. The rows above stay of record; these sit beside them
+(`out/llama3-budget/nll-f64sites/`, `compare.md`). The runs took 2 h 50 min
+alone on falicon, 16 runs a row, each row's first alone at 23.71 to
+26.99 GB.
+
+| realization | perplexity, D189 | perplexity | Δ log ppl, D189 | Δ log ppl | the log-softmax's share | orders under 2g, D189 | orders under 2g |
+|---|---|---|---|---|---|---|---|
+| `f32` | 24.7601 | 24.7699 | −3.961·10⁻⁴ | −1.46·10⁻⁷ | −3.960·10⁻⁴ | 0.33 | 3.8 |
+| `bf16-params-f32` (by hand) | 24.7601 | 24.7699 | −3.961·10⁻⁴ | −1.46·10⁻⁷ | −3.960·10⁻⁴ | 0.33 | 3.8 |
+| `int8` absmax | 24.8638 | 24.8736 | +3.782·10⁻³ | +4.178·10⁻³ | −3.964·10⁻⁴ | 3.0 | 3.0 |
+| `int8` pow2 | 24.9791 | 24.9890 | +8.411·10⁻³ | +8.808·10⁻³ | −3.963·10⁻⁴ | 2.9 | 2.8 |
+| `int4` absmax | 75.5661 | 75.6076 | +1.115 | +1.116 | −5.49·10⁻⁴ | 1.5 | 1.5 |
+| `int4` pow2 | 596.2051 | 596.5223 | +3.181 | +3.181 | −5.32·10⁻⁴ | 1.1 | 1.1 |
+
+- **RW8 holds on the six**, as it did.
+- **`f32` and the realization by hand stand 3.8 orders under their
+  bound**, where D189 had 0.33, so the prediction now holds for them.
+  - They are under `f64` at 8 342 of 16 384 targets, sd 1.42·10⁻⁵.
+  - No target passes 2g; D189 had 18.
+- **The share is the term D189 named.** It is negative at all but at most
+  two targets in every row: −3.96·10⁻⁴ for `f32`, by hand and `int8`, and
+  −5.3 to −5.5·10⁻⁴ for `int4`.
+- **On window 0** the addendum's `nll` is numpy's binary64 log-softmax of
+  the same logits within 5.3·10⁻¹⁴ a target (D189's split: −8.199·10⁻⁷
+  for `f32`, −4.313·10⁻³ for `int8` absmax, both found again).
+- **The realization by hand's runs are `f32`'s**, 16 of 16 byte for byte.
+- **Against transformers `float32`**, `f32` now differs per target by mean
+  −1.4·10⁻⁷ and sd 1.39·10⁻⁵. Both are centred on `f64`.
+  - So D189's 24.7601 against 24.7699 was the log-softmax's difference
+    alone.
+  - Every row of ours but `bf16`, whose `nll` stays in `bf16`, is now the
+    field's function of its logits.
+
 ## 6. Time (step 5, D190)
 
 RW9, alone on falicon, on 2026-11-08: one thread pinned to one X925 core
@@ -392,7 +433,9 @@ X925 core; llama.cpp and transformers are not timed.
 3.807·10⁻³ (§2). Every row's perplexity carries `nll`'s own arithmetic
 (§5): the rows of ours whose default is `f32` (`f32`, by hand, `int8`,
 `int4`) about −3.9·10⁻⁴ in log from its `f32` log-softmax, the others
-none.
+none. D189's addendum (§5) takes those six again with `nll`'s sites in
+`f64`: `f32` and by hand 24.7699, `int8` 24.8736 and 24.9890, `int4`
+75.6076 and 596.5223. This table keeps D189's rows of record.
 
 ## 8. The solved realizations in words
 
@@ -437,7 +480,7 @@ A's time without lanes and is 1.27× faster with them. It serves 32 tokens
 | RW5 | holds | D187 | each of the seven solves inside its budget, under 24 h and 108 GB (2 h 06 min, 96.74 GB) |
 | RW6 | holds at every δ | D188 | A changes no held-out decision; its gap 3.67·10⁻¹³ |
 | RW7 | fails at every δ, as written | D188 | the lightest within δ·N flips is llama.cpp Q8_0 at 10⁻¹ and 3·10⁻² (the certificate bounds the worst logit, not the flips), the realization by hand and B at 10⁻² (the norms rule 2 keeps in `f64`) |
-| RW8 | holds | D189 | every perplexity within e^{±2g} of `f64`'s, every solved one's within e^{±2ε}, on all 22 rows |
+| RW8 | holds | D189 and its addendum | every perplexity within e^{±2g} of `f64`'s, every solved one's within e^{±2ε}, on all 22 rows; with `nll`'s sites in `f64` (the addendum), `f32` and the realization by hand 3.8 orders under their bound |
 | RW9 | reported | D190 | the times of §6 |
 
 ## 10. The cost against the plan's §7

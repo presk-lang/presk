@@ -2,11 +2,11 @@
 source: crates/presk-cli/tests/run_diag.rs
 assertion_line: 74
 expression: snap
-input_file: tests/diag/run_no_value.psk
+input_file: examples/tests/diag/run_no_value.psk
 ---
-$ presk run tests/diag/run_no_value.psk --entry lookup --dim V=0 --dim T=2
+$ presk run examples/tests/diag/run_no_value.psk --entry lookup --dim V=0 --dim T=2
 [E7003] Error: `lookup` is refused at the dimensions given: its parameter `t` has no value, an index below 0 in a tensor of 2 elements (`V` = 0)
-   ,-[ tests/diag/run_no_value.psk:7:1 ]
+   ,-[ examples/tests/diag/run_no_value.psk:7:1 ]
    |
  7 | fn lookup(w : ℝ[V, 4], t : idx[V][seq: T]) -> ℝ[seq: T, 4] = embed(w, t)
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  

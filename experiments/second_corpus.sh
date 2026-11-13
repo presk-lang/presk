@@ -32,7 +32,7 @@ export PRESK=${PRESK:-out/bin/presk-22dd345}
 PY=${PY:-python3}
 URL=${URL:-https://storage.gra.cloud.ovh.net/v1/AUTH_4d7d1bcd41914ee184ef80e2c75c4fb1/dila-legi-codes/penal.md.zip}
 SHA=${SHA:-be64baff45de6e8dfc03704e5d37d21d4ff39559af64102139d1775c1539243d}   # penal.md, 2026-10-22
-D=corpus/nlp/data
+D=examples/corpus/nlp/data
 VOCAB=$D/civil_vocab.json
 JUDGE=${JUDGE:-out/penal_461_T256.psk.d}
 N=461
@@ -109,7 +109,7 @@ window() {
     run() { # name realization
         local p=$O/native/$1
         [ -f "$p.tsv" ] && return 0
-        "$PRESK" run experiments/margins.psk --entry logits --const D=384 --const H=6 --const L=6 --dim T=256 \
+        "$PRESK" run examples/experiments/margins.psk --entry logits --const D=384 --const H=6 --const L=6 --dim T=256 \
             --weights out/course_train_f64/final.psk.d --data "$JUDGE" --from $from --samples $count --seed 0 \
             --backend native --threads 2 --realize "@$2" --json --digits 17 > "$O/json/$1.json" 2> "$p.err" \
             && $PY experiments/margins.py native "$O/json/$1.json" "$MC/exact/$c" "$p" && rm -f "$O/json/$1.json" "$p.err" \

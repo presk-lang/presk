@@ -1,4 +1,4 @@
-> The study proposed in presk-project `docs/prompt-second-corpus-2026-10-22.md`, run on 2026-10-22 from 14:18 to 17:42 at the user's go, relayed by the paper session. Nothing was calibrated, solved, trained or timed. Version 0.16.0. The binary is D163's, `out/bin/presk-22dd345` (`presk 0.16.0-dev`), so every row on the Code pénal comes from the binary that wrote its row on the Code civil. The script is `experiments/second_corpus.sh` (`make second-corpus`), with `experiments/second_corpus.py` (standard library only). The outputs are in `out/second-corpus/`, `out/margins-penal/` and `out/margins-course-penal/`, archived in presk-project `data/second-corpus-0.16.0.tar.xz`. The decision is D168.
+> The study proposed in presk-project `docs/prompt-second-corpus-2026-10-22.md`, run on 2026-10-22 from 14:18 to 17:42 at the user's go. Nothing was calibrated, solved, trained or timed. Version 0.16.0. The binary is D163's, `out/bin/presk-22dd345` (`presk 0.16.0-dev`), so every row on the Code pénal comes from the binary that wrote its row on the Code civil. The script is `experiments/second_corpus.sh` (`make second-corpus`), with `experiments/second_corpus.py` (standard library only). The outputs are in `out/second-corpus/`, `out/margins-penal/` and `out/margins-course-penal/`, archived in presk-project `data/second-corpus-0.16.0.tar.xz`. The decision is D168.
 
 # The certificate on a second text: the Code pénal through the Code civil's models
 
@@ -93,7 +93,7 @@ Statement S (D118) holds on the Code pénal at both scales, at its own ε\*: eve
 | **logits-4.67e-4** (V6) | 1.431e-04 | 1.016e-04 | 0.71× | 0 / 0 | 11 | yes / yes |
 | d016-1e-1 | 4.126e-02 | 4.310e-02 | 1.04× | 518 / 435 | 9012 | no / no |
 | d016-1e-2 | 2.181e-02 | 2.425e-02 | 1.11× | 67 / 46 | 4622 | no / no |
-| d016-1e-3 (H2's) | 2.551e-03 | 2.176e-03 | 0.85× | 9 / 9 | 371 | no / no |
+| d016-1e-3 (D's) | 2.551e-03 | 2.176e-03 | 0.85× | 9 / 9 | 371 | no / no |
 | d016-1e-4 | 3.467e-04 | 3.563e-04 | 1.03× | 0 / 0 | 60 | yes / yes |
 | d016-1e-5 | 1.623e-04 | 1.190e-04 | 0.73× | 0 / 0 | 15 | yes / yes |
 | d016-1e-6 | 7.644e-05 | 4.975e-05 | 0.65× | 0 / 0 | 5 | yes / yes |

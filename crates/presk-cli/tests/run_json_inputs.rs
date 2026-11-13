@@ -35,18 +35,18 @@ fn the_inputs_printed_are_the_data_and_the_checkpoint() {
     let d = std::env::temp_dir().join(format!("presk-run-json-inputs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (data, from, samples) = ("tutorial/data/pairs.psk.d", 2, 3);
+    let (data, from, samples) = ("examples/tutorial/data/pairs.psk.d", 2, 3);
     let export = d.join("pairs.json");
     presk(&["data", "export", data, "--out", export.to_str().unwrap()]);
     let exported: Value = serde_json::from_str(&std::fs::read_to_string(&export).unwrap()).unwrap();
     // The samples run, leaf by leaf: (x, y) of samples 2, 3 and 4.
     let leaf = |i: usize| -> Vec<f64> { (from..from + samples).flat_map(|s| numbers(&exported["samples"][s][i])).collect() };
     let ckpt = d.join("ckpt");
-    presk(&["train", "tutorial/07_train.psk", "--steps", "20", "--backend", "native", "--ckpt", ckpt.to_str().unwrap()]);
+    presk(&["train", "examples/tutorial/07_train.psk", "--steps", "20", "--backend", "native", "--ckpt", ckpt.to_str().unwrap()]);
     let weights = ckpt.join("final.psk.d");
     let (from_s, samples_s) = (from.to_string(), samples.to_string());
     let run = |extra: &[&str]| -> Value {
-        let mut args = vec!["run", "tutorial/07_train.psk", "--entry", "loss", "--data", data, "--from", &from_s, "--samples", &samples_s, "--json", "--digits", "17"];
+        let mut args = vec!["run", "examples/tutorial/07_train.psk", "--entry", "loss", "--data", data, "--from", &from_s, "--samples", &samples_s, "--json", "--digits", "17"];
         args.extend_from_slice(extra);
         serde_json::from_str(&presk(&args)).unwrap()
     };

@@ -57,23 +57,23 @@ fn snap(name: &str, out: &presk_interp::RunOutput) {
 
 #[test]
 fn golden_mlp() {
-    snap("mlp_mse", &run("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], 256));
-    snap("mlp_mse_grad", &run("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], 256));
+    snap("mlp_mse", &run("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], 256));
+    snap("mlp_mse_grad", &run("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], 256));
 }
 
 #[test]
 fn golden_layernorm() {
-    snap("layernorm_apply", &run("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], 256));
-    snap("rmsnorm_apply", &run("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], 256));
+    snap("layernorm_apply", &run("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], 256));
+    snap("rmsnorm_apply", &run("examples/spec/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], 256));
 }
 
 const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 
 #[test]
 fn golden_minigpt() {
-    snap("minigpt_forward", &run("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], 256));
-    snap("minigpt_loss", &run("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], 256));
-    snap("minigpt_next_token", &run("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], 256));
+    snap("minigpt_forward", &run("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], 256));
+    snap("minigpt_loss", &run("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], 256));
+    snap("minigpt_next_token", &run("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], 256));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn softmax_rows_sum_to_one() {
     // A tiny model with a non-zero head so that logits are non-trivial: build the
     // attention weights through `loss`, which exercises softmax; check the
     // invariant on a direct softmax instead: Σ_axis softmax(x) = 1 at 2^-200.
-    let (prog, core) = prepare("tests/examples/minigpt/minigpt.psk", TINY);
+    let (prog, core) = prepare("examples/spec/minigpt/minigpt.psk", TINY);
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let x = Value::Real(presk_interp::Tensor { axes: vec![presk_interp::value::Axis { name: Some("seq2".into()), len: 5 }], data: (0..5).map(|i| Float::with_val(256, i as f64 * 0.7 - 1.0)).collect() });
     let sm = interp.prim_public(&presk_core::PrimOp::Softmax { axis: "seq2".into() }, &[x]).unwrap();
@@ -99,7 +99,7 @@ fn softmax_rows_sum_to_one() {
 #[test]
 fn ad_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/examples/mlp/mlp.psk";
+    let rel = "examples/spec/mlp/mlp.psk";
     let out = run(rel, &[], "mse_grad", &[("D", 2), ("B", 2)], bits);
     let (prog, core) = prepare(rel, &[]);
     let mse = core.find("mse").unwrap();
@@ -177,7 +177,7 @@ fn set_leaf_elem(v: &Value<Float>, path: &[String], i: usize, x: Float) -> Value
 #[test]
 fn ad_through_applied_closures_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/closure_grad.psk";
+    let rel = "examples/tests/data/closure_grad.psk";
     let (prog, core) = prepare(rel, &[]);
     let h = Float::with_val(bits, 2f64.powi(-120));
     let tol = Float::with_val(bits, 2f64.powi(-100));
@@ -208,11 +208,11 @@ fn ad_through_applied_closures_matches_finite_differences() {
 
 /// The optimizer functions lowered from `optimizer adamw { … }` (0.2.0 step 3):
 /// the cosine schedule of `train_minigpt.psk` at chosen steps, and one AdamW
-/// step from zero moments on `tests/data/train_ok.psk`, against the closed forms.
+/// step from zero moments on `examples/tests/data/train_ok.psk`, against the closed forms.
 #[test]
 fn optimizer_schedule_and_step() {
     use presk_interp::value::Axis;
-    let (prog, core) = prepare("tests/examples/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)]);
+    let (prog, core) = prepare("examples/spec/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)]);
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     let lr = core.find("adamw.lr").unwrap();
     let mut f = |t: u64, total: u64| -> f64 {
@@ -228,7 +228,7 @@ fn optimizer_schedule_and_step() {
     assert!(f(4000, 4000).abs() < 1e-18);
     assert!((f(5000, 4000)).abs() < 1e-18, "past the horizon the rate stays at 0");
 
-    let (prog, core) = prepare("tests/data/train_ok.psk", &[]);
+    let (prog, core) = prepare("examples/tests/data/train_ok.psk", &[]);
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     let step = core.find("adamw.step").unwrap();
     let tensor = |x: f64| Value::Real(presk_interp::Tensor { axes: vec![Axis { name: None, len: 64 }, Axis { name: None, len: 4 }], data: vec![Float::with_val(128, x); 256].into() });
@@ -259,7 +259,7 @@ fn optimizer_schedule_and_step() {
 #[test]
 fn ad_through_fold_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/stack_grad.psk";
+    let rel = "examples/tests/data/stack_grad.psk";
     let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
     snap("stack_grad", &out);
     let (prog, core) = prepare(rel, &[]);
@@ -310,7 +310,7 @@ fn ad_through_fold_matches_finite_differences() {
 #[test]
 fn ad_through_dropout_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/dropout_grad.psk";
+    let rel = "examples/tests/data/dropout_grad.psk";
     let (prog, core) = prepare(rel, &[]);
     let opts = presk_interp::RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 2)], seed: 0, bits, digits: 12 };
     let (gradf, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
@@ -371,7 +371,7 @@ fn ad_through_dropout_matches_finite_differences() {
 #[test]
 fn ad_through_merge_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/merge_grad.psk";
+    let rel = "examples/tests/data/merge_grad.psk";
     let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
     let (prog, core) = prepare(rel, &[]);
     let loss = core.find("loss").unwrap();
@@ -409,7 +409,7 @@ fn ad_through_merge_matches_finite_differences() {
 #[test]
 fn stacked_layers_draw_independent_keys() {
     let bits = 128;
-    let rel = "tests/data/stack_keys.psk";
+    let rel = "examples/tests/data/stack_keys.psk";
     let (prog, core) = prepare(rel, &[]);
     let zeros = |entry: &str| -> (usize, usize) {
         let opts = presk_interp::RunOptions { entry: entry.into(), dims: vec![("B".into(), 8)], seed: 0, bits, digits: 12 };
@@ -459,7 +459,7 @@ fn stacked_layers_draw_independent_keys() {
 #[test]
 fn ad_through_stacked_dropout_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/stack_dropout_grad.psk";
+    let rel = "examples/tests/data/stack_dropout_grad.psk";
     let (prog, core) = prepare(rel, &[]);
     let opts = presk_interp::RunOptions { entry: "loss_grad".into(), dims: vec![("B".into(), 8)], seed: 0, bits, digits: 12 };
     let (gradf, dims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
@@ -506,7 +506,7 @@ fn ad_through_stacked_dropout_matches_finite_differences() {
 #[test]
 fn ad_through_split_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/split_grad.psk";
+    let rel = "examples/tests/data/split_grad.psk";
     let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
     let (prog, core) = prepare(rel, &[]);
     let loss = core.find("loss").unwrap();
@@ -545,7 +545,7 @@ fn ad_through_split_matches_finite_differences() {
 #[test]
 fn ad_through_concat_slice_max_min_matches_finite_differences() {
     let bits = 512;
-    let rel = "tests/data/concat_grad.psk";
+    let rel = "examples/tests/data/concat_grad.psk";
     let out = run(rel, &[], "loss_grad", &[("B", 2)], bits);
     let (prog, core) = prepare(rel, &[]);
     let loss = core.find("loss").unwrap();
@@ -581,10 +581,10 @@ fn ad_through_concat_slice_max_min_matches_finite_differences() {
 /// `examples/rope/`, `examples/concat/`), at the reference's precision.
 #[test]
 fn golden_rope_and_concat() {
-    snap("rope_attention2", &run("tests/examples/rope/rope.psk", &[], "attention2", &[("B", 2), ("T", 8)], 256));
-    snap("rope_attention3", &run("tests/examples/rope/rope.psk", &[], "attention3", &[("B", 2), ("T", 8)], 256));
-    snap("concat_loss", &run("tests/examples/concat/concat.psk", &[], "loss", &[("B", 2), ("T", 8)], 256));
-    snap("concat_loss_grad", &run("tests/examples/concat/concat.psk", &[], "loss_grad", &[("B", 2), ("T", 8)], 256));
+    snap("rope_attention2", &run("examples/spec/rope/rope.psk", &[], "attention2", &[("B", 2), ("T", 8)], 256));
+    snap("rope_attention3", &run("examples/spec/rope/rope.psk", &[], "attention3", &[("B", 2), ("T", 8)], 256));
+    snap("concat_loss", &run("examples/spec/concat/concat.psk", &[], "loss", &[("B", 2), ("T", 8)], 256));
+    snap("concat_loss_grad", &run("examples/spec/concat/concat.psk", &[], "loss_grad", &[("B", 2), ("T", 8)], 256));
 }
 
 /// A fold whose accumulator type has an open prefix (`ℝ[..., model: 4]`):
@@ -593,7 +593,7 @@ fn golden_rope_and_concat() {
 #[test]
 fn ad_through_fold_with_open_prefix() {
     let bits = 512;
-    let rel = "tests/data/stack_prefix_grad.psk";
+    let rel = "examples/tests/data/stack_prefix_grad.psk";
     let out = run(rel, &[], "loss_grad", &[("B", 3)], bits);
     let (prog, core) = prepare(rel, &[]);
     let loss = core.find("loss").unwrap();

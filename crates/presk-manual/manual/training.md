@@ -96,11 +96,11 @@ time); 2 no `training run` in the file or an unreadable data file.
 
 ## Two runs
 
-A linear regression, `tests/train/mlp_regression.psk`: a `Linear{2, 1}` on
+A linear regression, `examples/tests/train/mlp_regression.psk`: a `Linear{2, 1}` on
 256 samples of `y = 2·x₀ − x₁ + 0.5`, AdamW at `lr = 0.05`, batches of 16:
 
 ```sh
-presk train tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
+presk train examples/tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
 ```
 
 ```text
@@ -113,11 +113,11 @@ presk train: 200 steps of Reg, final loss 0.000000, weights in out/reg_ckpt/fina
 ```
 
 The weights end near `(2, −1)` and `0.5` (a test asserts it). The MiniGPT of
-the specification, on the example data (`examples/minigpt/data/tokens.psk.d`,
+the specification, on the example data (`examples/spec/minigpt/data/tokens.psk.d`,
 510 windows of 8 tokens over a vocabulary of 64), with its constants reduced:
 
 ```sh
-presk train tests/examples/minigpt/train_minigpt.psk \
+presk train examples/spec/minigpt/train_minigpt.psk \
      --const V=64 --const D=16 --const H=2 --const L=2 --steps 20 --bits 64 --log-every 5 --ckpt out/ckpt
 ```
 
@@ -144,7 +144,7 @@ output of the test suite.
 ## In PyTorch: `presk export --train`
 
 ```sh
-presk export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable --train \
+presk export examples/spec/minigpt/train_minigpt.psk --target pytorch --mode readable --train \
      --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/trainloop_pt
 cd out/trainloop_pt && python train.py --steps 20 --dtype float64 --log-every 5 --ckpt ckpt
 ```
@@ -242,12 +242,12 @@ function it prepares (tutorial step 16 walks the three commands on the
 tutorial's tower; here they are on the corpus GPT):
 
 ```sh
-presk calibrate --step corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+presk calibrate --step examples/corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
     --weights out/gpt_trained/final.psk.d --warmup 100 --steps 600 \
     --realize f64 --realize f32 --realize recipe --out out/step_env.json
-presk solve --step corpus/nlp/05_gpt.psk --precision out/step_env.json --budget 1e-3 \
+presk solve --step examples/corpus/nlp/05_gpt.psk --precision out/step_env.json --budget 1e-3 \
     --profile out/gpt_prof.json --out out/step_1e-3.json
-presk train corpus/nlp/05_gpt.psk --backend native --realize @out/step_1e-3.json
+presk train examples/corpus/nlp/05_gpt.psk --backend native --realize @out/step_1e-3.json
 ```
 
 Since 0.17.0, `presk solve --step --grain value` (D178) types each value

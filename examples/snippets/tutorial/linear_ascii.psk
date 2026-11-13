@@ -1,0 +1,7 @@
+-- linear_ascii.psk — step 1 of the tutorial: the `Linear` of 01_linear.psk in the ASCII spelling.
+module Linear{In Out : dim} {
+  param w : Real[In, Out]  init = xavier_uniform
+  param b : Real[Out]      init = zeros
+  fn apply(x : Real[..., In]) -> Real[..., Out] =
+    x @ w + b
+}

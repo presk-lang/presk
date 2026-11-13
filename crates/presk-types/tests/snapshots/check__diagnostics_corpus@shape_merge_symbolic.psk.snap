@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_merge_symbolic.psk
+input_file: examples/tests/diag/shape_merge_symbolic.psk
 ---
 [E1007] Error: `merge` of `p` and `q` multiplies two symbolic dimensions
-   ,-[ tests/diag/shape_merge_symbolic.psk:7:41 ]
+   ,-[ examples/tests/diag/shape_merge_symbolic.psk:7:41 ]
    |
  7 | fn bad(x : ℝ[p: P, q: Q]) -> ℝ[] = mean(merge(axis p, axis q, x))
    |                                         ^^^^^^^^^^^^|^^^^^^^^^^^  

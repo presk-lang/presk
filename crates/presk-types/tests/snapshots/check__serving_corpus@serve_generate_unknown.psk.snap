@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/serve_generate_unknown.psk
+input_file: examples/tests/diag/serve_generate_unknown.psk
 ---
 [E2010] Error: `generate`: `nxt` is not a function of this file
-    ,-[ tests/diag/serve_generate_unknown.psk:14:14 ]
+    ,-[ examples/tests/diag/serve_generate_unknown.psk:14:14 ]
     |
  14 |   generate = nxt
     |              ^|^  

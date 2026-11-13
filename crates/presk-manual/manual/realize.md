@@ -255,7 +255,7 @@ MLP's, MiniGPT's and the course GPT's at small constants (4 280 points on
 twenty nest shapes, in three types, on both executors), and run each
 gradient with every derivative nest planned at once, packs included. Since
 0.10.0 step 7 they lower every point with its epilogue too, on the products
-of `tests/plan/epilogue.psk` (a bias after a `dot`, before it, a mask after
+of `examples/tests/plan/epilogue.psk` (a bias after a `dot`, before it, a mask after
 the scores `ein`, a residual after the values `ein`, an operand constant
 along `J`; 3 208 points in three types and under an `f64` accumulation) and
 on the derivative nests given an operand to add (4 280 points), against the
@@ -283,22 +283,22 @@ more) and condition 5 (its workers are the machine's, `p_M`, or half of
 them, on the native backend; `--threads` or `PRESK_THREADS` set `p_M`). The
 layout is part of the kernel cache's key, so two nests of one shape with two
 layouts get two kernels. `make plan-check` lowers every entry of
-`tests/plan/entries.txt` with and without `--plan
-@tests/plan/default.json` and compares the dumps byte for byte; at 0.7.0
+`examples/tests/plan/entries.txt` with and without `--plan
+@examples/tests/plan/default.json` and compares the dumps byte for byte; at 0.7.0
 step 1 they were also byte-identical to 0.6.0's, in `f64`, `f32` and `bf16`.
 
-`tests/plan/attention.json` is the language reference's example plan, for the
+`examples/tests/plan/attention.json` is the language reference's example plan, for the
 course GPT's attention: the scores `ein` tiled `[4, 16]` with a k-block of 32
 in the order `JIK`, four lanes, packed, split at depth 1 (its heads) over ten
 workers, and the softmax in two passes. It gives the default's output, bit for
 bit.
 
 ```sh
-presk run corpus/nlp/05_gpt.psk --entry SelfAttention.apply --dim B=16 --dim T=256 --backend native \
-     --plan @tests/plan/attention.json
-presk dump tests/plan/two_dots.psk --stage realize --plan @tests/plan/two_dots.json
-presk dump tests/plan/two_dots.psk --stage kernel --entry twice --plan @tests/plan/two_dots.json
-presk run tests/plan/two_dots.psk --entry twice --backend native --plan @tests/plan/two_dots.json
+presk run examples/corpus/nlp/05_gpt.psk --entry SelfAttention.apply --dim B=16 --dim T=256 --backend native \
+     --plan @examples/tests/plan/attention.json
+presk dump examples/tests/plan/two_dots.psk --stage realize --plan @examples/tests/plan/two_dots.json
+presk dump examples/tests/plan/two_dots.psk --stage kernel --entry twice --plan @examples/tests/plan/two_dots.json
+presk run examples/tests/plan/two_dots.psk --entry twice --backend native --plan @examples/tests/plan/two_dots.json
 ```
 
 ## Choosing a plan
@@ -366,7 +366,7 @@ tile chosen there could fail to divide another shape.
   computed afterwards, so the cost model under-counts what fusion will save.
 
 ```sh
-presk dump corpus/nlp/05_gpt.psk --stage realize --const D=64 --const H=2 --const L=2
-presk dump corpus/nlp/05_gpt.psk --stage kernel --entry adamw.step --const D=64 --const H=2 --const L=2 \
+presk dump examples/corpus/nlp/05_gpt.psk --stage realize --const D=64 --const H=2 --const L=2
+presk dump examples/corpus/nlp/05_gpt.psk --stage kernel --entry adamw.step --const D=64 --const H=2 --const L=2 \
      --dim B=2 --dim T=32 --realize f32
 ```

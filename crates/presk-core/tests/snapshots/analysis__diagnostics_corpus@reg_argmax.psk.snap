@@ -1,10 +1,10 @@
 ---
 source: crates/presk-core/tests/analysis.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/reg_argmax.psk
+input_file: examples/tests/diag/reg_argmax.psk
 ---
 [E3001] Error: cannot differentiate through `argmax`: the function is discontinuous (Disc) in `l`
-   ,-[ tests/diag/reg_argmax.psk:6:3 ]
+   ,-[ examples/tests/diag/reg_argmax.psk:6:3 ]
    |
  4 |   mean(real(argmax(logits)))
    |             ^^^^^^^|^^^^^^  

@@ -13,7 +13,7 @@
 # every side: native `presk bench --plan-only`, the C program's `-r` loop,
 # PyTorch in eval mode under no_grad. The training step is `presk train`
 # natively, the exported `train.py` for PyTorch, and for C the gradient
-# (`loss_grad` of experiments/gpt_grad.psk, exported with CKPT) plus
+# (`loss_grad` of examples/experiments/gpt_grad.psk, exported with CKPT) plus
 # `adamw.step`, the step's two entries, timed apart and added. Since 0.10.0
 # step 6 the native backend's two entries are timed the same way, by `presk
 # bench`, neither side drawing dropout masks: T4's step, like for like
@@ -77,9 +77,9 @@ C_WAIT=${C_WAIT:-GOMP_SPINCOUNT=8M}
 REPEAT=${REPEAT:-7}
 LLVM=${LLVM:-0}
 OUT=${1:?usage: experiments/pytorch_baseline.sh OUT}
-FILE=corpus/nlp/05_gpt.psk
-GRAD=experiments/gpt_grad.psk
-DATA=corpus/nlp/data/civil_T256.psk.d
+FILE=examples/corpus/nlp/05_gpt.psk
+GRAD=examples/experiments/gpt_grad.psk
+DATA=examples/corpus/nlp/data/civil_T256.psk.d
 DIMS=(--dim B=16 --dim T=256)
 THREADS=(10 20)
 

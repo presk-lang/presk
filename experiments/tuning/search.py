@@ -298,7 +298,7 @@ def main():
     ap.add_argument("--params", action="store_true")
     ap.add_argument("--out", required=True)
     ap.add_argument("--presk", default="./target/release/presk")
-    ap.add_argument("--file", default="experiments/margins.psk")
+    ap.add_argument("--file", default="examples/experiments/margins.psk")
     ap.add_argument("--weights", default="out/curve_train_f64/final.psk.d")
     ap.add_argument("--dims", default="--const D=64 --const H=2 --const L=2 --dim B=2 --dim T=256")
     a = ap.parse_args()

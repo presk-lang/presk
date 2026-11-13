@@ -221,9 +221,9 @@ model is now ready to arbitrate.
 
 ```sh
 make calibrate                                               # the profile above, then the two bench lines with it
-presk bench tests/examples/minigpt/train_minigpt.psk --entry loss --const V=64 --const D=16 --const H=2 --const L=2 \
+presk bench examples/spec/minigpt/train_minigpt.psk --entry loss --const V=64 --const D=16 --const H=2 --const L=2 \
      --dim B=2 --dim T=8 --calibrate out/profile.json
-presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt --profile out/profile.json
+presk run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt --profile out/profile.json
 ```
 
 **One profile, every machine type.** Since 0.6.0 step 3 a profile holds the
@@ -664,6 +664,17 @@ traffic from the types; at this rate it takes some 230 steps to repay itself.
 A cost model can rank kernels well and still not change which program you
 extract.
 
+Measured again at 0.17.1 on the course GPT (D195, `make opt-measured`),
+under the default layout, five processes each on the ten X925, the
+training step takes 5.4 % (`f32`) and 8.0 % (`f64`) less with `--opt` at
+`D` = 64, and 0.6 % and 2.5 % less at the course constants, with 511 → 358
+and 1 132 → 799 launches a step. The forward pass alone is 0.1–2.9 %
+*slower*. The rules change nothing it counts, but the `x − μ` that the
+corpus's `LayerNorm.apply` writes twice becomes one value. That value is
+read by two fusion groups, so it reaches memory: one launch more per call.
+An e-graph cannot keep a term computed twice, and the partition is chosen
+after the term: question 49, seen on the layer norm.
+
 ## Limits, reported
 
 The plan proposed to leave a function unrewritten when saturation hits a
@@ -674,9 +685,9 @@ a limit, and `dump --stage core-opt` names them with their stop reason and
 iteration count (decision D24).
 
 ```sh
-presk dump tests/examples/mlp/mlp.psk --stage core-opt        # program on stdout, report on stderr
-presk run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt
-presk train tests/examples/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+presk dump examples/spec/mlp/mlp.psk --stage core-opt        # program on stdout, report on stderr
+presk run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt
+presk train examples/spec/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
      --steps 20 --backend native --opt
 make opt-examples                                            # the comparisons above
 ```

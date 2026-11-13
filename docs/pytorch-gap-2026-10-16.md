@@ -1,8 +1,8 @@
-> PyTorch's own gap to the exact model, and its flips (presk D130). The prompt was presk-project `docs/prompt-paper-results-2026-10-16.md`, run 3, at the user's request through the paper session. Version 0.12.0 (D128's binary), PyTorch 2.14.0+cpu, on falicon, 2026-10-16; nothing is timed. The tables come from `experiments/pytorch_gap.sh` (`make pytorch-gap`): `out/pytorch-gap/margins.md` and `gaps.md`. The outputs are in presk-project `data/pytorch-gap-0.12.0.tar.xz`.
+> PyTorch's own gap to the exact model, and its flips (presk D130). It was run at the user's request. Version 0.12.0 (D128's binary), PyTorch 2.14.0+cpu, on falicon, 2026-10-16; nothing is timed. The tables come from `experiments/pytorch_gap.sh` (`make pytorch-gap`): `out/pytorch-gap/margins.md` and `gaps.md`. The outputs are in presk-project `data/pytorch-gap-0.12.0.tar.xz`.
 
 # PyTorch's own gap to the exact model
 
-The paper's claim is that a compiler which keeps the exact denotation can say how far a run is from the function it was written for. This run asks that question of the competitor's run: the same model, exported to PyTorch, run by PyTorch eager in `float32`, against the exact logits.
+The claim is that a compiler which keeps the exact denotation can say how far a run is from the function it was written for. This run asks that question of the competitor's run: the same model, exported to PyTorch, run by PyTorch eager in `float32`, against the exact logits.
 
 ## What ran
 
@@ -65,7 +65,7 @@ This run does not attribute the 6 % between 2.95·10⁻⁶ and 3.12·10⁻⁶ to
 - *What it can:* its own `float64` run, set against its `float32` one, would print 2.95·10⁻⁶ too, to within 6·10⁻¹⁵, since its `float64` lies that close to the exact logits.
 - *What it cannot:* know that its `float64` lies that close. The 5.9·10⁻¹⁵ is itself a measurement against the exact reference, which only this compiler keeps.
 
-So the claim for the paper is this. "PyTorch's float32 run is 2.9·10⁻⁶ from the function it was written for" is a number PyTorch can approximate, but cannot certify, without an exact reference. It is not a number PyTorch cannot approach at all.
+So the claim is this. "PyTorch's float32 run is 2.9·10⁻⁶ from the function it was written for" is a number PyTorch can approximate, but cannot certify, without an exact reference. It is not a number PyTorch cannot approach at all.
 
 ## To reproduce
 

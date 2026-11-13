@@ -13,7 +13,7 @@ fn presk(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_presk")).current_dir(root()).args(args).env("NO_COLOR", "1").output().expect("running presk")
 }
 
-const FILE: &str = "tutorial/07_train.psk";
+const FILE: &str = "examples/tutorial/07_train.psk";
 
 /// A realization file with `params` as given, in a directory of its own.
 fn record(dir: &Path, name: &str, params: &str) -> String {

@@ -41,7 +41,7 @@ BUDGETS=${BUDGETS:-4.67e-4 1e-6}
 MARGIN=${MARGIN:-2.5}
 FORMS=${FORMS:-unit-off measured-off rss narrow heldout rss-narrow rss-heldout}
 JOBS=${JOBS:-8}
-FILE=experiments/margins.psk
+FILE=examples/experiments/margins.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 mkdir -p "$OUT/env" "$OUT/solve"
 say() { echo "== $(date +%H:%M:%S) $*"; }

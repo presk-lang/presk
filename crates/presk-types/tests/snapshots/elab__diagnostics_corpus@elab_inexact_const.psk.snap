@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/elab.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/elab_inexact_const.psk
+input_file: examples/tests/diag/elab_inexact_const.psk
 ---
 [E1005] Error: `HD` is not a natural number
-   ,-[ tests/diag/elab_inexact_const.psk:4:18 ]
+   ,-[ examples/tests/diag/elab_inexact_const.psk:4:18 ]
    |
  4 | const HD : nat = D / H
    |                  ^^|^^  

@@ -6,7 +6,7 @@
 #
 # The course GPT at B = 16, T = 256 in f32, under the plans the frozen
 # profile gives (as pytorch_baseline.sh plans them): the forward pass
-# `GPT.apply`, the gradient `loss_grad` (experiments/gpt_grad.psk) and the
+# `GPT.apply`, the gradient `loss_grad` (examples/experiments/gpt_grad.psk) and the
 # optimizer `adamw.step`, the step's two entries. Each is timed launch by
 # launch on both sides:
 # - natively, by `presk bench --plan-only --calibrate`, which times every
@@ -52,8 +52,8 @@ CALLS=${CALLS:-4}
 ROUNDS=${ROUNDS:-3}
 BENCH=${BENCH:-}
 OUT=${1:?usage: experiments/kernel_shares.sh OUT}
-FILE=corpus/nlp/05_gpt.psk
-GRAD=experiments/gpt_grad.psk
+FILE=examples/corpus/nlp/05_gpt.psk
+GRAD=examples/experiments/gpt_grad.psk
 DIMS=(--dim B=16 --dim T=256)
 STRICT=(-std=c11 -ffp-contract=off -Wall -Wextra)
 

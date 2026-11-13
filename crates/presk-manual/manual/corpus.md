@@ -6,7 +6,7 @@ at constants small enough to be comfortable. That is a bad way to find out
 what a language cannot say and a worse way to find out what a code generator
 cannot do, because the programs drift towards what already works.
 
-`corpus/nlp/` is the correction. It is the ladder of models of an NLP course
+`examples/corpus/nlp/` is the correction. It is the ladder of models of an NLP course
 at Mines Paris, on that course's own data — the text and the vocabulary of
 the French civil code — transcribed into Presk without permission to change
 the models. Its purpose is to be a *forcing function*, not a demonstration.
@@ -27,7 +27,7 @@ corpus` runs rungs 1 to 3 and `make corpus-gpt` the last.
 
 ## Where the numbers live
 
-`corpus/nlp/EXPECTED.md`, with the date of every measurement and the
+`examples/corpus/nlp/EXPECTED.md`, with the date of every measurement and the
 configuration that produced it. That file is the corpus's point: a loss or a
 time quoted in this manual can be traced to a command and a day. Two of its
 entries are worth repeating here because they are what the corpus was for.

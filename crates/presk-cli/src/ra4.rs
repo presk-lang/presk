@@ -538,7 +538,7 @@ fn product_of(signature: &str) -> Option<(String, [usize; 3])> {
 
 /// The calibration's samples costed again (plan 0.8.0 step 4, 4b): each
 /// sample's layout lowered at the product its signature names, on `entry`
-/// of `file` (`experiments/matmul.psk`, whose dimensions are `I`, `K` and
+/// of `file` (`examples/experiments/matmul.psk`, whose dimensions are `I`, `K` and
 /// `J`), and costed on `machine` — the profile's own description, not the
 /// one this process runs on — under `rules`. Its time, layout and group are
 /// kept, the kernel lowered checked against its signature and its group.
@@ -1175,7 +1175,7 @@ mod tests {
     use presk_opt::profile::group_key;
 
     fn tutorial() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tutorial/03_attention.psk")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/tutorial/03_attention.psk")
     }
 
     fn f32_plan() -> presk_rt::Plan {
@@ -1234,7 +1234,7 @@ mod tests {
     #[test]
     fn a_capture_of_shapes_launches_what_a_run_launches() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let entries = std::fs::read_to_string(root.join("tests/plan/entries.txt")).unwrap();
+        let entries = std::fs::read_to_string(root.join("examples/tests/plan/entries.txt")).unwrap();
         let sig = |l: &Launch| format!("{} {:?} {:?} {:?} {:?} {:?} {:?}", l.nest, l.what, l.operands, l.dtype, l.order, l.accum, l.inputs.iter().map(|b| (std::mem::discriminant(b), b.len())).collect::<Vec<_>>());
         let mut launches = 0;
         for line in entries.lines().filter(|l| !l.trim().is_empty()) {
@@ -1535,7 +1535,7 @@ mod tests {
     fn a_calibration_is_costed_again_as_it_was_recorded() {
         assert_eq!(product_of("kernel dot (%0 : f32[16, 4096], %1 : f32[4096, 4096]) -> %2 : f32[16, 4096]"), Some(("f32".to_string(), [16, 4096, 4096])));
         assert_eq!(product_of("kernel add (%0 : f32[4, 3], %1 : f32[4, 3]) -> %2 : f32[4, 3]"), None);
-        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../experiments/matmul.psk");
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/experiments/matmul.psk");
         let machine = Machine { workers: 4, l1: 64 << 10, l2: 2 << 20, l3: 8 << 20, l3_sharing: 4, vector_registers: 32, vector_bytes: 16, source: "test".into(), line: 64 };
         let keys = ["form=tiled,tile=1x4,kblock=none,order=IJ,lanes=1,split=none", "form=tiled,tile=2x8,kblock=32,order=KIJ,lanes=1,split=(1, 2)", "form=tiled,tile=4x16,kblock=none,order=JI,lanes=1,split=(0, 2)"];
         // Recorded as `presk bench --space calib` records them, times made up.
@@ -1590,7 +1590,7 @@ mod tests {
     /// and the nests launched at one shape keep their own best.
     #[test]
     fn a_nest_at_several_shapes_takes_a_layout_every_shape_takes() {
-        let (file, dims) = ("tests/examples/mlp/mlp.psk", ["D=4", "B=2"]);
+        let (file, dims) = ("examples/spec/mlp/mlp.psk", ["D=4", "B=2"]);
         let (code, written) = plan_under("plan-shapes", file, "mse_grad", &dims, &[], "f32");
         assert_eq!(code, ExitCode::SUCCESS);
         let written = written.expect("a plan is written");
@@ -1635,7 +1635,7 @@ mod tests {
     fn a_sweep_of_several_nests_keeps_every_shape_and_ranks_the_derivatives() {
         let dir = scratch("nests");
         profile(&dir.join("p.json"), 1.0, 0.2);
-        let (file, dims) = (root().join("tests/examples/mlp/mlp.psk"), ["D=4".to_string(), "B=2".to_string()]);
+        let (file, dims) = (root().join("examples/spec/mlp/mlp.psk"), ["D=4".to_string(), "B=2".to_string()]);
         let captured = capture(&file, "mse_grad", &dims, &[], &f32_plan(), 0, &[], Capture::Shapes).unwrap();
         let derivatives: Vec<&Launch> = captured.launches.iter().filter(|l| matches!(op_name(l).as_str(), "dot_vjp_l" | "dot_vjp_r")).collect();
         let nests: Vec<String> = derivatives.iter().map(|l| l.nest.clone()).collect::<BTreeSet<_>>().into_iter().collect();
@@ -1668,17 +1668,17 @@ mod tests {
     fn a_type_the_profile_cannot_price_is_refused_or_left_out() {
         let minigpt = ["V=64", "D=16", "H=2", "L=2"];
         let dims = ["B=2", "T=8"];
-        let (code, written) = plan_under("plan-bf16", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &dims, &minigpt, "bf16");
+        let (code, written) = plan_under("plan-bf16", "examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &dims, &minigpt, "bf16");
         assert_eq!(code, ExitCode::from(2));
         assert!(written.is_none(), "a plan was written");
-        let mixed = format!("@{}", root().join("tests/plan/mixed-realization.json").display());
-        let (code, written) = plan_under("plan-mixed", "tests/examples/minigpt/minigpt.psk", "MiniGPT.apply", &dims, &minigpt, &mixed);
+        let mixed = format!("@{}", root().join("examples/tests/plan/mixed-realization.json").display());
+        let (code, written) = plan_under("plan-mixed", "examples/spec/minigpt/minigpt.psk", "MiniGPT.apply", &dims, &minigpt, &mixed);
         assert_eq!(code, ExitCode::SUCCESS);
         let written = written.expect("a plan is written");
         let base = presk_rt::Plan::from_realization(presk_rt::Realization::parse(&mixed).unwrap());
         let dims: Vec<String> = dims.iter().map(|s| s.to_string()).collect();
         let consts: Vec<String> = minigpt.iter().map(|s| s.to_string()).collect();
-        let captured = capture(&root().join("tests/examples/minigpt/minigpt.psk"), "MiniGPT.apply", &dims, &consts, &base, 0, &[], Capture::Shapes).unwrap();
+        let captured = capture(&root().join("examples/spec/minigpt/minigpt.psk"), "MiniGPT.apply", &dims, &consts, &base, 0, &[], Capture::Shapes).unwrap();
         let other: BTreeSet<&str> = captured.launches.iter().filter(|l| l.dtype != presk_rt::Dtype::F32).map(|l| l.nest.as_str()).collect();
         assert!(!other.is_empty(), "the mixed realization has sites of other types");
         for n in &other {

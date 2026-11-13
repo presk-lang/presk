@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_concat_shape.psk
+input_file: examples/tests/diag/shape_concat_shape.psk
 ---
 [E2003] Error: `concat` along `a` of `ℝ[a: 4, b: 2]` and `ℝ[b: 2, a: 1]`
-   ,-[ tests/diag/shape_concat_shape.psk:3:63 ]
+   ,-[ examples/tests/diag/shape_concat_shape.psk:3:63 ]
    |
  3 | fn f(x : ℝ[a: 4, b: 2], y : ℝ[b: 2, a: 1]) -> ℝ[a: 5, b: 2] = concat(axis a, x, y)
    |                                                               ^^^^^^^^^^|^^^^^^^^^  

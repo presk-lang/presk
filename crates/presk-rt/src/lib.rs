@@ -870,6 +870,12 @@ pub trait Backend {
     fn launch_stats(&self) -> (u64, u64) {
         (0, 0)
     }
+    /// Kernels compiled so far, and the seconds their lowering and their
+    /// compiling took (plan 0.17.2 step 4, D200): what `presk serve` counts
+    /// as compiling. `(0, 0.0)` for a backend that compiles nothing.
+    fn compile_stats(&self) -> (u64, f64) {
+        (0, 0.0)
+    }
 }
 
 /// The reference interpreter behind the seam: exact values pass through

@@ -47,7 +47,7 @@ PRESK=${PRESK:-./target/release/presk}
 # 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
 # recorded (the re-measurement after defect 3f, D93).
 REMAT=${REMAT:-store}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 DIMS=(--dim B=2 --dim T=256)
 ENV=out/curve-trained_env.json
@@ -95,7 +95,7 @@ declare -A VAL
 if [ "$QUALITY" = 1 ]; then
     [ -f out/civil_train_T256.psk.d ] && [ -f out/civil_val_T256.psk.d ] || {
         python3 -c "
-t = open('corpus/nlp/data/civil_tokens.txt').read().split()
+t = open('examples/corpus/nlp/data/civil_tokens.txt').read().split()
 cut = len(t) * 9 // 10
 open('out/civil_train.txt', 'w').write(' '.join(t[:cut]) + '\n')
 open('out/civil_val.txt', 'w').write(' '.join(t[cut:]) + '\n')"

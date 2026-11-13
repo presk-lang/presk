@@ -5,7 +5,7 @@
 > `presk calibrate --precision` (the magnitude envelope of the entry on 1 sample(s) at 128 bits);
 > `presk solve --budget 1e-3` (a realization proposed and verified by measurement against the reference
 > at 128 bits); and the exact reference alone, `presk run --bits 128` on one sample. The first column is
-> the model's key, which the paper's `tables/setup.py` reads.
+> the model's key.
 
 # Compile and solve times, 2026-10-19: the Llama 2 decoder
 
@@ -15,7 +15,7 @@
 
 The outputs of every command are under `out/llama-0.16.0/compile_times_T384/` (not committed; archived as
 `presk-project/data/llama-7b-0.16.0.tar.xz`). A time is of the
-command as the paper's reader would run it, the front end, the JIT and the reading of the data
+command as a reader would run it, the front end, the JIT and the reading of the data
 included; `presk solve` includes the reference run it verifies against. The row is `out/llama-0.16.0/compile_times_L1_T384.md`'s, the script's own report
 (decision D162), D124's row measured again at 0.16.0 (`docs/compile-times-2026-10-14-llama.md`).
 

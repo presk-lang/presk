@@ -197,7 +197,7 @@ impl Emit {
 
 /// The program of `mlp.psk` plus one function `prop(a, b : ℝ[batch: B, model: D], s : ℝ[]) -> …`.
 fn program_with(e: &E, kind: Kind) -> (presk_types::elab::ElabProgram, presk_core::Program, FuncId, BTreeMap<presk_types::dim::DimVar, u64>) {
-    let (prog, _, mut core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, _, mut core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let mse = core.func(core.find("mse").unwrap()).clone();
     let tensor = mse.params[1].ty.clone();
     let mut em = Emit { lets: vec![], next: 3, tensor: tensor.clone(), span: mse.span };

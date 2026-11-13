@@ -67,7 +67,7 @@ user, 2026-10-18).
 ## `presk memory`
 
 ```sh
-presk memory corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --depth 3
+presk memory examples/corpus/nlp/05_gpt.psk --entry GPT.apply --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16 --depth 3
 ```
 
 ```text

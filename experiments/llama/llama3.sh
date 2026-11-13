@@ -1,6 +1,6 @@
 #!/bin/bash
 # Llama 3.2 1B on its published weights (plan 0.17.0 step 7, presk D180):
-# coverage/llama3.psk on meta-llama/Llama-3.2-1B, the base model, which the
+# examples/coverage/llama3.psk on meta-llama/Llama-3.2-1B, the base model, which the
 # user downloads (its licence accepted, its token theirs):
 #
 #     hf download meta-llama/Llama-3.2-1B --local-dir ~/presk-data/llama-3.2-1b
@@ -95,12 +95,12 @@ if want rw4 && fresh "$OUT/rw4.md"; then
     case $rz in f32) R=f32 ;; *) R=@$OUT/realize/$rz.json ;; esac
     C=$OUT/serve_c_$rz
     if fresh "$C/generate"; then
-      $P export coverage/llama3.psk --target c --serve $CF --dim T=48 --weights "$W" --realize "$R" --no-exact -o "$C" < /dev/null || exit 1
+      $P export examples/coverage/llama3.psk --target c --serve $CF --dim T=48 --weights "$W" --realize "$R" --no-exact -o "$C" < /dev/null || exit 1
       make -s -C "$C" generate || exit 1
     fi
     k=0
     while read -r ids; do
-      a=$($P serve coverage/llama3.psk $CF --weights "$W" --prompt "$ids" --tokens 32 --temperature 0 --backend native --realize "$R" 2>/dev/null < /dev/null)
+      a=$($P serve examples/coverage/llama3.psk $CF --weights "$W" --prompt "$ids" --tokens 32 --temperature 0 --backend native --realize "$R" 2>/dev/null < /dev/null)
       b=$("$C/generate" --weights "$W" --prompt "$ids" --tokens 32 --temperature 0 2>/dev/null < /dev/null)
       same=no; [ -n "$a" ] && [ "$a" = "$b" ] && same=yes
       echo "| $rz | $k | $a | $b | $same |" >> "$OUT/rw4.tmp"
@@ -120,7 +120,7 @@ if want rw3; then
     n=$(echo "$ids" | wc -w)
     echo "$ids" > "$D/ids$k.txt"
     $P data pack --type "idx[$VOCAB][batch: 1, seq: $n]" -o "$D/ids$k.psk.d" "$D/ids$k.txt" > /dev/null < /dev/null || exit 1
-    run="$P run coverage/llama3.psk --entry Llama3.apply $CF --dim B=1 --dim T=$n --weights $W --data $D/ids$k.psk.d --json --result-only --digits 17"
+    run="$P run examples/coverage/llama3.psk --entry Llama3.apply $CF --dim B=1 --dim T=$n --weights $W --data $D/ids$k.psk.d --json --result-only --digits 17"
     if fresh "$D/exact.$k.json"; then
       echo "-- exact, prompt $k $(date)"
       /usr/bin/time -v systemd-run --user --scope -q -p MemoryMax=108G -p MemorySwapMax=0 \

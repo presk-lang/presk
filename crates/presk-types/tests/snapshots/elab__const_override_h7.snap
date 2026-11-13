@@ -4,7 +4,7 @@ assertion_line: 51
 expression: rendered
 ---
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/minigpt/../mlp/mlp.psk:26:65 ]
+    ,-[ examples/spec/minigpt/../mlp/mlp.psk:26:65 ]
     |
  26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
     |                                                                 |  
@@ -13,7 +13,7 @@ expression: rendered
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/minigpt/../mlp/mlp.psk:34:35 ]
+    ,-[ examples/spec/minigpt/../mlp/mlp.psk:34:35 ]
     |
  34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
     |                                   |  
@@ -22,7 +22,7 @@ expression: rendered
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [E1005] Error: `HD` is not a natural number
-    ,-[ tests/examples/minigpt/minigpt.psk:13:18 ]
+    ,-[ examples/spec/minigpt/minigpt.psk:13:18 ]
     |
  13 | const HD : nat = D / H     -- dimension per head
     |                  ^^|^^  
@@ -31,7 +31,7 @@ expression: rendered
     | Note: constants are evaluated exactly: a division must be exact and the result non-negative
 ----'
 [E1004] Error: static assertion fails: D % H == 0
-    ,-[ tests/examples/minigpt/minigpt.psk:15:1 ]
+    ,-[ examples/spec/minigpt/minigpt.psk:15:1 ]
     |
  15 | static assert D % H == 0   -- decidable Presburger fragment (§3.1)
     | ^^^^^^^^^^^^|^^^^^^^^^^^  

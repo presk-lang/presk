@@ -1,4 +1,0 @@
--- E8008: a scalar in the result of an exported entry. The C program writes
--- its outputs as a .psk.d file, which holds tensors only.
---   presk export tests/diag/export_c_scalar.psk --target c --entry next -o DIR
-fn next(x : ℝ[n: 4], m : nat) -> (ℝ[n: 4], nat) = (x, m + 1)

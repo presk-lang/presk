@@ -30,6 +30,12 @@
 //! (default: the prompt's length) and the function sees the last `T` tokens
 //! of the context, a sliding window. Otherwise the whole context is passed
 //! and grows, checked against the file's `dim T <= …` bound at every step.
+//!
+//! The loop's time is split in two (plan 0.17.2 step 4, D200). Compiling is
+//! preparing each context length the loop has not seen, and, inside the
+//! calls, lowering and compiling each kernel at its first launch, which the
+//! backend counts ([`Backend::compile_stats`]); computing is the calls' time
+//! less that. The initializer's call and the weights' reading are neither.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -104,6 +110,15 @@ pub struct ServeOutput {
     pub window: Option<u64>,
     pub greedy: bool,
     pub vocab: u64,
+    /// The loop's seconds compiling: the lengths prepared and the kernels
+    /// lowered and compiled inside the calls.
+    pub compile_s: f64,
+    /// The calls' seconds less their compiling.
+    pub compute_s: f64,
+    /// The context lengths prepared, one per length first seen.
+    pub compilations: u64,
+    /// The kernels compiled inside the loop.
+    pub kernels: u64,
 }
 
 fn te(code: &'static str, message: impl Into<String>) -> RtError {
@@ -282,6 +297,8 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
     let mut generated = Vec::new();
     let mut prepared: BTreeMap<u64, presk_rt::Prepared> = BTreeMap::new();
     let mut vocab = 0;
+    let (kernels0, _) = backend.compile_stats();
+    let (mut compile_s, mut compute_s) = (0.0, 0.0);
     for step in 1..=opts.tokens {
         let ctx: &[u64] = match window {
             Some(w) => &tokens[tokens.len() - w as usize..],
@@ -293,7 +310,9 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
         let p = match prepared.get(&len) {
             Some(p) => p,
             None => {
+                let t = std::time::Instant::now();
                 let p = backend.prepare(f, &dims, &opts.realize)?;
+                compile_s += t.elapsed().as_secs_f64();
                 prepared.entry(len).or_insert(p)
             }
         };
@@ -312,7 +331,13 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
         if fns.temperature {
             args.push(Value::F64(if greedy { 1.0 } else { temperature }));
         }
+        let (_, before) = backend.compile_stats();
+        let t = std::time::Instant::now();
         let out = backend.call(p, args)?;
+        let call_s = t.elapsed().as_secs_f64();
+        let compiled = backend.compile_stats().1 - before;
+        compile_s += compiled;
+        compute_s += (call_s - compiled).max(0.0);
         let next = match out {
             Value::Idx { t, .. } if t.numel() == 1 => t.data.to_f64()[0] as u64,
             other => return err("E7001", format!("the generation function returned a {}, expected one token", other.kind())),
@@ -321,7 +346,9 @@ pub fn serve(backend: &mut dyn Backend, core: &Program, elab: &ElabProgram, fns:
         generated.push(next);
         tokens.push(next);
     }
-    Ok(ServeOutput { model: fns.model.clone(), weights, prompt: opts.prompt.clone(), generated, window, greedy, vocab })
+    let compilations = prepared.len() as u64;
+    let kernels = backend.compile_stats().0 - kernels0;
+    Ok(ServeOutput { model: fns.model.clone(), weights, prompt: opts.prompt.clone(), generated, window, greedy, vocab, compile_s, compute_s, compilations, kernels })
 }
 
 /// The file-level facts (`dim T <= 1024`) must hold for the dimensions bound.

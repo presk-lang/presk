@@ -41,7 +41,7 @@ fn after_ad(rel: &str) -> (presk_core::Program, String) {
 #[test]
 fn no_grad_remains_and_programs_verify() {
     for rel in ["mlp/mlp.psk", "layernorm/layernorm.psk", "minigpt/minigpt.psk", "minigpt/train_minigpt.psk", "minigpt/serve_minigpt.psk"] {
-        let (core, _) = after_ad(&format!("tests/examples/{rel}"));
+        let (core, _) = after_ad(&format!("examples/spec/{rel}"));
         for f in &core.funcs {
             for l in &f.body.lets {
                 assert!(!matches!(l.rhs, Rhs::Grad(_)), "{rel}: `grad` left in {}", f.name);
@@ -52,7 +52,7 @@ fn no_grad_remains_and_programs_verify() {
 
 #[test]
 fn mlp_after_ad() {
-    let (core, text) = after_ad("tests/examples/mlp/mlp.psk");
+    let (core, text) = after_ad("examples/spec/mlp/mlp.psk");
     // The generated functions: a `.grad` for the lambda and a `.vjp` for every
     // function on the differentiated path.
     for name in ["mse_grad.lambda0.grad", "mse_grad.lambda0.vjp", "mse.vjp", "MLP.apply.vjp", "Linear.apply.vjp"] {

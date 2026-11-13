@@ -3,7 +3,7 @@
 //! every nest reads it from there, widened by its loads where the kernel's
 //! type is wider (`BufKind::Wide`), with no copy at the kernel's edge.
 //!
-//! On the test set (`tests/plan/entries.txt`), the tutorial's loss and the
+//! On the test set (`examples/tests/plan/entries.txt`), the tutorial's loss and the
 //! Llama decoder at tiny constants, with every parameter typed:
 //! - on each executor, the realization gives the bits the same record
 //!   without `params` gives on the parameters rounded to their types before
@@ -75,7 +75,7 @@ fn case(file: &str, entry: &str, args: &str) -> Case {
 
 fn cases() -> Vec<Case> {
     chdir_root();
-    let mut out: Vec<Case> = std::fs::read_to_string("tests/plan/entries.txt")
+    let mut out: Vec<Case> = std::fs::read_to_string("examples/tests/plan/entries.txt")
         .unwrap()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -84,12 +84,12 @@ fn cases() -> Vec<Case> {
             case(p.next().unwrap(), p.next().unwrap(), p.next().unwrap_or(""))
         })
         .collect();
-    out.push(case("tutorial/07_train.psk", "loss", "--dim B=4"));
+    out.push(case("examples/tutorial/07_train.psk", "loss", "--dim B=4"));
     // The Llama decoder at tiny constants: RMSNorm, RoPE's rotation, the
     // grouped attention, SwiGLU, the head (V2's second clause).
     let llama = "--const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16";
-    out.push(case("coverage/llama.psk", "Llama.apply", llama));
-    out.push(case("coverage/llama.psk", "loss", llama));
+    out.push(case("examples/coverage/llama.psk", "Llama.apply", llama));
+    out.push(case("examples/coverage/llama.psk", "loss", llama));
     out
 }
 
@@ -160,7 +160,7 @@ fn parameters_in_their_own_types_are_rounded_once_on_every_executor() {
 #[test]
 fn a_parameter_in_its_own_type_is_not_converted_at_an_edge() {
     use presk_kernel::profile::{HostProfile, Phase};
-    for c in cases().into_iter().filter(|c| c.file == "tutorial/07_train.psk" || c.file == "coverage/llama.psk") {
+    for c in cases().into_iter().filter(|c| c.file == "examples/tutorial/07_train.psk" || c.file == "examples/coverage/llama.psk") {
         let (prog, core) = prepare(&c.file, &c.consts);
         let opts = RunOptions { entry: c.entry.clone(), dims: c.dims.clone(), seed: 0, bits: 128, digits: 17 };
         let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();

@@ -1,5 +1,5 @@
 //! Snapshot tests: tokens of layernorm.psk, ASTs of the five example
-//! programs, and the rendered diagnostic of every `tests/diag/*.psk` file
+//! programs, and the rendered diagnostic of every `examples/tests/diag/*.psk` file
 //! (one diagnostic corpus entry per file, ASCII rendering, no color).
 
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn example(rel: &str) -> PathBuf {
-    repo_root().join("tests/examples").join(rel)
+    repo_root().join("examples/spec").join(rel)
 }
 
 /// Load a file under a repo-relative name so snapshots do not depend on the
@@ -46,7 +46,7 @@ fn ast_examples() {
 
 #[test]
 fn diagnostics_corpus() {
-    insta::glob!(repo_root().join("tests/diag"), "parse_*.psk", |path| {
+    insta::glob!(repo_root().join("examples/tests/diag"), "parse_*.psk", |path| {
         let mut sm = SourceMap::new();
         let id = load(&mut sm, path);
         let (_program, diags) = parse_file(&sm, id);
@@ -76,7 +76,7 @@ fn ascii_spellings() {
         }
         out
     }
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ascii");
+    let dir = repo_root().join("examples/tests/ascii");
     assert_eq!(ast_without_spans(&example("mlp/mlp.psk")), ast_without_spans(&dir.join("mlp_ascii.psk")));
     assert_eq!(ast_without_spans(&dir.join("symbols_unicode.psk")), ast_without_spans(&dir.join("symbols.psk")));
 }

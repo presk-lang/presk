@@ -1,0 +1,27 @@
+-- stack_key.psk — the `language` chapter's "A key inside stack{L}": the key
+-- carried in the fold's accumulator, so that each block draws its own
+-- (D37; examples/corpus/nlp/05_gpt.psk uses it). The lines outside the part
+-- declare what it presupposes, and `Tower` stacks it.
+const D : nat = 8
+dim B
+type Mask = ℝ[model: D]
+
+fn attn(x : ℝ[batch: B, model: D], mask : Mask) -> ℝ[batch: B, model: D] = x * mask
+
+-- quote: acc
+type Acc = (ℝ[batch: B, model: D], key)
+
+module Block {
+  fn apply(s : Acc, mask : Mask) -> Acc uses Rand =
+    let (x, k)   = s
+    let (k1, k2) = split_key(k)
+    (x + dropout(0.2, k1, attn(x, mask)), k2)
+}
+-- end quote
+
+module Tower {
+  use blocks : stack{2}(Block)
+  fn apply(x : ℝ[batch: B, model: D], mask : Mask, key : key) -> ℝ[batch: B, model: D] uses Rand =
+    let (y, k) = blocks.apply((x, key), mask)
+    y
+}

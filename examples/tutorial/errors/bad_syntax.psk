@@ -1,0 +1,8 @@
+-- bad_syntax.psk — step 2 of the tutorial: a function body without its `=` (E0010).
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out]
+    x · w + b
+}

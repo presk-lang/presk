@@ -1,4 +1,7 @@
 [package]
+# The package is `presk` (so that `cargo install presk` installs the `presk`
+# binary); the directory keeps its old name, `presk-cli`, and the other
+# crates still refer to it by it (publication, 2026-11-09).
 name = "presk"
 description = "The Presk compiler: a language for neural networks with exact real semantics, compiled under a declared error budget"
 version.workspace = true

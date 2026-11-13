@@ -1,9 +1,0 @@
--- E7003: a derivative takes its operation's condition. The gradient of a
--- mean over no element is refused at the mean's derivative, in the
--- function `grad` differentiates.
---   presk run tests/diag/run_derivative.psk --entry slope --dim T=0
-dim T
-
-fn average(y : ℝ[seq: T, model: 4]) -> ℝ[] = mean(y)
-
-fn slope(x : ℝ[seq: T, model: 4]) -> ℝ[seq: T, model: 4] = grad(λ y. average(y))(x)

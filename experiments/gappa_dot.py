@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One element of a contraction's kernel as a Gappa statement (D131).
 
-Writes, for `dot` of experiments/gappa_dot.psk, `[M, K] · [K, N]`, the Gappa
+Writes, for `dot` of examples/experiments/gappa_dot.psk, `[M, K] · [K, N]`, the Gappa
 file whose goal is the distance between the first output element the
 native `f32` (or `f64`, `bf16`) kernel computes and the exact denotation,
 with one rounding per operation the kernel performs, in its order. That is
@@ -62,7 +62,7 @@ def sites_of(env):
     adds = [k for op, k in got if op == "add"]
     dots = [k for op, k in got if op == "dot"]
     if len(adds) != 2 or len(dots) != 1:
-        sys.exit(f"gappa_dot.py: the envelope's sites of dot are {got}, not two adds and a dot (experiments/gappa_dot.psk)")
+        sys.exit(f"gappa_dot.py: the envelope's sites of dot are {got}, not two adds and a dot (examples/experiments/gappa_dot.psk)")
     return mags[adds[0]], mags[adds[1]], mags[dots[0]]
 
 

@@ -1,10 +1,10 @@
 ---
 source: crates/presk-core/tests/analysis.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/reg_index.psk
+input_file: examples/tests/diag/reg_index.psk
 ---
 [E3001] Error: cannot differentiate through `embed`: the function is discontinuous (Disc) in `i`
-   ,-[ tests/diag/reg_index.psk:5:3 ]
+   ,-[ examples/tests/diag/reg_index.psk:5:3 ]
    |
  3 |   mean(embed(w, t))
    |        ^^^^^|^^^^^  

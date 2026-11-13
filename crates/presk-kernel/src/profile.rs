@@ -176,6 +176,34 @@ pub struct Overhead {
     pub workers: usize,
 }
 
+impl Overhead {
+    /// The kernel's own code in a launch of `seconds`: what is left of it
+    /// besides the compiling, the dispatch and the threads.
+    pub fn kernel(&self, seconds: f64) -> f64 {
+        (seconds - self.compile - self.dispatch - self.threads).max(0.0)
+    }
+}
+
+/// One launch of a call as `presk bench --host-profile --launches` lists it
+/// (plan 0.17.2 step 4, D200): which kernel, launched by which nest, its own
+/// code's time, and where its buffers are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaunchRow {
+    /// The kernel's place in the backend's list.
+    pub kernel: usize,
+    /// The nest, `"<function>/%<let>"`.
+    pub nest: String,
+    /// The kernel's own code, in seconds, as [`Phase::Kernel`] counts it.
+    pub seconds: f64,
+    /// The threads the launch ran on.
+    pub workers: usize,
+    /// Each input as the kernel read it, its first element's address and its
+    /// bytes ([`buf_span`]).
+    pub inputs: Vec<(usize, u64)>,
+    /// The output, the same.
+    pub output: (usize, u64),
+}
+
 /// The host's time by phase over some calls.
 #[derive(Clone, Debug, Default)]
 pub struct HostProfile {
@@ -191,6 +219,9 @@ pub struct HostProfile {
     /// The process's minor page faults over the call, pages touched for the
     /// first time, when the caller counts them ([`minor_faults`]).
     pub faults: Option<u64>,
+    /// When set, a row per launch, in the call's order (`--launches`, plan
+    /// 0.17.2 step 4): the caller sets it before each call it wants listed.
+    pub rows: Option<Vec<LaunchRow>>,
 }
 
 /// A profile shared between a backend and its caller, which reads it
@@ -229,7 +260,7 @@ impl HostProfile {
         if o.workers > 1 {
             self.add(Phase::Threads, o.threads, 0);
         }
-        self.add(Phase::Kernel, (seconds - o.compile - o.dispatch - o.threads).max(0.0), 0);
+        self.add(Phase::Kernel, o.kernel(seconds), 0);
     }
 
     pub fn seconds(&self, p: Phase) -> f64 {
@@ -275,6 +306,57 @@ pub fn buf_bytes(b: &Buf) -> u64 {
         Buf::I64(v) => v.len() * 8,
         Buf::Quant(q) => std::mem::size_of_val(q.data.as_slice()) + std::mem::size_of_val(q.scales.as_slice()),
     }) as u64
+}
+
+/// A buffer as a kernel reads it: its first element's address and its bytes.
+/// Read after the launch, when a stack's parts are laid out already.
+pub fn buf_span(b: &Buf) -> (usize, u64) {
+    let at = match b {
+        Buf::Exact(_) => 0,
+        Buf::F64(v) => v.as_ptr() as usize,
+        Buf::F32(v) => v.as_ptr() as usize,
+        Buf::Bf16(v) => v.as_ptr() as usize,
+        Buf::I64(v) => v.as_ptr() as usize,
+        Buf::Quant(q) => q.data.as_ptr() as usize,
+    };
+    (at, buf_bytes(b))
+}
+
+/// The set strides of the data caches of the CPU the process last ran on:
+/// the bytes between two addresses of one set, its sets times its line
+/// (plan 0.17.2 step 4, D200). From Linux's sysfs; `None` elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetStrides {
+    pub cpu: usize,
+    pub l1: u64,
+    pub l2: u64,
+}
+
+pub fn set_strides() -> Option<SetStrides> {
+    let s = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // The thirty-ninth field, `processor`: the CPU last run on.
+    let rest = &s[s.rfind(')')? + 2..];
+    let cpu: usize = rest.split_whitespace().nth(36)?.parse().ok()?;
+    let stride = |level: &str| -> Option<u64> {
+        for i in 0..8 {
+            let d = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index{i}");
+            let read = |f: &str| std::fs::read_to_string(format!("{d}/{f}")).ok().map(|v| v.trim().to_string());
+            if read("level")?.as_str() == level && read("type")?.as_str() != "Instruction" {
+                return Some(read("number_of_sets")?.parse::<u64>().ok()? * read("coherency_line_size")?.parse::<u64>().ok()?);
+            }
+        }
+        None
+    };
+    Some(SetStrides { cpu, l1: stride("1")?, l2: stride("2")? })
+}
+
+/// The transparent huge pages' mode (`always`, `madvise`, `never`) and the
+/// process's anonymous memory in huge pages, in kB (Linux; `None`
+/// elsewhere).
+pub fn huge_pages() -> (Option<String>, Option<u64>) {
+    let mode = std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled").ok().and_then(|s| s.split('[').nth(1)?.split(']').next().map(str::to_string));
+    let anon = std::fs::read_to_string("/proc/self/smaps_rollup").ok().and_then(|s| s.lines().find_map(|l| l.strip_prefix("AnonHugePages:")?.trim().strip_suffix("kB")?.trim().parse().ok()));
+    (mode, anon)
 }
 
 /// The bytes a value's tensors hold.
@@ -397,6 +479,53 @@ pub fn table(calls: &[(HostProfile, f64)], unit: &str) -> String {
         kernels * 1e3,
         (call - kernels) * 1e3
     );
+    out
+}
+
+/// A buffer `--launches` lists the address of: 64 KiB or more, the X925's
+/// L1d. A smaller one is counted, not listed.
+pub const LARGE: u64 = 64 * 1024;
+
+/// The table `presk bench --host-profile --launches` prints after the
+/// phases' (plan 0.17.2 step 4, D200): each launch of a call in its order,
+/// its kernel, its own code's median and fastest over `calls`, its threads,
+/// its nest; under it each of its buffers of [`LARGE`] bytes or more, at the
+/// last call's virtual address and that address modulo 4 KiB, 64 KiB and the
+/// set strides of the CPU's L1d and L2 (`strides`). `kernels`: the names of
+/// the backend's kernels, by place.
+pub fn launch_table(calls: &[(HostProfile, f64)], kernels: &[String], strides: Option<SetStrides>) -> String {
+    use std::fmt::Write;
+    let listed: Vec<&Vec<LaunchRow>> = calls.iter().filter_map(|(p, _)| p.rows.as_ref()).collect();
+    let mut out = String::new();
+    let Some(last) = listed.last() else {
+        return out;
+    };
+    let same = listed.iter().all(|r| r.len() == last.len() && r.iter().zip(last.iter()).all(|(a, b)| a.kernel == b.kernel));
+    let at = match strides {
+        Some(s) => format!("cpu {}'s L1d and L2 set strides, {} KiB and {} KiB", s.cpu, s.l1 / 1024, s.l2 / 1024),
+        None => "no cache's set stride (no sysfs)".to_string(),
+    };
+    let _ = writeln!(out, "-- the launches of a call timed by phase, in order (`--launches`): each kernel's own code, the median and the fastest of {} calls, and its buffers of {} KiB or more at the last call's virtual addresses, modulo 4 KiB, 64 KiB and {at}", listed.len(), LARGE / 1024);
+    if !same {
+        let _ = writeln!(out, "-- the calls launched different kernels: the last call's alone");
+    }
+    let calls_of: Vec<&Vec<LaunchRow>> = if same { listed.clone() } else { vec![last] };
+    let moved = (0..last.len()).filter(|&i| calls_of.iter().any(|r| r[i].inputs.iter().chain(std::iter::once(&r[i].output)).zip(last[i].inputs.iter().chain(std::iter::once(&last[i].output))).any(|(a, b)| a.1 >= LARGE && a.0 != b.0))).count();
+    let _ = writeln!(out, "-- {moved} of {} launches had a large buffer at another address in another call", last.len());
+    let _ = writeln!(out, "{:>6}  {:<24} {:>11} {:>11} {:>7}  nest", "launch", "kernel", "µs median", "µs fastest", "threads");
+    let _ = writeln!(out, "{:>6}  {:<24} {:>11} {:>18} {:>6} {:>6} {:>7} {:>7}", "", "  buffer", "bytes", "address", "%4K", "%64K", "%L1", "%L2");
+    for (i, row) in last.iter().enumerate() {
+        let mut t: Vec<f64> = calls_of.iter().map(|r| r[i].seconds).collect();
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let name = format!("k{} {}", row.kernel, kernels.get(row.kernel).map_or("", String::as_str));
+        let _ = writeln!(out, "{:>6}  {:<24} {:>11.3} {:>11.3} {:>7}  `{}`", i + 1, name, t[t.len() / 2] * 1e6, t[0] * 1e6, row.workers, row.nest);
+        let bufs = row.inputs.iter().enumerate().map(|(j, b)| (format!("in{j}"), *b)).chain(std::iter::once(("out".to_string(), row.output)));
+        for (what, (addr, bytes)) in bufs.filter(|(_, (_, b))| *b >= LARGE) {
+            let m = |n: u64| (addr as u64 % n).to_string();
+            let (l1, l2) = strides.map_or(("—".to_string(), "—".to_string()), |s| (m(s.l1), m(s.l2)));
+            let _ = writeln!(out, "{:>6}  {:<24} {:>11} {:>#18x} {:>6} {:>6} {:>7} {:>7}", "", format!("  {what}"), bytes, addr, m(4096), m(65536), l1, l2);
+        }
+    }
     out
 }
 

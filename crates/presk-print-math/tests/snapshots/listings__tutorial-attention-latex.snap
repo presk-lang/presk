@@ -1,6 +1,6 @@
 ---
 source: crates/presk-print-math/tests/listings.rs
-expression: "typed_listing(\"tutorial/03_attention.psk\", Format::Latex)"
+expression: "typed_listing(\"examples/tutorial/03_attention.psk\", Format::Latex)"
 ---
 % presk dump --stage elab --format latex: 03_attention.psk and its imports, as the equations
 % of the language reference's chapter 3. A fragment: it compiles with the reference's

@@ -3,8 +3,7 @@
 Every row of the plan's §5 is solved, timed or checked again by its whole
 protocol and its script of record, on the tree of steps 1 to 4 (presk
 `22dd345`, the binary `out/bin/presk-22dd345`). Each section gives the old
-value beside the new, the decision numbers of both, and the paper's
-sentence that quotes the row (presk-paper-001 `main` at `0dac2b4`). The
+value beside the new and the decision numbers of both. The
 changes that move a row are the plan's letters:
 - **R**, the measured rounding term as the default (D155, D158). A value
   exact in a type costs nothing there.
@@ -25,7 +24,7 @@ was first moved to `out/pre-0.16.0/`. The rows no 0.16.0 change moves
 the exact logits are linked from `out/margins` and `out/margins-course`, so
 `make margins` ran only the new realizations.
 
-## 1. The curve at D = 64 on the trained envelope (Figure 4, H2): D132 → D163
+## 1. The curve at D = 64 on the trained envelope (statement D): D132 → D163
 
 `experiments/curve_trained.sh`, then its quality axis (`QUALITY=1`, D132's
 addendum: every realization trains the model again, 600 steps). The
@@ -41,7 +40,7 @@ outputs are `out/curve-trained_*` and `out/curve-trained.md`.
 | 10⁻⁶ | 19 (0), 19 (1) | 1.52× | 4.418·10⁻⁹ | 21 (2), 21 (1) | 1.68× | 2.972·10⁻⁷ |
 | 10⁻⁷ | 8 (0), 10 (1) | 1.15× | 1.738·10⁻⁹ | 8 (1), 21 (1) | 1.31× | 1.855·10⁻⁹ |
 
-- **Every point is still inside its budget, with no widening round.** H2
+- **Every point is still inside its budget, with no widening round.** D
   holds: at 10⁻³ the gap is 4.95·10⁻⁶ against 2.79·10⁻³.
 - **Six stored values fewer are offered (33 → 27):** the four dropout masks
   and two products by a mask (M). Every other stored value keeps its name.
@@ -64,27 +63,6 @@ outputs are `out/curve-trained_*` and `out/curve-trained.md`.
   1.28·10⁻⁴ of all-`f64`'s 2.7736101 at 10⁻¹, the same figure, and within
   6.5·10⁻⁶ everywhere else (+4.0·10⁻⁶ at 10⁻², −6.5·10⁻⁶ at 10⁻³ and 10⁻⁴,
   +1.3·10⁻⁶ at 10⁻⁵ and 10⁻⁶, 0 at 10⁻⁷). All-`f64`'s run is the same.
-
-**The paper** (§4, H2 and Figure 4) says:
-
-> the budget narrows 33 stored values, four to `bf16`, and types the 21
-> weights, eleven in `bf16`, 2.12× less traffic than all-`f64`, and the
-> solved realization is measured 1.60·10⁻⁵ from the exact loss […]: H2
-> holds.
-
-That becomes 27 stored values, three to `bf16`, the 21 weights with twelve
-in `bf16`, 2.04×, and 4.95·10⁻⁶.
-
-> The traffic falls monotonically from 3.17× to 1.15× […], 2.12× at 10⁻³
-> and 1.97× at 10⁻⁴, and the measured gap from 3.57·10⁻⁵ to 1.74·10⁻⁹
-
-That becomes 3.35× to 1.31×, 2.04× and 2.00×, and 6.26·10⁻³ to
-1.86·10⁻⁹.
-
-> the last stored value kept in `bf16`, the norm's ε, leaves at 10⁻⁶
-
-The ε now leaves at 10⁻⁷. The head width, exact, stays in `bf16` at every
-budget, so the curve's last point is not all-`f32`.
 
 ## 2. The curve at the course constants on the trained envelope (D132) → D163
 
@@ -123,7 +101,7 @@ trained weights.
 
 Every point is inside its budget. The bound is 2.5754·10⁻¹³, unchanged.
 
-## 4. V6 and `make margins` at D = 64 (D124, D125, D132; H5) → D163
+## 4. V6 and `make margins` at D = 64 (D124, D125, D132; S) → D163
 
 **V6** is the logits solved at ε\*(10⁻³) = 4.67·10⁻⁴ on four held-out
 windows (`out/v6-0.16.0/`):
@@ -145,40 +123,21 @@ windows (`out/v6-0.16.0/`):
 |---|---|---|
 | 10⁻¹ | 4.126·10⁻², 518, 9 298 | 4.126·10⁻², 518, 9 298 |
 | 10⁻² | 1.704·10⁻², 65, 3 706 | 2.181·10⁻², 67, 4 729 |
-| 10⁻³ (H2's) | 7.785·10⁻³ (17 ε\*), 30, 1 692 | **2.551·10⁻³ (5.5 ε\*), 9, 525** |
+| 10⁻³ (D's) | 7.785·10⁻³ (17 ε\*), 30, 1 692 | **2.551·10⁻³ (5.5 ε\*), 9, 525** |
 | 10⁻⁴ | 2.746·10⁻⁴, 0, 59 | 3.467·10⁻⁴, 0, 74 |
 | 10⁻⁵ | 7.521·10⁻⁵, 0, 18 | 1.623·10⁻⁴, 0, 35 |
 | 10⁻⁶ | 1.083·10⁻⁶, 0, 0 | 7.644·10⁻⁵, 0, 18 |
 | 10⁻⁷ | 7.468·10⁻⁷, 0, 0 | 6.207·10⁻⁷, 0, 0 |
 
-- **H5 holds as before.** Four of the curve's seven realizations, 10⁻⁴ and
+- **S holds as before.** Four of the curve's seven realizations, 10⁻⁴ and
   below, are certified at 10⁻³ and change no decision. Every one of the
   fifteen rows flips at most its bound.
-- **H2's realization is three times closer to the logits than D132's.**
+- **D's realization is three times closer to the logits than D132's.**
   It is 5.5 ε\* and 9 flips, where D132's was 17 ε\* and 30. D132's stored
   the attention's dropout mask in `bf16`, which is gone (M). It keeps ε,
   the head width 32 and its square root in `bf16`.
 
-**The paper** (§4, the margins) says:
-
-> four of the curve's seven realizations, 10⁻⁴ and below, are within it on
-> the logits and change no decision, and none of the fifteen realizations
-> measured changes more decisions than its margins allow: H5 holds. H2's
-> realization is not among the four: inside its budget on the loss, it is
-> 17 times ε\* on the logits and changes 30 decisions where its margins
-> allow 1 692
-
-The first sentence stands. In the second, 17 times becomes 5.5 times, and
-30 decisions where the margins allow 1 692 become 9 where they allow 525.
-
-> it narrows 29 of the 31 stored values and types the 21 weights, 1.97×
-> less traffic, and the realization is 7.5·10⁻⁵ from the exact logits over
-> the held-out text, changing no decision
-
-That becomes 22 of the 25 stored values, 1.97×, and 1.4·10⁻⁴, changing no
-decision.
-
-## 5. The course GPT through the margins (D129; H5 at course scale) → D163
+## 5. The course GPT through the margins (D129; S at course scale) → D163
 
 The logits are solved at ε\*(10⁻³) = 4.96·10⁻⁴ on four held-out windows
 (`out/margins-course-0.16.0/logits/`). The calibration took 1 h 00 min
@@ -196,7 +155,7 @@ and 1.3 GB, the solve 1 h 49 min and 2.9 GB (D129: 51 min, 1 h 36 min and
 | §2's 10⁻⁴ … 10⁻⁷ | certified, 0 flips | certified, 0 flips |
 | §3's 10⁻³ (D129's curve row) | 2.819·10⁻⁴, 0 flips, bound 52, certified | 2.629·10⁻⁴, 0 flips, bound 47, certified |
 
-H5 holds at course scale. Every certified realization changes no decision,
+S holds at course scale. Every certified realization changes no decision,
 and every row flips at most its bound. The logits' solve is still inside
 ε\* on the 461 windows, by 1.17× where D129's was inside by 2.4×. It moved
 7.6× out of sample, where D129's moved 4.8×. Its three `bf16` stored values
@@ -207,29 +166,11 @@ biases of the queries and of the keys and the second norm's β.
 Step 0b (`off-sample-course-step0b-2026-10-22.md`) finds that the queries'
 bias in `bf16` carries the 7.6×.*
 
-**The paper** (§4) says:
+## 6. `make precision`'s realization (D124) → D163
 
-> the curve's realizations from 10⁻⁴ down and the one solved on the logits
-> at ε\*, 1.97× less traffic, are within it and change no decision […];
-> the curve's 10⁻³ realization, at 1.98× inside its budget on the loss, is
-> 13 times ε\* on the logits and changes 29, as at D = 64; beyond it the
-> 10⁻² realization changes 10
-
-The logits' solve is now 1.99×, the curve's 10⁻³ realization 1.99×,
-13 ε\* and 29 changes, but not "as at D = 64" (9 there now). The 10⁻²
-realization changes 29.
-
-> the solve on the logits measured 4.3·10⁻⁵ on its four envelope windows
-> and 2.1·10⁻⁴ on the 461, 4.8× out of sample and still 2.4× inside ε\*
-
-That becomes 5.5·10⁻⁵ and 4.2·10⁻⁴, 7.6× out of sample and 1.17× inside
-ε\*.
-
-## 6. §2's realization and Figure 2 (`make precision`, D124) → D163
-
-`make precision` (`out/paper-0.16.0/precision.txt`). Its `build`
+`make precision` (its `precision.txt`). Its `build`
 prerequisite was skipped (`make -o build`, the binary given by `PRESK`).
-Then `presk explain` on the loss at 10⁻³ (`out/paper-0.16.0/explain-gpt/`).
+Then `presk explain` on the loss at 10⁻³ (its `explain-gpt/`).
 
 | | D124 | 0.16.0 |
 |---|---|---|
@@ -245,30 +186,18 @@ Then `presk explain` on the loss at 10⁻³ (`out/paper-0.16.0/explain-gpt/`).
 Under one type everywhere, the four rules' bounds move in their third or
 fourth digit (the masks' terms gone). The measured gaps are the same.
 
-**The paper** (§2) says:
-
-> all 33 stored values of the loss narrowed, 29 to `f32` and 4 to `bf16`,
-> and the 21 weights given a type […] 2.12× less; the estimate that ranked
-> them 2.72·10⁻³, 97 %
-
-That becomes all 27 stored values, 23 to `f32` and 4 to `bf16`, 2.02×,
-and 2.45·10⁻³, 87 %. The measured 3.87·10⁻⁶ becomes 1.25·10⁻⁶, and the
-bound, 3.0·10⁶, stands. The share of the dropout mask in §6.3 of
-Figure 2's document is gone: the largest share is now a head split in
-`bf16`, 74 %.
-
-## 7. The quant table (H4) and the step table (Figure 6)
+## 7. The quant table (K) and the step table
 
 Both are byte-identical to D124's:
-- `out/paper-0.16.0/quant_table.md` equals `paper-0.12.0/runs/new/quant_table.md`
+- the quant table equals D124's (its archive's `runs/new/quant_table.md`)
   (statement K holds, int8 2.73·10⁻⁵);
 - `step_table.md` equals the one in `out/pre-0.16.0/`.
 
 The step's realizations `out/step_1e-3.json`, `step_1e-2.json` and
 `step_recipe.json` are the same bytes too, and the step's calibration
 differs only by its time. R2 (iii) holds on the version's tree: a training
-step keeps its masks, and its solve is unchanged. So **J′ (H7) stands**,
-and Table 4's C step runs the same realization.
+step keeps its masks, and its solve is unchanged. So **J′ stands**,
+and T2's C step runs the same realization.
 
 ## 8. D128: the measurement overruling the estimate (`make widening`) → D163
 
@@ -286,7 +215,7 @@ move:
 | `clock`, 10⁻⁵ | 7.32·10⁻⁵, 1.58·10⁻², 1 round, 6.10·10⁻⁶, 2.00× | 1.83·10⁻⁵, the rest the same |
 | `noisy`, 10⁻⁵ | 1.15·10⁻⁴, 3.80·10⁻⁴, 0 rounds | 6.24·10⁻⁵, 3.80·10⁻⁴, 0 rounds |
 
-What the paper says of D128 holds at the budgets it quotes. Wherever
+D128's findings hold at its budgets. Wherever
 D128 found a refusal, the measurement still refuses the estimate's
 proposal. The estimates are lower under R, and at the two largest budgets
 the proposals narrow further. The measurement then refuses two that D128
@@ -311,7 +240,7 @@ curve's 10⁻³, now §1's trained-envelope row, at 2.551·10⁻³. D130 had
 - **The decoder against PyTorch (D107).** The decoder's PSK-Core, its
   optimized PSK-Core and its kernels at T = 384 are byte-identical between
   `454bb9f` and `22dd345` (D162).
-- **J′ (H7) and `presk train`'s native step.** The step's realizations are
+- **J′ and `presk train`'s native step.** The step's realizations are
   byte-identical (§7, R2 (iii)).
 - **The integer and uniform rows of `make margins`,** linked: no 0.16.0
   change moves a forward pass in `f64`, `f32` or `bf16` (D160 (ii)).
@@ -343,16 +272,6 @@ now price it at 2.00× and not 2.17×: D154's 2.17× counted the masks in
 `bf16`. The solver is 2 % short of them, where it was 10 % short. The
 tools' C programs and CRAFT's timings change in their second digit.
 
-**The paper** (§4) says:
-
-> find one realization, 2.17× less traffic, in 70 and 2 858 trials […]:
-> 3.7·10⁻⁴ from the exact logits […]; Of the 16 decisions that differ, four
-> tensors of ones — this entry's dropout masks, constant outside training —
-> in `bf16`
-
-That becomes 2.00× in 64 and 1 972 trials, at the same 3.7·10⁻⁴. Ten
-decisions differ, and no mask is left among them.
-
 ## 12. D155: the measured rounding term and the narrowing (`make solver-rounding`) → D165
 
 `experiments/solver_rounding.sh` (phase B, 08:46–09:05). The narrowing ran
@@ -375,31 +294,6 @@ charged s·u·|v|. With the masks gone, the values left exact in a type are
 the head width 32 and the decoder's gains (D162). At 10⁻⁶ it still gains
 a little, 1.31× against 1.26×. The narrowing still ends at the searches'
 realization at ε\*, and still fails out of sample at 10⁻⁶.
-
-**The paper** (§4) says:
-
-> the solver reaches 2.14× in the same one sweep and one measurement,
-> 1.6·10⁻⁴ over the held-out text
-
-That becomes 1.96×, no more than `unit`'s. The masks were the measured
-term's gain, and they are gone.
-
-> the solver ends at the searches' realization, decision for decision, in
-> 79 measurements
-
-The solver still ends at the searches' realization, in 74 measurements,
-now at 2.00×.
-
-> the measured rounding alone holds there, 1.40× at 8.9·10⁻⁷, as the solver
-> of record does at 1.27×
-
-That becomes 1.31× at 8.9·10⁻⁷. The solver of record is now that one; the
-`unit` form gives 1.26×.
-
-> The masks themselves are 15 % […]: a compiler that knew, at an entry
-> evaluated outside training, that x · 1 = x, would store none
-
-Since D160 that compiler is this one.
 
 ## 13. D156: the certificate off-sample against N (`make off-sample`) → D165
 
@@ -424,17 +318,7 @@ windows, judged on the others.
 - **Its out-of-sample ratio is smaller than D156's.** At 32 windows the
   gap out of sample is 1.15× the gap in sample.
 
-**The paper** (§4) says:
-
-> the solver of record's realization is 1.5× to 3.8× further from the exact
-> logits out of sample than in — 2.3× at the four windows of record, still
-> 1.9× at 32 at ε\* and 1.5× at 10⁻⁶ — and it is the same realization,
-> decision for decision, from 4 windows to 32
-
-That becomes 1.15× to 3.6×: 1.94× at four windows, 1.15× at 32 at ε\*,
-and 1.52× at 10⁻⁶. The realization is the same from one window to 32.
-
-## 14. Table 1: the compiler's own times (`make compile-times`) → D166
+## 14. The compiler's own times (`make compile-times`) → D166
 
 `experiments/compile_times.sh`, alone, one thread unpinned, one process per
 command (D101's protocol). The course GPT's rows and MiniGPT's ran on
@@ -462,7 +346,7 @@ and `docs/compile-times-2026-10-20-bert.md`, the decoder's
   | `454bb9f` (0.15.0, D154–D156) | 30.3 | 15.2 | D155's rounding table: +5 % |
   | `22dd345` (0.16.0) | 32.9 | 15.1 | D158's per-sample pass, only with several samples: +9 % |
 
-  Every calibration of Table 1 is on two samples, BERT's too, so both
+  Every calibration of the compile times is on two samples, BERT's too, so both
   apply to every row.
 - **The references are 4 to 7 % slower.** Each is one process, and the
   cause was not separated.
@@ -478,22 +362,9 @@ and `docs/compile-times-2026-10-20-bert.md`, the decoder's
     round.
 
   The exact loss is the same, 6.75736064365.
-- **The course GPT's Table 1 solve** is on the initialization's envelope
+- **The course GPT's compile-times solve** is on the initialization's envelope
   (D101's command). It puts all 26 stored values and 21 parameters in
-  `bf16`, 4.00×. Its time is what Table 1 reads.
-
-**The paper** (§6) says:
-
-> On the course GPT at course constants the reference on one window takes
-> 3 min, the calibration of the envelope on two windows 25 and the solve at
-> 10⁻³ […] 45; on two of BERT-large's 24 blocks, on its SQuAD loss, 9 min,
-> 80 min and 2 h 49 min at 11 GB
-
-That becomes 3 min, 29 min and 44 min for the course GPT, and 10 min,
-1 h 36 min and 2 h 50 min at 11 GB for BERT. Table 1's rows are the two
-reports'. BERT's sentence of §6 (28 values, 23 weights, 2.00×,
-9.2·10⁻⁷) becomes 28 values and 23 weights with 13 in `bf16`, 2.01× and
-1.0·10⁻⁵.
+  `bf16`, 4.00×. Its time is the one reported.
 
 ## 15. V5: the decoder block's speed under its realizations (D124) → D166
 
@@ -523,15 +394,7 @@ all-`f32`, D124's solved (0.12.0) and D162's (0.16.0).
   three gains in `bf16` move 24 KB, and they convert 18.9 MB a call at the
   kernels' edges, as D124's does.
 
-**The paper** (§6) says:
-
-> the block's forward pass under that realization runs as fast as
-> all-`f32`
-
-That becomes "faster than all-`f32` in every one of eight processes,
-0.73× by the medians (2.8 s against 3.9 s), 0.67× at batch 20".
-
-## 16. Table 4: the course GPT against PyTorch (D127's protocol) → D166
+## 16. T2 and T4: the course GPT against PyTorch (D127's protocol) → D166
 
 Five rounds of `experiments/pytorch_baseline.sh`, alone, on presk
 `d318d6f` (D164), 2026-10-21 11:44–13:35 (`out/retime-0.16.0/`, combined by
@@ -555,7 +418,7 @@ five processes.
 
 | statement | D127 | 0.16.0 |
 |---|---|---|
-| T2 (H9): the C step ÷ PyTorch's, at most 2× | 0.98× | **0.93×** (fastest 0.93×) |
+| T2: the C step ÷ PyTorch's, at most 2× | 0.98× | **0.93×** (fastest 0.93×) |
 | T4: the native forward pass ÷ the C program's, at most 1.3× | 1.52× | **1.63×** (1.65×) |
 | T4: the native step ÷ the C program's, like for like | 1.60× | **1.67×** (1.66×) |
 
@@ -568,7 +431,7 @@ five processes.
   its masks, is D127's to 0.1 ms.
 - **T2 holds by more, and T4 fails by more.** Both move because the C
   side got faster.
-- **J′ (H7) stands**, since the step's realizations are byte-identical
+- **J′ stands**, since the step's realizations are byte-identical
   (D163 §7).
 
 ## 17. D153's ratios, from the new C step → D166
@@ -594,17 +457,9 @@ ones; 0.16.0's draws none and multiplies by none. So "the C step against
 PyTorch without dropout" compares the same arithmetic: **1.39× eager and
 1.97× compiled.**
 
-**The paper** (§6, Table 4 and the baselines paragraph) says:
+## 18. J: a budget on the loss, timed per training step (D50) → D166
 
-> the C step 1.80× the compiled step's time […] 2.07× like for like
-
-That becomes 1.70× and 1.97×. Elsewhere in §6, T2's 0.98× becomes 0.93×,
-T4's 1.52× and 1.60× become 1.63× and 1.67×, and the C rows of Table 4 are
-§16's.
-
-## 18. H6: a budget on the loss, timed per training step (D50) → D166
-
-H6 is plan 0.6.0's statement J, written for 0.5.0 (D50). The loss's
+J is plan 0.6.0's statement, written for 0.5.0 (D50). The loss's
 realization is solved at 10⁻³ with the time objective and applied to a
 training step, which must then be at least 1.3× faster than all-`f64`. It
 had no script of record: D50 timed it by hand, from the difference of a
@@ -630,7 +485,7 @@ At 0.16.0 the method is `out/step5-0.16.0/h6.sh`, alone, five rounds
 | course constants (D50: 56.9, 50.2, 30.4; 1.13×) | 24.04 | 23.56 | **1.02×** (fastest 1.01×) | 13.76 | 1.75× |
 | D = 64 (D50, apremont: 1.06×) | 0.340 | 0.460 | **0.74×** (0.75×) | 0.303 | 1.12× |
 
-**H6 fails at both scales, for D50's reason.** The budget binds the loss's
+**J fails at both scales, for D50's reason.** The budget binds the loss's
 forward pass, so the realization names only those sites. A training step
 is mostly the reverse sweep and the optimizer, which the realization does
 not mention and which run at its default, `f64`. All-`f32` shows that the
@@ -641,16 +496,9 @@ cause was not measured. The likely one is the conversions where the
 narrowed forward sites meet a gradient in `f64`, which at this size would
 cost more than the narrowing saves.
 
-**The paper** (§4) says:
-
-> it was 1.06× at D = 64 and 1.13× at course scale, and H6 fails
-
-That becomes 0.74× at D = 64, on falicon (apremont's 1.06× cannot be taken
-again), and 1.02× at course scale. H6 fails.
-
 ## Found on the way: `presk plan` in the inference mode (D164)
 
-Table 4's first five rounds (phase B, 2026-10-21 05:17–06:14) stopped at
+T2 and T4's first five rounds (phase B, 2026-10-21 05:17–06:14) stopped at
 the native training step under the plan. `presk train` refused it with
 `E7002`: the plan named `Block.apply.bwd/%50`, a `let` that `presk train`'s
 program computes inside a fusion group.
@@ -658,5 +506,5 @@ program computes inside a fusion group.
 Since D160, `presk plan` lowers the inference reading. A gradient that drops
 then numbers its nests otherwise than the training run's program does, and
 `presk plan` had no way to plan that program. D164 adds `presk plan --mode
-training`, and Table 4 was run again, five rounds, on the fixed binary
+training`, and T2 and T4 were run again, five rounds, on the fixed binary
 (§16).

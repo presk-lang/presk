@@ -1,0 +1,23 @@
+-- heads.psk — a parameter per way its readers contract it (a right operand of
+-- `·`, a left one, an `ein` operand, a gathered table, a matrix both gathered
+-- and contracted): the program of `the_scale_s_axis_is_the_one_every_reader_contracts`
+-- (crates/presk-precision/tests/menu.rs).
+const K = 3
+const N = 4
+const V = 5
+
+module Heads {
+  param w   : ℝ[K, N]        init = xavier_uniform
+  param m   : ℝ[N, K]        init = xavier_uniform
+  param p   : ℝ[o: N, i: K]  init = xavier_uniform
+  param tab : ℝ[V, K]        init = normal(std = 0.02)
+  param tie : ℝ[V, K]        init = normal(std = 0.02)
+
+  fn apply(x : ℝ[batch: B, i: K], ids : idx[V][batch: B]) -> ℝ[] =
+    let a = x · w
+    let b = embed(tab, ids) · w
+    let c = m · mean(axis batch, x)
+    let d = ein[batch, o](x * p)
+    let e = embed(tie, ids) + one_hot(ids) · tie
+    mean(a) + mean(b) + mean(c) + mean(d) + mean(e)
+}

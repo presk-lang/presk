@@ -115,7 +115,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     // stack_prefix_grad's gradient, where a small result is left over from
     // larger terms cancelling, it crosses the band on some inputs and not
     // others, with 0.6.0's kernels as with these (D58).
-    if rel.starts_with("tests/examples/") || realize.default != Dtype::Bf16 {
+    if rel.starts_with("examples/spec/") || realize.default != Dtype::Bf16 {
         assert!(w.0 <= eps, "{rel} {entry} ({}): gap {:.3e} > {eps:.3e} at {}", realize.label(), w.0, w.1);
     }
     w.0
@@ -127,18 +127,18 @@ const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 fn examples_conform() {
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
-        ("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
-        ("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)]),
-        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
-        ("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)]),
-        ("tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)]),
-        ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
-        ("tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
+        ("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
+        ("examples/spec/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)]),
+        ("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
+        ("examples/tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)]),
+        ("examples/tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)]),
+        ("examples/tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
+        ("examples/tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
     ];
     // On these parameters MiniGPT's head is zero, and so are the logits of
     // `MiniGPT.apply`: `examples_with_their_zeros_drawn` checks it on others.
@@ -213,14 +213,14 @@ fn examples_with_their_zeros_drawn() {
     // (file, constants, entry, dimensions, whether its outputs cancel)
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], bool);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], false),
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], false),
-        ("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], false),
-        ("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], false),
-        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], true),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], false),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)], false),
-        ("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], false),
+        ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], false),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], false),
+        ("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], false),
+        ("examples/spec/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], false),
+        ("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], true),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], false),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)], false),
+        ("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], false),
     ];
     let mut report = String::new();
     for (rel, consts, entry, dims, cancels) in cases {
@@ -259,7 +259,7 @@ fn examples_with_their_zeros_drawn() {
 #[test]
 fn primitives_conform() {
     use presk_core::PrimOp;
-    let (prog, core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 256);
     let ax = |name: Option<&str>, len: usize| presk_interp::value::Axis { name: name.map(String::from), len };
     let real = |axes: Vec<presk_interp::value::Axis>, seed: u64| -> IValue {
@@ -359,7 +359,7 @@ fn primitives_conform() {
 /// The textual form of the kernels of a small entry.
 #[test]
 fn kernel_dump_snapshot() {
-    let (prog, core) = prepare("tutorial/01_linear.psk", &[]);
+    let (prog, core) = prepare("examples/tutorial/01_linear.psk", &[]);
     let opts = RunOptions { entry: "Linear{3, 2}.apply".into(), dims: vec![("batch".into(), 4)], seed: 0, bits: 64, digits: 12 };
     let mut backend = KernelBackend::new(&core, &prog, &Realization::uniform(Dtype::F32));
     presk_rt::run_with(&mut backend, &core, &prog, &opts, &Realization::uniform(Dtype::F32)).unwrap();
@@ -379,10 +379,10 @@ fn kernel_dump_snapshot() {
 fn a_vector_kernel_is_bit_identical_to_the_scalar_one() {
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 32), ("B", 4)]),
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 32), ("B", 4)]),
-        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
-        ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 32), ("B", 4)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 32), ("B", 4)]),
+        ("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+        ("examples/tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
     ];
     let mut widened = 0usize;
     for (rel, consts, entry, dims) in cases {

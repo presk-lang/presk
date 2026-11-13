@@ -117,7 +117,7 @@ def sites_of(env):
                 i += 1
             continue
         if got != op:
-            sys.exit(f"gappa_layernorm.py: site {key} is `{got}`, the body expected `{op}` ({name}): not the layer norm of tests/examples/layernorm/")
+            sys.exit(f"gappa_layernorm.py: site {key} is `{got}`, the body expected `{op}` ({name}): not the layer norm of examples/spec/layernorm/")
         out[name] = (mags[key], mins.get(key))
         i += 1
     if i != len(lets):

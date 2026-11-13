@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_concat_axis.psk
+input_file: examples/tests/diag/shape_concat_axis.psk
 ---
 [E2008] Error: `concat` operand without the axis `a`
-   ,-[ tests/diag/shape_concat_axis.psk:4:75 ]
+   ,-[ examples/tests/diag/shape_concat_axis.psk:4:75 ]
    |
  4 | fn f(x : ℝ[a: 4, b: 2], y : ℝ[b: 2]) -> ℝ[a: 5, b: 2] = concat(axis a, x, y)
    |                                                                           |  

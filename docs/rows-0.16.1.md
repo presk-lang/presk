@@ -67,7 +67,7 @@ The fourth value of one element in the loss's rows is the loss's mean
 (`loss/%7`). **Z1 holds.** The prompt expected under 1 % of the traffic, and
 the largest share forgone is 0.96 %, at the trained course curve's 10⁻¹.
 
-## 2. The curve at D = 64 on the trained envelope (Figure 4, H2): D163 → D170
+## 2. The curve at D = 64 on the trained envelope (statement D): D163 → D170
 
 `experiments/curve_trained.sh`, then its quality axis (`QUALITY=1`).
 
@@ -81,7 +81,7 @@ the largest share forgone is 0.96 %, at the trained course curve's 10⁻¹.
 | 10⁻⁶ | 21 (2), 21 (1) | 1.68× | 2.972·10⁻⁷ | 15 (0), 9 (0) | 1.67× | 2.275·10⁻⁸ |
 | 10⁻⁷ | 8 (1), 21 (1) | 1.31× | 1.855·10⁻⁹ | 5 (0), 9 (0) | 1.30× | 1.576·10⁻⁹ |
 
-- **Every point is inside its budget, with no widening round.** H2 holds:
+- **Every point is inside its budget, with no widening round.** D holds:
   at 10⁻³ the gap is 3.37·10⁻⁷ against 2.79·10⁻³.
 - **Traffic.** At every budget it is within 0.02× of 0.16.0's ratio. That
   is the 0.3–0.75 % the rules forgo.
@@ -117,7 +117,7 @@ Code civil, where 0.16.0's was 2.551·10⁻³ (5.5 ε\*) with 9 flips and a boun
 of 525. On the Code pénal it is 1.216·10⁻³ with 2 flips and a bound of 205
 (0.16.0: 2.176·10⁻³, 9 flips, 371).
 
-## 3. The course curve on the trained envelope (Figure 5) → D170
+## 3. The course curve on the trained envelope → D170
 
 `experiments/curve_course_trained.sh`, `JOBS=7`.
 
@@ -176,7 +176,7 @@ nine.
 | 10⁻⁶ | 5.968·10⁻⁶, 0 | yes | 5.636·10⁻⁶, 0 | 0.94× | 5.841·10⁻⁶, 0 | yes | 5.519·10⁻⁶, 0 | 0.94× |
 | 10⁻⁷ | 3.911·10⁻⁹, 0 | yes | 3.731·10⁻⁹, 0 | 0.95× | 2.164·10⁻¹⁴, 0 | yes | 3.273·10⁻¹⁴, 0 | 1.51× |
 
-## 5. V6 and `make margins` at D = 64 (H5) → D170
+## 5. V6 and `make margins` at D = 64 (S) → D170
 
 V6 is the logits solved at ε\*(10⁻³) = 4.67·10⁻⁴ on 0.16.0's envelope of
 four held-out windows (`out/v6-0.16.1/`).
@@ -203,7 +203,7 @@ nothing narrower is cheap enough: every other value is `f32`, and any
 an eighth of it (5.4·10⁻⁵ of 4.67·10⁻⁴). The gap on the 461 windows is
 all-`f32`'s, 3.1·10⁻⁶.
 
-## 6. The course GPT through the margins (H5 at course scale) → D170
+## 6. The course GPT through the margins (S at course scale) → D170
 
 The logits solved at ε\*(10⁻³) = 4.96·10⁻⁴ on 0.16.0's envelope
 (`out/margins-course-0.16.1/logits/`): 1 h 48 min and 2.9 GB, as at 0.16.0.
@@ -250,10 +250,10 @@ All seventeen together give all-`f32`'s 1.447·10⁻⁵ to the digit. The gap is
 `f32`'s rounding, 1.5× above or 2× below all-`f32`'s, depending on which
 statistics are stored wide; it is no longer `bf16`'s.
 
-## 7. §2's realization and Figure 2 (`make precision`) → D170
+## 7. `make precision`'s realization → D170
 
-`make precision` (`out/paper-0.16.1/precision.txt`, `make -o build`),
-then `presk explain` on the loss at 10⁻³ (`out/paper-0.16.1/explain-gpt/`).
+`make precision` (its `precision.txt`, `make -o build`),
+then `presk explain` on the loss at 10⁻³ (its `explain-gpt/`).
 
 | | 0.16.0 (D163) | 0.16.1 |
 |---|---|---|
@@ -272,7 +272,7 @@ measured gap is larger than 0.16.0's, still 790 times inside the budget.
 The budget the rules free goes elsewhere, and the measurement sees a
 different realization.
 
-## 8. The quant and step tables (H4, Figure 6)
+## 8. The quant and step tables (K)
 
 Byte-identical to `v0.16.0`'s, and so are the step's realizations of
 record (D169, Z0). The training step's solver is outside the rules.

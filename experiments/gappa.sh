@@ -1,6 +1,6 @@
 #!/bin/bash
 # One nest's bound proved in Gappa, beside the compiler's bound and the
-# measured gap (D108): `LayerNorm{D}.apply` of tests/examples/layernorm/,
+# measured gap (D108): `LayerNorm{D}.apply` of examples/spec/layernorm/,
 # in f32, at D = 8 and 64, on a batch of rows synthesized from seed 0.
 #
 # For each width, in order, every output under out/gappa/:
@@ -48,8 +48,8 @@ WIDTHS=${WIDTHS:-"8 64"}
 BATCH=${BATCH:-8}
 HYPS=${HYPS:-"sites input"}
 REALIZE=${REALIZE:-f32}
-FILE=experiments/gappa_layernorm.psk
-EXAMPLE=tests/examples/layernorm/layernorm.psk
+FILE=examples/experiments/gappa_layernorm.psk
+EXAMPLE=examples/spec/layernorm/layernorm.psk
 command -v "$GAPPA" > /dev/null || { echo "gappa.sh: no gappa on the PATH (apt install gappa, or GAPPA=…)"; exit 1; }
 [ -x "$PRESK" ] || { echo "gappa.sh: no $PRESK: make build"; exit 1; }
 mkdir -p "$OUT"

@@ -37,10 +37,10 @@ fn core_of(rel: &str, consts: &[(&str, u64)]) -> presk_core::Program {
 #[test]
 fn groups_are_safe_on_the_corpus_and_the_examples() {
     let programs = [
-        ("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 64), ("H", 2), ("L", 2)][..]),
-        ("corpus/nlp/03_mlp.psk", &[][..]),
-        ("tests/examples/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)][..]),
-        ("tests/data/dropout_grad.psk", &[][..]),
+        ("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 64), ("H", 2), ("L", 2)][..]),
+        ("examples/corpus/nlp/03_mlp.psk", &[][..]),
+        ("examples/spec/minigpt/train_minigpt.psk", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)][..]),
+        ("examples/tests/data/dropout_grad.psk", &[][..]),
     ];
     let mut total_groups = 0;
     for (rel, consts) in programs {

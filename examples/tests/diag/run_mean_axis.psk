@@ -1,0 +1,9 @@
+-- E7003: `mean axis a` over an axis of length 0, in a function the entry
+-- calls, whose open prefix `...` the call binds.
+--   presk run examples/tests/diag/run_mean_axis.psk --entry center --dim B=2 --dim D=0
+dim B
+dim D
+
+fn norm(x : ℝ[..., model: D]) -> ℝ[..., model: D] = x - mean(axis model, x)
+
+fn center(x : ℝ[batch: B, model: D]) -> ℝ[batch: B, model: D] = norm(x)

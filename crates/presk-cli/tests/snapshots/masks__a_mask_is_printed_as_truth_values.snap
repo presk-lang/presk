@@ -2,10 +2,10 @@
 source: crates/presk-cli/tests/masks.rs
 expression: text
 ---
-$ presk run tests/data/masks.psk --entry causal --dim T=3
+$ presk run examples/tests/data/masks.psk --entry causal --dim T=3
 bool[seq: 3, seq2: 3] = [seq: 3, seq2: 3] [[true, false, false], [true, true, false], [true, true, true]]
 
-$ presk run tests/data/masks.psk --entry causal --dim T=2 --json
+$ presk run examples/tests/data/masks.psk --entry causal --dim T=2 --json
 {
   "bits": 256,
   "dims": {
@@ -38,14 +38,14 @@ $ presk run tests/data/masks.psk --entry causal --dim T=2 --json
   "seed": 0
 }
 
-$ presk run tests/data/masks.psk --entry masked --dim T=2 --verbose --digits 6
+$ presk run examples/tests/data/masks.psk --entry masked --dim T=2 --verbose --digits 6
 -- entry masked with T = 2 at 256 bits, seed 0
 m : bool[seq: 2, seq2: 2] = [seq: 2, seq2: 2] [[true, true], [true, true]]
 x : ℝ[seq: 2, seq2: 2] = [seq: 2, seq2: 2] [[-1.32784, -0.388929], [-0.313463, 0.0468873]]
 -- result
 (bool[seq: 2, seq2: 2], ℝ[seq: 2, seq2: 2]) = ([seq: 2, seq2: 2] [[true, true], [true, true]], [seq: 2, seq2: 2] [[0.28112, 0.71888], [0.410875, 0.589125]])
 
-$ presk run tests/data/masks.psk --entry masked --dim T=2 --json --digits 6
+$ presk run examples/tests/data/masks.psk --entry masked --dim T=2 --json --digits 6
 {
   "bits": 256,
   "dims": {

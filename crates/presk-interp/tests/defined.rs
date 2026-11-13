@@ -32,7 +32,7 @@ fn prepare(rel: &str, consts: &[(&str, u64)]) -> (ElabProgram, presk_core::Progr
 
 /// `Tower.apply` at `T = 0`, with `layers` stacked `L` times.
 fn tower(l: u64) -> Result<(), String> {
-    let (prog, core) = prepare("tests/data/defined.psk", &[("L", l)]);
+    let (prog, core) = prepare("examples/tests/data/defined.psk", &[("L", l)]);
     let f = core.find("Tower.apply").unwrap();
     let dims: BTreeMap<_, _> = core.func(f).dims.iter().map(|d| (*d, 0)).collect();
     presk_interp::defined::check(&core, &prog, f, &dims, None).map_err(|e| e.message)

@@ -48,7 +48,7 @@ def margins_rows(path):
 
 
 def conformance_gap(presk, realize, export, weights):
-    out = subprocess.run([presk, "run", "experiments/margins.psk", "--entry", "logits", "--const", "D=64", "--const", "H=2",
+    out = subprocess.run([presk, "run", "examples/experiments/margins.psk", "--entry", "logits", "--const", "D=64", "--const", "H=2",
                           "--const", "L=2", "--dim", "B=2", "--dim", "T=256", "--weights", weights, "--backend", "native",
                           "--threads", "1", "--realize", realize, "--seed", "0", "--json", "--digits", "17"],
                          capture_output=True, text=True, check=True).stdout
@@ -103,7 +103,7 @@ def main():
         f = l.split()
         tools.append(f"Ruby {f[2]}" if f[0] == "ruby" else f"{f[0]} `{f[1][:7]}` ({f[2]}, {f[3]})")
     w("The tools: " + "; ".join(tools) + ".\n")
-    w(f"The program: `logits` of experiments/margins.psk at D = 64, B = 2, T = 256, exported in `f64`: "
+    w(f"The program: `logits` of examples/experiments/margins.psk at D = 64, B = 2, T = 256, exported in `f64`: "
       f"{len(prog.host_order)} host functions, {len(prog.kern_order)} kernels; its floating-point variables, "
       f"{sum(1 for v in prog.variables if v['file'] == 'model.c')} buffers of `model.c` and "
       f"{sum(1 for v in prog.variables if v['file'] == 'kernels.c')} locals of the kernels. "

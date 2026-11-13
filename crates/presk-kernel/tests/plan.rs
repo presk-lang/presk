@@ -75,13 +75,13 @@ const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 fn a_default_plan_lowers_to_the_kernels_of_0_6_0() {
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)]);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
-        ("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
-        ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)]),
-        ("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
+        ("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
+        ("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/train_minigpt.psk", TINY, "adamw.step", &[("B", 2), ("T", 8)]),
+        ("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)]),
     ];
     for (rel, consts, entry, dims) in cases {
         let (prog, core) = prepare(rel, consts);
@@ -93,7 +93,7 @@ fn a_default_plan_lowers_to_the_kernels_of_0_6_0() {
         }
     }
     // The attention of the tiny course GPT, every decision stated at its value.
-    let (prog, core) = prepare("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)]);
+    let (prog, core) = prepare("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)]);
     let stated = plan(
         r#"{ "realization": "f32", "layout": {
              "SelfAttention.apply/%13": { "form": "tiled", "tile": [1, 1], "kblock": "none", "order": "IJ", "lanes": 1, "pack": false },
@@ -115,7 +115,7 @@ fn a_default_plan_lowers_to_the_kernels_of_0_6_0() {
 /// whose layout changed. The bits do not change: lanes are exact.
 #[test]
 fn two_layouts_of_one_shape_do_not_share_a_kernel() {
-    let (prog, core) = prepare("tests/plan/two_dots.psk", &[]);
+    let (prog, core) = prepare("examples/tests/plan/two_dots.psk", &[]);
     let r = Realization::uniform(presk_rt::Dtype::F32);
     let dots = |ks: &[presk_kernel::Kernel]| ks.iter().filter(|k| k.name == "dot").map(|k| k.lanes).collect::<Vec<_>>();
     let (bare, ks) = run(&core, &prog, "twice", &[], None, &r).unwrap();
@@ -143,7 +143,7 @@ fn two_layouts_of_one_shape_do_not_share_a_kernel() {
 /// when the nest is launched.
 #[test]
 fn a_plan_this_version_cannot_apply_is_refused() {
-    let (prog, core) = prepare("tests/plan/two_dots.psk", &[]);
+    let (prog, core) = prepare("examples/tests/plan/two_dots.psk", &[]);
     let static_errors = [
         (r#"{ "twice/%9": { "lanes": 1 } }"#, "has no binding %9"),
         (r#"{ "thrice/%2": { "lanes": 1 } }"#, "no function `thrice`"),
@@ -191,7 +191,7 @@ fn a_plan_this_version_cannot_apply_is_refused() {
 #[test]
 fn the_load_count_reads_the_micro_kernel() {
     use presk_kernel::cost::{Machine, kernel_loads, planned_cost};
-    let (prog, core) = prepare("tests/plan/contractions.psk", &[]);
+    let (prog, core) = prepare("examples/tests/plan/contractions.psk", &[]);
     let f32r = Realization::parse("f32").unwrap();
     let kernels = |entry: &str, layout: &str| {
         let p = plan(&format!(r#"{{ "realization": "f32", "layout": {{ "{entry}/%2": {layout} }} }}"#));

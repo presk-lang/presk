@@ -120,14 +120,14 @@ type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'stati
 const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 
 const CASES: &[Case] = &[
-    ("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
-    ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
-    ("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
-    ("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)]),
-    ("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
-    ("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
-    ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
-    ("tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
+    ("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)]),
+    ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)]),
+    ("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)]),
+    ("examples/spec/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)]),
+    ("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)]),
+    ("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)]),
+    ("examples/tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)]),
+    ("examples/tests/train/mlp_regression.psk", &[], "loss", &[("B", 4)]),
 ];
 
 /// A propagated bound must be above the error actually committed, for every
@@ -199,7 +199,7 @@ fn the_reduction_order_changes_the_bound() {
     // initialization has a zero head, so under the conditioned rule its
     // whole bound is exactly zero — a product with an exact zero commits no
     // error — and no order can shorten it.
-    let (rel, consts, entry, dims) = ("tests/examples/mlp/mlp.psk", &[][..], "mse", &[("D", 32), ("B", 4)][..]);
+    let (rel, consts, entry, dims) = ("examples/spec/mlp/mlp.psk", &[][..], "mse", &[("D", 32), ("B", 4)][..]);
     let (_, b_seq) = measure(rel, consts, entry, dims, &seq);
     let (_, b_blocked) = measure(rel, consts, entry, dims, &blocked);
     let (_, b_inter) = measure(rel, consts, entry, dims, &inter);
@@ -215,7 +215,7 @@ fn the_reduction_order_changes_the_bound() {
 #[test]
 fn sensitivities_come_off_one_reverse_sweep() {
     use presk_precision::sensitivity;
-    let (prog, mut core) = prepare("tests/train/mlp_regression.psk", &[]);
+    let (prog, mut core) = prepare("examples/tests/train/mlp_regression.psk", &[]);
     let (entry, _, _) = presk_interp::run::resolve_entry(&core, &prog, "loss").unwrap();
     let (vjp, adjoints, diags) = presk_core::ad::vjp_with_adjoints(&mut core, entry);
     assert!(diags.is_empty(), "the objective differentiates");
@@ -250,7 +250,7 @@ fn sensitivities_come_off_one_reverse_sweep() {
 #[test]
 fn the_solver_stays_inside_the_budget_and_near_the_optimum() {
     use presk_precision::{sensitivity, solve};
-    let rel = "tests/train/mlp_regression.psk";
+    let rel = "examples/tests/train/mlp_regression.psk";
     let (prog, mut core) = prepare(rel, &[]);
     let (entry, _, _) = presk_interp::run::resolve_entry(&core, &prog, "loss").unwrap();
     let opts = RunOptions { entry: "loss".into(), dims: vec![("B".into(), 4)], seed: 0, bits: 128, digits: 17 };
@@ -318,7 +318,7 @@ fn an_interleaved_order_reassociates_and_says_so() {
     // to be visible at all. Neither MiniGPT entry does at initialization: a
     // zero-initialized head makes the logits identically zero and the loss
     // exactly `ln V`, whatever happens upstream. The MLP does.
-    let rel = "tests/examples/mlp/mlp.psk";
+    let rel = "examples/spec/mlp/mlp.psk";
     let consts: &[(&str, u64)] = &[];
     let (prog, core) = prepare(rel, consts);
     let opts = RunOptions { entry: "mse".into(), dims: vec![("D".into(), 32), ("B".into(), 4)], seed: 0, bits: 256, digits: 17 };
@@ -367,14 +367,14 @@ fn an_interleaved_order_reassociates_and_says_so() {
 /// `x`'s error and `Σ|x| = 3` for `w`'s.
 #[test]
 fn a_contraction_records_its_sums_of_terms() {
-    let (prog, core) = prepare("tests/data/terms.psk", &[]);
+    let (prog, core) = prepare("examples/tests/data/terms.psk", &[]);
     let (f, _, _) = presk_interp::run::resolve_entry(&core, &prog, "f").unwrap();
     let t = |xs: &[f64]| IValue::Real(presk_interp::Tensor { axes: vec![presk_interp::value::Axis { name: None, len: xs.len() }], data: xs.iter().map(|x| Float::with_val(128, *x)).collect() });
     let mut interp: Interp<Float> = Interp::new(&core, &prog, 128);
     interp.magnitudes = Some(Default::default());
     interp.terms = Some(Default::default());
     interp.call(f, Default::default(), vec![t(&[1.0, -2.0]), t(&[3.0, 1.0])]).unwrap();
-    let mut env = Envelope::new("tests/data/terms.psk", "f", 128, "2026-09-21");
+    let mut env = Envelope::new("examples/tests/data/terms.psk", "f", 128, "2026-09-21");
     env.observe(&interp.magnitudes.take().unwrap());
     env.observe_terms(&interp.terms.take().unwrap());
     let site = "f/%2";

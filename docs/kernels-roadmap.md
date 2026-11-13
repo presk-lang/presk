@@ -482,3 +482,34 @@ the fast mode, about 1.5× on this block.
 **Until then** (D126): every timing of record runs each row in several
 processes and reports the median across them and the fastest. A single
 process, as D100's protocol ran it, may land in either mode.
+
+**What SR5 found (2026-11-12, D201)**, on 0.17.2's binary, D124's program
+and plan, with `presk bench --host-profile --launches`:
+- *One launch.* The call takes 1.88 to 2.81 s across 20 processes (3
+  slow by a 20 % rule), and all of the spread is launch 18, the
+  attention's output projection (`Attention.apply/%23`), 1.36 to 2.29 s.
+  The call less it is 0.51 to 0.55 s in every process. This is the
+  plan's one contraction left at one lane and no tile; the query's
+  product, of the same size, is a tiled `dot` and takes 25 ms.
+- *Ruled out:* the physical frames under 4 KiB pages (under huge pages
+  the spread stays, 1.31×) and the weight's placement (with the address
+  space's randomization off it has one address in every process, and the
+  spread stays, 1.22×).
+- *Left open:* the activations' placement (6 MiB each, from the heap,
+  whose order of allocation differs between processes even with
+  randomization off), the physical placement above 2 MiB, and a cause
+  other than placement.
+- *Huge pages* make the projection 0.88× by the medians and leave the
+  rest of the call alone.
+
+**Next, for a later version** (no change in 0.17.2, plan 0.17.2 §8):
+- *The activations at fixed offsets:* an arena of stated layout, as the C
+  export's, or an allocator that aligns the large buffers, then the same
+  20 processes. If the spread goes, placement is named.
+- *The projection planned like the other products:* tiled, it would take
+  tens of milliseconds rather than one or two seconds, and the spread,
+  which is all its own, would mostly go whatever its cause. Why the plan
+  leaves this `ein` untiled is to be read first.
+- *Huge pages by default* (`madvise` on the large buffers) as a
+  measurement of its own. It changes timings of record, so it belongs to
+  a version that times its rows again.

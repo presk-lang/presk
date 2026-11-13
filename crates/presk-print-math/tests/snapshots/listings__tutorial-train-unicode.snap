@@ -1,6 +1,6 @@
 ---
 source: crates/presk-print-math/tests/listings.rs
-expression: "typed_listing(\"tutorial/07_train.psk\", Format::Unicode)"
+expression: "typed_listing(\"examples/tutorial/07_train.psk\", Format::Unicode)"
 ---
 -- presk dump --stage elab --format unicode: 07_train.psk and its imports, as the equations
 -- of the language reference's chapter 3

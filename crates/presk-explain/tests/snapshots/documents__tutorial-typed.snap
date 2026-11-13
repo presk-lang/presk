@@ -1,9 +1,9 @@
 ---
 source: crates/presk-explain/tests/documents.rs
-expression: "document(\"tutorial-typed\", \"tutorial/07_train.psk\", \"loss\", &[\"B=4\"], &[],\n(None, Some(\"@../../tests/plan/tutorial-typed.json\")),\n&[Target::Native, Target::C])"
+expression: "document(\"tutorial-typed\", \"examples/tutorial/07_train.psk\", \"loss\", &[\"B=4\"], &[],\n(None, Some(\"@../../examples/tests/plan/tutorial-typed.json\")),\n&[Target::Native, Target::C])"
 ---
 ---
-title: "`loss` of `../../tutorial/07_train.psk`, under the realization `../../tests/plan/tutorial-typed.json`, planned under the profile `data/x925-frozen.json`"
+title: "`loss` of `../../examples/tutorial/07_train.psk`, under the realization `../../examples/tests/plan/tutorial-typed.json`, planned under the profile `data/x925-frozen.json`"
 subtitle: "What the Presk compiler does to one program: `presk explain`"
 ---
 
@@ -11,12 +11,12 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 
 | Parameter | Value | Where it comes from |
 |-------------------|------------------------------------|------------------------------------|
-| Program | `../../tutorial/07_train.psk` | the command line |
+| Program | `../../examples/tutorial/07_train.psk` | the command line |
 | Entry | `loss` | `--entry loss` |
 | Dimensions | `B = 4` | `--dim B=4` |
 | Constants | `D = 4`, `L = 3` | the files' |
 | Weights | the initialization, seed 0 | no `--weights` |
-| Realization | `../../tests/plan/tutorial-typed.json` | `--realize @../../tests/plan/tutorial-typed.json` |
+| Realization | `../../examples/tests/plan/tutorial-typed.json` | `--realize @../../examples/tests/plan/tutorial-typed.json` |
 | Exact reference | MPFR at 128 bits | `--bits 128` |
 | Machine | the profile `tests/data/x925-frozen.json` | `--profile tests/data/x925-frozen.json` |
 | Threads | 10 | `--threads 10` |
@@ -24,14 +24,14 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift), C | `--target native,c` |
 
-Compiler: presk 0.17.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.17.2. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
 | What | Path | Provenance | SHA-256 |
 |-------------------|------------------------------------|--------------------|--------------------------|
 | the machine profile | `tests/data/x925-frozen.json` | given | `0a4ed24b1b666e13…` |
-| the realization | `../../tests/plan/tutorial-typed.json` | given | `849cbc6840e3a3da…` |
+| the realization | `../../examples/tests/plan/tutorial-typed.json` | given | `849cbc6840e3a3da…` |
 | the envelope | `$DOC/artifacts/envelope.json` | computed in this run |  |
 | the layout plan | `$DOC/artifacts/plan.json` | computed in this run |  |
 | the C program | `$DOC/artifacts/c/` | computed in this run |  |
@@ -57,7 +57,7 @@ A *fact* is a property of the program or of the compilation; a *decision* is wha
 
 The entry's file and the files it imports, as the compiler reads them.
 
-**`../../tutorial/07_train.psk`**
+**`../../examples/tutorial/07_train.psk`**
 
 ```text
   1  -- 07_train.psk — a training run: the tower of 06 learns y = 2·x + 1.
@@ -84,7 +84,7 @@ The entry's file and the files it imports, as the compiler reads them.
  22  }
 ```
 
-**`../../tutorial/06_tower.psk`**
+**`../../examples/tutorial/06_tower.psk`**
 
 ```text
   1  -- 06_tower.psk — composition: imports, sub-modules, stacked blocks.
@@ -111,7 +111,7 @@ The entry's file and the files it imports, as the compiler reads them.
  22  }
 ```
 
-**`../../tutorial/01_linear.psk`**
+**`../../examples/tutorial/01_linear.psk`**
 
 ```text
   1  -- 01_linear.psk — a linear layer: parameters, initializers, one function.
@@ -124,7 +124,7 @@ The entry's file and the files it imports, as the compiler reads them.
   8  }
 ```
 
-**`../../tutorial/02_norm.psk`**
+**`../../examples/tutorial/02_norm.psk`**
 
 ```text
   1  -- 02_norm.psk — named axes, reductions, broadcasting, hyperparameters.
@@ -139,27 +139,27 @@ The entry's file and the files it imports, as the compiler reads them.
 
 Diagnostics: none (`presk check` reports no error and no warning).
 
-*Command:* `presk check ../../tutorial/07_train.psk`
+*Command:* `presk check ../../examples/tutorial/07_train.psk`
 
 ## 2 Elaboration
 
 Elaboration resolves the imports, binds the constants, instantiates every module with its dimensions, and checks shapes, regularity classes and effects. Its output is the program with every instance named and every parameter's shape known.
 
 ```text
-== ../../tutorial/01_linear.psk
+== ../../examples/tutorial/01_linear.psk
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init
   param b : ℝ[Out]  init
   fn apply(x : ℝ[..., In]) -> ℝ[..., Out]
 }
-== ../../tutorial/02_norm.psk
+== ../../examples/tutorial/02_norm.psk
 module RMSNorm{D : dim} {
   param γ : ℝ[D]  init
   fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
 }
-== ../../tutorial/06_tower.psk
-import lin = ../../tutorial/01_linear.psk
-import norm = ../../tutorial/02_norm.psk
+== ../../examples/tutorial/06_tower.psk
+import lin = ../../examples/tutorial/01_linear.psk
+import norm = ../../examples/tutorial/02_norm.psk
 const D = 4
 const L = 3
 module Block {
@@ -172,8 +172,8 @@ module Tower {
   use final : RMSNorm{4}
   fn apply(x : ℝ[..., model: 4]) -> ℝ[..., model: 4]
 }
-== ../../tutorial/07_train.psk (main)
-import t = ../../tutorial/06_tower.psk
+== ../../examples/tutorial/07_train.psk (main)
+import t = ../../examples/tutorial/06_tower.psk
 dim B
 fn loss(θ : params Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, model: 4])) -> ℝ[]
 optimizer adamw (3 fields)
@@ -242,8 +242,8 @@ training run: model Tower, objective loss, optimizer adamw
 
 *Commands:*
 
-- `presk dump ../../tutorial/07_train.psk --stage elab`
-- `presk check ../../tutorial/07_train.psk --summary`
+- `presk dump ../../examples/tutorial/07_train.psk --stage elab`
+- `presk check ../../examples/tutorial/07_train.psk --summary`
 
 ## 3 PSK-Core
 
@@ -305,7 +305,7 @@ fn loss{B}(θ : params Tower, batch : (ℝ[batch: B, model: 4], ℝ[batch: B, mo
 }
 ```
 
-*Command:* `presk dump ../../tutorial/07_train.psk --stage core`
+*Command:* `presk dump ../../examples/tutorial/07_train.psk --stage core`
 
 ## 4 Differentiation
 
@@ -358,7 +358,7 @@ presk calibrate: the largest rounding error of each site's values (D155): 29 sit
 
 The envelope holds 30 sites from **1 sample** on the initial weights, at 128 bits; every bound below is conditional on it, and says so.
 
-*Command:* `presk calibrate --precision ../../tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out $DOC/artifacts/envelope.json`
+*Command:* `presk calibrate --precision ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out $DOC/artifacts/envelope.json`
 
 ### 6.2 The sensitivities
 
@@ -404,7 +404,7 @@ Block.apply/%4                          8.1492e-1
 Block.apply/%2                          5.3272e-1
 ```
 
-*Command:* `presk dump ../../tutorial/07_train.psk --stage sensitivity --entry loss --dim B=4 --sites 30`
+*Command:* `presk dump ../../examples/tutorial/07_train.psk --stage sensitivity --entry loss --dim B=4 --sites 30`
 
 ### 6.3 The realization
 
@@ -463,7 +463,7 @@ loss/%4                             1.964e0      4.716e1      2.401e1           
 
 The sound rule (`cond`) bounds the error by 8.590e-1, conditional on the envelope's 1 sample; the measurement is 3.090e-4, 2.8e3× under it.
 
-*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../tutorial/07_train.psk --realize @../../tests/plan/tutorial-typed.json --model all --sites 8 --measure`
+*Command:* `presk check --precision $DOC/artifacts/envelope.json ../../examples/tutorial/07_train.psk --realize @../../examples/tests/plan/tutorial-typed.json --model all --sites 8 --measure`
 
 ## 7 Fusion
 
@@ -493,7 +493,7 @@ Over one call, fusion takes 39 launches to 30.
 | `Block.apply/%8` | `%8 : ℝ[..., model: 4] = add x, %7` | alone | the function's result |
 | `loss/%6` | `%6 : ℝ[batch: B, model: 4] = pow 2 %5` | ends a group of 2 | read by `%7 : ℝ[] = mean %6`: a reduction |
 
-*Command:* `presk dump ../../tutorial/07_train.psk --stage realize --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/tutorial/07_train.psk --stage realize --plan @$DOC/artifacts/plan.json`
 
 ## 8 The machine and the layout plan
 
@@ -629,7 +629,7 @@ loss/%7 [4, 4] — 1 points, 1 within 1 + u, 1 launch
      lanes 1, split none
 ```
 
-*Command:* `PRESK_THREADS=10 presk plan ../../tutorial/07_train.psk --entry loss --dim B=4 --realize @../../tests/plan/tutorial-typed.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
+*Command:* `PRESK_THREADS=10 presk plan ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --realize @../../examples/tests/plan/tutorial-typed.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json`
 
 ## 9 The kernels and the host
 
@@ -871,7 +871,7 @@ void presk_loss(presk_arena *arena, const presk_loss_in *in, presk_loss_out *out
 }
 ```
 
-*Command:* `presk dump ../../tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json`
+*Command:* `presk dump ../../examples/tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json`
 
 ## 10 Targets
 
@@ -957,7 +957,7 @@ static void k5(const float *restrict in0, const uint16_t *restrict in1, float *r
 
 `make -C $DOC/artifacts/c check` builds it and compares its outputs with the native backend's, bit for bit.
 
-*Command:* `presk export ../../tutorial/07_train.psk --target c --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --threads 10 -o $DOC/artifacts/c`
+*Command:* `presk export ../../examples/tutorial/07_train.psk --target c --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --threads 10 -o $DOC/artifacts/c`
 
 ## 11 Measured
 
@@ -1107,27 +1107,27 @@ presk memory --step: under recompute, the peak is `loss.value_vjp`'s, at its ope
 
 *Commands:*
 
-- `presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json`
-- `presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --symbolic`
-- `presk memory ../../tutorial/07_train.psk --step --dim B=4 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json`
+- `presk memory ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --symbolic`
+- `presk memory ../../examples/tutorial/07_train.psk --step --dim B=4 --plan @$DOC/artifacts/plan.json`
 
 ## Appendix: the commands
 
 The commands behind the sections, in order, run from the directory the program was named from, with `DOC` set to this document's directory.
 
 ```sh
-presk check ../../tutorial/07_train.psk
-presk dump ../../tutorial/07_train.psk --stage elab
-presk check ../../tutorial/07_train.psk --summary
-presk dump ../../tutorial/07_train.psk --stage core
-presk calibrate --precision ../../tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out $DOC/artifacts/envelope.json
-presk dump ../../tutorial/07_train.psk --stage sensitivity --entry loss --dim B=4 --sites 30
-presk check --precision $DOC/artifacts/envelope.json ../../tutorial/07_train.psk --realize @../../tests/plan/tutorial-typed.json --model all --sites 8 --measure
-presk dump ../../tutorial/07_train.psk --stage realize --plan @$DOC/artifacts/plan.json
-PRESK_THREADS=10 presk plan ../../tutorial/07_train.psk --entry loss --dim B=4 --realize @../../tests/plan/tutorial-typed.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
-presk dump ../../tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json
-presk export ../../tutorial/07_train.psk --target c --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --threads 10 -o $DOC/artifacts/c
-presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json
-presk memory ../../tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --symbolic
-presk memory ../../tutorial/07_train.psk --step --dim B=4 --plan @$DOC/artifacts/plan.json
+presk check ../../examples/tutorial/07_train.psk
+presk dump ../../examples/tutorial/07_train.psk --stage elab
+presk check ../../examples/tutorial/07_train.psk --summary
+presk dump ../../examples/tutorial/07_train.psk --stage core
+presk calibrate --precision ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --bits 128 --out $DOC/artifacts/envelope.json
+presk dump ../../examples/tutorial/07_train.psk --stage sensitivity --entry loss --dim B=4 --sites 30
+presk check --precision $DOC/artifacts/envelope.json ../../examples/tutorial/07_train.psk --realize @../../examples/tests/plan/tutorial-typed.json --model all --sites 8 --measure
+presk dump ../../examples/tutorial/07_train.psk --stage realize --plan @$DOC/artifacts/plan.json
+PRESK_THREADS=10 presk plan ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --realize @../../examples/tests/plan/tutorial-typed.json --profile tests/data/x925-frozen.json --out $DOC/artifacts/plan.json
+presk dump ../../examples/tutorial/07_train.psk --stage kernel --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json
+presk export ../../examples/tutorial/07_train.psk --target c --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --threads 10 -o $DOC/artifacts/c
+presk memory ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json
+presk memory ../../examples/tutorial/07_train.psk --entry loss --dim B=4 --plan @$DOC/artifacts/plan.json --symbolic
+presk memory ../../examples/tutorial/07_train.psk --step --dim B=4 --plan @$DOC/artifacts/plan.json
 ```

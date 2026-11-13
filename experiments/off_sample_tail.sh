@@ -23,7 +23,7 @@ set -u
 cd "$(dirname "$0")/.."
 PRESK=${PRESK:-out/bin/presk-22dd345}
 PY=${PY:-python3}
-FILE=experiments/margins.psk
+FILE=examples/experiments/margins.psk
 DIMS=(--const D=384 --const H=6 --const L=6 --dim T=256)
 W=${W:-out/course_train_f64/final.psk.d}
 VAL=${VAL:-out/civil_val_T256.psk.d}

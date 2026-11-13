@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """hf_to_pskd.py — a Hugging Face Llama checkpoint as the `.psk.d` parameter
-file of `coverage/llama3.psk` (plan 0.17.0 step 7, presk D180).
+file of `examples/coverage/llama3.psk` (plan 0.17.0 step 7, presk D180).
 
-    hf_to_pskd.py CHECKPOINT_DIR -o OUT.psk.d [--program coverage/llama3.psk]
+    hf_to_pskd.py CHECKPOINT_DIR -o OUT.psk.d [--program examples/coverage/llama3.psk]
         [--model Llama3] [--presk target/release/presk] [--const NAME=N]...
         [--encoding bf16|f32|f64]
 
@@ -158,7 +158,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("checkpoint")
     ap.add_argument("-o", "--out", required=True)
-    ap.add_argument("--program", default="coverage/llama3.psk")
+    ap.add_argument("--program", default="examples/coverage/llama3.psk")
     ap.add_argument("--model", default="Llama3")
     ap.add_argument("--presk", default="target/release/presk")
     ap.add_argument("--const", action="append", default=[], help="NAME=N, as presk takes it")

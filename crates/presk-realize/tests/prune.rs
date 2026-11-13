@@ -47,16 +47,16 @@ const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 #[test]
 fn pruning_keeps_every_fusion_group() {
     let programs: &[(&str, &[(&str, u64)])] = &[
-        ("tests/examples/mlp/mlp.psk", &[]),
-        ("tests/plan/minigpt_grad.psk", TINY),
-        ("experiments/gpt_grad.psk", &[]),
-        ("tests/data/stack_grad.psk", &[]),
-        ("tests/data/stack_prefix_grad.psk", &[]),
-        ("tests/data/dropout_grad.psk", &[]),
-        ("tests/data/stack_keys.psk", &[]),
-        ("tests/data/merge_grad.psk", &[]),
-        ("tests/data/split_grad.psk", &[]),
-        ("tests/data/closure_grad.psk", &[]),
+        ("examples/spec/mlp/mlp.psk", &[]),
+        ("examples/tests/plan/minigpt_grad.psk", TINY),
+        ("examples/experiments/gpt_grad.psk", &[]),
+        ("examples/tests/data/stack_grad.psk", &[]),
+        ("examples/tests/data/stack_prefix_grad.psk", &[]),
+        ("examples/tests/data/dropout_grad.psk", &[]),
+        ("examples/tests/data/stack_keys.psk", &[]),
+        ("examples/tests/data/merge_grad.psk", &[]),
+        ("examples/tests/data/split_grad.psk", &[]),
+        ("examples/tests/data/closure_grad.psk", &[]),
     ];
     let (mut functions, mut groups, mut removed) = (0, 0, 0);
     let mut bad: Vec<String> = vec![];

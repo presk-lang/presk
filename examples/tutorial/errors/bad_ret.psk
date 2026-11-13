@@ -1,0 +1,8 @@
+-- bad_ret.psk — step 2 of the tutorial: `Linear` declared to return `In`, not `Out` (E2006, E2011).
+module Linear{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+  param b : ℝ[Out]      init = zeros
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., In] =
+    x · w + b
+}

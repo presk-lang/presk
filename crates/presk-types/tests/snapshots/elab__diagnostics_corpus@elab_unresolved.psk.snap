@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/elab.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/elab_unresolved.psk
+input_file: examples/tests/diag/elab_unresolved.psk
 ---
 [E1001] Error: unresolved name `Out` in a dimension
-   ,-[ tests/diag/elab_unresolved.psk:3:19 ]
+   ,-[ examples/tests/diag/elab_unresolved.psk:3:19 ]
    |
  3 |   param w : ℝ[In, Out]
    |                   ^|^  

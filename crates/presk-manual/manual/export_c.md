@@ -208,7 +208,7 @@ bit-identical to the `libm` crate on 10⁶ inputs, and each `f32` one on every
 
 **Programs through the binary** (`crates/presk-cli/tests/export_c.rs`, in
 `make test`; `make c-conformance` adds the course GPT and the trained
-checkpoints). Every entry of `tests/plan/entries.txt` is exported in
+checkpoints). Every entry of `examples/tests/plan/entries.txt` is exported in
 `f64`, `f32` and `bf16`, on the parameters `presk run` synthesizes and with
 the ones an initializer sets to zero drawn (`MiniGPT.apply`'s logits are
 zero otherwise, its head being `init = zeros`), and MiniGPT's five entries
@@ -241,7 +241,7 @@ operand quantized (500 points and 568 splits in each width).
 `presk_quantize` is bit-identical to presk-rt on 4 027 392 weights of both
 widths and schemes (ties at `n + ½`, zero channels, subnormals, huge
 values, NaNs among them). Through the binary (`make test`, 42 programs):
-`tests/quant/odd.psk` in both widths and schemes and the three types;
+`examples/tests/quant/odd.psk` in both widths and schemes and the three types;
 MiniGPT's forward pass and `next_token` with its head, embeddings and every
 matrix quantized, and its gradient (`loss_grad`) and an optimizer step; at
 `D = 9`, `H = 3` in `int4`, where attention's layers are copied to `f64`;
@@ -252,7 +252,8 @@ at `T = 256` in `int8`, and MiniGPT under the plan `presk plan` gives its
 quantized realization.
 
 **Generation** (statement C5). `generate` against `presk serve --backend
-native`, the same `--json` document byte for byte: in `make test`,
+native`, the same `--json` document byte for byte, but for `presk serve`'s
+four fields of compiling and computing (since 0.17.2, D200): in `make test`,
 `serve_minigpt.psk` with its zeros drawn, in the three types, through both
 hosts, greedy and sampled at three temperatures and four seeds; in `make
 c-conformance`, the same with the trained checkpoint of `make
@@ -355,7 +356,7 @@ takes the other 335–348 ms. The host is about four fifths of the native
 backend's lead, and not by first touches of memory: its page faults do not
 grow with the calls. On every core unpinned the C program is 1.13×
 PyTorch's time. A gradient exports too: the course GPT's `loss_grad`
-(`experiments/gpt_grad.psk`) at these constants records 2 220 launches, 386
+(`examples/experiments/gpt_grad.psk`) at these constants records 2 220 launches, 386
 of them dead, into an arena of 1.22 GB (since 0.10.0 step 3, which removes
 the dead code after differentiation, 1 616 launches, 12 dead, 1.02 GB;
 since step 4, which keeps the forward pass's residuals, 1 182 launches, 10

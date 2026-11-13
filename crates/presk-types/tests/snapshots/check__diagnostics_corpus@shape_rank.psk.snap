@@ -1,17 +1,17 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_rank.psk
+input_file: examples/tests/diag/shape_rank.psk
 ---
 [E2003] Error: shape mismatch: expected `ℝ[batch: B]`, found `ℝ[batch: B, model: 4]`
-   ,-[ tests/diag/shape_rank.psk:4:3 ]
+   ,-[ examples/tests/diag/shape_rank.psk:4:3 ]
    |
  4 |   x * x
    |   ^^|^^  
    |     `---- this has shape `[batch: B, model: 4]`; 1 axis expected
 ---'
 [E2011] Error: `f` returns `ℝ[batch: B, model: 4]` but is declared `-> ℝ[batch: B]`
-   ,-[ tests/diag/shape_rank.psk:4:3 ]
+   ,-[ examples/tests/diag/shape_rank.psk:4:3 ]
    |
  3 | ,-> fn f(x : ℝ[batch: B, model: 4]) -> ℝ[batch: B] =
  4 | |->   x * x

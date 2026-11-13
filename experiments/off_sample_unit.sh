@@ -23,7 +23,7 @@ for f in "$PRESK" "$ENV" "$W"; do [ -e "$f" ] || { echo "missing $f"; exit 1; };
 mkdir -p "$OUT"
 "$PRESK" --version > "$OUT/presk.txt"
 echo "== solve $(date -Is)"
-/usr/bin/time -v -o "$OUT/solve.time" "$PRESK" solve experiments/margins.psk --precision "$ENV" --budget-abs "$BUDGET" \
+/usr/bin/time -v -o "$OUT/solve.time" "$PRESK" solve examples/experiments/margins.psk --precision "$ENV" --budget-abs "$BUDGET" \
     --weights "$W" --sites 60 --rounding unit --narrow off --out "$OUT/solved.json" > "$OUT/solve.txt" 2> "$OUT/solve.err" \
     || { echo "the solve failed: $OUT/solve.err"; exit 1; }
 echo "== done $(date -Is)"

@@ -332,9 +332,9 @@ fn draw_zeros(args: &mut [Value]) {
 
 fn subjects() -> Vec<Recorded> {
     vec![
-        record("tests/examples/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::F32, |a| draw_zeros(a)),
-        record("tests/examples/mlp/mlp.psk", &[], &[("D", 4), ("B", 2)], "mse_grad", Dtype::F64, |a| draw_zeros(a)),
-        record("corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 8)], "SelfAttention.apply", Dtype::Bf16, |a| draw_zeros(a)),
+        record("examples/spec/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::F32, |a| draw_zeros(a)),
+        record("examples/spec/mlp/mlp.psk", &[], &[("D", 4), ("B", 2)], "mse_grad", Dtype::F64, |a| draw_zeros(a)),
+        record("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 8)], "SelfAttention.apply", Dtype::Bf16, |a| draw_zeros(a)),
     ]
 }
 
@@ -428,7 +428,7 @@ fn a_bf16_input_rounded_once_changes_the_outputs() {
     let f = TIE as f32;
     assert_eq!(f.to_bits() & 0xffff, 0x8000, "the f32 rounding lands on a bf16 tie");
     assert_eq!(presk_rt::f32_to_bf16(f), 0x3f80, "which ties to even");
-    let r = record("tests/examples/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::Bf16, |args| {
+    let r = record("examples/spec/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::Bf16, |args| {
         let Value::Real(t) = &mut args[1] else { panic!("x is a tensor") };
         let Buf::Exact(d) = &mut t.data else { panic!("an exact input") };
         d[0] = Float::with_val(256, TIE);
@@ -461,8 +461,8 @@ fn folded() -> Vec<Recorded> {
     let c2 = [("V", 64), ("D", 16), ("H", 2), ("L", 2)];
     let d = [("B", 2), ("T", 8)];
     vec![
-        record("tests/examples/minigpt/minigpt.psk", &c3, &d, "MiniGPT.apply", Dtype::F32, |a| draw_zeros(a)),
-        record("tests/plan/minigpt_grad.psk", &c2, &d, "loss_grad", Dtype::F64, |a| draw_zeros(a)),
+        record("examples/spec/minigpt/minigpt.psk", &c3, &d, "MiniGPT.apply", Dtype::F32, |a| draw_zeros(a)),
+        record("examples/tests/plan/minigpt_grad.psk", &c2, &d, "loss_grad", Dtype::F64, |a| draw_zeros(a)),
     ]
 }
 
@@ -700,12 +700,12 @@ fn dead_slices(rec: &Recording, kernels: &[Kernel]) -> HashSet<(String, usize)> 
 
 #[test]
 fn a_folds_value_returned_as_it_is_is_copied_into_the_callers_buffer() {
-    // `tests/export_c/fold_value.psk`: the entry returns a fold's value, and
+    // `examples/tests/export_c/fold_value.psk`: the entry returns a fold's value, and
     // `scaled` calls a function that does. No entry of the test set does.
     let d = [("B", 2)];
     let subjects = [
-        record("tests/export_c/fold_value.psk", &[], &d, "Norms.apply", Dtype::F32, |a| draw_zeros(a)),
-        record("tests/export_c/fold_value.psk", &[], &d, "scaled", Dtype::Bf16, |a| draw_zeros(a)),
+        record("examples/tests/export_c/fold_value.psk", &[], &d, "Norms.apply", Dtype::F32, |a| draw_zeros(a)),
+        record("examples/tests/export_c/fold_value.psk", &[], &d, "scaled", Dtype::Bf16, |a| draw_zeros(a)),
     ];
     for (i, r) in subjects.iter().enumerate() {
         let st = host::structure(&r.kernels, &r.rec, 1).unwrap();

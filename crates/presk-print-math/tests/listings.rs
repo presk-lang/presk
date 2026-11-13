@@ -2,7 +2,9 @@
 //! snapshots. The typed program of the tutorial, of the examples and of the
 //! course GPT, in LaTeX and in Unicode; PSK-Core after differentiation of
 //! the tutorial's gradient and of the MLP's; and every program of the test
-//! set that types written with no form left as its source text.
+//! set that types written with no form left as its source text. Beside the
+//! walker, the rule of D198: every program under `examples/`, each file there
+//! named by its index.
 
 use std::path::{Path, PathBuf};
 
@@ -36,30 +38,30 @@ fn core_listing(file: &str, f: Format) -> String {
 
 #[test]
 fn the_tutorial_as_equations() {
-    insta::assert_snapshot!("tutorial-train-latex", typed_listing("tutorial/07_train.psk", Format::Latex));
-    insta::assert_snapshot!("tutorial-train-unicode", typed_listing("tutorial/07_train.psk", Format::Unicode));
-    insta::assert_snapshot!("tutorial-attention-latex", typed_listing("tutorial/03_attention.psk", Format::Latex));
-    insta::assert_snapshot!("tutorial-attention-unicode", typed_listing("tutorial/03_attention.psk", Format::Unicode));
+    insta::assert_snapshot!("tutorial-train-latex", typed_listing("examples/tutorial/07_train.psk", Format::Latex));
+    insta::assert_snapshot!("tutorial-train-unicode", typed_listing("examples/tutorial/07_train.psk", Format::Unicode));
+    insta::assert_snapshot!("tutorial-attention-latex", typed_listing("examples/tutorial/03_attention.psk", Format::Latex));
+    insta::assert_snapshot!("tutorial-attention-unicode", typed_listing("examples/tutorial/03_attention.psk", Format::Unicode));
 }
 
 #[test]
 fn the_course_gpt_as_equations() {
-    insta::assert_snapshot!("gpt-latex", typed_listing("corpus/nlp/05_gpt.psk", Format::Latex));
-    insta::assert_snapshot!("gpt-unicode", typed_listing("corpus/nlp/05_gpt.psk", Format::Unicode));
+    insta::assert_snapshot!("gpt-latex", typed_listing("examples/corpus/nlp/05_gpt.psk", Format::Latex));
+    insta::assert_snapshot!("gpt-unicode", typed_listing("examples/corpus/nlp/05_gpt.psk", Format::Unicode));
 }
 
 #[test]
 fn the_examples_as_equations() {
-    for (name, file) in [("mlp", "tests/examples/mlp/mlp.psk"), ("layernorm", "tests/examples/layernorm/layernorm.psk"), ("minigpt", "tests/examples/minigpt/minigpt.psk")] {
+    for (name, file) in [("mlp", "examples/spec/mlp/mlp.psk"), ("layernorm", "examples/spec/layernorm/layernorm.psk"), ("minigpt", "examples/spec/minigpt/minigpt.psk")] {
         insta::assert_snapshot!(format!("{name}-latex"), typed_listing(file, Format::Latex));
     }
 }
 
 #[test]
 fn the_adjoints_as_equations() {
-    insta::assert_snapshot!("grad-core-latex", core_listing("tutorial/04_grad.psk", Format::Latex));
-    insta::assert_snapshot!("grad-core-unicode", core_listing("tutorial/04_grad.psk", Format::Unicode));
-    insta::assert_snapshot!("mlp-core-unicode", core_listing("tests/examples/mlp/mlp.psk", Format::Unicode));
+    insta::assert_snapshot!("grad-core-latex", core_listing("examples/tutorial/04_grad.psk", Format::Latex));
+    insta::assert_snapshot!("grad-core-unicode", core_listing("examples/tutorial/04_grad.psk", Format::Unicode));
+    insta::assert_snapshot!("mlp-core-unicode", core_listing("examples/spec/mlp/mlp.psk", Format::Unicode));
 }
 
 /// Every program of the repository that types, at both entries: no form
@@ -110,4 +112,60 @@ fn every_program_is_written_whole() {
         written += 1;
     }
     assert!(written >= 50, "only {written} programs typed");
+}
+
+/// Every program of the repository is under `examples/` (D198), and every
+/// file there is named by `examples/README.md`: between backquotes, by its
+/// path from `examples/` or by a pattern whose `*` stands for any part of
+/// one name.
+#[test]
+fn every_program_is_in_examples() {
+    fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            if name.starts_with('.') || (p.is_dir() && ["target", "out", "__pycache__"].contains(&name.as_str())) {
+                continue;
+            }
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    fn matches(pattern: &[u8], name: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => name.is_empty(),
+            Some((b'*', rest)) => (0..=name.len()).any(|i| matches(rest, &name[i..])),
+            Some((c, rest)) => name.first() == Some(c) && matches(rest, &name[1..]),
+        }
+    }
+    let named = |patterns: &[&str], rel: &str| {
+        patterns.iter().any(|p| {
+            let (ps, ns): (Vec<&str>, Vec<&str>) = (p.split('/').collect(), rel.split('/').collect());
+            ps.len() == ns.len() && ps.iter().zip(&ns).all(|(p, n)| matches(p.as_bytes(), n.as_bytes()))
+        })
+    };
+    let mut files = Vec::new();
+    walk(&root(), &mut files);
+    let examples = root().join("examples");
+    let index = std::fs::read_to_string(examples.join("README.md")).unwrap();
+    let patterns: Vec<&str> = index.split('`').skip(1).step_by(2).filter(|t| !t.is_empty() && !t.contains(char::is_whitespace)).collect();
+    let mut outside = Vec::new();
+    let mut unnamed = Vec::new();
+    for f in &files {
+        match f.strip_prefix(&examples) {
+            Ok(rel) => {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if rel != "README.md" && !named(&patterns, &rel) {
+                    unnamed.push(rel);
+                }
+            }
+            Err(_) if f.extension().is_some_and(|e| e == "psk") => outside.push(f.strip_prefix(root()).unwrap().display().to_string()),
+            Err(_) => {}
+        }
+    }
+    assert!(outside.is_empty(), "programs outside examples/: {outside:?}");
+    assert!(unnamed.is_empty(), "files under examples/ that examples/README.md does not name: {unnamed:?}");
 }

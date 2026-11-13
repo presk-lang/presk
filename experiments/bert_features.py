@@ -1,4 +1,4 @@
-"""SQuAD-shaped features for the `squad` and `squad_loss` entries of coverage/bert.psk.
+"""SQuAD-shaped features for the `squad` and `squad_loss` entries of examples/coverage/bert.psk.
 
 Usage: bert_features.py V T N SEED [--span] > features.txt, then
 presk data pack --type '(idx[V][seq: T], idx[2][seq: T], ℝ[seq2: T])'

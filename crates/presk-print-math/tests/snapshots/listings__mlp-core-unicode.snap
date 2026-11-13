@@ -1,6 +1,6 @@
 ---
 source: crates/presk-print-math/tests/listings.rs
-expression: "core_listing(\"tests/examples/mlp/mlp.psk\", Format::Unicode)"
+expression: "core_listing(\"examples/spec/mlp/mlp.psk\", Format::Unicode)"
 ---
 -- presk dump --stage core-after-ad --format unicode: mlp.psk, PSK-Core after differentiation,
 -- one equation per binding, in the notation of the language reference's chapter 3

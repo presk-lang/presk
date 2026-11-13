@@ -1,8 +1,8 @@
-> PyTorch compiled and in mixed precision, beside eager (presk D153). The prompt was presk-project `docs/prompt-paper-baselines-2026-10-18.md`, item 5 of the paper's improvements, at the user's request through the paper session. Version 0.15.0 (presk `f407639`, the tag's tree and the two scripts; the addendum without dropout at `caf42c1`), PyTorch 2.14.0+cpu, on falicon, 2026-10-18 19:52 to 20:35, nothing else on the machine. The tables come from `experiments/pytorch_modes.sh` (`make pytorch-modes`): `out/pytorch-modes-0.15.0/report.md`, `distances.md`, `modes-vs-eager.md`, `identity.txt`, `gap/margins.md`, `quality/quality.md`, `attribution/`. The outputs are in presk-project `data/pytorch-modes-0.15.0.tar.xz`.
+> PyTorch compiled and in mixed precision, beside eager (presk D153). It was run at the user's request. Version 0.15.0 (presk `f407639`, the tag's tree and the two scripts; the addendum without dropout at `caf42c1`), PyTorch 2.14.0+cpu, on falicon, 2026-10-18 19:52 to 20:35, nothing else on the machine. The tables come from `experiments/pytorch_modes.sh` (`make pytorch-modes`): `out/pytorch-modes-0.15.0/report.md`, `distances.md`, `modes-vs-eager.md`, `identity.txt`, `gap/margins.md`, `quality/quality.md`, `attribution/`. The outputs are in presk-project `data/pytorch-modes-0.15.0.tar.xz`.
 
 # PyTorch compiled and in mixed precision, beside eager
 
-The paper's Table 4 and T2 ("the C program's training step at 0.98× of PyTorch's", D127) compare with PyTorch **eager** in `float32`. Eager is not what a PyTorch user who cares about speed runs. `torch.compile` captures the graph and fuses it, and AMP in `bfloat16` is the mixed-precision recipe. This run measures both, on the same model, the same inputs and the same cores, by D126's protocol.
+T2 and T4 (D127: the C program's training step at 0.98× of PyTorch's) compare with PyTorch **eager** in `float32`. Eager is not what a PyTorch user who cares about speed runs. `torch.compile` captures the graph and fuses it, and AMP in `bfloat16` is the mixed-precision recipe. This run measures both, on the same model, the same inputs and the same cores, by D126's protocol.
 
 **In one paragraph.** On ten X925 cores, `torch.compile` with its defaults takes PyTorch's training step from 987.6 ms to 558.2 ms (0.57×), and its forward pass from 151.4 ms to 122.4 ms (0.81×). **The compiler's C step (1 003.5 ms, D127) is 1.80× the compiled step**, where it is 0.98× eager. With AMP added, PyTorch's step is 466.2 ms, so the C step is 2.15× it. Like for like, PyTorch's step drawing no dropout masks as the C step draws none, the C step is 1.46× eager's (685.0 ms) and 2.07× the compiled step's (483.8 ms). The compiled graph computes the products as eager does, through ATen's `mm` and `bmm`, about two thirds of its step. It wins on the rest: the elementwise operations fused, and the dropout masks drawn inside its kernels, which take a quarter of eager's step. In accuracy, the compiled `float32` model is as close to the exact logits as eager's (3.3·10⁻⁶ against 2.9·10⁻⁶ at D = 64, no flip). AMP's `bfloat16` is 4.0·10⁻² from them and flips 505 of 118 016 decisions, as the compiler's all-`bf16` does (5.0·10⁻², 480): the recipe certifies nothing at the margins' budget. Trained 600 steps at D = 64, AMP's validation loss is eager's +1.4·10⁻³ on average over three seeds. That is above the curve's realizations (within 1.3·10⁻⁴ of all-`f64`) and inside the spread a different dropout mask alone makes (about 10⁻²).
 
@@ -205,14 +205,14 @@ The seeds' spread, the largest loss less the smallest over a mode's three seeds:
 
 ## What it says
 
-**For T2 and Table 4.** On this CPU, `torch.compile` with its defaults makes PyTorch's training step of the course GPT 1.77× faster than eager, and its forward pass 1.24×.
+**For T2 and T4.** On this CPU, `torch.compile` with its defaults makes PyTorch's training step of the course GPT 1.77× faster than eager, and its forward pass 1.24×.
 - **Against compiled PyTorch, the compiler's C step is 1.80× slower**, where it is 0.98× eager's.
 - *T2's statement* (the C step at most 2× PyTorch's) would still hold against the compiled step as `train.py` runs it. It would fail against compile + AMP (2.15×, another precision), and like for like without masks (2.07×).
 - *The eager comparison already favoured the C program.* The C step draws no dropout masks and eager PyTorch's spends a quarter of its time drawing them. Without masks, the C step is 1.46× eager.
 - *The gap is not in the products*, which compiled PyTorch computes through the same libraries as eager. It is in the elementwise passes, which inductor fuses, and in the products' kernels themselves: the C program's are GCC's code from the export's nests, against OpenBLAS and oneDNN (D97, D100).
-- **RQ6 and §1 should say it:** the C step is level with eager PyTorch and behind compiled PyTorch, 1.8× with dropout and 2.1× like for like.
+- **In short:** the C step is level with eager PyTorch and behind compiled PyTorch, 1.8× with dropout and 2.1× like for like.
 
-**For §4's recipe row.**
+**For the recipe.**
 - *AMP's gap.* The recipe PyTorch documents for mixed precision, AMP in `bfloat16`, is 4.0·10⁻² from the exact logits at D = 64, flips 505 decisions and certifies nothing at ε\*(10⁻³). That is the compiler's all-`bf16` in kind, where the solver's certified realizations keep the gap 160 to 540 times smaller with no flip.
 - *AMP's speed.* AMP buys PyTorch 0.84× its step and 0.71× its forward pass in eager, and 0.84× its compiled step (466.2 against 558.2).
 - *AMP's quality.* Its quality cost (+1.4·10⁻³) is ten times the solver's realizations' and inside the spread of one dropout draw.

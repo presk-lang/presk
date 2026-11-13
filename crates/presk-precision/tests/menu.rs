@@ -249,29 +249,9 @@ fn the_exhaustive_search_runs_over_the_rungs() {
 /// gathered and contracted.
 #[test]
 fn the_scale_s_axis_is_the_one_every_reader_contracts() {
-    let src = r#"
-const K = 3
-const N = 4
-const V = 5
-
-module Heads {
-  param w   : ℝ[K, N]        init = xavier_uniform
-  param m   : ℝ[N, K]        init = xavier_uniform
-  param p   : ℝ[o: N, i: K]  init = xavier_uniform
-  param tab : ℝ[V, K]        init = normal(std = 0.02)
-  param tie : ℝ[V, K]        init = normal(std = 0.02)
-
-  fn apply(x : ℝ[batch: B, i: K], ids : idx[V][batch: B]) -> ℝ[] =
-    let a = x · w
-    let b = embed(tab, ids) · w
-    let c = m · mean(axis batch, x)
-    let d = ein[batch, o](x * p)
-    let e = embed(tie, ids) + one_hot(ids) · tie
-    mean(a) + mean(b) + mean(c) + mean(d) + mean(e)
-}
-"#;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/tests/precision/heads.psk");
     let mut sm = presk_syntax::SourceMap::new();
-    let id = sm.add("heads.psk", src);
+    let id = sm.load(&path).unwrap();
     let (program, diags) = presk_syntax::parse_file(&sm, id);
     assert!(diags.iter().all(|d| !d.is_error()), "{}", presk_syntax::diag::render_all(&diags, &sm, false));
     let (prog, diags) = presk_types::elab::elaborate(&mut sm, id, program, &presk_types::elab::Options::default());

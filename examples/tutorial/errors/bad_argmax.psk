@@ -1,0 +1,8 @@
+-- bad_argmax.psk — step 4 of the tutorial: a loss through `argmax` has no gradient (E3001).
+import "../01_linear.psk" as lin
+dim B
+
+fn hits{D : dim}(net : lin.Linear{D, 8}, θ : params net, x : ℝ[batch: B, D]) -> ℝ[] =
+  mean(real(argmax(net.apply(θ, x))))
+fn hits_grad{D : dim}(net : lin.Linear{D, 8}, θ : params net, x : ℝ[batch: B, D]) -> params net =
+  grad(λ θ. hits(net, θ, x))(θ)

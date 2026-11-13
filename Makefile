@@ -1,18 +1,18 @@
 # Presk compiler — thin orchestration over cargo (cargo does the work; never the reverse).
 #   make build            debug build of the workspace
 #   make test             all tests (unit, snapshot, property)
-#   make check-examples   `presk check` on every example program
+#   make check-examples   `presk check` on every program under examples/ but the diagnostics and the parser's ASCII spellings
 #   make run-examples     the reference `presk run` commands of the plan (§4)
 #   make export-examples  export the example files to out/ (with conformance data)
 #   make venv             create .venv with PyTorch, ONNX Runtime (uv) for the conformance tests
 #   make conformance      export-examples, then run the generated PyTorch tests in .venv
-#   make tutorial         every command of the manual's tutorial chapter, steps 0 to 18 (tutorial/*.psk)
+#   make tutorial         every command of the manual's tutorial chapter, steps 0 to 18 (examples/tutorial/*.psk)
 #   make train-examples   presk train on the regression and the tiny MiniGPT, on the reference and natively
 #   make serve-examples   presk serve on the tiny MiniGPT's checkpoint: greedy tokens identical on every backend; export --serve
 #   make serve-pt          ...and the exported serve.py gives the same tokens (needs the venv)
 #   make opt-examples     the e-graph optimizer: its report on the examples, and the same outputs with and without --opt
 #   make calibrate        presk bench --calibrate: time the kernels of the tiny MiniGPT natively, fit the roofline profile (out/profile.json)
-#   make corpus           the NLP-course corpus (corpus/nlp): the ladder checked, run and trained on the Code civil
+#   make corpus           the NLP-course corpus (examples/corpus/nlp): the ladder checked, run and trained on the Code civil
 #   make corpus-gpt       tokenize the Code civil and train the course GPT (reduced constants: the full size is the wall 0.4.0 has to break)
 #   make gpt-trained      the corpus GPT trained 600 steps at D = 64: the weights of the precision targets
 #   make precision        envelope, bound, sensitivity and solve on the corpus GPT (0.5.0, 0.6.0 step 6)
@@ -22,7 +22,7 @@
 #   make j-step           statement J′: the solved step at course scale, time and update gap
 #   make step-train       600 steps from scratch under the solved step, against the seeds
 #   make delta-p          δ_p, the reference's own gap: the interpreter at 128, 256 and 512 bits against itself at 1024 on the course GPT's loss, logits and gradient (W16, D98; about half an hour)
-#   make compile-times    the time presk check, calibrate, solve and the exact reference take per model, into docs/compile-times-<date>.md (the paper's setup table; a quiet machine)
+#   make compile-times    the time presk check, calibrate, solve and the exact reference take per model, into docs/compile-times-<date>.md (a quiet machine)
 #   make foil             MLPerf's accuracy rule and a budget on one model (0.6.0 step 8)
 #   make margins          ε from the exact model's margins, every realization's flips (D118)
 #   make bert             BERT-large inference at MLPerf's constants (about five hours; L=2 for minutes)
@@ -41,10 +41,16 @@
 #   make gappa-dot        a contraction's bound proved in Gappa beside the compiler's bound and the measured gap: `dot` of [8, K]·[K, 8] in f32 at K = 8…128 under the sequential order and interleaved(4, 8, 16), into out/gappa-dot/summary.md (D131; needs `gappa`; minutes, nothing timed)
 #   make solver-rounding  the solver's rounding term measured on the envelope and a narrowing step by measurement (--rounding measured, --narrow measured; defaults unchanged): V6's protocol on the logits at D = 64 at 4.67e-4 and 1e-6 in four forms, each judged on the 461 held-out windows beside D154's searches, into out/solver-rounding/report.md (D155; needs make margins and make precision-tuning; about half an hour)
 #   make off-sample       the certificate off-sample against the size of the calibration sample: the envelope of the logits at D = 64 on the first 1, 2, 4, 8, 16, 32 held-out windows and on all 461, the solver in three forms at 4.67e-4 and 1e-6 on each, every realization judged on the windows it was not calibrated on, into out/off-sample/report.md (D156; needs make margins and make solver-rounding; about an hour and a half on 12 jobs)
+#   make reference-bits   SR2 of the short runs: the eight solves of record at D = 64 (D170's curve on the trained envelope at 1e-1 … 1e-7 and V6 on the logits at 4.67e-4) with the reference at --bits 53 and 64, each realization against the record's byte for byte and each gap against the one read at 128 bits, into out/reference-bits/report.md (D192; needs D170's outputs and presk-project's data/rows-0.16.1.tar.xz; about fifteen minutes)
+#   make bound-depth      SR1 of the short runs: the course GPT at D = 64 trained at L = 1, 2, 4 and 6 blocks (make gpt-trained's recipe), each envelope checked under the four rules with --measure in f64 and f32, and the same L at initialization, log10(cond/rss) against L and rss against the measured gap, into out/bound-depth/report.md (D193; needs make gpt-trained and make precision; about twenty minutes)
+#   make step-plan        SR4 of the short runs: the course GPT's step under the cost model's plan, all-f64, all-f32 and the step solved at 1e-3 each under its own plan from the frozen profile, on the ten X925 cores pinned, five processes a row (presk train's median step, and J′'s four-step less one-step measure), and the weights under the default layout and the plan compared bit for bit, into out/step-plan/report.md (D194; needs make step-table's out/step_1e-3.json and the frozen profile; about fifteen minutes, the machine alone)
+#   make opt-measured     SR3 of the short runs: the e-graph optimizer on the course GPT at D = 64 and at the course constants, under all-f32 and all-f64 and the default layout, with and without --opt: the rules that fired, the loss's gap to the exact loss at 128 bits on the envelopes' two held-out windows, presk bench on the loss in five processes, and beside the gradient's gap at D = 64 and presk train's step in five processes, into out/opt-measured/report.md (D195; needs make gpt-trained's weights and D129's out/course_train_f64; about an hour and a half, the machine alone)
+#   make weights-width    SR6 of the short runs: the course GPT's trained weights of record rounded to k = 8 … 24 significant bits (the nine matrices, or all twenty-one parameters) and run under all-f32 natively on the Code civil's 461 held-out windows against the exact logits of the unrounded weights, at D = 64 and at the course constants: SR6a's checks, the smallest certified k at 10⁻³, the bytes at rest and the traffic, the Code pénal's rows, into out/weights-width/report.md (D196; needs make margins' and margins_course.sh's outputs of record; nothing timed)
+#   make sr5              SR5 of the short runs, on D200's timers, alone on the machine: D190's five serving rows of Llama 3.2 1B split into compiling, computing and the rest (SR5a, with SR5-0: D190's tokens and its elapsed times within 2 %), and the Llama 2 decoder block at the 7B width in 20 processes of `presk bench --host-profile --launches`, the two modes looked for (SR5b), into out/sr5-0.17.2/report.md (D201; needs D190's outputs and V5's realizations)
 #   make second-corpus    the certificate on a second text: the Code pénal (the course's container) on the Code civil's vocabulary, its first 461 windows of 256 through the Code civil's models, realizations and ε*(10⁻³) unchanged, at D = 64 and at the course constants, every realization of record judged there beside its rows on the Code civil (statements Y1 and Y2), into out/second-corpus/ (D168; needs make margins' and D163's outputs and the course GPT; network once; minutes at D = 64, about three hours at the course constants)
 #   make further-texts    the certificate on a third and a fourth text: the Code du travail and the Code de procédure pénale (the course's container), their typographic characters mapped and the rest outside the Code civil's vocabulary deleted, their first 461 windows of 256 through the Code civil's models at D = 64 and at the course constants, 0.16.1's realizations and 0.16.0's beside them (statement Z3, Y1 and Y2 per text), into out/further-<text>/ (D171; needs D170's and D163's outputs; network once; minutes at D = 64, about three hours a text at the course constants)
 #   make spend            three ways to spend the budget judged out of sample: the logits at D = 64 on the envelopes of the first 4 and 16 held-out windows, seven forms (--rounding unit, the default, --estimate rss, --narrow measured, --narrow heldout and the two with rss) at 4.67e-4 and 1e-6, every realization judged on the windows no form saw, into out/spend/report.md (D161; needs make margins)
-#   make precision-tuning a precision-tuning tool on the exported C: CRAFT's variable mode on the C program of the logits at D = 64 under the paper's criterion, Precimonious's and CRAFT's searches on presk's realizations, all of it judged on the 461 held-out windows, into out/precision-tuning/report.md (D154; needs make margins; network once for the tools, about half an hour)
+#   make precision-tuning a precision-tuning tool on the exported C: CRAFT's variable mode on the C program of the logits at D = 64 under the ε*(1e-3) criterion, Precimonious's and CRAFT's searches on presk's realizations, all of it judged on the 461 held-out windows, into out/precision-tuning/report.md (D154; needs make margins; network once for the tools, about half an hour)
 #   make pytorch-modes    PyTorch compiled (torch.compile) and in mixed precision (AMP bfloat16) beside eager: the course GPT's forward pass and training step by D126's protocol, the modes' identity, their gap to the exact logits at D = 64 and their quality after 600 steps, into out/pytorch-modes/report.md (D153; needs make margins; alone, about an hour)
 #   make pytorch-decoder  the Llama 2 decoder block at the 7B width, its forward pass natively and in PyTorch eager, ten X925 cores pinned, into out/pytorch-decoder/report.md (D107; alone, about three and a half hours)
 #   make host-profile     the native host's time by phase on the course GPT's forward pass, gradient and training step, into out/host-profile/report.md (0.10.0 step 5, D95; a quiet machine)
@@ -74,7 +80,6 @@
 #   make ra4-t3-day2      T3, day two (RA4_SAME_DATE=1: on day one's date), then ra4-t3-rank: presk rank --frozen into out/ra4-t3.md, O and Q on the derivative nests
 #   make realize          the fusion groups of the corpus GPT and the launches they remove (was `make sched`)
 #   make bench            presk bench on the tiny MiniGPT (forward, loss, optimizer step)
-#   make sync-examples    re-copy tests/examples from presk-specs and show the diff
 #   make snap             review pending insta snapshots
 #   make doc              build the user manual (crates/presk-manual) and open it
 #   make explain          presk explain on the tutorial's loss (a budget of 1e-3, the frozen profile, every target) into out/explain/loss (0.11.0)
@@ -101,15 +106,12 @@ RA4_CORES_SMALL ?= 0-4,10-14
 # `recompute`, the policy of the runs D48–D55 recorded (D93).
 REMAT ?= store
 
-EXAMPLES = tests/examples/mlp/mlp.psk \
-           tests/examples/layernorm/layernorm.psk \
-           tests/examples/minigpt/minigpt.psk \
-           tests/examples/minigpt/train_minigpt.psk \
-           tests/examples/minigpt/serve_minigpt.psk \
-           tests/examples/concat/concat.psk \
-           tests/examples/rope/rope.psk
+# Every program under examples/ (D198), listed by none: all but the
+# diagnostics', refused on purpose, and the parser's ASCII spellings, which
+# need only parse as their Unicode forms do.
+EXAMPLES = $(shell find examples -name '*.psk' -not -path 'examples/tests/diag/*' -not -path 'examples/tests/ascii/*' -not -path 'examples/tutorial/errors/*' | LC_ALL=C sort)
 
-.PHONY: llama3 llama3-budget llamacpp venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt sync-examples snap doc clean
+.PHONY: llama3 llama3-budget reference-bits bound-depth step-plan opt-measured weights-width sr5 llamacpp venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual manual-quotes gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -121,29 +123,29 @@ check-examples: build
 	@for f in $(EXAMPLES); do echo "== presk check $$f"; $(PRESK) check $$f || exit 1; done
 
 run-examples: build
-	$(PRESK) run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
-	$(PRESK) run tests/examples/layernorm/layernorm.psk --entry 'LayerNorm{8}.apply' --dim batch=3
-	$(PRESK) run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply \
+	$(PRESK) run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2
+	$(PRESK) run examples/spec/layernorm/layernorm.psk --entry 'LayerNorm{8}.apply' --dim batch=3
+	$(PRESK) run examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply \
 	    --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
-	$(PRESK) run tests/examples/rope/rope.psk --entry attention3 --dim B=2 --dim T=8
-	$(PRESK) run tests/examples/concat/concat.psk --entry loss_grad --dim B=2 --dim T=8
+	$(PRESK) run examples/spec/rope/rope.psk --entry attention3 --dim B=2 --dim T=8
+	$(PRESK) run examples/spec/concat/concat.psk --entry loss_grad --dim B=2 --dim T=8
 
 export-examples: build
-	$(PRESK) export tests/examples/mlp/mlp.psk --target pytorch --mode readable --conformance-entry mse_grad --dim D=4 --dim B=2 -o out/mlp_pt
-	$(PRESK) export tests/examples/layernorm/layernorm.psk --target pytorch --mode readable --conformance-entry 'LayerNorm{8}.apply' --dim batch=3 -o out/layernorm_pt
-	$(PRESK) export tests/examples/minigpt/minigpt.psk --target pytorch --mode readable --shapes=check \
+	$(PRESK) export examples/spec/mlp/mlp.psk --target pytorch --mode readable --conformance-entry mse_grad --dim D=4 --dim B=2 -o out/mlp_pt
+	$(PRESK) export examples/spec/layernorm/layernorm.psk --target pytorch --mode readable --conformance-entry 'LayerNorm{8}.apply' --dim batch=3 -o out/layernorm_pt
+	$(PRESK) export examples/spec/minigpt/minigpt.psk --target pytorch --mode readable --shapes=check \
 	    --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/minigpt_pt
-	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	$(PRESK) export examples/spec/minigpt/train_minigpt.psk --target pytorch --mode readable \
 	    --conformance-entry loss --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/train_pt
-	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	$(PRESK) export examples/spec/minigpt/train_minigpt.psk --target pytorch --mode readable \
 	    --conformance-entry adamw.step --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/adamw_pt
-	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	$(PRESK) export examples/spec/minigpt/train_minigpt.psk --target pytorch --mode readable \
 	    --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/trainloop_pt
-	$(PRESK) export tests/examples/minigpt/minigpt.psk --target pytorch --mode graph \
+	$(PRESK) export examples/spec/minigpt/minigpt.psk --target pytorch --mode graph \
 	    --conformance-entry MiniGPT.apply --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8 -o out/graph_pt
-	$(PRESK) export tests/examples/rope/rope.psk --target pytorch --mode readable --shapes=check \
+	$(PRESK) export examples/spec/rope/rope.psk --target pytorch --mode readable --shapes=check \
 	    --conformance-entry attention3 --dim B=2 --dim T=8 -o out/rope_pt
-	$(PRESK) export tests/examples/concat/concat.psk --target pytorch --mode readable --shapes=check \
+	$(PRESK) export examples/spec/concat/concat.psk --target pytorch --mode readable --shapes=check \
 	    --conformance-entry loss_grad --dim B=2 --dim T=8 -o out/concat_pt
 
 venv:
@@ -162,124 +164,127 @@ conformance: export-examples
 # step 18 a C compiler (with OpenMP for the planned program's threads).
 tutorial: build
 	$(PRESK) --help
-	$(PRESK) check tests/examples/mlp/mlp.psk
-	$(PRESK) check tutorial/01_linear.psk
-	! $(PRESK) run tutorial/01_linear.psk
-	$(PRESK) run tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --verbose
-	$(PRESK) run tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --seed 1 --bits 64 --digits 6
-	$(PRESK) check tutorial/02_norm.psk --summary
-	$(PRESK) run tutorial/02_norm.psk --entry 'RMSNorm{4}.apply' --dim batch=2 --digits 6
-	$(PRESK) check tutorial/03_attention.psk --summary
-	! $(PRESK) check tutorial/03_attention.psk --const H=3
-	$(PRESK) run tutorial/03_attention.psk --entry attend --dim B=1 --dim T=3 --digits 5
-	! $(PRESK) run tutorial/03_attention.psk --entry attend --dim B=1 --dim T=2000
-	$(PRESK) check tutorial/04_grad.psk --summary
-	$(PRESK) run tutorial/04_grad.psk --entry loss --dim D=3 --dim B=2 --digits 6
-	$(PRESK) run tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6
-	$(PRESK) run tutorial/05_sample.psk --entry pick --dim B=5
-	$(PRESK) run tutorial/05_sample.psk --entry pick --dim B=5 --seed 3
-	$(PRESK) check tutorial/06_tower.psk --summary
-	$(PRESK) dump tutorial/06_tower.psk --stage elab
-	$(PRESK) run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6
-	$(PRESK) run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6 --const L=1
-	$(PRESK) dump tutorial/04_grad.psk --stage core | sed -n '/^fn loss{/,/^}/p'
-	$(PRESK) dump tutorial/04_grad.psk --stage core-after-ad | grep '^fn'
-	$(PRESK) explain tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --out out/tutorial_explain
+	$(PRESK) check examples/spec/mlp/mlp.psk
+	$(PRESK) check examples/tutorial/01_linear.psk
+	! $(PRESK) run examples/tutorial/01_linear.psk
+	$(PRESK) run examples/tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --verbose
+	$(PRESK) run examples/tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --seed 1 --bits 64 --digits 6
+	$(PRESK) check examples/tutorial/02_norm.psk --summary
+	$(PRESK) run examples/tutorial/02_norm.psk --entry 'RMSNorm{4}.apply' --dim batch=2 --digits 6
+	@for f in bad_axis bad_ret bad_unbound bad_syntax; do echo "! presk check examples/tutorial/errors/$$f.psk"; ! $(PRESK) check examples/tutorial/errors/$$f.psk || exit 1; done
+	$(PRESK) check examples/tutorial/03_attention.psk --summary
+	! $(PRESK) check examples/tutorial/03_attention.psk --const H=3
+	$(PRESK) run examples/tutorial/03_attention.psk --entry attend --dim B=1 --dim T=3 --digits 5
+	! $(PRESK) run examples/tutorial/03_attention.psk --entry attend --dim B=1 --dim T=2000
+	$(PRESK) check examples/tutorial/04_grad.psk --summary
+	$(PRESK) run examples/tutorial/04_grad.psk --entry loss --dim D=3 --dim B=2 --digits 6
+	$(PRESK) run examples/tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6
+	! $(PRESK) check examples/tutorial/errors/bad_argmax.psk
+	$(PRESK) run examples/tutorial/05_sample.psk --entry pick --dim B=5
+	$(PRESK) run examples/tutorial/05_sample.psk --entry pick --dim B=5 --seed 3
+	! $(PRESK) check examples/tutorial/errors/bad_rand.psk
+	$(PRESK) check examples/tutorial/06_tower.psk --summary
+	$(PRESK) dump examples/tutorial/06_tower.psk --stage elab
+	$(PRESK) run examples/tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6
+	$(PRESK) run examples/tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6 --const L=1
+	$(PRESK) dump examples/tutorial/04_grad.psk --stage core | sed -n '/^fn loss{/,/^}/p'
+	$(PRESK) dump examples/tutorial/04_grad.psk --stage core-after-ad | grep '^fn'
+	$(PRESK) explain examples/tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --out out/tutorial_explain
 	grep '^## ' out/tutorial_explain/explain.md
-	$(PRESK) export tutorial/06_tower.psk --target pytorch --mode readable --shapes=check \
+	$(PRESK) export examples/tutorial/06_tower.psk --target pytorch --mode readable --shapes=check \
 	    --conformance-entry Tower.apply --dim batch=2 -o out/tutorial_tower
-	$(PRESK) export tutorial/04_grad.psk --target pytorch --mode readable \
+	$(PRESK) export examples/tutorial/04_grad.psk --target pytorch --mode readable \
 	    --conformance-entry loss_grad --dim D=3 --dim B=2 -o out/tutorial_grad
 	@for d in out/tutorial_tower out/tutorial_grad; do echo "== $$d"; (cd $$d && ../../.venv/bin/python -m pytest -q test_conformance.py) || exit 1; done
-	$(PRESK) check tests/examples/minigpt/minigpt.psk --summary
-	$(PRESK) run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply \
+	$(PRESK) check examples/spec/minigpt/minigpt.psk --summary
+	$(PRESK) run examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply \
 	     --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
-	$(PRESK) run tests/examples/minigpt/train_minigpt.psk --entry loss \
+	$(PRESK) run examples/spec/minigpt/train_minigpt.psk --entry loss \
 	     --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
-	! $(PRESK) run tests/examples/minigpt/train_minigpt.psk
-	$(PRESK) data pack --type '(ℝ[model: 4], ℝ[model: 4])' tutorial/data/pairs.txt -o tutorial/data/pairs.psk.d
-	$(PRESK) check tutorial/07_train.psk --summary
-	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
-	$(PRESK) export tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
+	! $(PRESK) run examples/spec/minigpt/train_minigpt.psk
+	$(PRESK) data pack --type '(ℝ[model: 4], ℝ[model: 4])' examples/tutorial/data/pairs.txt -o examples/tutorial/data/pairs.psk.d
+	$(PRESK) check examples/tutorial/07_train.psk --summary
+	$(PRESK) train examples/tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
+	$(PRESK) export examples/tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
 	(cd out/tutorial_train && ../../.venv/bin/python -m pytest -q -s test_conformance.py)
 	(cd out/tutorial_train && ../../.venv/bin/python train.py --steps 100 --log-every 25 --ckpt ckpt)
-	$(PRESK) bench tutorial/07_train.psk --entry loss --dim B=8
-	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 20 --backend native --ckpt out/tutorial_ckpt_native
-	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 100 --backend native --realize f32 --ckpt out/tutorial_ckpt_native32
-	$(PRESK) dump tutorial/04_grad.psk --stage core-opt >/dev/null
-	$(PRESK) run tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6 --opt
+	$(PRESK) bench examples/tutorial/07_train.psk --entry loss --dim B=8
+	$(PRESK) train examples/tutorial/07_train.psk --steps 100 --log-every 20 --backend native --ckpt out/tutorial_ckpt_native
+	$(PRESK) train examples/tutorial/07_train.psk --steps 100 --log-every 100 --backend native --realize f32 --ckpt out/tutorial_ckpt_native32
+	$(PRESK) dump examples/tutorial/04_grad.psk --stage core-opt >/dev/null
+	$(PRESK) run examples/tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6 --opt
 	rm -f out/tutorial_profile.json
-	$(PRESK) bench tutorial/07_train.psk --entry loss --dim B=8 --repeat 7 --calibrate out/tutorial_profile.json
-	$(PRESK) bench tutorial/07_train.psk --entry loss --dim B=8 --opt --profile out/tutorial_profile.json
-	python3 corpus/nlp/data/prepare.py
-	$(PRESK) data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
-	$(PRESK) data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
-	$(PRESK) data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
-	$(PRESK) data pack --type '(idx[41], idx[41])' corpus/nlp/data/bigrams.txt -o corpus/nlp/data/bigrams.psk.d
-	$(PRESK) check corpus/nlp/01_bigram_count.psk --summary
-	$(PRESK) run corpus/nlp/01_bigram_count.psk --entry loss --data corpus/nlp/data/bigrams.psk.d --backend native --digits 10
-	$(PRESK) check corpus/nlp/05_gpt.psk --summary
-	$(PRESK) calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 \
+	$(PRESK) bench examples/tutorial/07_train.psk --entry loss --dim B=8 --repeat 7 --calibrate out/tutorial_profile.json
+	$(PRESK) bench examples/tutorial/07_train.psk --entry loss --dim B=8 --opt --profile out/tutorial_profile.json
+	python3 examples/corpus/nlp/data/prepare.py
+	$(PRESK) data chars examples/corpus/nlp/data/civil.md -o examples/corpus/nlp/data/civil_vocab.json
+	$(PRESK) data encode examples/corpus/nlp/data/civil.md --vocab examples/corpus/nlp/data/civil_vocab.json -o examples/corpus/nlp/data/civil_tokens.txt
+	$(PRESK) data lm-windows --vocab 92 --seq 256 examples/corpus/nlp/data/civil_tokens.txt -o examples/corpus/nlp/data/civil_T256.psk.d
+	$(PRESK) data pack --type '(idx[41], idx[41])' examples/corpus/nlp/data/bigrams.txt -o examples/corpus/nlp/data/bigrams.psk.d
+	$(PRESK) check examples/corpus/nlp/01_bigram_count.psk --summary
+	$(PRESK) run examples/corpus/nlp/01_bigram_count.psk --entry loss --data examples/corpus/nlp/data/bigrams.psk.d --backend native --digits 10
+	$(PRESK) check examples/corpus/nlp/05_gpt.psk --summary
+	$(PRESK) calibrate --precision examples/tutorial/07_train.psk --entry loss --dim B=4 \
 	    --bits 128 --out out/tut_env.json
-	$(PRESK) check --precision out/tut_env.json tutorial/07_train.psk --realize f32
-	$(PRESK) solve tutorial/07_train.psk --precision out/tut_env.json \
+	$(PRESK) check --precision out/tut_env.json examples/tutorial/07_train.psk --realize f32
+	$(PRESK) solve examples/tutorial/07_train.psk --precision out/tut_env.json \
 	    --budget 1e-3 --out out/tut_solved.json --sites 0
-	$(PRESK) run tutorial/07_train.psk --entry loss --dim B=4 \
+	$(PRESK) run examples/tutorial/07_train.psk --entry loss --dim B=4 \
 	    --backend native --realize @out/tut_solved.json --digits 10
-	$(PRESK) calibrate --step tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d \
+	$(PRESK) calibrate --step examples/tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d \
 	    --warmup 20 --samples 8 --realize f64 --realize f32 --realize bf16 --realize recipe \
 	    --out out/tut_step.json
-	$(PRESK) solve --step tutorial/07_train.psk --precision out/tut_step.json \
+	$(PRESK) solve --step examples/tutorial/07_train.psk --precision out/tut_step.json \
 	    --budget 1e-3 --out out/tut_step_solved.json
-	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 20 --backend native \
+	$(PRESK) train examples/tutorial/07_train.psk --steps 100 --log-every 20 --backend native \
 	    --realize @out/tut_step_solved.json --ckpt out/tutorial_ckpt_step
 	$(PRESK) data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_step/final.psk.d
-	$(PRESK) train tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
+	$(PRESK) train examples/tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
 	    --seed 1 --ckpt out/tutorial_ckpt_seed1
 	$(PRESK) data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_seed1/final.psk.d
 	rm -rf out/tut_layout.json out/tut_tune
-	$(PRESK) bench experiments/gemm.psk --entry gemm --dim N=256 --realize f32 \
+	$(PRESK) bench examples/experiments/gemm.psk --entry gemm --dim N=256 --realize f32 \
 	    --calibrate out/tut_layout.json --space calib --repeat 5
-	$(PRESK) bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
+	$(PRESK) bench examples/experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
 	    --calibrate out/tut_layout.json --space calib --repeat 5
-	$(PRESK) plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+	$(PRESK) plan examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
 	    --profile out/tut_layout.json --out out/tut_plan.json
-	$(PRESK) run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
+	$(PRESK) run examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
 	    --realize f32 > out/tut_attend.txt
-	$(PRESK) run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
+	$(PRESK) run examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
 	    --plan @out/tut_plan.json > out/tut_attend_plan.txt
 	cmp out/tut_attend.txt out/tut_attend_plan.txt && echo "same output"
-	$(PRESK) autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+	$(PRESK) autotune examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
 	    --space small --profile out/tut_layout.json --interp --out out/tut_tune/day1
-	$(PRESK) autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+	$(PRESK) autotune examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
 	    --space small --profile out/tut_layout.json --out out/tut_tune/day2
 	$(PRESK) rank out/tut_tune/day1 out/tut_tune/day2 --entry attend --out out/tut_rank.md \
 	    | sed -n '/^## Statements/,/^| tile/p'
 	rm -rf out/tut_c out/tut_c16 out/tut_scop
-	$(PRESK) export tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim T=3 -o out/tut_c
+	$(PRESK) export examples/tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim T=3 -o out/tut_c
 	$(MAKE) -C out/tut_c check PRESK=$(CURDIR)/target/debug/presk
 	out/tut_c/model out/tut_c/conformance/inputs.psk.d out/tut_c/out.psk.d
 	$(PRESK) data info out/tut_c/out.psk.d
-	$(PRESK) export tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 \
+	$(PRESK) export examples/tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 \
 	    --plan @out/tut_plan.json -o out/tut_c16
 	$(MAKE) -s -C out/tut_c16 check
 	OMP_NUM_THREADS=1 $(MAKE) -s -C out/tut_c16 check
 	out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d out/tut_c16/out.psk.d
 	OMP_NUM_THREADS=1 out/tut_c16/model -r 11 out/tut_c16/conformance/inputs.psk.d out/tut_c16/out.psk.d
-	$(PRESK) export tutorial/03_attention.psk --target c --mode scop --entry attend --dim B=16 --dim T=256 \
+	$(PRESK) export examples/tutorial/03_attention.psk --target c --mode scop --entry attend --dim B=16 --dim T=256 \
 	    --realize f32 -o out/tut_scop
 	$(MAKE) -s -C out/tut_scop check
 
 train-examples: build
-	$(PRESK) train tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
-	$(PRESK) train tests/examples/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+	$(PRESK) train examples/tests/train/mlp_regression.psk --steps 200 --log-every 50 --ckpt out/reg_ckpt
+	$(PRESK) train examples/spec/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
 	    --steps 20 --bits 64 --log-every 5 --ckpt out/ckpt
 	$(PRESK) data info out/ckpt/final.psk.d
-	$(PRESK) train tests/examples/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+	$(PRESK) train examples/spec/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
 	    --steps 20 --log-every 5 --backend native --ckpt out/ckpt_native
-	$(PRESK) train tests/examples/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+	$(PRESK) train examples/spec/minigpt/train_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
 	    --steps 20 --log-every 20 --backend native --realize f32 --ckpt out/ckpt_native32
-	$(PRESK) train tests/examples/minigpt/train_minigpt.psk --const V=64 --const D=64 --const H=4 --const L=4 \
+	$(PRESK) train examples/spec/minigpt/train_minigpt.psk --const V=64 --const D=64 --const H=4 --const L=4 \
 	    --steps 100 --log-every 25 --backend native --ckpt out/ckpt_large
 
 # The MLPerf transcriptions of the manual's `coverage` chapter: what the shape
@@ -290,14 +295,14 @@ train-examples: build
 BERT_TINY = --const V=100 --const D=32 --const H=2 --const L=2 --dim B=2 --dim T=16
 LLAMA_TINY = --const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16
 coverage: build
-	$(PRESK) check coverage/bert.psk --summary | head -12
-	$(PRESK) check coverage/llama.psk --summary | head -12
-	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --bits 128 --digits 6 | cut -c1-120
-	$(PRESK) run coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
-	$(PRESK) run coverage/llama.psk --entry Llama.apply $(LLAMA_TINY) --bits 128 --digits 6 | cut -c1-120
-	$(PRESK) run coverage/llama.psk --entry Llama.apply $(LLAMA_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
-	$(PRESK) run coverage/llama.psk --entry loss $(LLAMA_TINY) --bits 128 --digits 17
-	$(PRESK) run coverage/llama.psk --entry loss $(LLAMA_TINY) --backend native --realize f64 --digits 17
+	$(PRESK) check examples/coverage/bert.psk --summary | head -12
+	$(PRESK) check examples/coverage/llama.psk --summary | head -12
+	$(PRESK) run examples/coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --bits 128 --digits 6 | cut -c1-120
+	$(PRESK) run examples/coverage/bert.psk --entry BertSquad.apply $(BERT_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
+	$(PRESK) run examples/coverage/llama.psk --entry Llama.apply $(LLAMA_TINY) --bits 128 --digits 6 | cut -c1-120
+	$(PRESK) run examples/coverage/llama.psk --entry Llama.apply $(LLAMA_TINY) --backend native --realize f32 --digits 6 | cut -c1-120
+	$(PRESK) run examples/coverage/llama.psk --entry loss $(LLAMA_TINY) --bits 128 --digits 17
+	$(PRESK) run examples/coverage/llama.psk --entry loss $(LLAMA_TINY) --backend native --realize f64 --digits 17
 
 # The three experiments of the manual's `experiments` chapter (needs `make venv`).
 # The third trains the course GPT against PyTorch on the same model and data:
@@ -309,17 +314,17 @@ GPT_STEPS ?= 6
 GPT_THREADS ?= $(shell nproc)
 experiment-gpt: build
 	$(CARGO) build --release -p presk
-	python3 corpus/nlp/data/prepare.py
-	$(PRESK) data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
-	$(PRESK) data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
-	$(PRESK) data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
-	$(PRESK) export corpus/nlp/05_gpt.psk --target pytorch --mode readable --train -o out/gpt_pt
+	python3 examples/corpus/nlp/data/prepare.py
+	$(PRESK) data chars examples/corpus/nlp/data/civil.md -o examples/corpus/nlp/data/civil_vocab.json
+	$(PRESK) data encode examples/corpus/nlp/data/civil.md --vocab examples/corpus/nlp/data/civil_vocab.json -o examples/corpus/nlp/data/civil_tokens.txt
+	$(PRESK) data lm-windows --vocab 92 --seq 256 examples/corpus/nlp/data/civil_tokens.txt -o examples/corpus/nlp/data/civil_T256.psk.d
+	$(PRESK) export examples/corpus/nlp/05_gpt.psk --target pytorch --mode readable --train -o out/gpt_pt
 	(cd out/gpt_pt && ../../.venv/bin/python train.py --steps $(GPT_STEPS) --log-every 1 --threads $(GPT_THREADS))
-	./target/release/presk train corpus/nlp/05_gpt.psk --steps $(GPT_STEPS) --log-every 1 --backend native --realize f32 --threads $(GPT_THREADS) --remat $(REMAT) --ckpt out/gpt_course
+	./target/release/presk train examples/corpus/nlp/05_gpt.psk --steps $(GPT_STEPS) --log-every 1 --backend native --realize f32 --threads $(GPT_THREADS) --remat $(REMAT) --ckpt out/gpt_course
 
 experiment: build
-	$(PRESK) export tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
-	$(PRESK) export tests/examples/minigpt/train_minigpt.psk --target pytorch --mode readable \
+	$(PRESK) export examples/tutorial/07_train.psk --target pytorch --mode readable --conformance-entry train:10 -o out/tutorial_train
+	$(PRESK) export examples/spec/minigpt/train_minigpt.psk --target pytorch --mode readable \
 	    --conformance-entry train:20 --const V=64 --const D=16 --const H=2 --const L=2 -o out/trainloop_pt
 	.venv/bin/python experiments/exact_vs_almost.py out/tutorial_train
 	.venv/bin/python experiments/exact_vs_almost.py out/trainloop_pt
@@ -327,7 +332,7 @@ experiment: build
 # The generation loop: the tiny MiniGPT's checkpoint of `make train-examples`,
 # greedy tokens identical on the reference and natively (both realizations).
 TINY = --const V=64 --const D=16 --const H=2 --const L=2
-SERVE = $(PRESK) serve tests/examples/minigpt/serve_minigpt.psk $(TINY) --weights out/ckpt/final.psk.d \
+SERVE = $(PRESK) serve examples/spec/minigpt/serve_minigpt.psk $(TINY) --weights out/ckpt/final.psk.d \
 	    --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0
 serve-examples: build
 	$(SERVE) --bits 64 > out/serve_interp.txt
@@ -335,9 +340,9 @@ serve-examples: build
 	$(SERVE) --backend native --realize f32 > out/serve_native32.txt
 	cmp out/serve_interp.txt out/serve_native.txt && cmp out/serve_interp.txt out/serve_native32.txt
 	cat out/serve_interp.txt
-	$(PRESK) serve tests/examples/minigpt/serve_minigpt.psk $(TINY) --weights out/ckpt/final.psk.d \
+	$(PRESK) serve examples/spec/minigpt/serve_minigpt.psk $(TINY) --weights out/ckpt/final.psk.d \
 	    --prompt "1 2 3 4 5 6 7 8" --tokens 8 --backend native
-	$(PRESK) export tests/examples/minigpt/serve_minigpt.psk $(TINY) --target pytorch --mode readable --serve -o out/serve_pt
+	$(PRESK) export examples/spec/minigpt/serve_minigpt.psk $(TINY) --target pytorch --mode readable --serve -o out/serve_pt
 
 # The exported serve.py against presk's native greedy tokens (needs `make venv`).
 serve-pt: serve-examples
@@ -348,35 +353,35 @@ serve-pt: serve-examples
 # report on the examples, then the same outputs with and without --opt on
 # the reference and natively (forward, gradient, twenty training steps).
 opt-examples: build
-	$(PRESK) dump tests/examples/mlp/mlp.psk --stage core-opt 2>&1 >/dev/null | grep -A 20 '^presk-opt'
-	$(PRESK) dump tests/examples/minigpt/train_minigpt.psk --stage core-opt $(TINY) 2>&1 >/dev/null | grep -A 30 '^presk-opt'
-	$(PRESK) run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 2>/dev/null > out/opt_a.txt
-	$(PRESK) run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt 2>/dev/null > out/opt_b.txt
+	$(PRESK) dump examples/spec/mlp/mlp.psk --stage core-opt 2>&1 >/dev/null | grep -A 20 '^presk-opt'
+	$(PRESK) dump examples/spec/minigpt/train_minigpt.psk --stage core-opt $(TINY) 2>&1 >/dev/null | grep -A 30 '^presk-opt'
+	$(PRESK) run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 2>/dev/null > out/opt_a.txt
+	$(PRESK) run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --opt 2>/dev/null > out/opt_b.txt
 	cmp out/opt_a.txt out/opt_b.txt
-	$(PRESK) run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8 --backend native 2>/dev/null > out/opt_a.txt
-	$(PRESK) run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8 --backend native --opt 2>/dev/null > out/opt_b.txt
+	$(PRESK) run examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8 --backend native 2>/dev/null > out/opt_a.txt
+	$(PRESK) run examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8 --backend native --opt 2>/dev/null > out/opt_b.txt
 	cmp out/opt_a.txt out/opt_b.txt
-	$(PRESK) run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --backend native --realize f32 2>/dev/null > out/opt_a.txt
-	$(PRESK) run tests/examples/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --backend native --realize f32 --opt 2>/dev/null > out/opt_b.txt
+	$(PRESK) run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --backend native --realize f32 2>/dev/null > out/opt_a.txt
+	$(PRESK) run examples/spec/mlp/mlp.psk --entry mse_grad --dim D=4 --dim B=2 --backend native --realize f32 --opt 2>/dev/null > out/opt_b.txt
 	cmp out/opt_a.txt out/opt_b.txt
-	$(PRESK) train tests/examples/minigpt/train_minigpt.psk $(TINY) --steps 20 --log-every 5 --backend native --ckpt out/ckpt_opt 2>&1 | grep '^step' > out/opt_a.txt
-	$(PRESK) train tests/examples/minigpt/train_minigpt.psk $(TINY) --steps 20 --log-every 5 --backend native --ckpt out/ckpt_opt --opt 2>&1 | grep '^step' > out/opt_b.txt
+	$(PRESK) train examples/spec/minigpt/train_minigpt.psk $(TINY) --steps 20 --log-every 5 --backend native --ckpt out/ckpt_opt 2>&1 | grep '^step' > out/opt_a.txt
+	$(PRESK) train examples/spec/minigpt/train_minigpt.psk $(TINY) --steps 20 --log-every 5 --backend native --ckpt out/ckpt_opt --opt 2>&1 | grep '^step' > out/opt_b.txt
 	cmp out/opt_a.txt out/opt_b.txt && cat out/opt_b.txt
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --opt
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --opt
 
-# The corpus of the NLP course (corpus/nlp, EXPECTED.md): the counting bigram
+# The corpus of the NLP course (examples/corpus/nlp, EXPECTED.md): the counting bigram
 # in closed form on 67652 real pairs, and the same model fitted by AdamW.
 corpus: build
-	python3 corpus/nlp/data/prepare.py
-	$(PRESK) data pack --type '(idx[41], idx[41])' corpus/nlp/data/bigrams.txt -o corpus/nlp/data/bigrams.psk.d
-	$(PRESK) check corpus/nlp/01_bigram_count.psk --summary
-	$(PRESK) check corpus/nlp/02_bigram_neural.psk --summary
-	$(PRESK) run corpus/nlp/01_bigram_count.psk --entry loss --data corpus/nlp/data/bigrams.psk.d --bits 128 --digits 10
-	$(PRESK) run corpus/nlp/01_bigram_count.psk --entry loss --data corpus/nlp/data/bigrams.psk.d --backend native --digits 10
-	$(PRESK) train corpus/nlp/02_bigram_neural.psk --backend native --log-every 1000 --ckpt out/nlp_bigram
-	$(PRESK) data pack --type '(idx[41][ctx: 3], idx[41])' corpus/nlp/data/context3.txt -o corpus/nlp/data/context3.psk.d
-	$(PRESK) check corpus/nlp/03_mlp.psk --summary
-	$(PRESK) train corpus/nlp/03_mlp.psk --backend native --log-every 400 --ckpt out/nlp_mlp
+	python3 examples/corpus/nlp/data/prepare.py
+	$(PRESK) data pack --type '(idx[41], idx[41])' examples/corpus/nlp/data/bigrams.txt -o examples/corpus/nlp/data/bigrams.psk.d
+	$(PRESK) check examples/corpus/nlp/01_bigram_count.psk --summary
+	$(PRESK) check examples/corpus/nlp/02_bigram_neural.psk --summary
+	$(PRESK) run examples/corpus/nlp/01_bigram_count.psk --entry loss --data examples/corpus/nlp/data/bigrams.psk.d --bits 128 --digits 10
+	$(PRESK) run examples/corpus/nlp/01_bigram_count.psk --entry loss --data examples/corpus/nlp/data/bigrams.psk.d --backend native --digits 10
+	$(PRESK) train examples/corpus/nlp/02_bigram_neural.psk --backend native --log-every 1000 --ckpt out/nlp_bigram
+	$(PRESK) data pack --type '(idx[41][ctx: 3], idx[41])' examples/corpus/nlp/data/context3.txt -o examples/corpus/nlp/data/context3.psk.d
+	$(PRESK) check examples/corpus/nlp/03_mlp.psk --summary
+	$(PRESK) train examples/corpus/nlp/03_mlp.psk --backend native --log-every 400 --ckpt out/nlp_mlp
 
 # The epsilon-to-quality curve (0.5.0 step 8): one program, one parameter
 # varying, every point verified by measurement against the exact reference.
@@ -414,8 +419,8 @@ bert:
 	$(CARGO) build --release -p presk
 	./experiments/bert.sh out/bert.md
 
-# The second model of the paper's RQ5 (D104): the Llama 2 decoder of
-# coverage/llama.psk at the 7B configuration's width (G = 32), L of its 32
+# A second model with a budget (D104): the Llama 2 decoder of
+# examples/coverage/llama.psk at the 7B configuration's width (G = 32), L of its 32
 # blocks, on its initialization and random token ids, by `bert`'s protocol —
 # the exact logits of one sequence of 384 tokens, the gaps of seven
 # realizations, the split of the whole quantisation scheme, the time — and a
@@ -428,7 +433,7 @@ llama:
 	./experiments/llama.sh out/llama.md
 
 # 0.17.0 step 7 (D180): Llama 3.2 1B on its published weights
-# (coverage/llama3.psk; experiments/llama/llama3.sh's stages convert,
+# (examples/coverage/llama3.psk; experiments/llama/llama3.sh's stages convert,
 # prompts, rw2, rw4, rw3). The checkpoint is the user's download:
 # `hf download meta-llama/Llama-3.2-1B --local-dir ~/presk-data/llama-3.2-1b`
 # (CK= names another directory). RW2 needs `make venv-hf`.
@@ -483,8 +488,8 @@ delta-p:
 	$(CARGO) build --release -p presk
 	./experiments/delta_p.sh
 
-# The time the compiler's commands take per model, for the paper's setup
-# table (presk-paper-001): `presk check`, `presk calibrate --precision`,
+# The time the compiler's commands take per model: `presk check`,
+# `presk calibrate --precision`,
 # `presk solve --budget 1e-3` and the exact reference on one sample, on the
 # course GPT at both constants, the tiny MiniGPT and BERT-large's L = 2
 # variant. A timing: a quiet machine, like j-step. MODELS= selects a subset.
@@ -495,69 +500,69 @@ compile-times:
 # The corpus GPT trained for 600 steps at D = 64, the weights statement K and
 # the quantisation table are measured on (a few minutes natively).
 gpt-trained: build
-	$(PRESK) train corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+	$(PRESK) train examples/corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
 	    --steps 600 --epochs 3 --log-every 100 --backend native --realize f32 --remat $(REMAT) --ckpt out/gpt_trained
 
 # The magnitude envelope a precision bound is conditional on (0.5.0 step 3),
 # and the property the whole analysis rests on: two disjoint sets of samples
 # must give magnitudes within a small factor of each other.
 precision: build
-	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	$(PRESK) calibrate --precision examples/corpus/nlp/05_gpt.psk --entry loss \
 	    --const D=32 --const H=2 --const L=2 --dim T=256 \
-	    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 0 \
+	    --data examples/corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 0 \
 	    --out out/envelope_a.json
-	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	$(PRESK) calibrate --precision examples/corpus/nlp/05_gpt.psk --entry loss \
 	    --const D=32 --const H=2 --const L=2 --dim T=256 \
-	    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 8 \
+	    --data examples/corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 8 \
 	    --out out/envelope_b.json --compare out/envelope_a.json
-	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	$(PRESK) calibrate --precision examples/corpus/nlp/05_gpt.psk --entry loss \
 	    --const D=32 --const H=2 --const L=2 --dim T=256 \
-	    --data corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 64 \
+	    --data examples/corpus/nlp/data/civil_T256.psk.d --bits 128 --samples 8 --from 64 \
 	    --out out/envelope_c.json --compare out/envelope_a.json
 	# And the bound that envelope supports, per realization (0.5.0 step 4).
-	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f64
-	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize f32 --sites 6
-	$(PRESK) check --precision out/envelope_a.json corpus/nlp/05_gpt.psk --realize bf16
+	$(PRESK) check --precision out/envelope_a.json examples/corpus/nlp/05_gpt.psk --realize f64
+	$(PRESK) check --precision out/envelope_a.json examples/corpus/nlp/05_gpt.psk --realize f32 --sites 6
+	$(PRESK) check --precision out/envelope_a.json examples/corpus/nlp/05_gpt.psk --realize bf16
 	# At T = 256, the dimension the weights were trained at: `pos : ℝ[T, D]`
 	# makes T part of the parameters, and 0.5.0 opened a T = 256 checkpoint at
 	# T = 32 without noticing (D48).
 	# On trained weights and two windows of text, the envelope now records
 	# each sum's terms as well (0.6.0 step 6); the four rules for sums side by
 	# side, each against the gap measured natively on the same inputs.
-	$(PRESK) calibrate --precision corpus/nlp/05_gpt.psk --entry loss \
+	$(PRESK) calibrate --precision examples/corpus/nlp/05_gpt.psk --entry loss \
 	    --const D=64 --const H=2 --const L=2 --dim T=256 --bits 128 \
-	    --data corpus/nlp/data/civil_T256.psk.d --samples 2 --from 0 \
+	    --data examples/corpus/nlp/data/civil_T256.psk.d --samples 2 --from 0 \
 	    --weights out/gpt_trained/final.psk.d --out out/gpt_env.json
-	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize f64 --model all --measure
-	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize f32 --model all --measure
-	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize bf16 --model all --measure
+	$(PRESK) check --precision out/gpt_env.json examples/corpus/nlp/05_gpt.psk --realize f64 --model all --measure
+	$(PRESK) check --precision out/gpt_env.json examples/corpus/nlp/05_gpt.psk --realize f32 --model all --measure
+	$(PRESK) check --precision out/gpt_env.json examples/corpus/nlp/05_gpt.psk --realize bf16 --model all --measure
 	# Where a budget should go, from one reverse sweep on trained weights
 	# (0.5.0 step 5). Without --weights the zero-initialized head makes every
 	# upstream gradient exactly zero and the ranking says nothing.
 	# The weights are `make gpt-trained`'s: 600 steps, not the 12 of
 	# `corpus-gpt`, whose head has barely left zero.
-	$(PRESK) dump corpus/nlp/05_gpt.psk --stage sensitivity --entry loss \
+	$(PRESK) dump examples/corpus/nlp/05_gpt.psk --stage sensitivity --entry loss \
 	    --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=256 \
 	    --weights out/gpt_trained/final.psk.d --sites 8
 	# A budget in, a realization out (0.5.0 step 6); then run what it chose.
-	$(PRESK) solve corpus/nlp/05_gpt.psk --precision out/gpt_env.json --budget 1e-3 \
+	$(PRESK) solve examples/corpus/nlp/05_gpt.psk --precision out/gpt_env.json --budget 1e-3 \
 	    --weights out/gpt_trained/final.psk.d --out out/solved.json --sites 6
-	$(PRESK) check --precision out/gpt_env.json corpus/nlp/05_gpt.psk --realize @out/solved.json --model all --measure
-	$(PRESK) run corpus/nlp/05_gpt.psk --entry loss --const D=64 --const H=2 --const L=2 \
+	$(PRESK) check --precision out/gpt_env.json examples/corpus/nlp/05_gpt.psk --realize @out/solved.json --model all --measure
+	$(PRESK) run examples/corpus/nlp/05_gpt.psk --entry loss --const D=64 --const H=2 --const L=2 \
 	    --dim B=2 --dim T=256 --backend native --realize @out/solved.json --digits 10
 
 # The Code civil as a character-level dataset, then the course GPT. `presk
 # check` passes at the course's own constants (D=384, H=6, L=6, T=256); what
 # trains here is reduced, because a course-scale step is the wall this version
-# exists to break (corpus/nlp/EXPECTED.md).
+# exists to break (examples/corpus/nlp/EXPECTED.md).
 corpus-gpt: build
-	python3 corpus/nlp/data/prepare.py
-	$(PRESK) data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
-	$(PRESK) data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
-	$(PRESK) data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
-	$(PRESK) data info corpus/nlp/data/civil_T256.psk.d --samples 1 | head -5
-	$(PRESK) check corpus/nlp/05_gpt.psk --summary | tail -8
-	$(PRESK) train corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+	python3 examples/corpus/nlp/data/prepare.py
+	$(PRESK) data chars examples/corpus/nlp/data/civil.md -o examples/corpus/nlp/data/civil_vocab.json
+	$(PRESK) data encode examples/corpus/nlp/data/civil.md --vocab examples/corpus/nlp/data/civil_vocab.json -o examples/corpus/nlp/data/civil_tokens.txt
+	$(PRESK) data lm-windows --vocab 92 --seq 256 examples/corpus/nlp/data/civil_tokens.txt -o examples/corpus/nlp/data/civil_T256.psk.d
+	$(PRESK) data info examples/corpus/nlp/data/civil_T256.psk.d --samples 1 | head -5
+	$(PRESK) check examples/corpus/nlp/05_gpt.psk --summary | tail -8
+	$(PRESK) train examples/corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
 	    --steps 12 --log-every 6 --backend native --realize f32 --ckpt out/gpt_tiny
 
 # The cost model (manual chapter `optimization`): every kernel of the three
@@ -566,37 +571,36 @@ corpus-gpt: build
 # the profile deciding the extraction.
 calibrate: build
 	rm -f out/profile.json
-	$(PRESK) bench tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8 --repeat 7 --calibrate out/profile.json | tail -3
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8 --repeat 7 --calibrate out/profile.json | tail -3
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 7 --calibrate out/profile.json
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8 --repeat 9 --opt --profile out/profile.json
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 9 --opt --profile out/profile.json
+	$(PRESK) bench examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8 --repeat 7 --calibrate out/profile.json | tail -3
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8 --repeat 7 --calibrate out/profile.json | tail -3
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 7 --calibrate out/profile.json
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8 --repeat 9 --opt --profile out/profile.json
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 9 --opt --profile out/profile.json
 
 # The realization pass (manual chapter `realize`): what shares a loop nest on
 # the corpus GPT, and the launches it removes from the forward and from the
 # optimizer's chain. `make sched` is kept as an alias of `make realize`.
 sched: realize
 realize: build
-	$(PRESK) dump corpus/nlp/05_gpt.psk --stage realize --const D=64 --const H=2 --const L=2 | tail -12
-	$(PRESK) dump corpus/nlp/05_gpt.psk --stage kernel --entry loss --const D=64 --const H=2 --const L=2 \
+	$(PRESK) dump examples/corpus/nlp/05_gpt.psk --stage realize --const D=64 --const H=2 --const L=2 | tail -12
+	$(PRESK) dump examples/corpus/nlp/05_gpt.psk --stage kernel --entry loss --const D=64 --const H=2 --const L=2 \
 	    --dim B=2 --dim T=32 --realize f32 | grep '^--'
-	$(PRESK) dump corpus/nlp/05_gpt.psk --stage kernel --entry adamw.step --const D=64 --const H=2 --const L=2 \
+	$(PRESK) dump examples/corpus/nlp/05_gpt.psk --stage kernel --entry adamw.step --const D=64 --const H=2 --const L=2 \
 	    --dim B=2 --dim T=32 --realize f32 | grep '^--'
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 21
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8 --repeat 21
 	@echo "-- a 1024x1024x1024 f32 matmul, one thread and all cores"
-	@printf 'const N : nat = 1024\nfn gemm(a : R[N, N], b : R[N, N]) -> R[N, N] = a . b\n' | sed 's/R\[/ℝ[/g; s/ \. / · /' > out/gemm.psk
-	$(PRESK) bench out/gemm.psk --entry gemm --realize f32 --threads 1 --repeat 5 --calibrate out/gemm_prof.json | grep '^kernel dot'
-	$(PRESK) bench out/gemm.psk --entry gemm --realize f32 --repeat 5 --calibrate out/gemm_prof.json | grep '^kernel dot'
+	$(PRESK) bench examples/experiments/gemm_1024.psk --entry gemm --realize f32 --threads 1 --repeat 5 --calibrate out/gemm_prof.json | grep '^kernel dot'
+	$(PRESK) bench examples/experiments/gemm_1024.psk --entry gemm --realize f32 --repeat 5 --calibrate out/gemm_prof.json | grep '^kernel dot'
 	@echo "-- threads: one training step of the corpus GPT at 1 and at all cores"
-	$(PRESK) train corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+	$(PRESK) train examples/corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
 	    --steps 2 --log-every 2 --backend native --realize f32 --threads 1 --ckpt out/gpt_thr
-	$(PRESK) train corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
+	$(PRESK) train examples/corpus/nlp/05_gpt.psk --const D=64 --const H=2 --const L=2 \
 	    --steps 2 --log-every 2 --backend native --realize f32 --ckpt out/gpt_thr
 
 bench: build
-	$(PRESK) bench tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8
-	$(PRESK) bench tests/examples/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8
+	$(PRESK) bench examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply $(TINY) --dim B=2 --dim T=8
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry loss $(TINY) --dim B=2 --dim T=8
+	$(PRESK) bench examples/spec/minigpt/train_minigpt.psk --entry adamw.step $(TINY) --dim B=2 --dim T=8
 
 # 0.7.0 step 4, widened in 0.8.0 step 3 (plan 0.8.0 §3.3, D67): the layout
 # cost model's calibration. A GEMM at four sizes and two thin products, bound
@@ -631,12 +635,12 @@ calibrate-ra4:
 	  for n in $(CALIB_SIZES); do \
 	    w=1; for m in $(CALIB_NO_ONE_WORKER); do [ $$m = $$n ] && w=2; done; \
 	    echo "-- GEMM N=$$n, $$r, pinned to $(RA4_CORES)"; \
-	    taskset -c $(RA4_CORES) ./target/release/presk bench experiments/gemm.psk --entry gemm --dim N=$$n \
+	    taskset -c $(RA4_CORES) ./target/release/presk bench examples/experiments/gemm.psk --entry gemm --dim N=$$n \
 	      --realize $$r --calibrate $(RA4_PROFILE) --space calib $(CALIB_MODEL) --min-workers $$w --repeat 5 | grep '^--' || exit 1; \
 	  done; \
 	  for s in $(CALIB_THIN); do \
 	    echo "-- product $$s, $$r, pinned to $(RA4_CORES)"; \
-	    taskset -c $(RA4_CORES) ./target/release/presk bench experiments/matmul.psk --entry matmul $$(echo $$s | tr ',' ' ' | sed 's/[^ ]*/--dim &/g') \
+	    taskset -c $(RA4_CORES) ./target/release/presk bench examples/experiments/matmul.psk --entry matmul $$(echo $$s | tr ',' ' ' | sed 's/[^ ]*/--dim &/g') \
 	      --realize $$r --calibrate $(RA4_PROFILE) --space calib $(CALIB_MODEL) --repeat 5 | grep '^--' || exit 1; \
 	  done; \
 	done; \
@@ -648,7 +652,7 @@ calibrate-ra4:
 # attention at B = 1 and 16, T = 256, f32 and f64: day one checks statement L
 # natively and on the kernel interpreter, day two natively, then `presk rank`
 # writes out/ra4-small.md — about a minute.
-RA4_SMALL = FILE=tutorial/03_attention.psk ENTRY=attend SPACE=small
+RA4_SMALL = FILE=examples/tutorial/03_attention.psk ENTRY=attend SPACE=small
 ra4-small:
 	$(CARGO) build --release -p presk
 	@rm -rf out/ra4-small
@@ -665,7 +669,7 @@ ra4-small:
 # too (statement L), in shards on every core, so it must not overlap a timed
 # sweep. `ra4-20` is the secondary sweep on all twenty cores, calibrated on
 # them. `ra4-day2` repeats day one and ranks the two, the check included.
-RA4_GEMM = FILE=experiments/gemm.psk ENTRY=gemm SHAPES=N=1024 TYPES=f32
+RA4_GEMM = FILE=examples/experiments/gemm.psk ENTRY=gemm SHAPES=N=1024 TYPES=f32
 RA4_BERT = CONSTS="D=1024 H=16" SHAPES=B=1,T=384 TYPES=f32 EXTRA="--top 8 --random 32"
 RA4_JOBS ?= 20
 ra4 ra4-day2:
@@ -744,7 +748,7 @@ ra4-ablation:
 # start beside another presk process.
 RA4_PROFILE_SMALL ?= out/profile-a725.json
 RA4_F2_DIR ?= out/ra4-f2
-RA4_F2_RUN ?= FILE=experiments/ra4_attention.psk ENTRY=SelfAttention.apply TYPES="f32 f64" SPACE=full
+RA4_F2_RUN ?= FILE=examples/experiments/ra4_attention.psk ENTRY=SelfAttention.apply TYPES="f32 f64" SPACE=full
 RA4_F2_SHAPES ?= B=1,T=256:4 B=16,T=256:40
 RA4_TAG ?= ra4-model-0.8.0
 RA4_TRIAL ?=
@@ -804,7 +808,7 @@ ra4-f2-check:
 # RA4_F1_RUN, RA4_F1A and RA4_F1B.
 RA4_F1_DIR ?= out/ra4-f1
 RA4_F1_PROFILE ?= $(RA4_FROZEN)
-RA4_F1_RUN ?= FILE=experiments/ra4_attention.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=full
+RA4_F1_RUN ?= FILE=examples/experiments/ra4_attention.psk ENTRY=SelfAttention.apply TYPES=f32 SPACE=full
 RA4_F1A ?= D=1024,H=16:B=1,T=384
 RA4_F1B ?= D=1024,H=8:B=2,T=512
 RA4_F1A_SAMPLE ?=
@@ -873,7 +877,7 @@ ra4-f1-check:
 # RA4_T3_SHAPE=B=2,T=16 RA4_T3_SPACE=small.
 RA4_T3_DIR ?= out/ra4-t3
 RA4_T3_PROFILE ?= $(RA4_FROZEN)
-RA4_T3_FILE ?= experiments/gpt_grad.psk
+RA4_T3_FILE ?= examples/experiments/gpt_grad.psk
 RA4_T3_ENTRY ?= loss_grad
 RA4_T3_CONSTS ?=
 RA4_T3_SHAPE ?= B=16,T=256
@@ -921,9 +925,9 @@ ra4-t3-check:
 	@echo "-- statement L: every shard of $(RA4_T3_DIR)/check bit-identical to point 0, natively and on the kernel interpreter"
 
 # 0.7.0 step 1: a plan with the default layout lowers every entry of
-# tests/plan/entries.txt to the kernels it has without one, byte for byte
+# examples/tests/plan/entries.txt to the kernels it has without one, byte for byte
 # (`dump --stage kernel`, f64). PLAN names another plan to compare.
-PLAN ?= tests/plan/default.json
+PLAN ?= examples/tests/plan/default.json
 plan-check: build
 	@mkdir -p out
 	@while IFS='|' read -r file entry args; do \
@@ -931,10 +935,10 @@ plan-check: build
 	  $(PRESK) dump --stage kernel "$$file" --entry "$$entry" $$args --plan @$(PLAN) > out/plan-check.plan || exit 1; \
 	  if cmp -s out/plan-check.bare out/plan-check.plan; then echo "same kernels  $$entry ($$file)"; \
 	  else echo "DIFFERENT     $$entry ($$file)"; diff out/plan-check.bare out/plan-check.plan | head -20; exit 1; fi; \
-	done < tests/plan/entries.txt
+	done < examples/tests/plan/entries.txt
 
 # 0.9.0 step 3 (D79): statements C1 and C2 of the C export. Every entry of
-# tests/plan/entries.txt (next_token since step 6), in f64, f32 and bf16, on its
+# examples/tests/plan/entries.txt (next_token since step 6), in f64, f32 and bf16, on its
 # synthesized parameters and with their zeros drawn (also in `make test`),
 # and the course GPT at its constants, zeros drawn at T = 8 and with the
 # course's trained checkpoint at T = 256 (out/course_probe_f32/final.psk.d):
@@ -1008,7 +1012,7 @@ c-speed:
 # every core; the distances to the native backend's f64 logits, the
 # operations counted, the linear products alone, and where the C program's
 # time goes kernel by kernel. Into out/pytorch-baseline/report.md. Needs
-# corpus/nlp/data/civil_T256.psk.d (make experiment-gpt) and a quiet machine.
+# examples/corpus/nlp/data/civil_T256.psk.d (make experiment-gpt) and a quiet machine.
 # Since 0.10.0 step 7: CFLAGS builds the C programs with those flags in place
 # of their Makefiles' -O2 (`make pytorch-baseline CFLAGS="-O3 -mcpu=native"
 # BASELINE_OUT=out/pytorch-baseline-o3`), C1 checked on each.
@@ -1078,6 +1082,60 @@ off-sample:
 	env -u CFLAGS $(CARGO) build --release -p presk
 	experiments/off_sample.sh out/off-sample
 
+# SR2, the short runs (D192): the eight solves of record at D = 64
+# (D170: the curve on the trained envelope at 10⁻¹ … 10⁻⁷, V6 on the logits
+# at ε*(10⁻³)) with the reference interpreter at --bits 53 and 64, each
+# realization against the record's byte for byte and each measured gap
+# against the one read at 128 bits. Needs D170's outputs in out/ and
+# presk-project's data/rows-0.16.1.tar.xz beside this repository.
+reference-bits:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/reference_bits.sh
+
+# SR1, the short runs (D193): the four rules against depth. The
+# course GPT at D = 64 trained by make gpt-trained's recipe at L = 1, 4 and 6
+# (L = 2 is make gpt-trained's own), each calibrated as make precision does
+# and at initialization, and `presk check --model all --measure` under f64
+# and f32 on each: log10(cond/rss) against L (SR1a) and rss against the
+# measured gap (SR1b). Needs make gpt-trained's and make precision's outputs.
+bound-depth:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/bound_depth.sh
+
+# SR4, the short runs (D194): the budgeted step under the cost
+# model's plan. At the course constants, all-f64, all-f32 and the step solved
+# at 1e-3 (out/step_1e-3.json, make step-table's), each under its own plan
+# from the frozen profile (PROFILE), on the ten X925 cores pinned: five
+# rounds of `presk train`'s median step and of J′'s four-minus-one-step
+# measure, and two steps under each layout compared bit for bit.
+step-plan:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/step_plan.sh
+
+# SR3, the short runs (D195): the e-graph optimizer measured where it
+# is allowed, the default layout and no budget. The course GPT at D = 64 and
+# at the course constants, all-f32 and all-f64, with and without --opt: the
+# rules that fired, the loss against the exact loss on the envelopes' two
+# held-out windows, five rounds of `presk bench` on the loss, and beside the
+# gradient's gap at D = 64 and five rounds of `presk train`'s step.
+opt-measured:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/opt_measured.sh
+
+weights-width:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/weights_width.sh
+
+# SR5, the short runs (plan 0.17.2 step 5, D201), on D200's timers,
+# alone on the machine: D190's five serving rows timed again with `presk
+# serve`'s split into compiling and computing (SR5a), and the Llama 2 decoder
+# block's two modes looked for in 20 processes of `presk bench --host-profile
+# --launches` (SR5b). Needs D190's outputs (out/llama3/, out/llama3-budget/)
+# and V5's 0.11.0 realization (out/v5-0.12.0/).
+sr5:
+	env -u CFLAGS $(CARGO) build --release -p presk
+	experiments/sr5.sh
+
 # Three ways to spend the budget, judged out of sample (plan 0.16.0 step 4,
 # D161): --estimate rss, --narrow measured --margin k and --narrow heldout.
 spend:
@@ -1104,7 +1162,7 @@ further-texts:
 	TEXT=procedure_penale experiments/further_texts.sh
 
 # PyTorch eager on the Llama 2 decoder block (D107): D100's protocol on one
-# block of coverage/llama.psk at the 7B width, the forward pass at 384
+# block of examples/coverage/llama.psk at the 7B width, the forward pass at 384
 # tokens, batch 1 and 20, `f32` — the native backend in `f32` and with
 # `int8` weights on every matrix, under the default layouts and under the
 # frozen profile's plans, against PyTorch on the module the PyTorch export
@@ -1120,7 +1178,7 @@ pytorch-decoder:
 	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) experiments/pytorch_decoder.sh $(DECODER_OUT)
 
 # Where the measurement changes the solver's decision (D128): the six entries
-# of experiments/widening.psk, calibrated at 128 bits, checked under f64,
+# of examples/experiments/widening.psk, calibrated at 128 bits, checked under f64,
 # f32 and bf16 (the four rules and the measured gap), solved at seven
 # budgets with every move `presk explain` records, and the proposal with
 # only the misjudged value widened measured beside each widening solve;
@@ -1158,7 +1216,7 @@ REALIZE ?= f32
 GAPPA_OUT ?= out/gappa
 
 # A contraction's bound proved in Gappa (D131): experiments/gappa_dot.sh, a
-# copy of gappa.sh for `dot` of experiments/gappa_dot.psk, one output
+# copy of gappa.sh for `dot` of examples/experiments/gappa_dot.psk, one output
 # element of [8, K] · [K, 8] in f32 at K = 8, 16, 32, 64, 128 under the
 # sequential order and interleaved(n), the hypotheses the operands' and the
 # output's magnitudes from the envelope; into out/gappa-dot/summary.md.
@@ -1179,12 +1237,6 @@ host-profile:
 	$(CARGO) build --release -p presk
 	PROFILE=$(RA4_FROZEN) CORES=$(RA4_CORES) CONFIGS="$(CONFIGS)" experiments/host_profile.sh out/host-profile
 
-sync-examples:
-	rsync -a --delete --exclude PROVENANCE.md $(PRESK_SPECS_DIR)/examples/ tests/examples/
-	@sed -i.bak "s/^Commit: .*/Commit: $$(git -C $(PRESK_SPECS_DIR) rev-parse --short HEAD)/" tests/examples/PROVENANCE.md \
-	  && rm tests/examples/PROVENANCE.md.bak   # -i.bak: the one spelling GNU and BSD sed both accept
-	git status --short tests/examples
-
 snap:
 	$(CARGO) insta review
 
@@ -1203,7 +1255,7 @@ EXPLAIN ?= out/explain/loss
 EXPLAIN_PROFILE ?= crates/presk-explain/tests/data/x925-frozen.json
 TEXLIVE ?= /usr/local/texlive/2026/bin/aarch64-linux
 explain:
-	$(PRESK) explain tutorial/07_train.psk --entry loss --dim B=4 --budget 1e-3 --profile $(EXPLAIN_PROFILE) --threads 10 --target native,c,pytorch --out $(EXPLAIN)
+	$(PRESK) explain examples/tutorial/07_train.psk --entry loss --dim B=4 --budget 1e-3 --profile $(EXPLAIN_PROFILE) --threads 10 --target native,c,pytorch --out $(EXPLAIN)
 
 explain-pdf:
 	@test -f $(EXPLAIN)/explain.md || $(MAKE) explain
@@ -1216,9 +1268,9 @@ explain-pdf:
 # and PSK-Core after differentiation of the tutorial, the examples and the
 # course GPT, as LaTeX documents that compile alone, each compiled by LuaLaTeX
 # into out/math/. Nothing timed, any machine with TeX Live.
-MATH_FILES = tutorial/07_train.psk tutorial/03_attention.psk tutorial/04_grad.psk \
-             tests/examples/mlp/mlp.psk tests/examples/layernorm/layernorm.psk tests/examples/minigpt/minigpt.psk \
-             corpus/nlp/05_gpt.psk
+MATH_FILES = examples/tutorial/07_train.psk examples/tutorial/03_attention.psk examples/tutorial/04_grad.psk \
+             examples/spec/mlp/mlp.psk examples/spec/layernorm/layernorm.psk examples/spec/minigpt/minigpt.psk \
+             examples/corpus/nlp/05_gpt.psk
 math-check: build
 	@mkdir -p out/math
 	@for f in $(MATH_FILES); do n=$$(basename $$f .psk); \
@@ -1232,12 +1284,18 @@ math-check: build
 explain-manual:
 	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk --test explain the_manual_holds_the_tutorial_s_document
 
+# The manual's listings of Presk written again from the programs they name
+# (D199): each block after a line `<!-- psk: examples/PATH -->`, and each
+# `<!-- psk: check examples/PATH -->`'s diagnostics.
+manual-quotes:
+	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk --test manual_quotes
+
 # The course GPT's network diagram (plan 0.14.0 step 3, D143), one layout:
 # level 2 into the manual's chapter explain_network, its SVG, which a test of
 # presk-explain holds current; level 1 and Block alone, the report's two
-# figures (the user's decision of 2026-10-17: each readable on paper), as TikZ
+# figures (the user's decision of 2026-10-17: each readable in print), as TikZ
 # in presk-specs, each with the command that made it in its first lines.
-NETWORK_GPT = corpus/nlp/05_gpt.psk --stage network --entry loss --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16
+NETWORK_GPT = examples/corpus/nlp/05_gpt.psk --stage network --entry loss --const D=64 --const H=2 --const L=2 --dim B=2 --dim T=16
 network-figure: build
 	PRESK_UPDATE_MANUAL=1 $(CARGO) test -q -p presk-explain --test network the_manual_holds_the_course_gpt_s_network
 	@mkdir -p out/network

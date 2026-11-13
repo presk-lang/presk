@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/elab.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/elab_assert_fails.psk
+input_file: examples/tests/diag/elab_assert_fails.psk
 ---
 [E1004] Error: static assertion fails: D % H == 0
-   ,-[ tests/diag/elab_assert_fails.psk:4:1 ]
+   ,-[ examples/tests/diag/elab_assert_fails.psk:4:1 ]
    |
  4 | static assert D % H == 0
    | ^^^^^^^^^^^^|^^^^^^^^^^^  

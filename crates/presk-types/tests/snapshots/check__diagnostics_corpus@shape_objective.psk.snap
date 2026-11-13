@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_objective.psk
+input_file: examples/tests/diag/shape_objective.psk
 ---
 [E2010] Error: `objective` `loss` takes `params B` but the model is `A`
-    ,-[ tests/diag/shape_objective.psk:16:15 ]
+    ,-[ examples/tests/diag/shape_objective.psk:16:15 ]
     |
  16 |   objective = loss
     |               ^^|^  

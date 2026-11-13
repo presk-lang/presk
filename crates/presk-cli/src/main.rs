@@ -670,7 +670,7 @@ enum Command {
         /// Fit every form under every load term on the same samples and print their constants and u; write nothing.
         #[arg(long)]
         compare: bool,
-        /// Cost every sample again first, its time kept: its layout lowered at its product on this program (experiments/matmul.psk) and costed on the profile's machine description.
+        /// Cost every sample again first, its time kept: its layout lowered at its product on this program (examples/experiments/matmul.psk) and costed on the profile's machine description.
         #[arg(long, value_name = "FILE.psk")]
         recost: Option<PathBuf>,
         /// The product entry of --recost's program, with dimensions I, K and J.
@@ -724,6 +724,13 @@ enum Command {
         /// of call give the same bits, which is checked.
         #[arg(long, conflicts_with = "calibrate")]
         host_profile: bool,
+        /// With --host-profile: list each launch of a call timed by phase, in
+        /// the call's order (plan 0.17.2 step 4): its kernel, its own code's
+        /// median and fastest over those calls, and its buffers of 64 KiB or
+        /// more at their addresses, modulo 4 KiB, 64 KiB and the set strides
+        /// of the CPU's L1d and L2. Without it, nothing is timed per launch.
+        #[arg(long, requires = "host_profile")]
+        launches: bool,
         /// With --calibrate: `calib` times the entry's one contraction (a GEMM)
         /// under a spanning set of layouts and fits the layout cost model into
         /// the profile (0.7.0 step 4); without it, the roofline of every kernel.
@@ -1715,7 +1722,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Command::Bench { file, entry, dims, consts, bits, repeat, warmup, seed, opt, profile, calibrate, host_profile, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only, plan_only, llvm, weights, remat } => {
+        Command::Bench { file, entry, dims, consts, bits, repeat, warmup, seed, opt, profile, calibrate, host_profile, launches, space, load_term, combine, min_workers, rules, realize, plan, threads, native_only, plan_only, llvm, weights, remat } => {
             set_remat(remat);
             set_threads(threads);
             let rules = rules.as_deref().map(presk_kernel::cost::CostRules::parse).transpose();
@@ -1735,7 +1742,7 @@ fn main() -> ExitCode {
                 (Some(p), None) => Some((p, None)),
                 (None, _) => None,
             };
-            bench(&file, &entry, &dims, &consts, bits, (repeat, warmup), seed, Opt { on: opt, profile }, calibrate, host_profile, &parse_plan(plan.as_deref(), &realize), plan.is_some(), (native_only, plan_only, llvm), weights.as_deref())
+            bench(&file, &entry, &dims, &consts, bits, (repeat, warmup), seed, Opt { on: opt, profile }, calibrate, (host_profile, launches), &parse_plan(plan.as_deref(), &realize), plan.is_some(), (native_only, plan_only, llvm), weights.as_deref())
         }
         Command::Data { command } => match data(command) {
             Ok(()) => ExitCode::SUCCESS,
@@ -1800,6 +1807,10 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
                     "window": out.window,
                     "greedy": out.greedy,
                     "vocab": out.vocab,
+                    "compile_s": out.compile_s,
+                    "compute_s": out.compute_s,
+                    "compilations": out.compilations,
+                    "compiled_kernels": out.kernels,
                 });
                 println!("{}", serde_json::to_string_pretty(&j).unwrap());
             } else {
@@ -1807,7 +1818,20 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
                     Some(w) => format!("context window {w}"),
                     None => "whole context".to_string(),
                 };
-                eprintln!("presk serve: {} from {}, prompt of {} tokens, {} generated, {}, {}", out.model, out.weights.display(), out.prompt.len(), out.generated.len(), if out.greedy { "greedy" } else { "sampled" }, ctx);
+                let plural = |n: u64, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+                eprintln!(
+                    "presk serve: {} from {}, prompt of {} tokens, {} generated, {}, {}; compiled in {:.3} s ({}, {}), computed in {:.3} s",
+                    out.model,
+                    out.weights.display(),
+                    out.prompt.len(),
+                    out.generated.len(),
+                    if out.greedy { "greedy" } else { "sampled" },
+                    ctx,
+                    out.compile_s,
+                    plural(out.compilations, "length"),
+                    plural(out.kernels, "kernel"),
+                    out.compute_s
+                );
                 println!("{}", out.generated.iter().map(u64::to_string).collect::<Vec<_>>().join(" "));
             }
             ExitCode::SUCCESS
@@ -2237,7 +2261,7 @@ fn calibrate_precision(
 /// (`--space calib`) its load term, its combination and the fewest workers
 /// a layout of the space is stated on.
 #[allow(clippy::type_complexity)]
-fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, (repeat, warmup): (usize, usize), seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, host_profile: bool, plan: &presk_rt::Plan, planned: bool, (native_only, plan_only, llvm): (bool, bool, bool), weights: Option<&Path>) -> ExitCode {
+fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32, (repeat, warmup): (usize, usize), seed: u64, opt: Opt, calibrate: Option<(&Path, Option<(presk_opt::profile::LoadTerm, presk_opt::profile::Combine, usize, Option<presk_kernel::cost::CostRules>)>)>, (host_profile, launches): (bool, bool), plan: &presk_rt::Plan, planned: bool, (native_only, plan_only, llvm): (bool, bool, bool), weights: Option<&Path>) -> ExitCode {
     let realize = &plan.realization;
     let dims = match parse_dims(dims) {
         Ok(d) => d,
@@ -2295,7 +2319,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         return calibrate_profile(&core, &prog, func, &fdims, &args, plan, repeat.max(3), path, plan_only, llvm);
     }
     if host_profile {
-        return bench_host_profile(&core, &prog, (entry, func, &fdims), &args, (plan, planned), (repeat, warmup));
+        return bench_host_profile(&core, &prog, (entry, func, &fdims), &args, (plan, planned), (repeat, warmup), launches);
     }
     let time = |name: &str, b: &mut dyn presk_rt::Backend, realize: &presk_rt::Realization| -> Option<(String, f64, f64)> {
         match presk_driver::bench::time_call(b, func, &fdims, realize, &args, warmup, repeat) {
@@ -2507,10 +2531,11 @@ fn refit(path: &Path, load: presk_opt::profile::LoadTerm, combine: presk_opt::pr
 /// its arguments and the drop of its result included; `repeat` calls with
 /// the timers and `repeat` without, alternated, after at least one warm-up
 /// call (the first compiles); then one call of each kind, their outputs
-/// compared bit for bit.
+/// compared bit for bit. `launches`: the timed calls list each launch too
+/// (plan 0.17.2 step 4, D200).
 #[allow(clippy::type_complexity)]
-fn bench_host_profile(core: &presk_core::Program, prog: &elab::ElabProgram, (entry, func, fdims): (&str, presk_core::FuncId, &presk_interp::eval::Dims), args: &[presk_rt::Value], (plan, planned): (&presk_rt::Plan, bool), (repeat, warmup): (usize, usize)) -> ExitCode {
-    match presk_driver::bench::host_profile(core, prog, func, fdims, args, plan, planned, repeat, warmup) {
+fn bench_host_profile(core: &presk_core::Program, prog: &elab::ElabProgram, (entry, func, fdims): (&str, presk_core::FuncId, &presk_interp::eval::Dims), args: &[presk_rt::Value], (plan, planned): (&presk_rt::Plan, bool), (repeat, warmup): (usize, usize), launches: bool) -> ExitCode {
+    match presk_driver::bench::host_profile(core, prog, func, fdims, args, plan, planned, repeat, warmup, launches) {
         Ok(h) => {
             print!("{}", presk_driver::text::host_profile(entry, &plan.realization.label(), planned, &h));
             if h.same { ExitCode::SUCCESS } else { ExitCode::from(1) }

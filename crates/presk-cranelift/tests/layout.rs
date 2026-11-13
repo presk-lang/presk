@@ -65,7 +65,7 @@ fn bits_of(v: &Value) -> Vec<u64> {
 
 #[test]
 fn every_point_of_a_contractions_layout_space_is_exact() {
-    let (prog, core) = prepare("tests/plan/contractions.psk");
+    let (prog, core) = prepare("examples/tests/plan/contractions.psk");
     let mut checked = 0usize;
     let mut split_checked = 0usize;
     let mut split_refused = 0usize;
@@ -178,9 +178,9 @@ fn prepare_grad(rel: &str, consts: &[(&str, u64)]) -> (ElabProgram, presk_core::
 type Entry = (&'static str, &'static str, &'static [(&'static str, u64)], &'static [(&'static str, u64)]);
 
 const GRADIENTS: [Entry; 3] = [
-    ("tests/examples/mlp/mlp.psk", "mse_grad", &[], &[("D", 4), ("B", 2)]),
-    ("tests/plan/minigpt_grad.psk", "loss_grad", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)], &[("B", 2), ("T", 8)]),
-    ("experiments/gpt_grad.psk", "loss_grad", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 32)]),
+    ("examples/spec/mlp/mlp.psk", "mse_grad", &[], &[("D", 4), ("B", 2)]),
+    ("examples/tests/plan/minigpt_grad.psk", "loss_grad", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)], &[("B", 2), ("T", 8)]),
+    ("examples/experiments/gpt_grad.psk", "loss_grad", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 32)]),
 ];
 
 /// An entry's arguments as `presk run` synthesizes them, in `d`.
@@ -376,7 +376,7 @@ fn a_gradient_with_its_derivatives_planned_is_exact() {
 // its layout space, the kernel with its epilogue gives the bits of the
 // product's kernel followed by the `add`'s: in `f64`, `f32` and `bf16`, on
 // the kernel interpreter and natively, under thread splits, on the products
-// of `tests/plan/epilogue.psk` and on the derivative nests of the gradients
+// of `examples/tests/plan/epilogue.psk` and on the derivative nests of the gradients
 // given an operand to add; and whole programs under plans that state it give
 // the bits of the default.
 
@@ -477,7 +477,7 @@ fn captured(prog: &ElabProgram, core: &presk_core::Program, entry: &str, dims: &
 
 #[test]
 fn every_point_with_its_epilogue_is_exact() {
-    let (prog, core) = prepare("tests/plan/epilogue.psk");
+    let (prog, core) = prepare("examples/tests/plan/epilogue.psk");
     let mut exec = presk_cranelift::NativeExec::new().unwrap();
     exec.threads = 4;
     let mut next = 0usize;
@@ -554,12 +554,12 @@ fn every_point_of_a_derivative_nest_with_an_epilogue_is_exact() {
 /// The entries whose products are planned with their epilogues: a forward
 /// pass and a gradient of each of the MLP, MiniGPT and the course GPT.
 const PROGRAMS: [Entry; 6] = [
-    ("tests/examples/mlp/mlp.psk", "mse", &[], &[("D", 4), ("B", 2)]),
-    ("tests/examples/mlp/mlp.psk", "mse_grad", &[], &[("D", 4), ("B", 2)]),
-    ("tests/examples/minigpt/train_minigpt.psk", "loss", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)], &[("B", 2), ("T", 8)]),
-    ("tests/plan/minigpt_grad.psk", "loss_grad", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)], &[("B", 2), ("T", 8)]),
-    ("corpus/nlp/05_gpt.psk", "GPT.apply", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 32)]),
-    ("experiments/gpt_grad.psk", "loss_grad", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 32)]),
+    ("examples/spec/mlp/mlp.psk", "mse", &[], &[("D", 4), ("B", 2)]),
+    ("examples/spec/mlp/mlp.psk", "mse_grad", &[], &[("D", 4), ("B", 2)]),
+    ("examples/spec/minigpt/train_minigpt.psk", "loss", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)], &[("B", 2), ("T", 8)]),
+    ("examples/tests/plan/minigpt_grad.psk", "loss_grad", &[("V", 64), ("D", 16), ("H", 2), ("L", 2)], &[("B", 2), ("T", 8)]),
+    ("examples/corpus/nlp/05_gpt.psk", "GPT.apply", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 32)]),
+    ("examples/experiments/gpt_grad.psk", "loss_grad", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 32)]),
 ];
 
 /// Every real leaf's bits.
@@ -684,7 +684,7 @@ fn an_epilogue_under_a_mixed_realization() {
 /// and the reference interpreter, which reads no realization, runs either.
 #[test]
 fn a_declared_accumulation_type_the_kernels_do_not_honour_is_refused() {
-    let (prog, core) = prepare("tests/plan/contractions.psk");
+    let (prog, core) = prepare("examples/tests/plan/contractions.psk");
     let accum = |storage: Dtype, sum: Dtype| {
         let mut r = Realization::uniform(storage);
         r.accum.insert("linear/%2".into(), sum);
@@ -713,12 +713,12 @@ fn a_declared_accumulation_type_the_kernels_do_not_honour_is_refused() {
 /// is not a product.
 #[test]
 fn an_epilogue_is_refused_where_it_does_not_apply() {
-    let (_, core) = prepare("tests/plan/contractions.psk");
+    let (_, core) = prepare("examples/tests/plan/contractions.psk");
     let r = Realization::uniform(Dtype::F32);
     let plan = |nest: &str| Plan { realization: r.clone(), realization_ref: None, profile: None, layout: BTreeMap::from([(nest.to_string(), Layout { epilogue: Some(true), ..Layout::default() })]) };
     let e = presk_kernel::plan::check_plan(&plan("linear/%2"), &core).unwrap_err();
     assert!(e.code == "E7002" && e.message.contains("is the result"), "{}", e.message);
-    let (_, core) = prepare("tests/plan/epilogue.psk");
+    let (_, core) = prepare("examples/tests/plan/epilogue.psk");
     let e = presk_kernel::plan::check_plan(&plan("linear/%4"), &core).unwrap_err();
     assert!(e.code == "E7002" && e.message.contains("decision of a contraction nest"), "{}", e.message);
     assert!(presk_kernel::plan::check_plan(&plan("linear/%3"), &core).is_ok());

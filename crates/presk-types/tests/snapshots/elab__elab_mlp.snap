@@ -2,7 +2,7 @@
 source: crates/presk-types/tests/elab.rs
 expression: "format!(\"{}\\n-- diagnostics --\\n{}\", elab::dump(&prog),\nrender_all(&diags, &sm, false))"
 ---
-== tests/examples/mlp/mlp.psk (main)
+== examples/spec/mlp/mlp.psk (main)
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init
   param b : ℝ[Out]  init
@@ -31,7 +31,7 @@ MLP{D, 4*D}:
 
 -- diagnostics --
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/mlp/mlp.psk:26:65 ]
+    ,-[ examples/spec/mlp/mlp.psk:26:65 ]
     |
  26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
     |                                                                 |  
@@ -40,7 +40,7 @@ MLP{D, 4*D}:
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/mlp/mlp.psk:34:35 ]
+    ,-[ examples/spec/mlp/mlp.psk:34:35 ]
     |
  34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
     |                                   |  

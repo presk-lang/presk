@@ -78,18 +78,18 @@ const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 fn gradients_are_bit_identical_without_their_dead_code() {
     type Case = (&'static str, &'static [(&'static str, u64)], &'static str, &'static [(&'static str, u64)], bool);
     let cases: &[Case] = &[
-        ("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], false),
-        ("tests/plan/minigpt_grad.psk", TINY, "loss_grad", &[("B", 2), ("T", 8)], false),
-        ("experiments/gpt_grad.psk", &[], "loss_grad", &[("B", 2), ("T", 8)], false),
-        ("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)], false),
-        ("tests/data/stack_grad.psk", &[], "scale_grad", &[("B", 2)], false),
-        ("tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)], false),
-        ("tests/data/dropout_grad.psk", &[], "loss_grad", &[("B", 2)], true),
-        ("tests/data/stack_keys.psk", &[], "loss_grad", &[("B", 2)], true),
-        ("tests/data/merge_grad.psk", &[], "loss_grad", &[("B", 2)], false),
-        ("tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)], false),
-        ("tests/data/closure_grad.psk", &[], "d_two", &[], false),
-        ("tests/data/closure_grad.psk", &[], "d_captured", &[], false),
+        ("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], false),
+        ("examples/tests/plan/minigpt_grad.psk", TINY, "loss_grad", &[("B", 2), ("T", 8)], false),
+        ("examples/experiments/gpt_grad.psk", &[], "loss_grad", &[("B", 2), ("T", 8)], false),
+        ("examples/tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)], false),
+        ("examples/tests/data/stack_grad.psk", &[], "scale_grad", &[("B", 2)], false),
+        ("examples/tests/data/stack_prefix_grad.psk", &[], "loss_grad", &[("B", 3)], false),
+        ("examples/tests/data/dropout_grad.psk", &[], "loss_grad", &[("B", 2)], true),
+        ("examples/tests/data/stack_keys.psk", &[], "loss_grad", &[("B", 2)], true),
+        ("examples/tests/data/merge_grad.psk", &[], "loss_grad", &[("B", 2)], false),
+        ("examples/tests/data/split_grad.psk", &[], "loss_grad", &[("B", 2)], false),
+        ("examples/tests/data/closure_grad.psk", &[], "d_two", &[], false),
+        ("examples/tests/data/closure_grad.psk", &[], "d_captured", &[], false),
     ];
     let mut report = String::new();
     for (rel, consts, entry, dims, training) in cases {

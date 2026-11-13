@@ -62,8 +62,8 @@ TRAIN=${TRAIN:-out/civil_train_T256.psk.d}
 VAL=${VAL:-out/civil_val_T256.psk.d}
 PRESK_ROWS=${PRESK_ROWS:-"f64 f32 bf16 d124-1e-3 d132-1e-3 logits-4.67e-4"}
 OUT=${1:?usage: experiments/pytorch_modes.sh OUT}
-FILE=corpus/nlp/05_gpt.psk
-GRAD=experiments/gpt_grad.psk
+FILE=examples/corpus/nlp/05_gpt.psk
+GRAD=examples/experiments/gpt_grad.psk
 DIMS=(--dim B=16 --dim T=256)
 D64=(--const D=64 --const H=2 --const L=2)
 read -ra THREADS <<< "${THREADS:-10 20}"
@@ -101,7 +101,7 @@ if [ ! -f "$OUT/setup.done" ]; then
     say "the machine"
     {
         echo "date $(date -Iseconds)"
-        echo "presk $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates experiments/pytorch_baseline.py experiments/gpt_grad.psk || echo -dirty), $("$PRESK" --version)"
+        echo "presk $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates experiments/pytorch_baseline.py examples/experiments/gpt_grad.psk || echo -dirty), $("$PRESK" --version)"
         echo "kernel $(uname -sr), $(nproc) cores"
         lscpu | grep -E "^(Nom de modèle|Model name|Vitesse maximale|CPU max MHz)" | sed 's/  */ /g'
         echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
@@ -109,7 +109,7 @@ if [ ! -f "$OUT/setup.done" ]; then
         g++ --version | sed -n 1p
         echo "c_wait $C_WAIT"
     } > "$OUT/machine.txt"
-    sha256sum "$CKPT" "$W64" "$TRAIN" "$VAL" "$PROFILE" corpus/nlp/data/civil_T256.psk.d > "$OUT/inputs.sha256"
+    sha256sum "$CKPT" "$W64" "$TRAIN" "$VAL" "$PROFILE" examples/corpus/nlp/data/civil_T256.psk.d > "$OUT/inputs.sha256"
     "$PY" -c "import torch; print('torch', torch.__version__); print(torch.__config__.show()); print(torch.__config__.parallel_info())" > "$OUT/torch-config.txt"
     "$PY" - > "$OUT/inductor-config.txt" <<'EOF'
 import torch, torch._inductor.config as c, torch._dynamo.config as d

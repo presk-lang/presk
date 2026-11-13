@@ -4,7 +4,7 @@ checkpoint, run by presk under `f64`, against Hugging Face `transformers`'
 `LlamaForCausalLM` in `float64` on the same ids.
 
     .venv-hf/bin/python experiments/llama/rw2.py CHECKPOINT_DIR WEIGHTS.psk.d PROMPTS.txt
-        [--presk target/release/presk] [--program coverage/llama3.psk]
+        [--presk target/release/presk] [--program examples/coverage/llama3.psk]
         [--const NAME=N]... [--backend native] [--out DIR]
 
 PROMPTS.txt holds one prompt per line, as whitespace-separated token ids,
@@ -120,7 +120,7 @@ def main():
     ap.add_argument("weights")
     ap.add_argument("prompts")
     ap.add_argument("--presk", default="target/release/presk")
-    ap.add_argument("--program", default="coverage/llama3.psk")
+    ap.add_argument("--program", default="examples/coverage/llama3.psk")
     ap.add_argument("--const", action="append", default=[])
     ap.add_argument("--backend", default="native")
     ap.add_argument("--out", default="out/llama3/rw2")

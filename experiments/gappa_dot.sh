@@ -1,7 +1,7 @@
 #!/bin/bash
 # A contraction's bound proved in Gappa, beside the compiler's bound and the
 # measured gap (D131): a copy of experiments/gappa.sh (D108's layer norm) for
-# `dot` of experiments/gappa_dot.psk, [M, K] · [K, N] in f32, at K = 8, 16,
+# `dot` of examples/experiments/gappa_dot.psk, [M, K] · [K, N] in f32, at K = 8, 16,
 # 32, 64, 128, on an 8 × K and a K × 8 matrix synthesized from seed 0, under
 # the sequential order and under interleaved(n) for n = 4, 8, 16 (where n
 # divides K and K/n ≥ 2).
@@ -42,7 +42,7 @@ ROWS=${ROWS:-8}
 ORDERS=${ORDERS:-"sequential interleaved(4) interleaved(8) interleaved(16)"}
 HYPS=${HYPS:-"operands sites"}
 REALIZE=${REALIZE:-f32}
-FILE=experiments/gappa_dot.psk
+FILE=examples/experiments/gappa_dot.psk
 command -v "$GAPPA" > /dev/null || { echo "gappa_dot.sh: no gappa on the PATH (apt install gappa, or GAPPA=…)"; exit 1; }
 [ -x "$PRESK" ] || { echo "gappa_dot.sh: no $PRESK: make build"; exit 1; }
 mkdir -p "$OUT"

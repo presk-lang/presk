@@ -42,31 +42,31 @@ const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 
 #[test]
 fn run_goldens_unchanged() {
-    golden("tests/run", "mlp_mse", run_opt("tests/examples/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], 256));
-    golden("tests/run", "mlp_mse_grad", run_opt("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], 256));
-    golden("tests/run", "layernorm_apply", run_opt("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], 256));
-    golden("tests/run", "rmsnorm_apply", run_opt("tests/examples/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], 256));
-    golden("tests/run", "minigpt_forward", run_opt("tests/examples/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], 256));
-    golden("tests/run", "minigpt_loss", run_opt("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], 256));
-    golden("tests/run", "minigpt_next_token", run_opt("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], 256));
-    golden("tests/run", "stack_grad", run_opt("tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)], 512));
+    golden("tests/run", "mlp_mse", run_opt("examples/spec/mlp/mlp.psk", &[], "mse", &[("D", 4), ("B", 2)], 256));
+    golden("tests/run", "mlp_mse_grad", run_opt("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], 256));
+    golden("tests/run", "layernorm_apply", run_opt("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], 256));
+    golden("tests/run", "rmsnorm_apply", run_opt("examples/spec/layernorm/layernorm.psk", &[], "RMSNorm{8}.apply", &[("batch", 3)], 256));
+    golden("tests/run", "minigpt_forward", run_opt("examples/spec/minigpt/minigpt.psk", TINY, "MiniGPT.apply", &[("B", 2), ("T", 8)], 256));
+    golden("tests/run", "minigpt_loss", run_opt("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], 256));
+    golden("tests/run", "minigpt_next_token", run_opt("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], 256));
+    golden("tests/run", "stack_grad", run_opt("examples/tests/data/stack_grad.psk", &[], "loss_grad", &[("B", 2)], 512));
 }
 
 /// The same goldens when the extraction is decided by a roofline profile.
 #[test]
 fn run_goldens_unchanged_with_profile() {
     let p = || Some(synthetic_profile());
-    golden("tests/run", "mlp_mse_grad", run_with("tests/examples/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], 256, p()));
-    golden("tests/run", "layernorm_apply", run_with("tests/examples/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], 256, p()));
-    golden("tests/run", "minigpt_loss", run_with("tests/examples/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], 256, p()));
-    golden("tests/run", "minigpt_next_token", run_with("tests/examples/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], 256, p()));
+    golden("tests/run", "mlp_mse_grad", run_with("examples/spec/mlp/mlp.psk", &[], "mse_grad", &[("D", 4), ("B", 2)], 256, p()));
+    golden("tests/run", "layernorm_apply", run_with("examples/spec/layernorm/layernorm.psk", &[], "LayerNorm{8}.apply", &[("batch", 3)], 256, p()));
+    golden("tests/run", "minigpt_loss", run_with("examples/spec/minigpt/train_minigpt.psk", TINY, "loss", &[("B", 2), ("T", 8)], 256, p()));
+    golden("tests/run", "minigpt_next_token", run_with("examples/spec/minigpt/serve_minigpt.psk", TINY, "next_token", &[("B", 2), ("T", 8)], 256, p()));
 }
 
 /// The regression of `presk-train` still converges with the rewritten
 /// objective, adjoint and optimizer.
 #[test]
 fn regression_converges_after_rewriting() {
-    let (prog, typed, mut core) = prepare("tests/train/mlp_regression.psk", &[]);
+    let (prog, typed, mut core) = prepare("examples/tests/train/mlp_regression.psk", &[]);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let report = optimize(&mut core, &prog);
     assert!(report.lets_after() < report.lets_before(), "{}", report.summary());
@@ -80,7 +80,7 @@ fn regression_converges_after_rewriting() {
 /// digits (the same snapshot file).
 #[test]
 fn minigpt_train_golden_unchanged() {
-    let (prog, typed, mut core) = prepare("tests/examples/minigpt/train_minigpt.psk", TINY);
+    let (prog, typed, mut core) = prepare("examples/spec/minigpt/train_minigpt.psk", TINY);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     optimize(&mut core, &prog);
     let ckpt = std::env::temp_dir().join(format!("presk-opt-tests-{}", std::process::id()));

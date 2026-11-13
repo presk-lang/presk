@@ -1,4 +1,4 @@
-> The estimate's rounding term measured on the envelope, and a narrowing step decided by measurement (presk D155). The prompt was presk-project `docs/prompt-solver-rounding-2026-10-19.md`, item 6's conclusion, written by the paper session on the user's word ("allons jusqu'au bout de ce point avec le compilateur"). Version 0.15.0 with D155's code (presk `ecd8357`) and script (`7eab040`), on falicon, 2026-10-19 from 11:11 to 11:31, nothing timed of record. The tables come from `experiments/solver_rounding.sh` (`make solver-rounding`): `out/solver-rounding-0.15.0/report.md`, `margins.md`, `calibrate.txt`, `solve/`, `bounds.txt`. The outputs are in presk-project `data/solver-rounding-0.15.0.tar.xz`.
+> The estimate's rounding term measured on the envelope, and a narrowing step decided by measurement (presk D155). The prompt was presk-project `docs/prompt-solver-rounding-2026-10-19.md`, written on the user's word ("allons jusqu'au bout de ce point avec le compilateur"). Version 0.15.0 with D155's code (presk `ecd8357`) and script (`7eab040`), on falicon, 2026-10-19 from 11:11 to 11:31, nothing timed of record. The tables come from `experiments/solver_rounding.sh` (`make solver-rounding`): `out/solver-rounding-0.15.0/report.md`, `margins.md`, `calibrate.txt`, `solve/`, `bounds.txt`. The outputs are in presk-project `data/solver-rounding-0.15.0.tar.xz`.
 
 # The estimate's rounding term measured, and a narrowing step
 
@@ -120,7 +120,7 @@ The four masks are this entry's `dropout_mask` sites: `SelfAttention.apply/%20`,
 
 ## The question of the default
 
-The flags are off, so the released compiler solves every row of the paper as it was solved. Turning `--rounding measured` on by default would change every solved realization of record. Each would then need solving again by its whole protocol (presk-project memory "rerun the whole protocol"):
+The flags are off, so the released compiler solves every row of record as it was solved. Turning `--rounding measured` on by default would change every solved realization of record. Each would then need solving again by its whole protocol (presk-project memory "rerun the whole protocol"):
 
 | row of record | what it reruns | hours |
 |---|---|---|
@@ -137,7 +137,7 @@ Turning `--narrow measured` on adds at each solve one native run of the entry pe
 
 It also needs the held-out check this run makes before its answer can be trusted. **The recommendation:**
 - **`--rounding measured`** is safe to make the default at the next version that solves the rows again: a term never larger than the unit one, from the same sample, its realizations holding at both budgets here;
-- **`--narrow measured`** should stay a flag, named in the paper where it is used, with a held-out check beside it.
+- **`--narrow measured`** should stay a flag, named wherever it is used, with a held-out check beside it.
 
 The decision is the user's.
 

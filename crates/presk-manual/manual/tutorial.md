@@ -5,8 +5,8 @@ the tool: every command below is run by `make tutorial`, and every output
 shown is what version 0.16.0 prints (timings vary from one run and one machine
 to the next; these are from an aarch64 Linux machine with twenty cores). The
 programs written here are in the
-`tutorial/` directory of the repository; the reference programs of the
-specification are in `tests/examples/`.
+`examples/tutorial/` directory of the repository; the reference programs of the
+specification are in `examples/spec/`.
 
 What you will do, in order:
 
@@ -82,12 +82,13 @@ Options:
 Check the smallest reference program, a two-layer perceptron:
 
 ```sh
-presk check tests/examples/mlp/mlp.psk
+presk check examples/spec/mlp/mlp.psk
 ```
 
+<!-- psk: check examples/spec/mlp/mlp.psk -->
 ```text
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/mlp/mlp.psk:26:65 ]
+    ,-[ examples/spec/mlp/mlp.psk:26:65 ]
     |
  26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
     |                                                                 |
@@ -96,7 +97,7 @@ presk check tests/examples/mlp/mlp.psk
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/mlp/mlp.psk:34:35 ]
+    ,-[ examples/spec/mlp/mlp.psk:34:35 ]
     |
  34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
     |                                   |
@@ -121,8 +122,9 @@ numbers. There are no machine number types: `ℝ` is the real line, and how it
 is realized (float32, bfloat16…) is a compilation choice made later, under an
 error budget. Shapes are part of the types, with named or symbolic axes.
 
-`tutorial/01_linear.psk`:
+`examples/tutorial/01_linear.psk`:
 
+<!-- psk: examples/tutorial/01_linear.psk -->
 ```text
 -- 01_linear.psk — a linear layer: parameters, initializers, one function.
 module Linear{In Out : dim} {
@@ -155,14 +157,14 @@ module Linear{In Out : dim} {
 Check it:
 
 ```sh
-presk check tutorial/01_linear.psk        # silent: no diagnostic, exit code 0
+presk check examples/tutorial/01_linear.psk        # silent: no diagnostic, exit code 0
 ```
 
 Now run it. The interpreter needs an *entry point*: which function, and for a
 module function, with which dimension arguments.
 
 ```sh
-presk run tutorial/01_linear.psk
+presk run examples/tutorial/01_linear.psk
 ```
 
 ```text
@@ -170,7 +172,7 @@ presk run: --entry is required; functions: Linear.apply
 ```
 
 ```sh
-presk run tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --verbose
+presk run examples/tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --verbose
 ```
 
 ```text
@@ -207,12 +209,13 @@ What happened:
   conformance test of step 8).
 
 ```sh
-presk run tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --seed 1 --bits 64 --digits 6
+presk run examples/tutorial/01_linear.psk --entry 'Linear{3, 2}.apply' --dim batch=4 --seed 1 --bits 64 --digits 6
 ```
 
 **ASCII spelling.** The same module can be written without Unicode; the two
 spellings are the same program, and diagnostics print the Unicode form:
 
+<!-- psk: examples/snippets/tutorial/linear_ascii.psk#Linear -->
 ```text
 module Linear{In Out : dim} {
   param w : Real[In, Out]  init = xavier_uniform
@@ -224,8 +227,9 @@ module Linear{In Out : dim} {
 
 ## 2. Shapes and named axes
 
-`tutorial/02_norm.psk` normalizes the last axis of its input:
+`examples/tutorial/02_norm.psk` normalizes the last axis of its input:
 
+<!-- psk: examples/tutorial/02_norm.psk -->
 ```text
 -- 02_norm.psk — named axes, reductions, broadcasting, hyperparameters.
 module RMSNorm{D : dim} {
@@ -254,7 +258,7 @@ module RMSNorm{D : dim} {
 `let`:
 
 ```sh
-presk check tutorial/02_norm.psk --summary
+presk check examples/tutorial/02_norm.psk --summary
 ```
 
 ```text
@@ -268,7 +272,7 @@ RMSNorm.init : [key C∞] uses Rand
 The second part is explained in steps 5 and 6. Run it:
 
 ```sh
-presk run tutorial/02_norm.psk --entry 'RMSNorm{4}.apply' --dim batch=2 --digits 6
+presk run examples/tutorial/02_norm.psk --entry 'RMSNorm{4}.apply' --dim batch=2 --digits 6
 ```
 
 ```text
@@ -279,21 +283,31 @@ presk run tutorial/02_norm.psk --entry 'RMSNorm{4}.apply' --dim batch=2 --digits
 
 The checker's job is to reject programs whose shapes are wrong, for *all*
 values of the symbolic dimensions, and to say why in the terms of the
-source. Try these variants in a scratch file.
+source. Each variant below is a file of `examples/tutorial/errors/`, and
+what `presk check` prints for it follows it (a test holds both current,
+`make manual-quotes` writes them again).
 
-Two axes of the same length but different names are different axes:
+```sh
+presk check examples/tutorial/errors/bad_axis.psk
+```
 
+Two axes of the same length but different names are different axes
+(`bad_axis.psk`):
+
+<!-- psk: examples/tutorial/errors/bad_axis.psk -->
 ```text
+-- bad_axis.psk — step 2 of the tutorial: two axes of one length but two names (E2003).
 dim B
 fn add(a : ℝ[batch: B, model: 4], b : ℝ[time: B, model: 4]) -> ℝ[batch: B, model: 4] =
   a + b
 ```
 
+<!-- psk: check examples/tutorial/errors/bad_axis.psk -->
 ```text
 [E2003] Error: cannot broadcast `ℝ[batch: B, model: 4]` with `ℝ[time: B, model: 4]`
-   ,-[ bad_axis.psk:3:3 ]
+   ,-[ examples/tutorial/errors/bad_axis.psk:4:3 ]
    |
- 3 |   a + b
+ 4 |   a + b
    |   ^^|^^
    |     `---- no alignment by position or by name
    |
@@ -301,22 +315,24 @@ fn add(a : ℝ[batch: B, model: 4], b : ℝ[time: B, model: 4]) -> ℝ[batch: B,
 ---'
 ```
 
-A wrong return type, in `Linear` (`-> ℝ[..., In]` instead of `Out`). The
+A wrong return type, in `Linear` (`-> ℝ[..., In]` instead of `Out`,
+`bad_ret.psk`). The
 dimensions are symbolic, so the checker gives a counterexample:
 
+<!-- psk: check examples/tutorial/errors/bad_ret.psk -->
 ```text
 [E2006] Error: dimension mismatch: `In` vs `Out`
-   ,-[ bad_ret.psk:5:5 ]
+   ,-[ examples/tutorial/errors/bad_ret.psk:7:5 ]
    |
- 5 |     x · w + b
+ 7 |     x · w + b
    |     ^^^^|^^^^
    |         `------ differ for In = 1, Out = 0
 ---'
 [E2011] Error: `apply` returns `ℝ[..., Out]` but is declared `-> ℝ[..., In]`
-   ,-[ bad_ret.psk:5:5 ]
+   ,-[ examples/tutorial/errors/bad_ret.psk:7:5 ]
    |
- 4 | ,->   fn apply(x : ℝ[..., In]) -> ℝ[..., In] =
- 5 | |->     x · w + b
+ 6 | ,->   fn apply(x : ℝ[..., In]) -> ℝ[..., In] =
+ 7 | |->     x · w + b
    | |       ^^^^|^^^^
    | |           `------- this body has type `ℝ[..., Out]`
    | |
@@ -324,25 +340,27 @@ dimensions are symbolic, so the checker gives a counterexample:
 ---'
 ```
 
-A name that is not in scope (`x · w + c`):
+A name that is not in scope (`x · w + c`, `bad_unbound.psk`):
 
+<!-- psk: check examples/tutorial/errors/bad_unbound.psk -->
 ```text
 [E2001] Error: unresolved name `c`
-   ,-[ bad_unbound.psk:5:13 ]
+   ,-[ examples/tutorial/errors/bad_unbound.psk:7:13 ]
    |
- 5 |     x · w + c
+ 7 |     x · w + c
    |             |
    |             `-- not a variable, parameter, module member or constant in scope
 ---'
 ```
 
-A forgotten `=` before a function body:
+A forgotten `=` before a function body (`bad_syntax.psk`):
 
+<!-- psk: check examples/tutorial/errors/bad_syntax.psk -->
 ```text
 [E0010] Error: expected `=`, found identifier `x`
-   ,-[ bad_syntax.psk:4:5 ]
+   ,-[ examples/tutorial/errors/bad_syntax.psk:7:5 ]
    |
- 4 |     x · w
+ 7 |     x · w + b
    |     |
    |     `-- expected `=` here
 ---'
@@ -350,8 +368,9 @@ A forgotten `=` before a function body:
 
 ## 3. Constants, assertions and bounded dimensions
 
-`tutorial/03_attention.psk` computes causal attention scores:
+`examples/tutorial/03_attention.psk` computes causal attention scores:
 
+<!-- psk: examples/tutorial/03_attention.psk -->
 ```text
 -- 03_attention.psk — constants, static assertions, bounded dimensions, ein.
 const D  : nat = 8          -- model dimension
@@ -392,7 +411,7 @@ fn attend(q : Q, k : Q, v : Q) -> Q =
   added to the scores).
 
 ```sh
-presk check tutorial/03_attention.psk --summary
+presk check examples/tutorial/03_attention.psk --summary
 ```
 
 ```text
@@ -410,12 +429,12 @@ re-checked. With three heads, `HD = 8 / 3` is not a natural number and the
 assertion fails (the first and last of the errors printed):
 
 ```sh
-presk check tutorial/03_attention.psk --const H=3
+presk check examples/tutorial/03_attention.psk --const H=3
 ```
 
 ```text
 [E1005] Error: `HD` is not a natural number
-   ,-[ tutorial/03_attention.psk:4:18 ]
+   ,-[ examples/tutorial/03_attention.psk:4:18 ]
    |
  4 | const HD : nat = D / H      -- must be exact: checked at elaboration
    |                  ^^|^^
@@ -425,7 +444,7 @@ presk check tutorial/03_attention.psk --const H=3
 ---'
 …
 [E1004] Error: static assertion fails: D % H == 0
-   ,-[ tutorial/03_attention.psk:5:1 ]
+   ,-[ examples/tutorial/03_attention.psk:5:1 ]
    |
  5 | static assert D % H == 0
    | ^^^^^^^^^^^^|^^^^^^^^^^^
@@ -436,8 +455,8 @@ presk check tutorial/03_attention.psk --const H=3
 Running needs the file dimensions `B` and `T`; the bound on `T` is enforced:
 
 ```sh
-presk run tutorial/03_attention.psk --entry attend --dim B=1 --dim T=3 --digits 5
-presk run tutorial/03_attention.psk --entry attend --dim B=1 --dim T=2000
+presk run examples/tutorial/03_attention.psk --entry attend --dim B=1 --dim T=3 --digits 5
+presk run examples/tutorial/03_attention.psk --entry attend --dim B=1 --dim T=2000
 ```
 
 ```text
@@ -447,8 +466,9 @@ presk run tutorial/03_attention.psk --entry attend --dim B=1 --dim T=2000
 
 ## 4. Differentiation and regularity classes
 
-`tutorial/04_grad.psk` defines a loss over the linear layer and its gradient:
+`examples/tutorial/04_grad.psk` defines a loss over the linear layer and its gradient:
 
+<!-- psk: examples/tutorial/04_grad.psk -->
 ```text
 -- 04_grad.psk — a loss, its gradient, and regularity classes.
 import "01_linear.psk" as lin
@@ -475,7 +495,7 @@ fn loss_grad{D B : dim}(net : lin.Linear{D, 1}, θ : params net,
   a parameter tree is a parameter tree of the same shape.
 
 ```sh
-presk check tutorial/04_grad.psk --summary
+presk check examples/tutorial/04_grad.psk --summary
 ```
 
 ```text
@@ -498,8 +518,8 @@ requires `C⁰⁺` or better in the differentiated argument, and the checker
 proves it: `loss` is `C∞` in `θ`, so `loss_grad` is accepted.
 
 ```sh
-presk run tutorial/04_grad.psk --entry loss --dim D=3 --dim B=2 --digits 6
-presk run tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6
+presk run examples/tutorial/04_grad.psk --entry loss --dim D=3 --dim B=2 --digits 6
+presk run examples/tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6
 ```
 
 ```text
@@ -518,24 +538,31 @@ finite differences at 512 bits.
 
 ### A function that cannot be differentiated
 
-Replace the loss by the mean of an `argmax`:
+`examples/tutorial/errors/bad_argmax.psk` replaces the loss by the mean of
+an `argmax`:
 
+<!-- psk: examples/tutorial/errors/bad_argmax.psk -->
 ```text
+-- bad_argmax.psk — step 4 of the tutorial: a loss through `argmax` has no gradient (E3001).
+import "../01_linear.psk" as lin
+dim B
+
 fn hits{D : dim}(net : lin.Linear{D, 8}, θ : params net, x : ℝ[batch: B, D]) -> ℝ[] =
   mean(real(argmax(net.apply(θ, x))))
 fn hits_grad{D : dim}(net : lin.Linear{D, 8}, θ : params net, x : ℝ[batch: B, D]) -> params net =
   grad(λ θ. hits(net, θ, x))(θ)
 ```
 
+<!-- psk: check examples/tutorial/errors/bad_argmax.psk -->
 ```text
 [E3001] Error: cannot differentiate through `argmax`: the function is discontinuous (Disc) in `θ`
-   ,-[ bad_argmax.psk:6:3 ]
+   ,-[ examples/tutorial/errors/bad_argmax.psk:8:3 ]
    |
- 4 |   mean(real(argmax(net.apply(θ, x))))
+ 6 |   mean(real(argmax(net.apply(θ, x))))
    |             ^^^^^^^^^^^|^^^^^^^^^^^
    |                        `------------- `argmax` makes the result discontinuous in `θ`
    |
- 6 |   grad(λ θ. hits(net, θ, x))(θ)
+ 8 |   grad(λ θ. hits(net, θ, x))(θ)
    |   ^^^^^^^^^^^^^|^^^^^^^^^^^^
    |                `-------------- `grad` here, with respect to `θ`
    |
@@ -550,8 +577,9 @@ The error names the primitive responsible, even through a call, and the
 
 ## 5. Randomness is an effect
 
-`tutorial/05_sample.psk`:
+`examples/tutorial/05_sample.psk`:
 
+<!-- psk: examples/tutorial/05_sample.psk -->
 ```text
 -- 05_sample.psk — randomness is an effect, and a draw a function of its key.
 dim B
@@ -566,14 +594,16 @@ fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] uses Ra
 - **`sample(key, logits)`** draws from the softmax of the logits, a token
   per position from the key's uniform draw of that position: a function of
   its key, as `dropout` is. It *uses* the `Rand` effect, which the function
-  must declare with `uses Rand`. Without the clause:
+  must declare with `uses Rand`. Without the clause
+  (`examples/tutorial/errors/bad_rand.psk`):
 
+<!-- psk: check examples/tutorial/errors/bad_rand.psk -->
 ```text
 [E4001] Error: `pick` uses the effect `Rand` without declaring it
-   ,-[ bad_rand.psk:3:3 ]
+   ,-[ examples/tutorial/errors/bad_rand.psk:5:3 ]
    |
- 2 | ,-> fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
- 3 | |->   sample(key, logits)
+ 4 | ,-> fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
+ 5 | |->   sample(key, logits)
    | |     ^^^^^^^^^|^^^^^^^^^
    | |              `------------ this uses `Rand`
    | |
@@ -590,8 +620,8 @@ synthesizes every argument, from `--seed`, and `sample` draws from it (until
 0.10.0 step 7b it took no key and drew from a stream seeded by `--seed`):
 
 ```sh
-presk run tutorial/05_sample.psk --entry pick --dim B=5
-presk run tutorial/05_sample.psk --entry pick --dim B=5 --seed 3
+presk run examples/tutorial/05_sample.psk --entry pick --dim B=5
+presk run examples/tutorial/05_sample.psk --entry pick --dim B=5 --seed 3
 ```
 
 ```text
@@ -601,8 +631,9 @@ idx[8][batch: 5] = [batch: 5] [4, 5, 3, 3, 4]
 
 ## 6. Composition: imports, sub-modules, stacks
 
-`tutorial/06_tower.psk` assembles the previous modules:
+`examples/tutorial/06_tower.psk` assembles the previous modules:
 
+<!-- psk: examples/tutorial/06_tower.psk -->
 ```text
 -- 06_tower.psk — composition: imports, sub-modules, stacked blocks.
 import "01_linear.psk" as lin
@@ -636,17 +667,17 @@ module Tower {
   sequence.
 
 ```sh
-presk check tutorial/06_tower.psk --summary
-presk dump tutorial/06_tower.psk --stage elab
+presk check examples/tutorial/06_tower.psk --summary
+presk dump examples/tutorial/06_tower.psk --stage elab
 ```
 
 The elaboration dump shows the resolved program, with the instances and
 the layout of each parameter tree:
 
 ```text
-== tutorial/06_tower.psk (main)
-import lin = tutorial/01_linear.psk
-import norm = tutorial/02_norm.psk
+== examples/tutorial/06_tower.psk (main)
+import lin = examples/tutorial/01_linear.psk
+import norm = examples/tutorial/02_norm.psk
 const D = 4
 const L = 3
 module Block {
@@ -672,8 +703,8 @@ Block:
 ```
 
 ```sh
-presk run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6
-presk run tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6 --const L=1
+presk run examples/tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6
+presk run examples/tutorial/06_tower.psk --entry Tower.apply --dim batch=2 --digits 6 --const L=1
 ```
 
 ```text
@@ -703,10 +734,11 @@ For instance, `loss` of step 4 in PSK-Core, then the functions that
 differentiation adds:
 
 ```sh
-presk dump tutorial/04_grad.psk --stage core | sed -n '/^fn loss{/,/^}/p'
-presk dump tutorial/04_grad.psk --stage core-after-ad | grep '^fn'
+presk dump examples/tutorial/04_grad.psk --stage core | sed -n '/^fn loss{/,/^}/p'
+presk dump examples/tutorial/04_grad.psk --stage core-after-ad | grep '^fn'
 ```
 
+<!-- psk: none (PSK-Core, as presk dump --stage core prints it) -->
 ```text
 fn loss{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1]) -> ℝ[] {
   ŷ : ℝ[batch: B, 1] = call Linear.apply{In = D, Out = 1}(θ, x)
@@ -717,6 +749,7 @@ fn loss{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1
 }
 ```
 
+<!-- psk: none (the signatures presk dump --stage core-after-ad prints) -->
 ```text
 fn Linear.apply{In Out}(θ : params Linear{In, Out}, x : ℝ[..., In]) -> ℝ[..., Out] {
 fn loss{D B}(θ : params Linear{D, 1}, x : ℝ[batch: B, D], y : ℝ[batch: B, 1]) -> ℝ[] {
@@ -755,7 +788,7 @@ document, each section with the command that prints it (0.11.0, the
 `explain` chapter):
 
 ```sh
-presk explain tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --out out/tutorial_explain
+presk explain examples/tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --out out/tutorial_explain
 grep '^## ' out/tutorial_explain/explain.md
 ```
 
@@ -789,7 +822,7 @@ machine (`--profile`); `make explain` writes the document of step 15's
 explain-pdf` its PDF. Since 0.13.0, `--format html` also writes
 `explain.html`, the pipeline view: the stages as columns, every element
 linked to what it was made from, its equations and each kernel's machine
-code (the `explain` chapter); and `presk dump tutorial/04_grad.psk --stage
+code (the `explain` chapter); and `presk dump examples/tutorial/04_grad.psk --stage
 core-after-ad --format unicode` prints the derivatives above as equations,
 each with the rule it was made by (the `language` chapter, "Reading a
 program as mathematics"). Since 0.14.0 the page has a second tab, Network:
@@ -797,9 +830,9 @@ the program as boxes and arrows, each box a call with its formula, its
 parameters and its work, opening in place, any set of boxes at once and
 "expand all" every one (0.14.1), every box and arrow an element of the
 columns; `presk explain` also writes it as `network.svg`, and
-`presk dump tutorial/07_train.psk --stage network --entry loss --dim B=4`
+`presk dump examples/tutorial/07_train.psk --stage network --entry loss --dim B=4`
 prints its outline (the `explain` chapter, "The network diagram"). Since
-0.15.0, `presk memory tutorial/07_train.psk --entry loss --dim B=4` counts
+0.15.0, `presk memory examples/tutorial/07_train.psk --entry loss --dim B=4` counts
 what one call needs in memory, from the program: the parameters, the peak
 of live bytes and each call's share, beside the C program's arena; `--step`
 the training step under both `--remat`s, `--symbolic` the same as
@@ -813,7 +846,7 @@ source, and, with `--conformance-entry`, a test that compares it with the
 interpreter on the same inputs.
 
 ```sh
-presk export tutorial/06_tower.psk --target pytorch --mode readable --shapes=check \
+presk export examples/tutorial/06_tower.psk --target pytorch --mode readable --shapes=check \
     --conformance-entry Tower.apply --dim batch=2 -o out/tutorial_tower
 ```
 
@@ -851,7 +884,7 @@ shape. A gradient exports to `torch.func.grad`, as `loss_grad` of step 4
 shows:
 
 ```sh
-presk export tutorial/04_grad.psk --target pytorch --mode readable \
+presk export examples/tutorial/04_grad.psk --target pytorch --mode readable \
     --conformance-entry loss_grad --dim D=3 --dim B=2 -o out/tutorial_grad
 ```
 
@@ -899,12 +932,12 @@ Then:
 
 ## 9. The reference examples
 
-The programs of the specification, copied under `tests/examples/`, are the
+The programs of the specification, copied under `examples/spec/`, are the
 acceptance tests of the compiler; `minigpt.psk` is a complete decoder-only
 transformer with its training and serving configurations.
 
 ```sh
-presk check tests/examples/minigpt/minigpt.psk --summary
+presk check examples/spec/minigpt/minigpt.psk --summary
 ```
 
 The summary shows the attention shapes with the relabeled `seq2` axis,
@@ -930,9 +963,9 @@ training loss of `train_minigpt.psk`, whose constants live in the imported
 file:
 
 ```sh
-presk run tests/examples/minigpt/minigpt.psk --entry MiniGPT.apply \
+presk run examples/spec/minigpt/minigpt.psk --entry MiniGPT.apply \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
-presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
+presk run examples/spec/minigpt/train_minigpt.psk --entry loss \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim B=2 --dim T=8
 ```
 
@@ -946,7 +979,7 @@ presk run tests/examples/minigpt/train_minigpt.psk --entry loss \
 and executed by `presk train` (the `training` chapter):
 
 ```sh
-presk run tests/examples/minigpt/train_minigpt.psk
+presk run examples/spec/minigpt/train_minigpt.psk
 ```
 
 ```text
@@ -963,9 +996,10 @@ the loss.
 
 A `training run` block turns a model, an objective and data into a loop that
 `presk train` executes and `presk export --train` turns into a PyTorch
-script. `tutorial/07_train.psk` teaches the tower of step 6 the function
+script. `examples/tutorial/07_train.psk` teaches the tower of step 6 the function
 `y = 2·x + 1`:
 
+<!-- psk: examples/tutorial/07_train.psk -->
 ```text
 -- 07_train.psk — a training run: the tower of 06 learns y = 2·x + 1.
 import "06_tower.psk" as t
@@ -999,12 +1033,12 @@ training run {
 - **`data`** names a `.psk.d` file relative to this one, shuffled with its own
   seed and cut into batches of 8, which fixes `B`.
 
-The data file holds 128 samples written as text (`tutorial/data/pairs.txt`,
+The data file holds 128 samples written as text (`examples/tutorial/data/pairs.txt`,
 eight numbers per line: `x` then `y`) and packed with the type of one sample:
 
 ```sh
-presk data pack --type '(ℝ[model: 4], ℝ[model: 4])' tutorial/data/pairs.txt -o tutorial/data/pairs.psk.d
-presk check tutorial/07_train.psk --summary
+presk data pack --type '(ℝ[model: 4], ℝ[model: 4])' examples/tutorial/data/pairs.txt -o examples/tutorial/data/pairs.psk.d
+presk check examples/tutorial/07_train.psk --summary
 ```
 
 ```text
@@ -1023,7 +1057,7 @@ and bound `B`. Train on the interpreter (`--ckpt` redirects the checkpoints
 the block asks for):
 
 ```sh
-presk train tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
+presk train examples/tutorial/07_train.psk --steps 100 --log-every 20 --ckpt out/tutorial_ckpt
 ```
 
 ```text
@@ -1045,7 +1079,7 @@ weights are a one-sample `.psk.d` of type `params Tower`. Everything runs at
 256 bits: a reference, not a fast trainer. For speed, export the run:
 
 ```sh
-presk export tutorial/07_train.psk --target pytorch --mode readable \
+presk export examples/tutorial/07_train.psk --target pytorch --mode readable \
     --conformance-entry train:10 -o out/tutorial_train
 (cd out/tutorial_train && ../../.venv/bin/python -m pytest -q -s test_conformance.py)
 (cd out/tutorial_train && ../../.venv/bin/python train.py --steps 100 --log-every 25 --ckpt ckpt)
@@ -1084,7 +1118,7 @@ on first use, in `f64`, `f32` or `bf16`. The interpreter stays the reference;
 the native backend is measured against it.
 
 ```sh
-presk bench tutorial/07_train.psk --entry loss --dim B=8
+presk bench examples/tutorial/07_train.psk --entry loss --dim B=8
 ```
 
 ```text
@@ -1108,7 +1142,7 @@ dominated by dispatch, not arithmetic; the `native` chapter has larger
 programs. Train the tower of step 11 natively:
 
 ```sh
-presk train tutorial/07_train.psk --steps 100 --log-every 20 --backend native --ckpt out/tutorial_ckpt_native
+presk train examples/tutorial/07_train.psk --steps 100 --log-every 20 --backend native --ckpt out/tutorial_ckpt_native
 ```
 
 ```text
@@ -1140,8 +1174,8 @@ automatic differentiation produces (`optimization` chapter). On the
 gradient of step 4:
 
 ```sh
-presk dump tutorial/04_grad.psk --stage core-opt >/dev/null
-presk run tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6 --opt
+presk dump examples/tutorial/04_grad.psk --stage core-opt >/dev/null
+presk run examples/tutorial/04_grad.psk --entry loss_grad --dim D=3 --dim B=2 --digits 6 --opt
 ```
 
 ```text
@@ -1173,7 +1207,7 @@ launches natively, computes each one's work and traffic from its loop nest,
 and fits the roofline `λ + max(W/π, Q/β)` to the measurements:
 
 ```sh
-presk bench tutorial/07_train.psk --entry loss --dim B=8 --repeat 7 --calibrate out/tutorial_profile.json
+presk bench examples/tutorial/07_train.psk --entry loss --dim B=8 --repeat 7 --calibrate out/tutorial_profile.json
 ```
 
 ```text
@@ -1207,7 +1241,7 @@ flatters the model or not. `--opt --profile out/tutorial_profile.json` then
 makes that profile decide the extraction:
 
 ```sh
-presk bench tutorial/07_train.psk --entry loss --dim B=8 --opt --profile out/tutorial_profile.json
+presk bench examples/tutorial/07_train.psk --entry loss --dim B=8 --opt --profile out/tutorial_profile.json
 ```
 
 ```text
@@ -1225,21 +1259,21 @@ the same (`optimization` chapter).
 
 Everything so far was small enough to read. This step runs the same tool on
 the corpus of an actual course — the NLP course at Mines Paris, whose ladder
-of models is in `corpus/nlp/` and whose data is the text of the French civil
+of models is in `examples/corpus/nlp/` and whose data is the text of the French civil
 code. `make corpus` runs all of it; what follows is the shape of it.
 
 **Text becomes a dataset** in three steps, each of which says what it did:
 
 ```sh
-presk data chars corpus/nlp/data/civil.md -o corpus/nlp/data/civil_vocab.json
-presk data encode corpus/nlp/data/civil.md --vocab corpus/nlp/data/civil_vocab.json -o corpus/nlp/data/civil_tokens.txt
-presk data lm-windows --vocab 92 --seq 256 corpus/nlp/data/civil_tokens.txt -o corpus/nlp/data/civil_T256.psk.d
+presk data chars examples/corpus/nlp/data/civil.md -o examples/corpus/nlp/data/civil_vocab.json
+presk data encode examples/corpus/nlp/data/civil.md --vocab examples/corpus/nlp/data/civil_vocab.json -o examples/corpus/nlp/data/civil_tokens.txt
+presk data lm-windows --vocab 92 --seq 256 examples/corpus/nlp/data/civil_tokens.txt -o examples/corpus/nlp/data/civil_T256.psk.d
 ```
 
 ```text
-presk data: wrote corpus/nlp/data/civil_vocab.json (92 characters over 1182121 of text)
-presk data: wrote corpus/nlp/data/civil_tokens.txt (1182121 tokens over a vocabulary of 92)
-presk data: wrote corpus/nlp/data/civil_T256.psk.d (4617 windows of type (idx[92][seq: 256], idx[92][seq: 256]) from 1182121 tokens)
+presk data: wrote examples/corpus/nlp/data/civil_vocab.json (92 characters over 1182121 of text)
+presk data: wrote examples/corpus/nlp/data/civil_tokens.txt (1182121 tokens over a vocabulary of 92)
+presk data: wrote examples/corpus/nlp/data/civil_T256.psk.d (4617 windows of type (idx[92][seq: 256], idx[92][seq: 256]) from 1182121 tokens)
 ```
 
 Characters, not bytes, so an accent is one token; the vocabulary is a JSON
@@ -1250,6 +1284,7 @@ the maximum-likelihood estimate in closed form, and in Presk it is one
 contraction of two indicator tensors — the decomposition the specification
 ascribes to `embed`, now writable because `one_hot` exists:
 
+<!-- psk: examples/corpus/nlp/01_bigram_count.psk#counts -->
 ```text
 fn counts(ox : ℝ[batch: N, prev: V], oy : ℝ[batch: N, next: V]) -> ℝ[prev: V, next: V] =
   ein[prev, next](ox * oy)
@@ -1262,9 +1297,9 @@ Evaluate it on all 67 652 character pairs of the civil code's vocabulary —
 it:
 
 ```sh
-presk check corpus/nlp/01_bigram_count.psk --summary
-presk run corpus/nlp/01_bigram_count.psk --entry loss \
-    --data corpus/nlp/data/bigrams.psk.d --backend native --digits 10
+presk check examples/corpus/nlp/01_bigram_count.psk --summary
+presk run examples/corpus/nlp/01_bigram_count.psk --entry loss \
+    --data examples/corpus/nlp/data/bigrams.psk.d --backend native --digits 10
 ```
 
 ```text
@@ -1295,7 +1330,7 @@ predicts better, which is why the rung exists.
 context 256, on the civil code:
 
 ```sh
-presk check corpus/nlp/05_gpt.psk --summary
+presk check examples/corpus/nlp/05_gpt.psk --summary
 ```
 
 ```text
@@ -1323,7 +1358,7 @@ not reach yet.
 
 | Command | What it verifies |
 |---|---|
-| `make test` | the Rust test suite: unit tests, snapshot tests of every stage on the examples and of every diagnostic in `tests/diag/`, property tests of the shape decision procedure, gradients against finite differences at 512 bits (`mse`, two stacked modules), golden outputs of `presk run` in `tests/run/`, the `.psk.d` container, the optimizer's schedule and step, the training loop (a regression converges, the tiny MiniGPT's 20-step log), that the generated Python byte-compiles, and the C export's programs, built and compared bit for bit with the native backend (step 18) |
+| `make test` | the Rust test suite: unit tests, snapshot tests of every stage on the examples and of every diagnostic in `examples/tests/diag/`, property tests of the shape decision procedure, gradients against finite differences at 512 bits (`mse`, two stacked modules), golden outputs of `presk run` in `tests/run/`, the `.psk.d` container, the optimizer's schedule and step, the training loop (a regression converges, the tiny MiniGPT's 20-step log), that the generated Python byte-compiles, and the C export's programs, built and compared bit for bit with the native backend (step 18) |
 | `make check-examples` | `presk check` on the five reference programs: no error, only `W0001` |
 | `make run-examples` | the reference `presk run` commands |
 | `make export-examples` | the exports with conformance data, under `out/`: three models, the training loss, one optimizer step, twenty training steps, the ONNX graph |
@@ -1368,7 +1403,7 @@ on the exact interpreter — a bound needs a scale, and static intervals cannot
 supply one for a network:
 
 ```sh
-presk calibrate --precision tutorial/07_train.psk --entry loss --dim B=4 \
+presk calibrate --precision examples/tutorial/07_train.psk --entry loss --dim B=4 \
     --bits 128 --out out/tut_env.json
 ```
 
@@ -1392,7 +1427,7 @@ number, and here nothing cancels (the worst is 1.16). Then ask what a given
 realization costs:
 
 ```sh
-presk check --precision out/tut_env.json tutorial/07_train.psk --realize f32
+presk check --precision out/tut_env.json examples/tutorial/07_train.psk --realize f32
 ```
 
 ```text
@@ -1410,7 +1445,7 @@ of magnitude above the error actually committed on the corpus GPT, as the
 rely on it:
 
 ```sh
-presk solve tutorial/07_train.psk --precision out/tut_env.json \
+presk solve examples/tutorial/07_train.psk --precision out/tut_env.json \
     --budget 1e-3 --out out/tut_solved.json --sites 0
 ```
 
@@ -1451,7 +1486,7 @@ measurement.
 The file it writes is a realization, and `--realize @FILE` runs it:
 
 ```sh
-presk run tutorial/07_train.psk --entry loss --dim B=4 \
+presk run examples/tutorial/07_train.psk --entry loss --dim B=4 \
     --backend native --realize @out/tut_solved.json --digits 10
 ```
 
@@ -1490,13 +1525,13 @@ the zeros of initialisation and the measured step is at the peak learning
 rate — and the batch is eight samples, the run's own size:
 
 ```sh
-presk calibrate --step tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d \
+presk calibrate --step examples/tutorial/07_train.psk --weights out/tutorial_ckpt/final.psk.d \
     --warmup 20 --samples 8 --realize f64 --realize f32 --realize bf16 --realize recipe \
     --out out/tut_step.json
 ```
 
 ```text
-presk calibrate: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of tutorial/data/pairs.psk.d (noise: the next 8)
+presk calibrate: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of examples/tutorial/data/pairs.psk.d (noise: the next 8)
 presk calibrate: 245 sites in 18 functions of one exact step at 256 bits (0.0 s)
   |θ′ − θ|    3.7830e-2   |g| 5.6012e-1   |θ| 5.2636e0
   noise       7.1633e-1   ‖g_B − g_B′‖₂ / ‖g_B‖₂ between two batches of 8 (f64): what a rounding error is to be compared with
@@ -1533,12 +1568,12 @@ type and compared with the exact step at 256 bits:
 Then solve the step under a budget of 10⁻³:
 
 ```sh
-presk solve --step tutorial/07_train.psk --precision out/tut_step.json \
+presk solve --step examples/tutorial/07_train.psk --precision out/tut_step.json \
     --budget 1e-3 --out out/tut_step_solved.json
 ```
 
 ```text
-presk solve: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of tutorial/data/pairs.psk.d (noise: the next 8)
+presk solve: step 21 of 160 from out/tutorial_ckpt/final.psk.d after 20 warm-up step(s) in f64, on samples 0..8 of examples/tutorial/data/pairs.psk.d (noise: the next 8)
 presk solve: the step under an update budget of 1.00e-3 (‖θ̂′−θ′‖₂/‖θ′−θ‖₂), 18 functions, 38 native steps measured
 function                        sites     f64 cost     gap f32    gap bf16   chosen
 Block.apply                         6      1.216e3     5.15e-8     2.67e-3      f32
@@ -1585,10 +1620,10 @@ where the run ends, against step 12's `f64` run and against a change of
 seed:
 
 ```sh
-presk train tutorial/07_train.psk --steps 100 --log-every 20 --backend native \
+presk train examples/tutorial/07_train.psk --steps 100 --log-every 20 --backend native \
     --realize @out/tut_step_solved.json --ckpt out/tutorial_ckpt_step
 presk data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_step/final.psk.d
-presk train tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
+presk train examples/tutorial/07_train.psk --steps 100 --log-every 100 --backend native \
     --seed 1 --ckpt out/tutorial_ckpt_seed1
 presk data diff out/tutorial_ckpt_native/final.psk.d out/tutorial_ckpt_seed1/final.psk.d
 ```
@@ -1649,9 +1684,9 @@ calibrated on a matrix product, a program the attention never enters, so
 that what it later says about attention is a prediction and not a fit:
 
 ```sh
-presk bench experiments/gemm.psk --entry gemm --dim N=256 --realize f32 \
+presk bench examples/experiments/gemm.psk --entry gemm --dim N=256 --realize f32 \
     --calibrate out/tut_layout.json --space calib --repeat 5
-presk bench experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
+presk bench examples/experiments/gemm.psk --entry gemm --dim N=512 --realize f32 \
     --calibrate out/tut_layout.json --space calib --repeat 5
 ```
 
@@ -1708,7 +1743,7 @@ thin products in two types, pinned to like cores with `taskset`.
 Now choose a layout for every nest of the entry, statically:
 
 ```sh
-presk plan tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+presk plan examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
     --profile out/tut_layout.json --out out/tut_plan.json
 ```
 
@@ -1740,9 +1775,9 @@ points it cannot tell from its choice. The plan is a JSON file (`realize`
 chapter), and `--plan` runs it:
 
 ```sh
-presk run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
+presk run examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
     --realize f32 > out/tut_attend.txt
-presk run tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
+presk run examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --backend native \
     --plan @out/tut_plan.json > out/tut_attend_plan.txt
 cmp out/tut_attend.txt out/tut_attend_plan.txt && echo "same output"
 ```
@@ -1760,9 +1795,9 @@ adds a row that times the entry under the plan.)
 Was the choice right? Measure every point, twice:
 
 ```sh
-presk autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+presk autotune examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
     --space small --profile out/tut_layout.json --interp --out out/tut_tune/day1
-presk autotune tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
+presk autotune examples/tutorial/03_attention.psk --entry attend --dim B=16 --dim T=256 --realize f32 \
     --space small --profile out/tut_layout.json --out out/tut_tune/day2
 ```
 
@@ -1871,7 +1906,7 @@ any machine, which run without the compiler and compute what `presk run
 --backend native` computes, bit for bit. Export step 3's attention:
 
 ```sh
-presk export tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim T=3 -o out/tut_c
+presk export examples/tutorial/03_attention.psk --target c --entry attend --dim B=1 --dim T=3 -o out/tut_c
 ```
 
 ```text
@@ -1988,7 +2023,7 @@ backend's run, so it follows what that run followed. At step 17's size and
 under its plan:
 
 ```sh
-presk export tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 \
+presk export examples/tutorial/03_attention.psk --target c --entry attend --dim B=16 --dim T=256 \
     --plan @out/tut_plan.json -o out/tut_c16
 make -s -C out/tut_c16 check
 OMP_NUM_THREADS=1 make -s -C out/tut_c16 check
@@ -2048,7 +2083,7 @@ own, at point zero (its default layout, one lane, one worker), in the form
 such tools read:
 
 ```sh
-presk export tutorial/03_attention.psk --target c --mode scop --entry attend --dim B=16 --dim T=256 \
+presk export examples/tutorial/03_attention.psk --target c --mode scop --entry attend --dim B=16 --dim T=256 \
     --realize f32 -o out/tut_scop
 make -s -C out/tut_scop check
 ```

@@ -11,7 +11,7 @@ prints the number of positions and the loss to 12 digits. At each position
 the loss is log Σ exp(y_v) − y_target, computed in doubles from the logits'
 leading parts with the largest subtracted first (so to about 10⁻¹⁵ of the
 loss, far below any realization's gap to it), and the mean is `math.fsum`'s.
-This is `loss` of corpus/nlp/05_gpt.psk on the exact model — the mean over
+This is `loss` of examples/corpus/nlp/05_gpt.psk on the exact model — the mean over
 batch and sequence of `cross_entropy` — which the reference itself would
 take 178.6 s a window to compute at the course constants (D101).
 """

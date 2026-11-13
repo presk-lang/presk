@@ -1,7 +1,7 @@
 #!/bin/bash
 # PyTorch eager on the Llama 2 decoder block (D107): D100's protocol
 # (pytorch_baseline.sh, the course GPT's forward pass on three sides) on one
-# block of coverage/llama.psk at the 7B configuration's width (G = 32, L = 1:
+# block of examples/coverage/llama.psk at the 7B configuration's width (G = 32, L = 1:
 # D = 4096, 32 heads, SwiGLU's 11008, V = 32 000), the model D104 and D106
 # ran exactly and natively. The forward pass `Llama.apply` at T tokens
 # (default 384, D104's) and batch 1 and 20, `f32`. A measurement, not a
@@ -68,7 +68,7 @@ MEM=${MEM:-108G}
 REALIZATIONS=${REALIZATIONS:-}
 ROWS=${ROWS:-all}
 OUT=${1:?usage: experiments/pytorch_decoder.sh OUT}
-FILE=coverage/llama.psk
+FILE=examples/coverage/llama.psk
 CONSTS=(--const G=32 --const L=1)
 
 case $ROWS in all | realizations) ;; *) echo "pytorch_decoder.sh: ROWS is all or realizations, not $ROWS" >&2; exit 1 ;; esac
@@ -331,7 +331,7 @@ date, rev, version = first[0].split()[1][:10], first[1].split()[1].rstrip(","), 
 if rows_all:
     print(f"# The Llama 2 decoder block against PyTorch eager: {version}")
     print()
-    print(f"One block of the Llama 2 decoder at the 7B configuration's width (`coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}, `f32`; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh`. Two sides on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads): presk's native backend (`presk bench --native-only --plan-only`), under its default layouts and under `presk plan`'s plan with the frozen profile, in `f32` and with `int8` weights on every matrix; and PyTorch running the module `presk export --target pytorch --mode readable` writes, in eval mode under `torch.no_grad()`, with its own draw of the same distributions (every matrix normal(std = 0.02), every γ ones; seed 0) and token ids drawn by `torch.randint` (seed 0). Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
+    print(f"One block of the Llama 2 decoder at the 7B configuration's width (`examples/coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}, `f32`; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh`. Two sides on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads): presk's native backend (`presk bench --native-only --plan-only`), under its default layouts and under `presk plan`'s plan with the frozen profile, in `f32` and with `int8` weights on every matrix; and PyTorch running the module `presk export --target pytorch --mode readable` writes, in eval mode under `torch.no_grad()`, with its own draw of the same distributions (every matrix normal(std = 0.02), every γ ones; seed 0) and token ids drawn by `torch.randint` (seed 0). Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
     print()
     counted = {b: flops(b) for b in batches}
     print("**Operations.** The forward pass's contractions, a multiply and an add a term: " + "; ".join(
@@ -434,7 +434,7 @@ def phases(k):
 if not rows_all:
     print(f"# The Llama 2 decoder block under further realizations: {version}")
     print()
-    print(f"One block of the Llama 2 decoder at the 7B configuration's width (`coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh` with `ROWS=realizations`: presk's native backend alone (`presk bench --native-only --plan-only`), on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads), D100's protocol as D107 ran it, without PyTorch's rows. Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
+    print(f"One block of the Llama 2 decoder at the 7B configuration's width (`examples/coverage/llama.psk`, `--const G=32 --const L=1`: D = {D}, 32 heads each its own key head, SwiGLU's {FF}, V = {V}), its forward pass `Llama.apply` at T = {T}; {date}, presk `{rev}`, `experiments/pytorch_decoder.sh` with `ROWS=realizations`: presk's native backend alone (`presk bench --native-only --plan-only`), on the ten X925 cores pinned (`taskset -c 5-9,15-19`, ten threads), D100's protocol as D107 ran it, without PyTorch's rows. Each time is the median of the calls after one warmup call, which compiles natively; the native process's exact draw of the parameters comes before and is not timed.")
 if realizations:
     print("\n## Further realizations\n")
     print("Each realization under `presk plan`'s plan for it with the frozen profile, at each batch size; then, in a process of its own, the host by phase (`presk bench --host-profile`, D95's: three calls timed by phase after one warmup call). The kernels' share is their code's time in the call; *converted* is the phase `buffers.convert`, the inputs a launch receives in another type than its kernel's, converted into a new buffer at the kernel's edge, its time and its bytes a call. The GFLOP/s divide the compiler's count of the contractions by the median.")

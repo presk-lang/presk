@@ -1,6 +1,6 @@
 //! Statement P4 of plan 0.13.0 (D138): the native column. Every kernel of
 //! the entries `make plan-check` runs, in the three types and under the
-//! plans of `tests/plan/`, compiled as `presk run --backend native` compiles
+//! plans of `examples/tests/plan/`, compiled as `presk run --backend native` compiles
 //! it: every byte of its machine code lies in one range of one line of the
 //! kernel's printed text, the ranges in order and none overlapping, and the
 //! lines change no byte (a run's code is the same).
@@ -35,16 +35,16 @@ fn kernels(file: &str, entry: &str, flags: &str, plan: Option<&str>, realize: &s
 
 #[test]
 fn every_byte_of_every_kernel_has_its_line() {
-    let entries = std::fs::read_to_string(root().join("tests/plan/entries.txt")).unwrap();
+    let entries = std::fs::read_to_string(root().join("examples/tests/plan/entries.txt")).unwrap();
     let (mut n, mut bytes, mut given, mut prologue, mut tail, mut relocs) = (0usize, 0usize, 0u32, 0u32, 0u32, 0usize);
     for line in entries.lines().filter(|l| !l.trim().is_empty()) {
         let mut parts = line.splitn(3, '|');
         let (file, entry, flags) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap_or(""));
-        let mut runs: Vec<(Option<&str>, &str, &str)> = vec![(None, "f64", flags), (None, "f32", flags), (None, "bf16", flags), (Some("tests/plan/default.json"), "f64", flags)];
+        let mut runs: Vec<(Option<&str>, &str, &str)> = vec![(None, "f64", flags), (None, "f32", flags), (None, "bf16", flags), (Some("examples/tests/plan/default.json"), "f64", flags)];
         // A tiled contraction in lanes, k-blocked, split and packed, and a
         // two-pass softmax: the attention's plan, at a T its tile divides.
         if entry == "SelfAttention.apply" {
-            runs.push((Some("tests/plan/attention.json"), "f32", "--const V=92 --const D=64 --const H=2 --const L=1 --dim B=2 --dim T=16"));
+            runs.push((Some("examples/tests/plan/attention.json"), "f32", "--const V=92 --const D=64 --const H=2 --const L=1 --dim B=2 --dim T=16"));
         }
         for (plan, realize, flags) in runs {
             let ks = kernels(file, entry, flags, plan, realize);

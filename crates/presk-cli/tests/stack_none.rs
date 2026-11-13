@@ -24,7 +24,7 @@ fn ok(o: &Output, what: &str) -> String {
     String::from_utf8_lossy(&o.stdout).to_string()
 }
 
-const FILE: &str = "tests/data/stack_none.psk";
+const FILE: &str = "examples/tests/data/stack_none.psk";
 
 fn json(o: &Output, what: &str) -> serde_json::Value {
     serde_json::from_str(&ok(o, what)).unwrap()
@@ -76,7 +76,7 @@ fn a_stack_of_no_layer_runs_on_every_executor_and_in_c() {
 fn a_fold_of_count_zero_is_not_walked_by_the_refusal_at_dimensions() {
     // `T = 0` empties `seq`, which `Layer.apply` averages over: with no
     // layer its body is never applied, and the entry is defined.
-    const DEFINED: &str = "tests/data/defined.psk";
+    const DEFINED: &str = "examples/tests/data/defined.psk";
     for backend in ["interp", "kernel", "native"] {
         let o = presk(&["run", DEFINED, "--const", "L=0", "--entry", "Tower.apply", "--dim", "T=0", "--backend", backend, "--json"]);
         let j = json(&o, &format!("Tower.apply at T = 0 on {backend}"));

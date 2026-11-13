@@ -16,7 +16,7 @@ const TINY: &[(&str, u64)] = &[("V", 64), ("D", 16), ("H", 2), ("L", 2)];
 
 #[test]
 fn self_attention_apply() {
-    let (prog, _, mut core) = prepare("tests/examples/minigpt/minigpt.psk", TINY);
+    let (prog, _, mut core) = prepare("examples/spec/minigpt/minigpt.psk", TINY);
     let before = core.func(core.find("SelfAttention.apply").unwrap()).body.lets.len();
     optimize(&mut core, &prog);
     let text = func_text(&core, &prog, "SelfAttention.apply");
@@ -28,7 +28,7 @@ fn self_attention_apply() {
 /// `.bwd` after its `.fwd`.
 #[test]
 fn mse_vjp_and_mlp_adjoints() {
-    let (prog, _, mut core) = prepare("tests/examples/mlp/mlp.psk", &[]);
+    let (prog, _, mut core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let lets = |core: &presk_core::Program, name: &str| core.func(core.find(name).unwrap()).body.lets.len();
     let sweeps = ["mse.bwd", "MLP.apply.bwd", "Linear.apply.bwd"];
     let before: Vec<usize> = sweeps.iter().map(|n| lets(&core, n)).collect();
@@ -51,7 +51,7 @@ fn mse_vjp_and_mlp_adjoints() {
 /// The report's totals: fewer lets, lower cost, every function verified.
 #[test]
 fn report_totals() {
-    let (prog, typed, mut core) = prepare("tests/examples/minigpt/train_minigpt.psk", TINY);
+    let (prog, typed, mut core) = prepare("examples/spec/minigpt/train_minigpt.psk", TINY);
     presk_train::prepare_training(&mut core, &prog, &typed).unwrap();
     let report = optimize(&mut core, &prog);
     assert!(report.lets_after() < report.lets_before(), "{}", report.summary());

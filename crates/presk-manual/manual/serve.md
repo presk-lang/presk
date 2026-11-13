@@ -8,6 +8,7 @@ PyTorch. This is the minimal form of the specification's `serve` (plan 0.3.0
 
 ## The block, resolved
 
+<!-- psk: examples/spec/minigpt/serve_minigpt.psk#inference serve, same tokens -->
 ```text
 inference serve {
   model   = m.MiniGPT
@@ -45,7 +46,7 @@ inference serve {
 ```text
 -- inference --
 inference serve: model MiniGPT
-    weights : ckpt/final (tests/examples/minigpt/ckpt/final.psk.d, not found)
+    weights : ckpt/final (examples/spec/minigpt/ckpt/final.psk.d, not found)
     generate: next_token(θ, key, ctx, temperature)
     ignored : precision, target, batching, cache (checked, without effect in this version)
 ```
@@ -108,7 +109,7 @@ length), loads the weights at that shape and passes the model the **last
 `T` tokens** of the context at every step: a sliding window, reported as
 `context window 8`. A prompt shorter than `T` is refused (`E7001`), a longer
 one slides. When the parameters do not depend on `T`, as a model with RoPE's
-(`coverage/llama3.psk`), the whole context is passed and grows, reported as
+(`examples/coverage/llama3.psk`), the whole context is passed and grows, reported as
 `whole context`, and the file's `dim T <= …` bound is checked at every step.
 Until 0.17.0 step 7 (D180) the test read the initializer's dimensions,
 which are every dimension of its file, so every model was served over a
@@ -118,9 +119,28 @@ same model read any context up to `Tmax`.
 
 Output: the generated tokens on stdout, one line, space-separated; a summary
 line on stderr; `--json` gives `{model, weights, prompt, generated, window,
-greedy, vocab}`. Exit codes: 0; 1 a diagnostic or a run-time error (a token
-outside the vocabulary, a prompt shorter than the window, a violated bound);
-2 no `inference serve`, no weights file, or a malformed `--prompt`/`--dim`.
+greedy, vocab, compile_s, compute_s, compilations, compiled_kernels}`. Exit
+codes: 0; 1 a diagnostic or a run-time error (a token outside the
+vocabulary, a prompt shorter than the window, a violated bound); 2 no
+`inference serve`, no weights file, or a malformed `--prompt`/`--dim`.
+
+**Compiling and computing** (0.17.2 step 4, D200). The summary line ends
+with the loop's time in two parts, and `--json` gives them in seconds:
+- **compiled** (`compile_s`): each context length the loop has not seen is
+  prepared, and inside the call that follows, each kernel new at that
+  length is lowered to PSK-Kernel and, natively, compiled by Cranelift (or
+  by `clang` with `--backend llvm`) at its first launch. The backend counts
+  that time as it goes. The line also gives the lengths prepared
+  (`compilations`) and the kernels compiled (`compiled_kernels`). Over a
+  window the length is the window's, so one; over a growing context, one a
+  token. The reference interpreter compiles nothing, so its line says 0
+  kernels.
+- **computed** (`compute_s`): the calls' time less that.
+
+The rest of a process's time is neither: reading the weights, the
+initializer's call that gives them their shapes, and the program's checking
+and lowering before the loop. The timers are a clock read on each side of
+each call and each new kernel, so the tokens are the same bits.
 
 ## On the tiny MiniGPT
 
@@ -128,14 +148,16 @@ With the checkpoint of `make train-examples` (`out/ckpt/final.psk.d`: twenty
 steps on the example tokens, `V=64 D=16 H=2 L=2`, windows of 8):
 
 ```sh
-presk serve tests/examples/minigpt/serve_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
+presk serve examples/spec/minigpt/serve_minigpt.psk --const V=64 --const D=16 --const H=2 --const L=2 \
      --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0 --backend native
 ```
 
 ```text
-presk serve: MiniGPT from out/ckpt/final.psk.d, prompt of 8 tokens, 8 generated, greedy, context window 8
+presk serve: MiniGPT from out/ckpt/final.psk.d, prompt of 8 tokens, 8 generated, greedy, context window 8; compiled in 0.011 s (1 length, 28 kernels), computed in 0.004 s
 33 33 33 33 0 0 0 0
 ```
+
+The times vary from run to run; the tokens do not.
 
 The same eight tokens come out of the reference interpreter at 64 bits, of
 the native backend in `f64` and in `f32`, and of the exported `serve.py` in
@@ -148,7 +170,7 @@ fixes the tokens, the same on the interpreter at 64 bits and natively in
 `19 55 1 63 57 1 54 29` natively):
 
 ```text
-presk serve: MiniGPT from out/ckpt/final.psk.d, prompt of 8 tokens, 8 generated, sampled, context window 8
+presk serve: MiniGPT from out/ckpt/final.psk.d, prompt of 8 tokens, 8 generated, sampled, context window 8; compiled in 0.005 s (1 length, 27 kernels), computed in 0.002 s
 6 7 23 37 52 34 57 19
 ```
 
@@ -161,7 +183,7 @@ its error.
 ## In PyTorch: `presk export --serve`
 
 ```sh
-presk export tests/examples/minigpt/serve_minigpt.psk --target pytorch --mode readable --serve \
+presk export examples/spec/minigpt/serve_minigpt.psk --target pytorch --mode readable --serve \
      --const V=64 --const D=16 --const H=2 --const L=2 -o out/serve_pt
 python out/serve_pt/serve.py --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0 --dtype float64
 ```
@@ -197,7 +219,7 @@ deterministic path.
 ## In C: `presk export --target c --serve`
 
 ```sh
-presk export tests/examples/minigpt/serve_minigpt.psk --target c --serve \
+presk export examples/spec/minigpt/serve_minigpt.psk --target c --serve \
      --const V=64 --const D=16 --const H=2 --const L=2 --dim T=8 --weights out/ckpt/final.psk.d -o out/serve_c
 make -C out/serve_c
 out/serve_c/generate --weights out/ckpt/final.psk.d --prompt "1 2 3 4 5 6 7 8" --tokens 8 --temperature 0
@@ -210,7 +232,8 @@ the parameters fix (`--dim T=8`, which a C program of one shape needs where
 token `i` given the child `i` of the key `--seed` names (`presk_key_child`).
 Its draws are the native backend's from the same keys, and its output is
 `presk serve --backend native`'s byte for byte, in every realization,
-greedy and sampled, `--json` included (statement C5): the eight greedy tokens
+greedy and sampled, `--json` included but for `presk serve`'s four fields of
+compiling and computing (statement C5): the eight greedy tokens
 above are `33 33 33 33 0 0 0 0` again, and with `--seed` the sampled ones are
 the native backend's for that seed. A model whose parameters do not fix the
 context's length is exported at the length `--dim T=n` gives (0.17.0 step
@@ -234,15 +257,15 @@ context again.
 ## On Llama 3.2 1B's published weights
 
 `make llama3`'s stage `rw4` (`experiments` chapter, §25; plan 0.17.0
-step 7, D180) serves `coverage/llama3.psk` on `meta-llama/Llama-3.2-1B`,
+step 7, D180) serves `examples/coverage/llama3.psk` on `meta-llama/Llama-3.2-1B`,
 converted to a `.psk.d` of `bf16` leaves (`data` chapter), from four
 prompts of 16 tokens:
 
 ```sh
-presk serve coverage/llama3.psk --weights out/llama3/llama-3.2-1b.psk.d \
+presk serve examples/coverage/llama3.psk --weights out/llama3/llama-3.2-1b.psk.d \
      --prompt "128000 791 6864 315 9822 374 12366 11 323 279 6864 315 15704 374 22463 13" \
      --tokens 32 --temperature 0 --backend native --realize f32
-presk export coverage/llama3.psk --target c --serve --dim T=48 \
+presk export examples/coverage/llama3.psk --target c --serve --dim T=48 \
      --weights out/llama3/llama-3.2-1b.psk.d --realize f32 --no-exact -o out/llama3/serve_c_f32
 make -C out/llama3/serve_c_f32 generate
 ```
@@ -257,7 +280,8 @@ capital of Italy is Rome." (statement RW4). Neither is fast:
 - **No KV cache.** Each token computes the whole context again.
 - **`presk serve`** also compiles the kernels again at each new length:
   16 to 28 minutes for 32 tokens in `f32`, 8 in `int8`, whose weights are
-  a quarter of the bytes.
+  a quarter of the bytes. Since 0.17.2 its summary line splits that time
+  between compiling and computing (above).
 - **`generate.c`** computes all 48 positions at every step, in 21 to 33
   minutes.
 - **Memory.** `presk serve` holds about 29 GB in `f32`. The C program's

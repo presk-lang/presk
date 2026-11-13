@@ -1148,7 +1148,7 @@ enter the layout space as contraction nests, a gradient stops recomputing
 its forward pass, and the native host is measured and fixed; then the bias
 of a linear layer becomes its product's epilogue. Every change is exact:
 either a layout, which the space proves bit-identical, or the same
-operations in the same order. Steps 0–2 come before PLDI's deadline of 12
+operations in the same order. Steps 0–2 come before 12
 November, steps 3–8 after it; the CUDA export comes after the version.
 
 | Step | Contents | Status |
@@ -1301,7 +1301,7 @@ the way, 3a and 3f, moved what they had to); the native backend is within
   D93's bit for bit. The `bf16` gradients' launch counts of the `language`
   chapter, stale since steps 7b and 8, are measured again (577 and 412 for
   MiniGPT, 1 598 and 1 140 for the course GPT).
-- **The paper's run at the tag** (2026-10-03, D103): `make gpt-trained`,
+- **The runs of record at the tag** (2026-10-03, D103): `make gpt-trained`,
   `precision`, `quant-table`, `step-table`, `step-train`, `plan-check`,
   `opt-examples`, `c-conformance`, BERT at two blocks and its gaps at 24,
   and `make j-step`, on the tagged code. Every output is D93's (or step
@@ -1312,7 +1312,7 @@ the way, 3a and 3f, moved what they had to); the native backend is within
   5.3·10⁻² from the exact ones at 24 blocks, where D53 measured 1.1·10⁻¹:
   moved by 0.7.0's step 2 (D58, found by bisection), whose `bf16` products
   of an output width not a multiple of eight accumulate in `f32`.
-- **A second model for the paper's RQ5** (2026-10-04, D104; `make llama`,
+- **A second model with a budget** (2026-10-04, D104; `make llama`,
   the `coverage` chapter's *The decoder, run*). `coverage/llama.psk` with
   `G = 32`, Llama 2 7B's published width, one of its 32 blocks, on its
   initialization and 384 random tokens: the exact logits in 1 h 55 min
@@ -1375,7 +1375,7 @@ the reference interpreter*, "Memory"). The executors' seam shares the same buffe
 0.10.0's, bit for bit, and the reference no slower. On one block of the
 Llama 2 decoder at the 7B width, the exact logits hold 29 GB where they
 held 85, and a budget is solved and discharged where the solve was killed
-at 108 GB: the paper's RQ5 has a second model with a budget solved on it
+at 108 GB: a second model has a budget solved on it
 (`coverage` chapter). The native backend and the C export compute a
 quantised parameter read through `split` (the `native` chapter), so K's
 whole scheme runs natively on the decoder.
@@ -1422,7 +1422,7 @@ block, 7.4 times its reference.
   attention's output projection, an `ein` over three summed axes, which
   the contraction builder does not tile (it takes one summed axis); the
   tiled products run at about 400 GFLOP/s, PyTorch's whole pass at 940 and
-  1 139. No compiler change: a measurement, for the paper's Table 4.
+  1 139. No compiler change: a measurement.
 
 ## Version 0.11.0
 
@@ -1445,7 +1445,7 @@ document read the same values. No value the compiler computes changes.
 | 4 | The reasons of every decision | done (2026-10-09, D114): the solver records its moves (`presk_precision::solve::Move`: each narrowing tried, taken or refused by the budget, each widening after a measurement), and each decision's type gets its reason; fusion says why each group ends (`presk_core::fusion::stops`); each nest's chosen layout beside its runners-up and its best split, each prediction in its terms; the optimizer's rewrites before and after (`presk_driver::opt::Opt::apply_report`); the static assertions and how they were decided. X1 unchanged |
 | 5 | Site traces and the measured section | done (2026-10-09, D115): `--measure` (the realization natively against the exact reference, the solver's gap; a call; each kernel's median launch beside its prediction; the host by phase) over `presk_driver::bench` (`time_call`, `kernel_times`, `host_profile`, moved from the CLI, whose output keeps its form) and `text::host_profile`; `--site` and the default traces (the largest shares of the estimate, the slowest predicted nests), each site through every stage; the index of every site |
 | 6 | The PDF (`make explain-pdf`); the tutorial's step 7 from the tool | done (2026-10-09, D116): `make explain`, `make explain-pdf` (pandoc 3.1.3, LuaLaTeX from TeX Live 2026, the DejaVu fonts; the tutorial's document 19 pages in 6 s), `make explain-manual`; the manual's chapter `explain_loss`, the tutorial's document, held current by a test; the tutorial's step 7 shows `presk explain`; X5 holds: the Llama 2 decoder block at the 7B width, 384 tokens, D106's envelope and realization given, no exact reference, in 40 s and 10.9 GB, D106's 30 inert sites shown as followers and carried values |
-| 7 | The checks of record | done (2026-10-10, D117): version `0.11.0` on `bb78cb8`, with three of D110's defects fixed (`dump --stage elab` and `core` bind `--const`, a missing weights file named once, the PyTorch conformance reports a verification failure) and `check --precision --measure` saying "the kernel interpreter"; on that tree `make test`, `check-examples`, `coverage`, `plan-check`, `c-conformance` (14 of 14), `cargo doc` with no warning; X1 on `out/x1/x1.sh` against `024c44c`, 37 files, each named; `make tutorial` the same but for its times, step 7's `presk explain` and step 15's solve (7 sites, not 22). The paper's runs at 0.11.0: `make precision` 29 sites at 2.14×, the same gap; `make quant-table` byte for byte; the curve 2.87× to 1.09×, every budget inside; BERT-large at two blocks 25 sites at 2.03×, measured 1.05·10⁻⁵ (D101: 63 at 2.00×, 5.1·10⁻⁷; two stored values typed otherwise, `docs/compile-times-2026-10-09.md`); the decoder 24 of 25 sites at 1.96×, measured 1.99·10⁻⁵ (D106: 52 of 56 at 1.99×, 4.3·10⁻⁶; the softmax and RMSNorm's mean now `f32`, `docs/compile-times-2026-10-09-llama.md`) |
+| 7 | The checks of record | done (2026-10-10, D117): version `0.11.0` on `bb78cb8`, with three of D110's defects fixed (`dump --stage elab` and `core` bind `--const`, a missing weights file named once, the PyTorch conformance reports a verification failure) and `check --precision --measure` saying "the kernel interpreter"; on that tree `make test`, `check-examples`, `coverage`, `plan-check`, `c-conformance` (14 of 14), `cargo doc` with no warning; X1 on `out/x1/x1.sh` against `024c44c`, 37 files, each named; `make tutorial` the same but for its times, step 7's `presk explain` and step 15's solve (7 sites, not 22). The runs of record at 0.11.0: `make precision` 29 sites at 2.14×, the same gap; `make quant-table` byte for byte; the curve 2.87× to 1.09×, every budget inside; BERT-large at two blocks 25 sites at 2.03×, measured 1.05·10⁻⁵ (D101: 63 at 2.00×, 5.1·10⁻⁷; two stored values typed otherwise, `docs/compile-times-2026-10-09.md`); the decoder 24 of 25 sites at 1.96×, measured 1.99·10⁻⁵ (D106: 52 of 56 at 1.99×, 4.3·10⁻⁶; the softmax and RMSNorm's mean now `f32`, `docs/compile-times-2026-10-09-llama.md`) |
 | 8 | Documentation and version `0.11.0` | done (2026-10-10): the CHANGELOG, `CLAUDE.md`, the manual's `precision`, `coverage`, `experiments` and `status` chapters; in presk-specs (!70) the plan marked done, the reference at 0.11.0 (draft v0.15: the Status paragraphs, chapter 4's stored values, W18, the per-parameter float storage type, decided for 0.12.0), the report (the driver and `presk explain` in chapter 8, RA3, the roadmap, the history) and the tooling's pandoc, LuaLaTeX and DejaVu. Tagged `v0.11.0` on 2026-10-12, on `c73a2e1` (presk-specs `ed95d22`) |
 
 ### What 0.11.0 was judged on
@@ -1543,7 +1543,7 @@ every output 0.11.0 gave.
 | 4 | The solver: the parameters as decisions keyed by path, the functions' results offered, an entry whose result is a tensor (`--budget-abs`); `presk explain`'s decisions table | done (2026-10-13, D123): a `.vjp`'s cotangent argument's 1-norm recorded, so the results are ranked and offered; the parameters decided by path (`solve::ParamSite`, `param_reads`), their term at the narrowest of their type and their readers', their sensitivity the cotangent's 1-norm per leaf, read as the sweep returns; `--budget-abs`, a tensor entry ranked by one sweep seeded with ones, per output element, the measurement deciding; the bound charges the parameter tree at its narrowest type; `presk explain`'s §6.3 lists the parameters among the decisions and, under a given realization, every stored value and every parameter; the decoder's gate on 16 tokens |
 | 5 | The measurements: V1–V6 | done (2026-10-15, D124), alone on falicon: V1 holds, every difference named (the solves, their downstream, the sensitivity listings, the tutorial's solve); V2 and V3 hold, V3 at the decoder's width too (no parameter byte converted under its solved realization; its parameters 1.74 GB at rest in `f32`); V4: the tutorial 11 stored values and 4 parameters at 2.07×, the course GPT 33 and 21 at 2.12×, the curve 2.78× to 1.08×, BERT-large's two blocks 28 and 23 at 2.00×, the decoder 31 of 32 and 13 at 1.99× in 71.7 GB, the weights counted, every gap inside its budget; V5 holds: the decoder block under its solved realization no slower than all-`f32` at batch 1 in any of three rounds (1.00, 0.72, 0.66), 3.5 to 4 times faster than under 0.11.0's, 0.69 of all-`f32` at batch 20; V6: the course GPT's logits at 4.67·10⁻⁴, 1.97×, 7.5·10⁻⁵ measured, no decision changed; `experiments/curve.sh` trains without `params` |
 | 6 | The checks of record, the documents, version `0.12.0` | done (2026-10-15, D125): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` (the ignored tests included) pass, `cargo doc` has no warning (the two of 0.11.0 fixed), `clippy` the warnings of step 0's tree and no other; X1 against step 4 differs by the version line and the envelopes' date alone; the manual (every chapter's figures at 0.12.0, `training`'s refusal of `params`), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.17 (the Status paragraphs at 0.12.0, the question W19, a `bf16` nest's wider operand, decided by the user the same day: the reference amended to what the executors do, no output moved), the report, the slides, the summary and a status note; the poster |
-| 7 | The merge requests and the paper's side | done (2026-10-15): one merge request per step, the write-up as its first comment; the paper's side as a prompt for the paper session (presk-project `docs/prompt-paper-0.12.0-2026-10-15.md`) |
+| 7 | The merge requests | done (2026-10-15): one merge request per step, the write-up as its first comment |
 
 ### What 0.12.0 was judged on
 
@@ -1584,7 +1584,7 @@ tiling.
   parameter's sensitivity stays its leaf's exact 1-norm, `--quant` stays a
   pass on top of the float assignment, and every timing of record runs
   each row in several processes, at least three.
-- **The paper's results runs at 0.12.0** (2026-10-15 to 2026-10-16):
+- **The results runs at 0.12.0** (2026-10-15 to 2026-10-16):
   - the course GPT's T2, T4 and J′ across five processes (D127);
   - where the measurement refuses the solver's estimate (D128, `make
     widening`), with a solver defect fixed: an entry whose first argument
@@ -1618,7 +1618,7 @@ with a realization that types sites.
 | 4 | The math printer's two entries (`presk-print-math`, `presk dump --format latex\|unicode`), then the page's math layer | done (2026-10-17, D137): the notation first, the reference's chapter 3 gaining its section 3.10, "Programs as equations" (presk-specs !85, draft v0.18); the crate `presk-print-math`, one tree of formulas rendered in LaTeX (the reference's macros) or Unicode, and two entries: the typed program (a function as the equations of its `let`s, an operation by its name, `ein` as its sum at an index named by its axes, a stack as its recurrence, a rebound name primed) and PSK-Core after differentiation (one equation per binding, a generated binding with what the provenance table says it was made for); `presk dump --stage elab\|core-after-ad --format latex\|unicode`, `--module`, `--function`, `--standalone`; the 56 programs of the repository that type print with no gap; `make math-check` compiles 14 standalone documents; the page's math layer: a formula on every elaborated function and expression, every `let` of PSK-Core and after, each precision site's term of the estimate, each contraction nest's sum and order, a derivative's rule (table `core-adjoint`) and a rewrite's identity on the links; KaTeX 0.19.0 inlined; P3 holds with the formulas on (the decoder block: first draw 19 ms, a select at most 7.0 ms, a fold or an open at most 45.0 ms); P5 holds, the user having checked the listing (`docs/printer-p5-2026-10-17/listing.pdf`, 2026-10-17); P0 holds on X1's harness |
 | 5 | The native column | done (2026-10-17, D138): `presk_cranelift::machine_code` compiles each kernel as `presk run --backend native` does, each statement's instructions carrying its line of the kernel's text as a Cranelift `SourceLoc` (the header the prologue, the closing brace the return), and keeps the bytes, each line's ranges and Cranelift's text of the instructions (`set_disasm`, question 9); a byte Cranelift gives no line (the register allocator's moves, a branch at a block's edge) takes the line before it, marked; `presk explain --format json\|html` with the native target writes them (`native k<j>`, linked to its kernel by `code`), and the page's last column shows them; P4 holds on the 1 164 kernels of the test set in three types and two plans (197 252 bytes, 88 % with Cranelift's own line; the decoder block's, 65 %), and the lines change no byte; P3 holds with the column (the decoder block: a select at most 7.0 ms, a fold or an open at most 44.0 ms); P0 holds on X1's harness |
 | 6 | The checks of record, the documents, version `0.13.0` | done (2026-10-17, D139): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` (the ignored tests included) pass, `cargo doc -p presk-manual` has no warning; P0: X1's 863 outputs against `08d0cf3` differ in 19 files, by their version and commit lines alone, `make quant-table` and `step-table` byte for byte, `make tutorial` but for its measurements (times, the autotuned layouts' measured winners, `u`, RA4's percentages) and cargo's version line; `presk --help` unchanged but for the version; the manual (index, tutorial, cli, language, explain, native, dependencies, install, status), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.18 (chapter 3's section 3.10, its Status paragraphs at 0.13.0), the report (the foreword, chapter 8's section on the pipeline view, the roadmap, the history), the slides, the summary and a status note (`docs/status-2026-10-17.md`); the poster at 0.13.0 |
-| 7 | The merge requests | done (2026-10-17): one merge request per step, stacked, the write-up as its description; the paper session told at each |
+| 7 | The merge requests | done (2026-10-17): one merge request per step, stacked, the write-up as its description |
 
 ### What 0.13.0 was judged on
 
@@ -1673,7 +1673,7 @@ arrow is an element of the table.
 | 0 | The plan, the statements N0–N5, the facts checked, the user's decisions; version `0.14.0-dev`; N0's baseline | done (2026-10-17, D140): one PSK-Core function per module definition, so a box's own element is its call's `let`; the envelope keeps a site's largest count of elements over its calls; W and Q per box need the calls above each launch, which the launch log did not hold (the plan's question 1, the user's answer: record them); N0's baseline, X1's harness on `7e215f1` (863 outputs) and `make quant-table`, `step-table` and `tutorial` |
 | 1 | `presk-diagram`: the graph from the table, its numbers, the layered layout; JSON format 2 | done (2026-10-17, D141): the kernel backend's launch log records the calls above each launch (`Launched::calls`); crate `presk-diagram` draws the program the kernels run as call and stack boxes, operation, host and parameter nodes and arrows, each naming its element, with the printer's formulas, the arrows' types and bytes, each box's parameters and W and Q, laid out top to bottom once per opening reachable (a box opened folds its siblings); `explain.json` format 2 with `network`, and `network.svg`; N1 and N2 hold on 36 diagrams (`presk-explain/tests/network.rs`); found: `explain.json` under the native target varies from run to run by a `libm` address in a kernel's code |
 | 2 | The Network tab | done (2026-10-17, D142): the page's second tab draws the diagram from `explain.json`'s positions, a box's header opening and folding it in place, hover the numbers and formulas, a click selecting the node's elements in the columns (shift: lit on the diagram), "labels", "keys" and "backward", the lesson recording the tab and the opened boxes; N1's second half and N5 hold; the diagram's parameter rules fixed on the MLP's gradient |
-| 3 | `network.svg`, `presk dump --stage network`, TikZ; the course GPT's figure in the report | done (2026-10-17, D143): `presk dump --stage network` (outline, `--format json\|svg\|tikz`, `--level N`, `--standalone`); TikZ with the printer's LaTeX in the boxes; `make network-figure` writes the course GPT at level 2 into the manual's chapter `explain_network`, and level 1 and `Block` alone (`--box`) into the report's figures 9.1 and 9.2 (presk-specs !89), each readable on paper (the user's decision); N4 holds |
+| 3 | `network.svg`, `presk dump --stage network`, TikZ; the course GPT's figure in the report | done (2026-10-17, D143): `presk dump --stage network` (outline, `--format json\|svg\|tikz`, `--level N`, `--standalone`); TikZ with the printer's LaTeX in the boxes; `make network-figure` writes the course GPT at level 2 into the manual's chapter `explain_network`, and level 1 and `Block` alone (`--box`) into the report's figures 9.1 and 9.2 (presk-specs !89), each readable in print (the user's decision); N4 holds |
 | 4 | The checks of record, the documents, version `0.14.0` | done (2026-10-17, D144): on the version's tree `make test`, `check-examples`, `coverage`, `plan-check` and `c-conformance` pass, `cargo doc -p presk-manual` has no warning; N0: X1's 863 outputs against `7e215f1` differ in 19 files, by their version and commit lines alone, `make quant-table` and `step-table` byte for byte, `make tutorial` but for its measurements; the manual (index, tutorial, cli, explain, `explain_network`, status), the CHANGELOG, `CLAUDE.md`; in presk-specs the plan marked done, the reference at draft v0.19 (its Status paragraphs at 0.14.0), the report (the foreword, chapter 8's section and its two figures, the roadmap, the history), the slides, the summary and a status note (`docs/status-2026-10-17-0.14.0.md`, presk-specs !90); the poster at 0.14.0 |
 | 4b | The native code's bytes before linking (the user's answer on presk !100) | done (2026-10-17, D145): each kernel's machine code kept as Cranelift emitted it, the fields the linker fills with a `libm` address zero and named (`relocs`), the `libm` functions declared in their names' order; `explain.json` the same from one run to the next on the tutorial, the course GPT and the decoder block; the code a run executes unchanged (X1) |
 
@@ -1704,8 +1704,8 @@ the manual and the report. The kernel backend's record of the calls above
 each launch.
 
 **Does not have.** Two siblings opened at once (opening a box folds its
-siblings); a figure of a whole model opened two levels deep legible on
-paper (the report has the model and one block apart); the memory a value holds while
+siblings); a figure of a whole model opened two levels deep legible in
+print (the report has the model and one block apart); the memory a value holds while
 it is alive, which the diagram's data would give; and what 0.13.0
 did not have: a nest's loops as nested sums, the optimizer's rule per
 binding, Cranelift's IR, the precision stages on the optimized program,
@@ -1757,7 +1757,7 @@ each layer straight down, never through a node, where 0.14.0's could run
 through a box.
 
 **Does not have.** A layout the reader moves by hand; the exploded view as
-a figure on paper (the course GPT exploded is 1 062 × 3 954 pt); the
+a figure in print (the course GPT exploded is 1 062 × 3 954 pt); the
 memory a value holds while it is alive; and what 0.14.0 did not have.
 
 ## Version 0.15.0
@@ -1881,7 +1881,7 @@ was then solved and timed again by its whole protocol.
 | R3 | One executor's bits: the kernel interpreter computes the native bits; the solver's gap is the native one | holds | **holds** (D159); at scale, the solver's measurement and the native gap 0.0 % apart on the 36 solves of D156's protocol (D165), and the decoder's 2.544·10⁻⁵ the native gap (D162) |
 | R4 | The cost per sample: (i) the same cost from any number of windows; (ii) the same decisions at 1, 2 and 4 | (i) holds; (ii) measured | **(i) holds; (ii) failed at step 1 by one element, LayerNorm's ε, at four windows; with the masks gone (step 3) the default's realization is the same from 1 to 32 windows** (D161, D165) |
 | R5 | Three ways to spend the budget, each a default only by the plan's rule | reported | **reported**: every form holds out of sample, none keeps 1.5× at 10⁻⁶ and no new one keeps its realization from 4 to 16 windows, so none becomes a default (D161) |
-| R6 | The rows of record at 0.16.0, old and new, both decisions, the paper's sentence | reported | **reported** (D162–D166, `docs/rows-0.16.0.md`) |
+| R6 | The rows of record at 0.16.0, old and new, both decisions | reported | **reported** (D162–D166, `docs/rows-0.16.0.md`) |
 
 ## What 0.16.0 has, and what it does not
 
@@ -1955,8 +1955,7 @@ Tagged `v0.17.0` on 2026-11-04 on `e391a8b`, whose tree is the version's,
 to !151 and presk-specs !102 to !104; D181's addendum, D183 and D184
 (!152 to !154, documents only) were merged before the tag. Four parts: the native backend at GCC on its
 own kernels, `int8` and `int4` in the solver's menu, the training step
-budgeted per stored value, and real weights. No row of the paper was
-solved or timed again: the paper stays at 0.16.1.
+budgeted per stored value, and real weights.
 
 | Step | Contents | Status |
 |---|---|---|
@@ -1968,7 +1967,7 @@ solved or timed again: the paper stays at 0.16.1.
 | 5 | The training step budgeted per stored value (D178): `presk solve --step --grain value`, every stored value of the step but its state measured alone, D52's method at that grain, the realization in `storage`, applied by `presk train` under both `--remat`; `presk calibrate --step` prices a realization of stored values by role; TS0 holds (`solve --step`, the step table, X1 against `v0.16.1`); TS1: inside its budget at 10⁻³ by measurement, predicted 0.11 % slower than J′ by function (0.01 % than J′ with its state wide), under the profile's resolution at D = 64 | done (2026-10-28) |
 | 6 | The language (D179, presk-specs !103, the reference at draft v0.25): a slice that keeps its axis, `e[a: lo..hi]`, its bounds dimensions `presk check` places inside the axis (`E2014`); `concat(axis a, x, y)`; `max`, `min` and `clamp`, a tie to the second operand; through the checker, PSK-Core and its adjoints (`slice_vjp`), the interpreter, the kernels (copies, and selections), the native, C and LLVM backends, the PyTorch export and the printers. RW1 holds: `examples/rope/` and `examples/concat/` give the same bits on the three compiled executors in `f64`, `f32` and `bf16`, C1 holds on them, their gradients agree with finite differences at 512 bits, `coverage/llama.psk` takes RoPE and checks with no substitution. Every `concat` is a copy: 1.6 % of the RoPE attention's kernels at the course width, so the placement is not taken | done (2026-10-28) |
 | 7 | Real weights (D180): `.psk.d` version 2, a leaf's encoding `f64`, `f32` or `bf16` in the header, read exactly (a file of `f64` leaves still version 1, the same bytes), every reader; the converter `experiments/llama/hf_to_pskd.py` (`safetensors` read by hand, nothing permuted) and the tokenizer outside (`tokens.py`); `coverage/llama3.psk`, Llama 3.2 at 1B's configuration; `presk export --serve --dim T=n` for a model whose parameters do not fix the context (`E8009` without it), the context padded; `make llama3` on `meta-llama/Llama-3.2-1B`. A defect fixed: a checkpoint's parameters were drawn in exact arithmetic before being read (99 GB at 1.2·10⁹), now described and read against zeros of their shape; `presk run --result-only`. RW2 holds (6.2·10⁻¹⁵ against `transformers` in `float64`), RW4 holds (`presk serve` and `generate.c`, the same 32 tokens from four prompts in `f32` and `int8`), RW3 reported (`experiments` §25) | done (2026-10-29) |
-| 8 | The version's rows (D181, `docs/rows-0.17.0.md`), the timed ones alone by D127's protocol. NB2 holds: Cranelift with level 2 takes 1.19× the C program's time on the course GPT's forward pass and 0.994× on the step (T4's 1.63× and 1.67× at 0.16.0); NB3 holds: the LLVM backend 0.995× and 0.871×; NB4 reported (the kernels per backend, a cold compile 37–48 ms a kernel). QM1 holds; QM2 fails on BERT-large's two blocks at 10⁻³, the one menu taking no integer (2.00×) where `--quant` reaches 4.93×, and holds at equality on V6 and the course logits; QM3 holds, the one menu's realization of the course logits 0.16.1's. TS2 fails: the per-value step 7.80 s against J′'s 6.99 s at course scale, most of it the optimizer's state kept in `f64`; TS3 reported (the conversions 12.5 % of H6's step at D = 64) | done (2026-10-29) |
+| 8 | The version's rows (D181, `docs/rows-0.17.0.md`), the timed ones alone by D127's protocol. NB2 holds: Cranelift with level 2 takes 1.19× the C program's time on the course GPT's forward pass and 0.994× on the step (T4's 1.63× and 1.67× at 0.16.0); NB3 holds: the LLVM backend 0.995× and 0.871×; NB4 reported (the kernels per backend, a cold compile 37–48 ms a kernel). QM1 holds; QM2 fails on BERT-large's two blocks at 10⁻³, the one menu taking no integer (2.00×) where `--quant` reaches 4.93×, and holds at equality on V6 and the course logits; QM3 holds, the one menu's realization of the course logits 0.16.1's. TS2 fails: the per-value step 7.80 s against J′'s 6.99 s at course scale, most of it the optimizer's state kept in `f64`; TS3 reported (the conversions 12.5 % of J's step at D = 64) | done (2026-10-29) |
 | 9 | The documents and version 0.17.0 (D182): NB0, QM0, TS0 and RW0 on the version's tree, the checks of record, the manual, the reference at draft v0.26, the report, the slides, the summary, the status note, the poster | done (2026-10-29) |
 
 | Statement | Content | Expected | Verdict |
@@ -1985,7 +1984,7 @@ solved or timed again: the paper stays at 0.16.1.
 | TS0 | Nothing moves under the old grain | every byte | **holds** (D178; D182) |
 | TS1 | Per value: inside, and no slower by prediction | holds | **fails** on its second half (D178): 0.11 % slower |
 | TS2 | Per value at course scale: ≥ 1.3× all-`f64`, ≤ J′ | ≥ 1.3×, ≤ J′ | **fails** on its second half (D181): 7.80 s against 6.99 s |
-| TS3 | The conversions' share of the step | reported | **reported** (D181): 3.1 % per value, 12.5 % of H6's at D = 64 |
+| TS3 | The conversions' share of the step | reported | **reported** (D181): 3.1 % per value, 12.5 % of J's at D = 64 |
 | RW0 | Nothing moves without the constructs | every byte | **holds** (D179, D180; D182) |
 | RW1 | The language through every stage | holds | **holds** (D179) |
 | RW2 | Llama 3.2 1B against `transformers` in `float64` | ≤ 10⁻⁸ | **holds** (D180): 6.2·10⁻¹⁵ |
@@ -2028,13 +2027,14 @@ solved or timed again: the paper stays at 0.16.1.
 
 ## Version 0.17.1
 
-Opened 2026-11-05 (D185): plan
+Tagged `v0.17.1` on 2026-11-08 on `1ea5319`, whose tree is the version's,
+`1b16edd`; presk-specs `f56be18`. D189's addendum (!163, documents only)
+was merged before the tag. Opened 2026-11-05 (D185): plan
 `presk-specs/implementation/presk-plan-0.17.1.md` (presk-specs !106).
 Llama 3.2 1B solved whole under a budget read off the exact model's
 margins on WikiText-2, against the uniform types and the field's recipes
 (llama.cpp, transformers) on the exact scale, with perplexity under the
-e^{±2ε} bound. No row of record of the paper is run again; nothing of it
-enters the 12 November submission.
+e^{±2ε} bound. No row of record is run again.
 
 | Step | Contents | Status |
 |---|---|---|
@@ -2053,7 +2053,7 @@ enters the 12 November submission.
 | RW5 | The solve holds at this scale | holds | **holds** (D187): one realization for the seven, 2 h 06 min and 96.74 GB a solve |
 | RW6 | The certificate transfers | holds | **holds** at every δ (D188): no held-out decision changed |
 | RW7 | The compiler beats the recipes on weight bytes | holds | **fails** at every δ, as written (D188): Q8_0 and per-column `int8` within the flips at 10⁻¹ and 3·10⁻²; the norms rule 2 keeps in `f64` at 10⁻² |
-| RW8 | The budget bounds the perplexity | holds | **holds** on all 22 rows (D189) |
+| RW8 | The budget bounds the perplexity | holds | **holds** on all 22 rows (D189); with `nll`'s sites in `f64`, `f32` and the realization by hand stand 3.8 orders under their bound (D189's addendum) |
 | RW9 | The times | reported | **reported** (D190): A's forward pass 1.48× `f64`'s on one core at a traffic ratio of 3.97 |
 
 ## What 0.17.1 has, and what it does not
@@ -2074,7 +2074,63 @@ enters the 12 November submission.
   where the field's recipes stay within the flips far outside ε\*(δ).
 - `nll`'s log-softmax in a wider accumulator under a narrow default: its
   sum of 128 256 exponentials runs in one `f32` accumulator in sequence
-  (`accum`, `E7002`, question 67; D189).
+  (`accum`, `E7002`, question 67; D189). Per-site storage types its two
+  sites `f64` and removes the term (D189's addendum).
 - A KV cache: `presk serve` recomputes the context at every token, 7 to
   13 minutes for 32 tokens on one core.
 - Grouped integer scales; a GPU.
+
+## Version 0.17.2
+
+Version `0.17.2` (D202), done on 2026-11-12, for the user to tag `v0.17.2`
+on 13 November. Opened the same day (D197): plan
+`presk-specs/implementation/presk-plan-0.17.2.md` (presk-specs !109). The
+compiler's code is 0.17.1's; the version adds two timers, which measure
+and change nothing the compiler produces, moves every Presk program under
+`examples/`, and runs SR5 on its own binary, so that those
+rows cite a tagged, public version. No row of record is run
+again.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The version opened (D197) | done |
+| 1 | Every program moved under `examples/` (D198): `examples/README.md` names each file, `make check-examples` takes them by wildcard, a test fails on a program elsewhere | done |
+| 2 | The manual's, the Rust tests' and the scripts' inline programs into files (D199): each listing of Presk in the manual names its program, or says why it is none, and a test holds it to the program (`make manual-quotes` writes it again); the tutorial's error programs in `examples/tutorial/errors/` | done |
+| 3 | presk-specs reads the language's programs from presk (a presk-specs merge request): the specification chapter's listings that are programs in `examples/snippets/spec/` | done |
+| 4 | The timers (D200): `presk serve`'s loop split into compiling (the lengths prepared, the kernels lowered and compiled at their first launch inside the calls, which the backend counts) and computing, on its summary line and in `--json`; `presk bench --host-profile --launches`, each launch of a call with its kernel's time and its large buffers' addresses and their residues | done |
+| 5 | SR5 on falicon, alone (D201, `make sr5`): serving split into compiling (0.30–0.39 s of 423–773 s) and computing (86–93 %), D190's binary as a control, the decoder block's spread found in one launch, placement tested under huge pages and with the address space fixed | done |
+| 6 | Version 0.17.2 (D202): the export without the public Makefile's `publish` target, and `--preview`, the next version's public commit built before its tag, on which `cargo publish --workspace --dry-run` packages and builds the 23 crates; `make test`, `check-examples`, `run-examples`, `tutorial`, `plan-check` and `math-check` on the version's tree; the manual, the reference at draft v0.28, the report, the status note | done (2026-11-12) |
+
+| Statement | Content | Expected | Verdict |
+|---|---|---|---|
+| SR5-0 | The timers change nothing: D190's 32 tokens under each serving row, its median elapsed time within 2 % of D190's | holds | **fails** as written: the tokens are D190's, but `f32` takes 0.947 of D190's time and A 0.971; D190's own binary takes 0.934 in the same setting, this one 1.4 % more (D201) |
+| SR5a | D190's five serving rows, compile and compute apart | reported | reported: compiling 0.30–0.39 s, computing 86–93 %, B 0.686 of `f32`'s computing (D201) |
+| SR5b | The two modes on the Llama 2 decoder block, 20 processes, a day at most | reported | reported: 3 of 20 slow, the spread all in the attention's output projection; placement left open, the physical frames and the weight's placement ruled out (D201) |
+
+## What 0.17.2 has, and what it does not
+
+**Has.**
+- 0.17.1's compiler. Since `v0.17.1` its sources change for the two
+  timers alone, besides the paths of the programs it reads (`ra4.rs`'s
+  tutorial attention) and the tests' (D198, D200).
+- Two timers, which change no output (D200). `presk serve`'s summary line
+  and `--json` split the loop into compiling (each new length prepared,
+  each kernel lowered and compiled at its first launch) and computing.
+  `presk bench --host-profile --launches` lists each launch of a call,
+  its kernel's time and its large buffers' addresses with their residues
+  modulo the page and the caches' set strides.
+- Every Presk program of the repository under `examples/`, indexed by
+  `examples/README.md` (D198); `examples/spec/` holds the language's,
+  which presk-specs' report prints. Each listing of Presk in this manual
+  names its program, and a test holds the listing to it (D199).
+- SR5 on the version's own binary (`make sr5`, D201):
+  serving Llama 3.2 1B for 32 tokens is computing, compiling under 0.1 %
+  of it, and B's computing is 0.686 of `f32`'s.
+
+**Does not have.**
+- A cause for the decoder block's spread between processes: it is all in
+  one launch, the untiled output projection of the attention, and neither
+  the physical frames nor the weight's placement explain it; the
+  activations' placement is left open (D201, `docs/kernels-roadmap.md`).
+- A KV cache: `presk serve` recomputes the context at every token.
+- Every machine type of plan 0.18.0, which starts after the tag.

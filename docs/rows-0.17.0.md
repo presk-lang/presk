@@ -3,7 +3,7 @@
 Every row the version measures, on the version's binary
 (`out/bin/presk-0.17.0-step8a`, the tree of steps 1 to 7, presk `49840da`;
 step 7's fix, `ced194e`, changes no bit and no timed path, D180). No row of
-the paper is solved or timed again: the paper stays at 0.16.1 (plan §12).
+record is solved or timed again (plan §12).
 The decision is D181. Two phases:
 - **Phase A, untimed** (`out/step8-0.17.0/phaseA.sh`): the solves of QM1
   and QM2, side by side, and the margins of QM3. The envelopes of record
@@ -18,8 +18,7 @@ The decision is D181. Two phases:
   D127's protocol: every round starts when the one-minute load is under
   1.5, and the load and the busiest processes are logged at each start.
   It ran from 11:42 to 15:06 on 2026-10-29, every round's load
-  between 0.83 and 1.49 (`out/step8-0.17.0/phaseB.log`), the paper session
-  told before and after.
+  between 0.83 and 1.49 (`out/step8-0.17.0/phaseB.log`).
 
 **How the phases ran.**
 - **The first night.** Phase A started on 2026-10-28 at 20:50. At 21:39
@@ -159,7 +158,7 @@ the one menu's, the same realization, 892.8 ms (1.019×, the processes'
 spread), its `--narrow measured` one 876.4 ms (1.001×), all-`f32` 866.3 ms
 (0.989×). **QM3 holds**, its time reported.
 
-## 3. NB2 and NB3: Table 4 with the LLVM backend
+## 3. NB2 and NB3: T2 and T4 with the LLVM backend
 
 `experiments/pytorch_baseline.sh` with `LLVM=1`, five rounds, each
 round a process of every side (D127's protocol). The course GPT at
@@ -177,7 +176,7 @@ profile's plans. The C program waits as the native backend's pool does
   time on the forward pass and 0.994× on the step, under T4's
   threshold of 1.3×. At 0.16.0, T4 failed at 1.63× and 1.67× (D166).
 - **NB3 holds.** The LLVM backend takes 0.995× and 0.871× of it, so
-  the compiler's own backend is at GCC on its kernels, C1 and H8 kept
+  the compiler's own backend is at GCC on its kernels, C1 and H kept
   (NB0, D176).
 - **The step's 0.871× is mostly the C program's host.** Kernel for kernel
   (§4), LLVM's step is 683 ms against GCC's 695 ms, 0.98×. The C program's
@@ -254,15 +253,15 @@ Four steps, the first left out; three processes each, the median.
 | scale | realization | the step (ms) | `buffers.convert` (ms) | its share |
 |---|---|---|---|---|
 | D = 64 | all-`f64` | 214.3 | 0.07 | 0.03 % |
-| D = 64 | H6's (`out/h6-0.16.0/solved-train.json`) | 319.2 | 39.89 | 12.50 % |
+| D = 64 | J's (`out/h6-0.16.0/solved-train.json`) | 319.2 | 39.89 | 12.50 % |
 | D = 64 | J′'s | 133.0 | 0.92 | 0.71 % |
 | D = 64 | the per-value one | 175.3 | 22.35 | 12.75 % |
 | course | all-`f64` | 14920.5 | 0.31 | 0.00 % |
-| course | H6's (`out/h6-0.16.0/solved-train.json`) | 15251.6 | 235.39 | 1.54 % |
+| course | J's (`out/h6-0.16.0/solved-train.json`) | 15251.6 | 235.39 | 1.54 % |
 | course | J′'s | 6931.4 | 68.66 | 0.99 % |
 | course | the per-value one | 7879.7 | 245.60 | 3.12 % |
 
-- **H6 at D = 64 is explained in part.** Its realization's step spends
+- **J at D = 64 is explained in part.** Its realization's step spends
   12.5 % of its time converting buffers (40 ms of 319 ms), where all-`f64`
   spends none; that is 38 % of its 105 ms over all-`f64` (D166's 0.74×).
 - **The per-value realization** converts as much at D = 64 (12.8 %) and

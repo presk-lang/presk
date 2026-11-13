@@ -2,7 +2,7 @@
 source: crates/presk-types/tests/elab.rs
 expression: "format!(\"{}\\n-- diagnostics --\\n{}\", elab::dump(&prog),\nrender_all(&diags, &sm, false))"
 ---
-== tests/examples/minigpt/../layernorm/layernorm.psk
+== examples/spec/minigpt/../layernorm/layernorm.psk
 module LayerNorm{D : dim} {
   param γ : ℝ[D]  init
   param β : ℝ[D]  init
@@ -12,7 +12,7 @@ module RMSNorm{D : dim} {
   param γ : ℝ[D]  init
   fn apply(x : ℝ[..., model: D], eps : f64 = …) -> ℝ[..., model: D]
 }
-== tests/examples/minigpt/../mlp/mlp.psk
+== examples/spec/minigpt/../mlp/mlp.psk
 module Linear{In Out : dim} {
   param w : ℝ[In, Out]  init
   param b : ℝ[Out]  init
@@ -25,9 +25,9 @@ module MLP{D hidden : dim} {
 }
 fn mse{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> ℝ[]   -- implicit dims: B
 fn mse_grad{D : dim}(net : MLP{D, 4*D}, θ : params MLP{D, 4*D}, x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D]) -> params MLP{D, 4*D}   -- implicit dims: B
-== tests/examples/minigpt/minigpt.psk (main)
-import norm = tests/examples/minigpt/../layernorm/layernorm.psk
-import ff = tests/examples/minigpt/../mlp/mlp.psk
+== examples/spec/minigpt/minigpt.psk (main)
+import norm = examples/spec/minigpt/../layernorm/layernorm.psk
+import ff = examples/spec/minigpt/../mlp/mlp.psk
 const V = 50257
 const D = 768
 const H = 12
@@ -121,7 +121,7 @@ Block:
 
 -- diagnostics --
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/minigpt/../mlp/mlp.psk:26:65 ]
+    ,-[ examples/spec/minigpt/../mlp/mlp.psk:26:65 ]
     |
  26 | fn mse{D : dim}(net : MLP{D, 4*D}, θ : params net, x : ℝ[batch: B, model: D],
     |                                                                 |  
@@ -130,7 +130,7 @@ Block:
     | Help: declare it with `dim B` at file level or as a type parameter `{B : dim}`
 ----'
 [W0001] Warning: implicit dimension `B`
-    ,-[ tests/examples/minigpt/../mlp/mlp.psk:34:35 ]
+    ,-[ examples/spec/minigpt/../mlp/mlp.psk:34:35 ]
     |
  34 |                      x : ℝ[batch: B, model: D], y : ℝ[batch: B, model: D])
     |                                   |  

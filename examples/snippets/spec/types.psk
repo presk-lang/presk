@@ -1,0 +1,24 @@
+-- types.psk — The listings of the specification's section 3, "Type system"
+-- (presk-specs' report/chapters/02-spec.tex), which the report prints from
+-- here: each is the lines between `-- quote: NAME` and the next
+-- `-- end quote`. The lines outside them declare what a listing presupposes,
+-- so that the file is a program `presk check` accepts.
+
+-- quote: shapes
+dim B          -- batch size, symbolic
+dim T <= 4096  -- sequence length, bounded
+const D : nat = 768
+const H : nat = 12
+static assert D % H == 0
+-- end quote
+
+-- quote: axes
+type Tokens   = ℝ[batch: B, seq: T, model: D]
+type AttnMask = ℝ[batch: B, seq: T, seq2: T]
+-- end quote
+
+const V : nat = 50257
+
+-- quote: idx
+type TokenBatch = idx[V][batch: B, seq: T]   -- tensor of indices, not of reals
+-- end quote

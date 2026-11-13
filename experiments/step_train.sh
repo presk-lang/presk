@@ -17,7 +17,7 @@ PRESK=${PRESK:-./target/release/presk}
 # 4): `store`, the default, or `recompute`, the policy of the runs D48–D55
 # recorded (the re-measurement after defect 3f, D93).
 REMAT=${REMAT:-store}
-MODEL=corpus/nlp/05_gpt.psk
+MODEL=examples/corpus/nlp/05_gpt.psk
 CONSTS=(--const D=64 --const H=2 --const L=2)
 SOLVED=${SOLVED:-out/step_1e-3.json}
 STEPS=${STEPS:-600}

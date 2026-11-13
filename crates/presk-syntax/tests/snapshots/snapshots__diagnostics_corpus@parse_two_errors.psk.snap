@@ -1,17 +1,17 @@
 ---
 source: crates/presk-syntax/tests/snapshots.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/parse_two_errors.psk
+input_file: examples/tests/diag/parse_two_errors.psk
 ---
 [E0010] Error: expected `=`, found identifier `zeros`
-   ,-[ tests/diag/parse_two_errors.psk:3:23 ]
+   ,-[ examples/tests/diag/parse_two_errors.psk:3:23 ]
    |
  3 |   param w : ℝ[D] init zeros
    |                       ^^|^^  
    |                         `---- expected `=` here
 ---'
 [E0010] Error: expected an expression, found `fn`
-   ,-[ tests/diag/parse_two_errors.psk:6:1 ]
+   ,-[ examples/tests/diag/parse_two_errors.psk:6:1 ]
    |
  6 | fn h(x : ℝ[]) -> ℝ[] = x
    | ^|  

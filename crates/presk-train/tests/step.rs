@@ -36,7 +36,7 @@ fn tiny() -> &'static Tiny {
     T.get_or_init(|| {
         std::env::set_current_dir(root()).unwrap();
         let mut sm = SourceMap::new();
-        let id = sm.load(Path::new("tests/examples/minigpt/train_minigpt.psk")).unwrap();
+        let id = sm.load(Path::new("examples/spec/minigpt/train_minigpt.psk")).unwrap();
         let (program, diags) = parse_file(&sm, id);
         assert!(diags.iter().all(|d| !d.is_error()), "{}", render_all(&diags, &sm, false));
         let opts = Options { const_overrides: [("V", 64), ("D", 16), ("H", 2), ("L", 2)].iter().map(|(n, v)| (n.to_string(), *v)).collect() };
@@ -160,7 +160,7 @@ fn the_step_s_sites_are_the_training_loop_s() {
     let t = tiny();
     for remat in [Remat::Store, Remat::Recompute] {
         let mut sm = SourceMap::new();
-        let id = sm.load(Path::new("tests/examples/minigpt/train_minigpt.psk")).unwrap();
+        let id = sm.load(Path::new("examples/spec/minigpt/train_minigpt.psk")).unwrap();
         let (program, _) = parse_file(&sm, id);
         let opts = Options { const_overrides: [("V", 64), ("D", 16), ("H", 2), ("L", 2)].iter().map(|(n, v)| (n.to_string(), *v)).collect() };
         let (prog, _) = elab::elaborate(&mut sm, id, program, &opts);

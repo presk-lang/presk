@@ -18,7 +18,7 @@ fn presk(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn a_tensor_valued_entry_is_solved_under_a_budget_on_its_largest_gap() {
-    const FILE: &str = "tests/data/logits.psk";
+    const FILE: &str = "examples/tests/data/logits.psk";
     let dir = std::env::temp_dir().join(format!("presk-solve-tensor-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let env = dir.join("env.json");

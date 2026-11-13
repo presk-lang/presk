@@ -3,7 +3,7 @@
 The specification's roadmap asks for one measurement of the type system:
 *coverage of the shape fragment on a corpus of models*. This chapter answers
 it with MLCommons' MLPerf suites as the corpus, because they are the models a
-systems paper is expected to know and because their architectures are public
+systems reader is expected to know and because their architectures are public
 and fixed. The first question is only whether the language can *say* each
 model, and where exactly it stops. Since 0.6.0 step 8 one of them is also
 run: BERT-large, the one MLPerf benchmark within reach, at MLPerf's own
@@ -13,7 +13,7 @@ width, one of its blocks, on which D106 solves a budget. No MLPerf submission is
 (`presk-specs/implementation/presk-plan-0.4.0.md` §3.7, decisions D27, D53
 and D104).
 
-The transcriptions are in `coverage/`; `make coverage` checks them and runs
+The transcriptions are in `examples/coverage/`; `make coverage` checks them and runs
 both at tiny constants, `make bert` runs BERT at MLPerf's constants and
 `make llama` the decoder at Llama 2 7B's width.
 
@@ -21,8 +21,8 @@ both at tiny constants, `make bert` runs BERT at MLPerf's constants and
 
 | Family | MLPerf benchmarks | Status | What is missing |
 |---|---|---|---|
-| Transformer encoder | BERT-large (training and inference) | **expressible**, `coverage/bert.psk`; inference **runs** at MLPerf's constants, natively and exactly | — |
-| Transformer decoder | GPT-3, GPT-J 6B, Llama 2 70B, Llama 3.1 405B | **expressible** exactly, rotary positions included, `coverage/llama.psk` (since 0.17.0 step 6, D179); one block **runs** at Llama 2 7B's width, natively and exactly (D104, with a learned position table then), and a budget is **solved** on it (D106) | — |
+| Transformer encoder | BERT-large (training and inference) | **expressible**, `examples/coverage/bert.psk`; inference **runs** at MLPerf's constants, natively and exactly | — |
+| Transformer decoder | GPT-3, GPT-J 6B, Llama 2 70B, Llama 3.1 405B | **expressible** exactly, rotary positions included, `examples/coverage/llama.psk` (since 0.17.0 step 6, D179); one block **runs** at Llama 2 7B's width, natively and exactly (D104, with a learned position table then), and a budget is **solved** on it (D106) | — |
 | Mixture of experts | Mixtral 8×7B | not expressible | top-*k*; indexing a stacked parameter tree by a runtime value |
 | Convolutional vision | ResNet-50, RetinaNet, 3D U-Net, Stable Diffusion | not expressible | convolution, pooling, batch and instance normalization; transposed convolution |
 | Detection post-processing | RetinaNet | outside the language | non-maximum suppression is data-dependent control flow |
@@ -34,7 +34,7 @@ families — which is where the suite itself has been moving.
 
 ## What the two transcriptions show
 
-`coverage/bert.psk` is BERT-large as MLPerf fixes it: 24 post-normalized
+`examples/coverage/bert.psk` is BERT-large as MLPerf fixes it: 24 post-normalized
 blocks of width 1024, 16 heads, context 384, the three embedding tables
 (token, position, segment) summed and normalized, an additive padding mask
 that broadcasts by name across heads and queries, and the two-logit SQuAD
@@ -42,7 +42,7 @@ span head. It checks whole, with shapes, regularity classes and effects. An
 MLPerf model, in its training and its inference form, is a Presk program
 today — and, since 0.6.0 step 8, one that runs: see *BERT-large, run* below.
 
-`coverage/llama.psk` is the decoder the Llama, GPT-J and Mixtral benchmarks
+`examples/coverage/llama.psk` is the decoder the Llama, GPT-J and Mixtral benchmarks
 share: no biases, `RMSNorm`, SwiGLU with its own hidden width, a causal mask,
 and a head drawn as the other matrices (zero-initialized until D104, see
 *The decoder, run*). `silu` is `x · σ(x)`, written from `sigmoid`. In
@@ -58,6 +58,7 @@ keys and values eight heads shared by thirty-two query heads, so the queries
 are read as `(groups: 8, per: 4, hd: 128)` and the keys and values as
 `(groups: 8, hd: 128)`:
 
+<!-- psk: none (lines of a body: the attention as 0.5.0 transcribed it, before examples/coverage/llama.psk took RoPE) -->
 ```text
 let qg = split(axis qout,  groups: G, rest: P*HD, x · wq)
 let q  = split(axis rest,  per: P,    hd: HD,     qg)
@@ -90,6 +91,7 @@ language and an exact Llama. Plan 0.17.0 step 6 brings both constructs, and
 the transcription takes RoPE in Hugging Face's pairing (dimension `r` of a
 head with `r + HD/2`) and drops its learned table:
 
+<!-- psk: examples/coverage/llama.psk#rope, same tokens -->
 ```text
 fn rope(φ : ℝ[seq: T, rot: HD/2], x : ℝ[..., seq: T, hd: HD]) -> ℝ[..., seq: T, hd: HD] =
   let p  = split(axis hd, pair: 2, rot: HD/2, x)
@@ -104,13 +106,13 @@ The angles are `ein[seq, rot](real(positions(seq: T)) * frequencies())`, an
 outer product written as an `ein` that sums nothing. `rope` wants `seq` just
 before `hd`, so the queries and keys are projected by `ein` with the heads
 before the positions (`ein[batch, groups, per, seq, hd](x * wq3)`), and still
-nothing transposes. The specification's example `examples/rope/` is the same
+nothing transposes. The specification's example `examples/spec/rope/` is the same
 rotation with Llama 3's frequency scaling, written with `clamp`.
 
 ## The decoder, run
 
 After the tag `v0.10.0`, the second transcription runs too (D104), by BERT's
-protocol: `make llama` (`experiments/llama.sh`). It is `coverage/llama.psk`
+protocol: `make llama` (`experiments/llama.sh`). It is `examples/coverage/llama.psk`
 with `G = 32`, every query head its own key head, so that the width (4 096),
 the heads (32 of 128), SwiGLU's width (11 008) and the vocabulary (32 000)
 are Llama 2 7B's published configuration; at its 32 blocks the file counts

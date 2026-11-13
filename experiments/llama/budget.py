@@ -241,7 +241,7 @@ FLOAT = {"f64": 8, "f32": 4, "bf16": 2}
 
 
 def leaves(cfg):
-    """`coverage/llama3.psk`'s parameter leaves at the checkpoint's
+    """`examples/coverage/llama3.psk`'s parameter leaves at the checkpoint's
     configuration: path, shape."""
     D, FF, L, V = cfg["hidden_size"], cfg["intermediate_size"], cfg["num_hidden_layers"], cfg["vocab_size"]
     KV = cfg["num_key_value_heads"] * (D // cfg["num_attention_heads"])

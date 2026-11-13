@@ -1,10 +1,10 @@
 ---
 source: crates/presk-types/tests/check.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/shape_no_axis.psk
+input_file: examples/tests/diag/shape_no_axis.psk
 ---
 [E2008] Error: no axis named `model`
-   ,-[ tests/diag/shape_no_axis.psk:4:13 ]
+   ,-[ examples/tests/diag/shape_no_axis.psk:4:13 ]
    |
  4 |   mean(axis model, x)
    |             ^^|^^  

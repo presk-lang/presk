@@ -1,10 +1,10 @@
 ---
 source: crates/presk-core/tests/analysis.rs
 expression: "render_all(&diags, &sm, false)"
-input_file: tests/diag/eff_missing_rand.psk
+input_file: examples/tests/diag/eff_missing_rand.psk
 ---
 [E4001] Error: `pick` uses the effect `Rand` without declaring it
-   ,-[ tests/diag/eff_missing_rand.psk:4:3 ]
+   ,-[ examples/tests/diag/eff_missing_rand.psk:4:3 ]
    |
  3 | ,-> fn pick(key : key, logits : ℝ[batch: B, vocab: 8]) -> idx[8][batch: B] =
  4 | |->   sample(key, logits)

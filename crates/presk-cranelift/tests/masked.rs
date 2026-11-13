@@ -1,5 +1,5 @@
 //! The masked softmax (plan 0.10.0 step 7b, D99) against the additive mask it
-//! replaces (`tests/data/masked_softmax.psk`): on every row a mask leaves
+//! replaces (`examples/tests/data/masked_softmax.psk`): on every row a mask leaves
 //! non-empty, `softmax(axis a, x, where = m)` gives the bits the softmax of
 //! `x` with `−∞` at every refused position gives, and so does its gradient.
 //! On the reference interpreter at 256 bits; on the kernel interpreter and
@@ -28,7 +28,7 @@ fn repo_root() -> PathBuf {
 
 fn prepare() -> (ElabProgram, presk_core::Program) {
     let mut sm = SourceMap::new();
-    let id = sm.load(&repo_root().join("tests/data/masked_softmax.psk")).unwrap();
+    let id = sm.load(&repo_root().join("examples/tests/data/masked_softmax.psk")).unwrap();
     let (program, diags) = parse_file(&sm, id);
     assert!(diags.iter().all(|d| !d.is_error()), "{}", render_all(&diags, &sm, false));
     let (prog, diags) = elab::elaborate(&mut sm, id, program, &Options::default());

@@ -52,6 +52,11 @@ pub trait KernelExec {
     fn parallel(&mut self, n: usize, f: &(dyn Fn(usize) + Sync)) {
         (0..n).for_each(f);
     }
+    /// Kernels compiled so far, and the seconds compiling them took (plan
+    /// 0.17.2 step 4, D200); nothing for an executor that compiles nothing.
+    fn compile_stats(&self) -> (u64, f64) {
+        (0, 0.0)
+    }
 }
 
 /// The kernel-IR interpreter as an executor.
@@ -207,6 +212,10 @@ pub struct KernelBackend<'p> {
     /// 1, D141), and the iteration of the fold whose body is called next.
     calls: Vec<String>,
     iteration: Option<usize>,
+    /// The seconds spent lowering kernels at their first launch, timed
+    /// whether the host profiles or not (plan 0.17.2 step 4, D200): one
+    /// clock read on each side of a kernel new to the cache.
+    lowering: f64,
 }
 
 /// One launch as [`KernelBackend::launch_log`] logs it.
@@ -236,6 +245,12 @@ impl Backend for KernelBackend<'_> {
 
     fn launch_stats(&self) -> (u64, u64) {
         (self.launches, self.fused)
+    }
+
+    /// Each kernel is lowered at its first launch and compiled by the
+    /// executor at its first run: the kernels so far, and both times.
+    fn compile_stats(&self) -> (u64, f64) {
+        (self.kernels.len() as u64, self.lowering + self.exec.compile_stats().1)
     }
 
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared> {
@@ -274,7 +289,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true, lowering: 0.0 }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -507,6 +522,7 @@ impl<'p> KernelBackend<'p> {
         let idx = match hit {
             Some(i) => i,
             None => {
+                let t_new = std::time::Instant::now();
                 let mut l = lowered().map_err(|m| RtError { code: "E7001", message: m, span: None })?;
                 for (spec, w) in l.kernel.inputs.iter_mut().zip(&wide) {
                     if let Some(kind) = w
@@ -522,6 +538,7 @@ impl<'p> KernelBackend<'p> {
                 self.kernels.push(l.kernel);
                 self.outs.push((l.out_axes, l.out_kind, l.out_bound));
                 self.cache.insert(key, i);
+                self.lowering += t_new.elapsed().as_secs_f64();
                 self.tock(Phase::Lower, t, || 0);
                 i
             }
@@ -564,7 +581,12 @@ impl<'p> KernelBackend<'p> {
         self.exec.run(idx, &self.kernels[idx], &refs, &mut out)?;
         if let (Some(p), Some(t)) = (&self.profile, t) {
             let s = since(t);
-            p.borrow_mut().launch(s, self.exec.overhead());
+            let o = self.exec.overhead();
+            let mut p = p.borrow_mut();
+            p.launch(s, o);
+            if let Some(rows) = p.rows.as_mut() {
+                rows.push(crate::profile::LaunchRow { kernel: idx, nest: self.site.clone(), seconds: o.kernel(s), workers: o.workers.max(1), inputs: refs.iter().map(|b| crate::profile::buf_span(b)).collect(), output: crate::profile::buf_span(&out) });
+            }
         }
         self.launches += 1;
         let (axes, kind, bound) = self.outs[idx].clone();

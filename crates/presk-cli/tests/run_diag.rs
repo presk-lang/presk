@@ -1,4 +1,4 @@
-//! `tests/diag/run_*.psk`: an entry refused at the dimensions where an
+//! `examples/tests/diag/run_*.psk`: an entry refused at the dimensions where an
 //! operation of its body is undefined (`E7003`, plan 0.10.0 step 7b), through
 //! the binary. Each file's header names its commands: `--   presk …`, each
 //! refused, and `-- setup: presk …`, run first, which must succeed; `$OUT`
@@ -38,7 +38,7 @@ fn with(args: &[String], extra: &[&str]) -> Vec<String> {
 
 #[test]
 fn refusals_at_dimensions() {
-    insta::glob!(root().join("tests/diag"), "run_*.psk", |path| {
+    insta::glob!(root().join("examples/tests/diag"), "run_*.psk", |path| {
         let text = std::fs::read_to_string(path).unwrap();
         let stem = path.file_stem().unwrap().to_str().unwrap();
         let out = std::env::temp_dir().join(format!("presk-run-diag-{}-{stem}", std::process::id()));
@@ -78,10 +78,10 @@ fn refusals_at_dimensions() {
 
 /// What is defined at a zero length runs on every executor: a softmax over
 /// an axis of length 0 is empty, and a sum over it is 0. A call and a closure
-/// applied are walked for what they compute (`tests/data/defined.psk`).
+/// applied are walked for what they compute (`examples/tests/data/defined.psk`).
 #[test]
 fn what_is_defined_at_a_zero_length_runs() {
-    let file = "tests/data/defined.psk".to_string();
+    let file = "examples/tests/data/defined.psk".to_string();
     let run = |entry: &str, b: &str| presk(&["run".into(), file.clone(), "--entry".into(), entry.into(), "--dim".into(), "T=0".into(), "--backend".into(), b.into()]);
     for b in ["interp", "kernel", "native"] {
         let o = run("fine", b);
