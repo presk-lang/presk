@@ -74,6 +74,12 @@ impl KernelExec for NoRun {
     fn run(&mut self, _: usize, _: &Kernel, _: &[&Buf], _: &mut Buf) -> presk_rt::Result<()> {
         Ok(())
     }
+
+    /// It lowers a kernel in any formats, as the kernel interpreter runs one
+    /// (plan 0.18.0 step 3), and runs none.
+    fn emulates(&self) -> bool {
+        true
+    }
 }
 
 /// An input of [`Capture::Shapes`], built from its shape: a tensor as zeros

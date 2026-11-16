@@ -68,6 +68,10 @@ pub mod realization {}
 
 pub mod envelope;
 
+/// What a format costs a value, and which values it holds (plan 0.18.0
+/// step 5, D208).
+pub mod formats;
+
 pub mod propagate;
 
 pub mod sensitivity;
@@ -76,3 +80,7 @@ pub mod sensitivity;
 pub mod quant;
 
 pub mod solve;
+
+/// A machine's numbers, as the solver offers them (plan 0.18.0 step 5,
+/// D208).
+pub mod target;

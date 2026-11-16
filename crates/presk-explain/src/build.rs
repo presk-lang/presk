@@ -347,7 +347,7 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
             (None, None)
         }
         None => {
-            let c = presk_driver::precision::Calibrate { file: &o.file, entry: &o.entry, dims: dims.clone(), consts: &o.consts, data: None, samples: None, from: 0, seed: o.seed, bits: o.bits, weights: o.weights.as_deref() };
+            let c = presk_driver::precision::Calibrate { file: &o.file, entry: &o.entry, dims: dims.clone(), consts: &o.consts, data: None, samples: None, from: 0, seed: o.seed, bits: o.bits, weights: o.weights.as_deref(), range: false, formats: Vec::new() };
             match presk_driver::precision::calibrate(&pcore, &prog, &c) {
                 Ok(e) => {
                     if let Err(m) = e.save(&art("envelope.json")) {
@@ -432,6 +432,12 @@ fn run<'a>(o: &'a Options, report: &mut dyn Report) -> presk_driver::Result<Stat
         Some((e, _)) => match presk_driver::precision::bound(&xcore, &prog, e, &realization, &presk_precision::propagate::Model::ALL, !o.no_exact) {
             Ok(b) => Some(b),
             Err(presk_driver::precision::BoundError::NotEntry) => None,
+            // A realization in formats the error analysis does not bound yet
+            // has its document without the bound (plan 0.18.0 step 3).
+            Err(presk_driver::precision::BoundError::Formats(m)) => {
+                report.line(&format!("presk explain: {m}"));
+                None
+            }
             Err(presk_driver::precision::BoundError::Measure(m)) => {
                 report.line(&format!("presk check: {m}"));
                 return Err(Stop(1));
@@ -1222,7 +1228,7 @@ fn why(sv: &Solved, site: &str, unit: &str) -> String {
         };
     }
     let moves: Vec<&Move> = sv.solution.moves.iter().filter(|m| match m {
-        Move::Tried { site: x, .. } | Move::Widened { site: x, .. } | Move::Narrowed { site: x, .. } | Move::Undone { site: x, .. } => x == site,
+        Move::Tried { site: x, .. } | Move::Widened { site: x, .. } | Move::Narrowed { site: x, .. } | Move::Undone { site: x, .. } | Move::Switched { site: x, .. } => x == site,
     }).collect();
     let mut parts: Vec<String> = Vec::new();
     for m in &moves {
@@ -1231,6 +1237,7 @@ fn why(sv: &Solved, site: &str, unit: &str) -> String {
             Move::Widened { round, from, to, gap, .. } => parts.push(format!("widened from `{}` to `{}` at round {round}, the gap {} over the budget", from.name(), to.name(), sci(*gap))),
             Move::Narrowed { pass, from, to, gap, kept: true, .. } => parts.push(format!("narrowed from `{}` to `{}` by measurement at pass {pass}, the gap then {}", from.name(), to.name(), sci(*gap))),
             Move::Undone { from, to, heldout, .. } => parts.push(format!("widened back from `{}` to `{}` when the held-out samples' gap was {} (D161)", from.name(), to.name(), sci(*heldout))),
+            Move::Switched { round, mode, gap, kept: true, .. } => parts.push(format!("put in the mode {mode} at round {round}, the gap then {} (D208)", sci(*gap))),
             _ => {}
         }
     }
@@ -1264,12 +1271,16 @@ fn stored_values(s: &State, v: &mut Section) {
             if s.roles.role(&site) != Role::Decision || !matches!(l.ty, presk_types::ty::Ty::Real(_)) {
                 continue;
             }
-            let (d, from) = match r.storage.get(&site) {
-                Some(d) => (*d, "the record"),
-                None => (r.dtype_at(&site), if site.rsplit_once('/').is_some_and(|(f, _)| r.functions.contains_key(f)) { "its function's" } else { "the default" }),
+            let from = if r.storage.contains_key(&site) || r.scaled.contains_key(&site) {
+                "the record"
+            } else if site.rsplit_once('/').is_some_and(|(f, _)| r.functions.contains_key(f)) {
+                "its function's"
+            } else {
+                "the default"
             };
             named.insert(site.clone());
-            rows.push((site.clone(), vec![format!("`{site}`"), op_of(s, &site), format!("`{}`", d.name()), from.into()]));
+            // Its formats where the record states them (D208).
+            rows.push((site.clone(), vec![format!("`{site}`"), op_of(s, &site), format!("`{}`", r.label_at(&site)), from.into()]));
         }
     }
     rows.sort_by_key(|(site, _)| site_order(site));

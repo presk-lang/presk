@@ -61,7 +61,8 @@ fn tol(r: &Realization) -> (f64, f64) {
         // *relative* error, which says nothing about the kernel. Measured
         // worst over the examples: 3.2e-2 (0.7.0 step 2). The programs of
         // tests/ report their bf16 gap without asserting it (D58).
-        Dtype::Bf16 => (2f64.powi(-4), 2f64.powi(-5)),
+        Dtype::BF16 => (2f64.powi(-4), 2f64.powi(-5)),
+        d => d.unreachable(),
     };
     if r.order.is_exact() { (eps, a) } else { (eps * 8.0, a) }
 }
@@ -115,7 +116,7 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     // stack_prefix_grad's gradient, where a small result is left over from
     // larger terms cancelling, it crosses the band on some inputs and not
     // others, with 0.6.0's kernels as with these (D58).
-    if rel.starts_with("examples/spec/") || realize.default != Dtype::Bf16 {
+    if rel.starts_with("examples/spec/") || realize.default != Dtype::BF16 {
         assert!(w.0 <= eps, "{rel} {entry} ({}): gap {:.3e} > {eps:.3e} at {}", realize.label(), w.0, w.1);
     }
     w.0
@@ -146,7 +147,7 @@ fn examples_conform() {
     for (rel, consts, entry, dims) in cases {
         let g64 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F64));
         let g32 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F32));
-        let gbf = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::Bf16));
+        let gbf = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::BF16));
         report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}  bf16 {gbf:.1e}\n"));
     }
     eprintln!("{report}");
@@ -234,7 +235,7 @@ fn examples_with_their_zeros_drawn() {
         let p = presk_rt::Backend::prepare(&mut exact, func, &fdims, &f64r).unwrap();
         let reference = presk_rt::Backend::call(&mut exact, &p, args.clone()).unwrap().to_interp(256);
         report.push_str(&format!("{entry:22}"));
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let r = Realization::uniform(d);
             let (eps, a) = tol(&r);
             let mut b = KernelBackend::new(&core, &prog, &r);
@@ -342,7 +343,7 @@ fn primitives_conform() {
         (PrimOp::SumSquares, vec![x.clone()]),
         (PrimOp::Real, vec![ids.clone()]),
     ];
-    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::Bf16)] {
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::BF16)] {
         let (eps, a) = tol(&realize);
         let mut backend = KernelBackend::new(&core, &prog, &realize);
         for (op, args) in &cases {

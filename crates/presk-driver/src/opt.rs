@@ -85,7 +85,7 @@ pub fn check_sites(plan: &presk_rt::Plan, links: &[presk_provenance::Link]) -> s
     use presk_provenance::{How, Stage};
     let rewritten: std::collections::BTreeSet<&str> = links.iter().filter(|l| l.child.stage == Stage::Opt && !l.child.key.contains("/%") && matches!(l.how, How::Rewritten { .. })).map(|l| l.child.key.as_str()).collect();
     let r = &plan.realization;
-    let named: Vec<(&str, &String)> = r.storage.keys().map(|s| ("types", s)).chain(r.accum.keys().map(|s| ("accumulates", s))).chain(plan.layout.keys().map(|s| ("lays out", s))).collect();
+    let named: Vec<(&str, &String)> = r.storage.keys().map(|s| ("types", s)).chain(r.arith.keys().map(|s| ("computes", s))).chain(r.product.keys().map(|s| ("rounds the products of", s))).chain(r.accum.keys().map(|s| ("accumulates", s))).chain(r.scaled.keys().map(|s| ("quantizes", s))).chain(plan.layout.keys().map(|s| ("lays out", s))).collect();
     let mut hits: Vec<String> = Vec::new();
     for (what, site) in &named {
         let Some((f, _)) = site.rsplit_once("/%") else { continue };

@@ -28,7 +28,7 @@ fn the_records_conditions_are_checked_on_every_executor() {
     std::fs::create_dir_all(&dir).unwrap();
     let cases = [
         (record(&dir, "typo.json", r#"{"norm.gamma":"bf16"}"#), "`norm.gamma` in its own type, which is not a parameter of the model (it has blocks.norm.γ"),
-        (record(&dir, "wide.json", r#"{"w":"f64"}"#), "a parameter's own type is `f32` or `bf16`"),
+        (record(&dir, "wide.json", r#"{"w":"f64"}"#), "a parameter's own type is a float format narrower than `f64`"),
     ];
     for (realize, says) in &cases {
         for backend in ["interp", "kernel", "native"] {

@@ -11,6 +11,8 @@ use presk_types::dim::{DimExpr, DimVar};
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{Shape, Ty};
 
+use presk_format::Float;
+
 use crate::key::Key;
 use crate::real::Real;
 use crate::value::{Axis, Tensor, Value};
@@ -50,12 +52,20 @@ pub struct Interp<'p, R: Real> {
     /// grows as `b` shrinks, so the analysis needs a floor as well as a
     /// ceiling (0.5.0 step 4).
     pub minima: Option<BTreeMap<String, f64>>,
-    /// And the largest rounding error of the site's values in each storage
-    /// type, `max |fl_d(x) − x|` for `d` = `f64`, `f32`, `bf16` in that order
+    /// And, when asked, the smallest and the largest value at each site,
+    /// signed: what an asymmetric scale and its zero point are computed
+    /// from (plan 0.18.0 step 4, D207, `presk calibrate --range`).
+    pub ranges: Option<BTreeMap<String, (f64, f64)>>,
+    /// And the largest rounding error of the site's values in each format
+    /// of [`Interp::rounding_formats`], `max |fl_d(x) − x|`
     /// ([`max_rounding`]): what the estimate's term `u(d) · max|x|` stands
-    /// for, measured on the same values (D155). It is 0 where every value is
-    /// exact in the type, as 1 and 32 are in `bf16`.
-    pub roundings: Option<BTreeMap<String, [f64; 3]>>,
+    /// for, measured on the same values (D155), keyed by format (D204). It
+    /// is 0 where every value is exact in the format, as 1 and 32 are in
+    /// `bf16`.
+    pub roundings: Option<BTreeMap<String, BTreeMap<Float, f64>>>,
+    /// The formats `roundings` measures: `f64`, `f32` and `bf16` unless the
+    /// caller names others.
+    pub rounding_formats: Vec<Float>,
     /// And `Σ |x|` at each site. The sensitivity analysis wants a **1-norm**
     /// of an adjoint, not a maximum: perturbing every element of `v` by `δ`
     /// moves the output by `‖∂L/∂v‖₁ · δ`, which is the quantity a budget is
@@ -144,7 +154,7 @@ impl Deaths {
 
 impl<'p, R: Real> Interp<'p, R> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, prec: u32) -> Self {
-        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, roundings: None, sums: None, elems: None, ops: None, terms: None, live: None, deaths: Vec::new(), zeros: Default::default(), _r: std::marker::PhantomData }
+        Interp { prog, elab, prec, training: false, magnitudes: None, minima: None, ranges: None, roundings: None, rounding_formats: vec![presk_format::F64, presk_format::F32, presk_format::BF16], sums: None, elems: None, ops: None, terms: None, live: None, deaths: Vec::new(), zeros: Default::default(), _r: std::marker::PhantomData }
     }
 
     /// Evaluate a dimension expression under a dimension environment.
@@ -239,7 +249,7 @@ impl<'p, R: Real> Interp<'p, R> {
                     self.terms.as_mut().expect("just checked").entry(site).or_default().join(&t);
                 }
             }
-            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.roundings.is_some() || self.elems.is_some() || self.ops.is_some() {
+            if self.magnitudes.is_some() || self.sums.is_some() || self.minima.is_some() || self.ranges.is_some() || self.roundings.is_some() || self.elems.is_some() || self.ops.is_some() {
                 let site = format!("{}/%{}", func.name, l.var.0);
                 let m = max_abs(&v);
                 if self.magnitudes.is_some() {
@@ -249,9 +259,10 @@ impl<'p, R: Real> Interp<'p, R> {
                     }
                 }
                 if let Some(rs) = self.roundings.as_mut() {
-                    let r = max_rounding(&v);
-                    let e = rs.entry(site.clone()).or_insert([0.0; 3]);
-                    for (a, b) in e.iter_mut().zip(r) {
+                    let r = max_rounding(&v, &self.rounding_formats);
+                    let e = rs.entry(site.clone()).or_default();
+                    for (f, b) in self.rounding_formats.iter().zip(r) {
+                        let a = e.entry(*f).or_insert(0.0);
                         *a = a.max(b);
                     }
                 }
@@ -273,6 +284,12 @@ impl<'p, R: Real> Interp<'p, R> {
                     if t > *e {
                         *e = t;
                     }
+                }
+                if let Some(rs) = self.ranges.as_mut()
+                    && let Some((lo, hi)) = value_range(&v)
+                {
+                    let e = rs.entry(site.clone()).or_insert((lo, hi));
+                    *e = (e.0.min(lo), e.1.max(hi));
                 }
                 if let Some(mins) = self.minima.as_mut() {
                     let lo = min_abs_nonzero(&v);
@@ -649,47 +666,61 @@ pub fn max_abs<R: Real>(v: &Value<R>) -> f64 {
 }
 
 /// The largest rounding error over every real leaf of a value, in each
-/// storage type: `max |fl_d(x) − x|` for `d` = `f64`, `f32`, `bf16`.
+/// format of `formats`, in that order: `max |fl_d(x) − x|`.
 ///
-/// Each `x` is rounded as the runtime rounds it: to the nearest `f64`, that
-/// to the nearest `f32`, and that to the nearest `bf16`, ties to even on the
-/// `f32`'s bits (`presk_rt::f32_to_bf16`, which this crate cannot call: the
-/// runtime depends on it). The difference is taken at the value's own
-/// precision, so the `f64` term is the 128-bit value's distance to its double,
-/// and a value exact in a type contributes 0 to that type's term. Never more
-/// than `u(d) · max|x|`, the term the estimate used before D155. A value that
-/// overflows a type has an infinite error there; a NaN is skipped.
-pub fn max_rounding<R: Real>(v: &Value<R>) -> [f64; 3] {
-    let join = |a: [f64; 3], b: [f64; 3]| [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])];
+/// Each `x` is rounded as the runtime stores it ([`Float::store`]): to the
+/// nearest `f64`, then to the format, through `f32` when `f32` holds the
+/// format, so that a `bf16` is the nearest to the nearest `f32`, ties to even
+/// on the `f32`'s bits, as `presk_rt::f32_to_bf16` rounds it. The difference
+/// is taken at the value's own precision, so the `f64` term is the 128-bit
+/// value's distance to its double, and a value exact in a format contributes
+/// 0 to that format's term. Never more than `u(d) · max|x|`, the term the
+/// estimate used before D155. A value that overflows a format to an infinity
+/// or a NaN has an infinite error there, and one a format saturates the
+/// distance the saturation moves it; a NaN is skipped.
+pub fn max_rounding<R: Real>(v: &Value<R>, formats: &[Float]) -> Vec<f64> {
+    let mut acc = vec![0.0; formats.len()];
+    fold_rounding(v, formats, &mut acc);
+    acc
+}
+
+/// [`max_rounding`] into `acc`, each format's maximum in place.
+fn fold_rounding<R: Real>(v: &Value<R>, formats: &[Float], acc: &mut [f64]) {
     match v {
-        Value::Real(t) => t.data.iter().map(|x| rounding_of(x)).fold([0.0; 3], join),
-        Value::Tuple(xs) => xs.iter().map(max_rounding).fold([0.0; 3], join),
-        Value::Record(xs) => xs.iter().map(|(_, x)| max_rounding(x)).fold([0.0; 3], join),
-        Value::F64(x) => rounding_of_f64(*x),
-        _ => [0.0; 3],
+        Value::Real(t) => t.data.iter().for_each(|x| rounding_of(x, formats, acc)),
+        Value::Tuple(xs) => xs.iter().for_each(|x| fold_rounding(x, formats, acc)),
+        Value::Record(xs) => xs.iter().for_each(|(_, x)| fold_rounding(x, formats, acc)),
+        Value::F64(x) => acc.iter_mut().zip(rounding_of_f64(*x, formats)).for_each(|(a, r)| *a = a.max(r)),
+        _ => {}
     }
 }
 
-/// One value's rounding error in `f64`, `f32` and `bf16`.
-fn rounding_of<R: Real>(x: &R) -> [f64; 3] {
+/// One value's rounding error in each format, folded into `acc`.
+fn rounding_of<R: Real>(x: &R, formats: &[Float], acc: &mut [f64]) {
     let x64 = x.to_f64();
     if x64.is_nan() {
-        return [0.0; 3];
+        return;
     }
     let p = x.prec();
-    let off = |y: f64| if y.is_finite() { x.sub(&R::from_f64(y, p)).abs().to_f64() } else { f64::INFINITY };
-    let x32 = x64 as f32;
-    [off(x64), off(x32 as f64), off(bf16_of(x32) as f64)]
+    for (a, f) in acc.iter_mut().zip(formats) {
+        let y = f.store(x64);
+        let r = if y.is_finite() { x.sub(&R::from_f64(y, p)).abs().to_f64() } else { f64::INFINITY };
+        *a = a.max(r);
+    }
 }
 
 /// The same for a machine double, whose `f64` error is 0.
-pub fn rounding_of_f64(x: f64) -> [f64; 3] {
+pub fn rounding_of_f64(x: f64, formats: &[Float]) -> Vec<f64> {
     if x.is_nan() {
-        return [0.0; 3];
+        return vec![0.0; formats.len()];
     }
-    let x32 = x as f32;
-    let off = |y: f32| if y.is_finite() { (x - y as f64).abs() } else { f64::INFINITY };
-    [0.0, off(x32), off(bf16_of(x32))]
+    formats
+        .iter()
+        .map(|f| {
+            let y = f.store(x);
+            if y.is_finite() { (x - y).abs() } else { f64::INFINITY }
+        })
+        .collect()
 }
 
 /// The `bf16` nearest an `f32`, ties to even, as an `f32`: the runtime's
@@ -721,6 +752,23 @@ pub fn min_abs_nonzero<R: Real>(v: &Value<R>) -> f64 {
         Value::Record(xs) => xs.iter().map(|(_, x)| min_abs_nonzero(x)).fold(f64::INFINITY, f64::min),
         Value::F64(x) if *x != 0.0 => x.abs(),
         _ => f64::INFINITY,
+    }
+}
+
+/// The smallest and the largest real of a value, over its every real leaf
+/// but its NaNs; `None` when it has none.
+pub fn value_range<R: Real>(v: &Value<R>) -> Option<(f64, f64)> {
+    let join = |a: Option<(f64, f64)>, b: Option<(f64, f64)>| match (a, b) {
+        (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.max(b.1))),
+        (a, None) => a,
+        (None, b) => b,
+    };
+    match v {
+        Value::Real(t) => t.data.iter().map(|x| x.to_f64()).filter(|x| !x.is_nan()).fold(None, |r, x| join(r, Some((x, x)))),
+        Value::Tuple(xs) => xs.iter().map(value_range).fold(None, join),
+        Value::Record(xs) => xs.iter().map(|(_, x)| value_range(x)).fold(None, join),
+        Value::F64(x) if !x.is_nan() => Some((*x, *x)),
+        _ => None,
     }
 }
 

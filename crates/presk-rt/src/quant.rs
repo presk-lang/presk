@@ -90,10 +90,17 @@ pub struct Quant {
 }
 
 impl Quant {
+    /// The scaled format these integers are (D204): a signed integer of
+    /// `bits`, symmetric, one scale per channel, the scale an `f32` under
+    /// `absmax` and a power of two under `pow2`, no zero point.
+    pub fn format(&self) -> presk_format::Scaled {
+        presk_format::Scaled::weights(u32::from(self.bits), self.scheme == QuantScheme::Pow2)
+    }
+
     /// The largest magnitude a quantised integer takes, `2^(b−1) − 1`. The
     /// range is symmetric, so `-2^(b−1)` is never used and negation is exact.
     pub fn qmax(&self) -> i32 {
-        (1 << (self.bits - 1)) - 1
+        self.format().qmax() as i32
     }
 
     pub fn name(&self) -> String {
@@ -379,20 +386,46 @@ pub fn quantize_params(theta: &Value, quant: &BTreeMap<String, Quant>) -> Result
 /// `given` converted to its type, once (plan 0.12.0, D121): a leaf already
 /// of that type is shared as it is. `into` and `given` are one tree, `into`
 /// perhaps realized already; the conversion is from `given`'s values.
-pub fn typed_leaves(into: &Value, given: &Value, params: &BTreeMap<String, crate::Dtype>) -> Value {
-    fn go(v: &Value, g: Option<&Value>, path: &str, params: &BTreeMap<String, crate::Dtype>) -> Value {
+pub fn typed_leaves(into: &Value, given: &Value, params: &BTreeMap<String, crate::Dtype>, counted: bool) -> Value {
+    fn go(v: &Value, g: Option<&Value>, path: &str, params: &BTreeMap<String, crate::Dtype>, counted: bool) -> Value {
         let join = |n: &str| if path.is_empty() { n.to_string() } else { format!("{path}.{n}") };
         match v {
-            Value::Record(fs) => Value::Record(fs.iter().map(|(n, x)| (n.clone(), go(x, g.and_then(|g| g.field(n)), &join(n), params))).collect()),
-            Value::Tuple(xs) => Value::Tuple(xs.iter().enumerate().map(|(i, x)| go(x, g.and_then(|g| if let Value::Tuple(gs) = g { gs.get(i) } else { None }), &join(&i.to_string()), params)).collect()),
+            Value::Record(fs) => Value::Record(fs.iter().map(|(n, x)| (n.clone(), go(x, g.and_then(|g| g.field(n)), &join(n), params, counted))).collect()),
+            Value::Tuple(xs) => Value::Tuple(xs.iter().enumerate().map(|(i, x)| go(x, g.and_then(|g| if let Value::Tuple(gs) = g { gs.get(i) } else { None }), &join(&i.to_string()), params, counted)).collect()),
             leaf => match (params.get(path), g) {
                 (Some(d), Some(Value::Real(t))) if t.data.dtype() == d.name() => Value::Real(t.clone()),
+                (Some(d), Some(Value::Real(t))) if counted => {
+                    let mut c = presk_format::Counts::default();
+                    let data = crate::Buf::of_counted(*d, &t.data.to_f64(), &mut c);
+                    TYPED.with(|t| t.set({
+                        let mut all = t.get();
+                        all.add(c);
+                        all
+                    }));
+                    Value::Real(Tensor { axes: t.axes.clone(), data })
+                }
                 (Some(d), Some(Value::Real(t))) => Value::Real(Tensor { axes: t.axes.clone(), data: crate::Buf::of(*d, &t.data.to_f64()) }),
                 _ => leaf.clone(),
             },
         }
     }
-    go(into, Some(given), "", params)
+    go(into, Some(given), "", params, counted)
+}
+
+thread_local! {
+    /// What storing parameters in their own types produced under a
+    /// realization that emulates, since the thread began (plan 0.18.0 step
+    /// 6, D209): the kernel interpreter adds what it has counted since it
+    /// was made to its run's counts ([`typed_counts`]).
+    static TYPED: std::cell::Cell<presk_format::Counts> = const { std::cell::Cell::new(presk_format::Counts { saturations: 0, infinities: 0, nans: 0, wraps: 0 }) };
+}
+
+/// What storing parameters in their own types under a realization that
+/// emulates has produced on this thread so far, saturations and infinities
+/// that the store's conversion gave: a tally that only grows, read as a
+/// difference.
+pub fn typed_counts() -> presk_format::Counts {
+    TYPED.with(|t| t.get())
 }
 
 /// `theta` with every quantised leaf replaced by its integers and scales,

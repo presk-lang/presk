@@ -142,9 +142,9 @@ fn a_masked_softmax_is_the_additive_masks_bit_for_bit() {
             let (vm, va) = (call(&mut interp, masked, am), call(&mut interp, additive, aa));
             assert_eq!(format!("{vm:?}"), format!("{va:?}"), "{masked} on the interpreter");
             compared += 1;
-            for dtype in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+            for dtype in [Dtype::F64, Dtype::F32, Dtype::BF16] {
                 let r = Realization::uniform(dtype);
-                let passes: &[usize] = if dtype == Dtype::Bf16 { &[3] } else { &[3, 2] };
+                let passes: &[usize] = if dtype == Dtype::BF16 { &[3] } else { &[3, 2] };
                 for &p in passes {
                     let mut kernel = KernelBackend::new(&core, &prog, &r);
                     let mut native = native_backend(&core, &prog, &r).unwrap();

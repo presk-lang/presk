@@ -757,8 +757,8 @@ impl<'a> Builder<'a> {
     fn dtype(&self, t: &Ty, site: &Id, func: &Func) -> String {
         let _ = func;
         match t {
-            Ty::Real(_) => self.i.realization.dtype_at(&site.key).name().to_string(),
-            Ty::Tuple(ts) if ts.iter().any(|t| matches!(t, Ty::Real(_))) => self.i.realization.dtype_at(&site.key).name().to_string(),
+            Ty::Real(_) => self.i.realization.label_at(&site.key),
+            Ty::Tuple(ts) if ts.iter().any(|t| matches!(t, Ty::Real(_))) => self.i.realization.label_at(&site.key),
             Ty::Idx { .. } => "idx".into(),
             Ty::Truth(_) => "bool".into(),
             Ty::Key => "key".into(),

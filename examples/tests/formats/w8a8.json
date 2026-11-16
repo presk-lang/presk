@@ -1,0 +1,11 @@
+{
+  "default": "f32",
+  "scaled": {
+    "Dense.apply/%2": { "int": "u8/sat", "scheme": "minmax" },
+    "Dense.apply/%4": { "int": "i8/sat", "scheme": "absmax" }
+  },
+  "product": { "Dense.apply/%4": "i32" },
+  "accum": { "Dense.apply/%4": "i32" },
+  "order": { "kind": "sequential" },
+  "quant": { "w": { "bits": 8, "over": 0 } }
+}

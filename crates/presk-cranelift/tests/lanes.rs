@@ -31,6 +31,7 @@ fn contraction(d: Dtype, threads: Threads) -> Kernel {
     Kernel {
         name: "ein".into(),
         dtype: d,
+        arith: presk_kernel::ir::Arith::native(d),
         inputs: vec![spec(&[6, 8]), spec(&[6, 4])],
         output: spec(&[4, 8]),
         nloops: 3,
@@ -68,6 +69,7 @@ fn elementwise(d: Dtype) -> Kernel {
     Kernel {
         name: "fused".into(),
         dtype: d,
+        arith: presk_kernel::ir::Arith::native(d),
         inputs: vec![spec(&[3, 8]), spec(&[3]), spec(&[3, 8])],
         output: spec(&[3, 8]),
         nloops: 2,
@@ -101,6 +103,7 @@ fn sum_to(d: Dtype) -> Kernel {
     Kernel {
         name: "sum_to".into(),
         dtype: d,
+        arith: presk_kernel::ir::Arith::native(d),
         inputs: vec![spec(&[3, 2, 8])],
         output: spec(&[8]),
         nloops: 4,

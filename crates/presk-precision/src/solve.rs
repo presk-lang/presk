@@ -110,11 +110,15 @@
 //! `presk-train` and the CLI.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use presk_rt::{AxisRef, Dtype, Quant, QuantScheme, Realization};
+use presk_format::{Affine, Format};
+use presk_rt::{AxisRef, Dtype, Quant, QuantScheme, Realization, Scale, ScaleRule};
 
 use crate::envelope::{Envelope, Rounding};
+use crate::formats::{self, Refusal, Seen};
 use crate::sensitivity::Sensitivity;
+use crate::target::{Kind, Target};
 
 /// A budget on an entry's output: relative to its largest magnitude in the
 /// envelope, as every budget was until 0.12.0, or absolute (plan 0.12.0
@@ -139,16 +143,19 @@ impl Budget {
 
 /// What a site may be assigned: the float storage types, and the integer
 /// rungs, `(bits, scheme)`, a parameter of rank two or more is offered
-/// besides them (plan 0.17.0 step 4, D177).
+/// besides them (plan 0.17.0 step 4, D177); and a machine's description
+/// when the menu is its (`presk solve --target`, plan 0.18.0 step 5, D208),
+/// which adds the affine formats an activation is offered, says which
+/// floats a parameter is, and what every nest computes in.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Menu(pub Vec<Dtype>, pub Vec<(u8, QuantScheme)>);
+pub struct Menu(pub Vec<Dtype>, pub Vec<(u8, QuantScheme)>, pub Option<Arc<Target>>);
 
 impl Default for Menu {
     /// The float storage types, the menu since 0.5.0, and no integer rung:
     /// `--quant` quantizes in a pass after the solve (0.6.0, D44, D49), and
     /// `presk solve --menu` offers the integers in the solve itself (D177).
     fn default() -> Menu {
-        Menu(vec![Dtype::F64, Dtype::F32, Dtype::Bf16], Vec::new())
+        Menu(vec![Dtype::F64, Dtype::F32, Dtype::BF16], Vec::new(), None)
     }
 }
 
@@ -158,53 +165,75 @@ impl Menu {
     /// `int4/pow2`. The float types are put widest first and the integer
     /// rungs `int8` before `int4`, `absmax` before `pow2`, in whatever order
     /// they are written, so that one menu solves one way; it needs a float
-    /// type.
+    /// type. A float type is read by its format's name, any float format
+    /// since plan 0.18.0 step 5 (D208; `E7004` until then): a value in a
+    /// format no backend computes in is measured on the kernel interpreter.
     pub fn parse(s: &str) -> Result<Menu, String> {
         let (mut floats, mut ints) = (Vec::new(), Vec::new());
-        for w in s.split(',').map(str::trim) {
+        for w in presk_format::split_names(s) {
             let (bits, schemes): (u8, &[QuantScheme]) = match w {
-                "f64" | "f32" | "bf16" => {
-                    floats.push(match w {
-                        "f64" => Dtype::F64,
-                        "f32" => Dtype::F32,
-                        _ => Dtype::Bf16,
-                    });
-                    continue;
-                }
                 "int8" => (8, &[QuantScheme::Absmax, QuantScheme::Pow2]),
                 "int4" => (4, &[QuantScheme::Absmax, QuantScheme::Pow2]),
                 "int8/absmax" => (8, &[QuantScheme::Absmax]),
                 "int8/pow2" => (8, &[QuantScheme::Pow2]),
                 "int4/absmax" => (4, &[QuantScheme::Absmax]),
                 "int4/pow2" => (4, &[QuantScheme::Pow2]),
-                other => return Err(format!("`{other}` is not a rung: f64, f32, bf16, int8, int4, int8/absmax, int8/pow2, int4/absmax or int4/pow2")),
+                other => match presk_format::Float::parse(other) {
+                    Ok(f) => {
+                        floats.push(Dtype::new(f));
+                        continue;
+                    }
+                    Err(_) => return Err(format!("`{other}` is not a rung: a float format's name (f64, f32, bf16, f16, …), int8, int4, int8/absmax, int8/pow2, int4/absmax or int4/pow2")),
+                },
             };
             ints.extend(schemes.iter().map(|s| (bits, *s)));
         }
-        floats.sort_by_key(|d| std::cmp::Reverse(d.bytes()));
-        floats.dedup();
+        sort_floats(&mut floats);
         let order = |s: &QuantScheme| matches!(s, QuantScheme::Pow2);
         ints.sort_by_key(|(b, s)| (std::cmp::Reverse(*b), order(s)));
         ints.dedup();
         if floats.is_empty() {
             return Err("a menu needs a float type: the values that are not parameters of rank two or more have no other".into());
         }
-        Ok(Menu(floats, ints))
+        Ok(Menu(floats, ints, None))
     }
 
-    /// Every rung, the float types first.
+    /// A machine's menu (D208): its storage and its parameters' floats, its
+    /// integer weights, and the description, which says the rest.
+    pub fn of_target(t: Target) -> Result<Menu, String> {
+        let mut floats: Vec<Dtype> = t.storage.iter().chain(t.param_floats()).copied().collect();
+        sort_floats(&mut floats);
+        let ints = t.weights()?;
+        Ok(Menu(floats, ints, Some(Arc::new(t))))
+    }
+
+    /// The type a value the solver does not offer keeps: `f64`, or the
+    /// target's widest storage format.
+    pub fn default_type(&self) -> Dtype {
+        self.2.as_ref().map_or(Dtype::F64, |t| t.widest())
+    }
+
+    /// Every rung, the float types first, then the integer weights, then
+    /// the target's affine formats.
     pub fn rungs(&self) -> impl Iterator<Item = Rung> + '_ {
-        self.0.iter().map(|d| Rung::Float(*d)).chain(self.1.iter().map(|(bits, scheme)| Rung::Int { bits: *bits, scheme: *scheme }))
+        let affine = self.2.iter().flat_map(|t| t.scaled.iter()).filter_map(|s| s.resolve(1.0, Some((-1.0, 1.0))).ok().map(|a| Rung::Affine { int: a.int, rule: s.scheme }));
+        self.0.iter().map(|d| Rung::Float(*d)).chain(self.1.iter().map(|(bits, scheme)| Rung::Int { bits: *bits, scheme: *scheme })).chain(affine)
     }
 
     /// How many rungs it has.
     pub fn len(&self) -> usize {
-        self.0.len() + self.1.len()
+        self.rungs().count()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Floats widest first, each once.
+fn sort_floats(floats: &mut Vec<Dtype>) {
+    floats.sort_by_key(|d| (std::cmp::Reverse(d.bytes()), std::cmp::Reverse(d.format().p)));
+    floats.dedup();
 }
 
 /// A step of a value's menu (plan 0.17.0 step 4, D177): a float storage
@@ -213,26 +242,30 @@ impl Menu {
 /// integers are dequantized to `f32(q·s)` as a nest reads them
 /// (`presk_rt::quant`): a storage type, as `bf16` is, with a scale. The
 /// rungs live here, not in `Dtype`, since no value is computed in them.
+/// Under a target (D208), an activation's affine format of `int` codes, its
+/// scale and zero point computed by `rule` from the envelope at its site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rung {
     Float(Dtype),
     Int { bits: u8, scheme: QuantScheme },
+    Affine { int: presk_format::Int, rule: ScaleRule },
 }
 
 impl Rung {
     /// Its name: a float type's, or the realization's for a `quant` entry,
-    /// `int8`, `int4/pow2` ([`Quant::name`]).
+    /// `int8`, `int4/pow2` ([`Quant::name`]), or `affine(u8/sat)/minmax`.
     pub fn name(self) -> String {
         match self {
             Rung::Float(d) => d.name().to_string(),
             Rung::Int { bits, scheme } => Quant { bits, over: AxisRef::Pos(-2), scheme }.name(),
+            Rung::Affine { int, rule } => format!("affine({int})/{}", rule.name()),
         }
     }
 
     pub fn float(self) -> Option<Dtype> {
         match self {
             Rung::Float(d) => Some(d),
-            Rung::Int { .. } => None,
+            Rung::Int { .. } | Rung::Affine { .. } => None,
         }
     }
 
@@ -355,11 +388,16 @@ pub struct Options {
     /// all-default traffic, in bytes whatever the machine. 10⁻³ by default;
     /// 0 turns rule 2 off. Rule 1 has no option.
     pub min_gain: f64,
+    /// The range rules' margin (plan 0.18.0 step 5, D208): a float format is
+    /// not offered a value whose largest magnitude, times it, passes the
+    /// format's largest finite number, nor a sum whose terms or products do.
+    /// 2 by default, a binade.
+    pub range_margin: f64,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { rounding: RoundingTerm::default(), narrow: Narrow::default(), estimate: Estimate::default(), margin: 2.5, heldout: None, min_gain: 1e-3 }
+        Options { rounding: RoundingTerm::default(), narrow: Narrow::default(), estimate: Estimate::default(), margin: 2.5, heldout: None, min_gain: 1e-3, range_margin: 2.0 }
     }
 }
 
@@ -400,6 +438,14 @@ pub struct Solution {
     /// How many realizations were measured against the exact reference: the
     /// verification and its widening rounds, then the narrowing's trials.
     pub measurements: usize,
+    /// The smallest gap any of them measured (D208): under a target, what
+    /// the solver reports when no realization in the target's types is
+    /// inside the budget.
+    pub smallest: Option<f64>,
+    /// Under a target, the values no realization in its types can hold
+    /// (D208): a sum whose operands no mode takes, a format the range rules
+    /// refuse and no other format replaces. None is measured then.
+    pub infeasible: Vec<String>,
     /// The options it was solved under.
     pub options: Options,
     /// Sites the solver could narrow at all (the rest had no magnitude, no
@@ -442,6 +488,11 @@ pub enum Move {
     /// held-out samples, outside the threshold, so the last narrowing kept,
     /// `site`'s from `from` to `to`, is undone.
     Undone { site: String, from: Rung, to: Rung, heldout: f64 },
+    /// Under a target (D208), when no decision widens inside its modes:
+    /// the contraction `site` put in `mode`, its operands with it, at round
+    /// `round`, measured at `gap` and `kept` when that is smaller than
+    /// before, else undone.
+    Switched { round: usize, site: String, mode: String, gap: f64, kept: bool },
 }
 
 impl Solution {
@@ -486,6 +537,18 @@ pub struct Offers {
     pub min_gain: f64,
     /// The values not offered, in the order of the decisions.
     pub excluded: Vec<Excluded>,
+    /// The formats the range rules do not offer a value (plan 0.18.0 step
+    /// 5, D208), by decision.
+    pub refused: Vec<Refused>,
+}
+
+/// A format the range rules do not offer a value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refused {
+    pub name: String,
+    pub param: bool,
+    pub rung: Rung,
+    pub why: Refusal,
 }
 
 impl Offers {
@@ -520,6 +583,16 @@ struct Site {
     round: Option<Rounding>,
     /// A parameter's integer rungs, priced at rest (D177); none for a nest.
     ints: Vec<IntRung>,
+    /// Its smallest non-zero magnitude and its range, as the envelope saw
+    /// them, for the formats' terms and the range rules (D208).
+    floor: f64,
+    range: Option<(f64, f64)>,
+}
+
+impl Site {
+    fn seen(&self) -> Seen {
+        Seen { mag: self.mag, floor: self.floor, range: self.range }
+    }
 }
 
 impl Site {
@@ -563,7 +636,8 @@ fn sites(env: &Envelope, sens: &Sensitivity) -> Vec<Site> {
             let elems = env.cost_elems(name) as f64;
             let sens = sens.get(name)?;
             let work = elems * op_weight(env.op(name));
-            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false, round: env.rounding.get(name).copied(), ints: Vec::new() })
+            let (floor, range) = (env.floor(name).unwrap_or(0.0), env.range.get(name).map(|r| (r[0], r[1])));
+            (elems > 0.0 && *mag > 0.0).then(|| Site { name: name.clone(), elems, mag: *mag, sens, work, param: false, round: env.rounding.get(name).cloned(), ints: Vec::new(), floor, range })
         })
         .collect()
 }
@@ -594,9 +668,40 @@ pub enum Role {
 
 /// The roles of a program's sites. A site it does not name is a decision,
 /// which is what the solver took every site for until 0.11.0. Since 0.12.0
-/// the parameters it offers come with them ([`Roles::with_params`]).
+/// the parameters it offers come with them ([`Roles::with_params`]), and
+/// since 0.18.0 what the formats' terms and the range rules read of each
+/// stored value ([`Facts`]).
 #[derive(Clone, Debug, Default)]
-pub struct Roles(pub BTreeMap<String, Role>, pub Vec<ParamSite>);
+pub struct Roles(pub BTreeMap<String, Role>, pub Vec<ParamSite>, pub BTreeMap<String, Facts>);
+
+/// What the formats' terms and the range rules read of a stored value off
+/// the program (plan 0.18.0 step 5, D208).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Facts {
+    /// For a sum or a contraction, the terms it adds, read off the types at
+    /// the envelope's shapes ([`crate::propagate::Analysis::sums`]).
+    pub k: Option<f64>,
+    /// The stored values a sum or a contraction reads its terms from, per
+    /// operand in order: every value the operand may be, followed through
+    /// the calls, folds and closures that pass it ([`value_sources`]), a
+    /// function called from several places reading each caller's.
+    pub operands: Vec<Vec<String>>,
+    /// The roundings a term's product takes: a contraction's operands less
+    /// one, one for a sum of squares, none for a plain sum.
+    pub products: f64,
+    /// Whether a division divides by the value as it is stored.
+    pub divisor: bool,
+    /// The divisors its nest computes, its group's members a division
+    /// divides by, by site: the envelope has their smallest values, which
+    /// its arithmetic format must hold (AdamW's `√v̂ + ε`).
+    pub divides: Vec<String>,
+    /// Whether the value is a constant: a literal, or a host's number made
+    /// real (`real eps`).
+    pub constant: bool,
+    /// The constants its nest computes, its group's members that are, by
+    /// site: the envelope has their values.
+    pub consts: Vec<String>,
+}
 
 /// A parameter the solver offers (plan 0.12.0 step 4, D123): a leaf of the
 /// entry's parameter tree, decided by its path as the realization's
@@ -690,6 +795,105 @@ pub fn param_reads(core: &presk_core::Program, entry: presk_core::FuncId) -> BTr
             if e.len() > before {
                 work.push(g);
             }
+        }
+    }
+    out
+}
+
+/// The stored values each variable of the program may be (plan 0.18.0 step
+/// 5, D208), by its site: a `let` that computes a value (a primitive, a
+/// literal, a parameter's field) is its own; a tuple's projection the
+/// component's where the tuple is in sight, else every component's; a
+/// function's parameter every value its calls, folds (a fold's accumulator
+/// its body's result too) and closures pass it; a call's result its
+/// callee's. Context-insensitive, so a function called from several places
+/// reads the values of all of them, as its sites have one realization.
+pub fn value_sources(core: &presk_core::Program) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+    use presk_core::ir::{Rhs, VarId};
+    use presk_core::FuncId;
+    use std::collections::{BTreeSet, HashMap};
+    type Set = BTreeSet<String>;
+    let mut params: HashMap<(FuncId, usize), Set> = HashMap::new();
+    let mut results: HashMap<FuncId, Set> = HashMap::new();
+    let mut out: BTreeMap<String, Set> = BTreeMap::new();
+    let grow = |into: &mut Set, from: &Set| -> bool {
+        let before = into.len();
+        into.extend(from.iter().cloned());
+        into.len() > before
+    };
+    for _ in 0..64 {
+        let mut changed = false;
+        for (fi, f) in core.funcs.iter().enumerate() {
+            let fid = FuncId(fi as u32);
+            let name = |v: VarId| format!("{}/%{}", f.name, v.0);
+            let mut env: HashMap<VarId, Set> = HashMap::new();
+            for (k, p) in f.params.iter().enumerate() {
+                env.insert(p.var, params.get(&(fid, k)).cloned().unwrap_or_default());
+            }
+            let mut tuples: HashMap<VarId, Vec<VarId>> = HashMap::new();
+            let mut closures: HashMap<VarId, (FuncId, Vec<VarId>)> = HashMap::new();
+            let mut pass: Vec<((FuncId, usize), Set)> = Vec::new();
+            for l in &f.body.lets {
+                let get = |env: &HashMap<VarId, Set>, v: &VarId| env.get(v).cloned().unwrap_or_default();
+                let src: Set = match &l.rhs {
+                    Rhs::Prim { .. } | Rhs::Lit(_) | Rhs::Field(..) => Set::from([name(l.var)]),
+                    Rhs::Tuple(vs) => {
+                        tuples.insert(l.var, vs.clone());
+                        vs.iter().flat_map(|v| get(&env, v)).collect()
+                    }
+                    Rhs::Record(fs) => fs.iter().flat_map(|(_, v)| get(&env, v)).collect(),
+                    Rhs::Proj(x, i) => match tuples.get(x).and_then(|vs| vs.get(*i)) {
+                        Some(v) => get(&env, v),
+                        None => get(&env, x),
+                    },
+                    Rhs::Call { f: g, args, .. } => {
+                        pass.extend(args.iter().enumerate().map(|(k, a)| ((*g, k), get(&env, a))));
+                        results.get(g).cloned().unwrap_or_default()
+                    }
+                    Rhs::Fold { body, stacked, init, extra, index, .. } => {
+                        let off = usize::from(*index);
+                        let ins = stacked.iter().chain(std::iter::once(init)).chain(extra);
+                        pass.extend(ins.enumerate().map(|(k, a)| ((*body, off + k), get(&env, a))));
+                        let carried = results.get(body).cloned().unwrap_or_default();
+                        pass.push(((*body, off + stacked.len()), carried.clone()));
+                        carried
+                    }
+                    Rhs::Closure { f: g, captured } => {
+                        closures.insert(l.var, (*g, captured.clone()));
+                        Set::new()
+                    }
+                    Rhs::Grad(x) => {
+                        if let Some((g, cap)) = closures.get(x).cloned()
+                            && let Some(gg) = core.find(&format!("{}.grad", core.func(g).name))
+                        {
+                            closures.insert(l.var, (gg, cap));
+                        }
+                        Set::new()
+                    }
+                    Rhs::Apply { fun, args } => match closures.get(fun).cloned() {
+                        Some((g, cap)) => {
+                            pass.extend(cap.iter().chain(args).enumerate().map(|(k, a)| ((g, k), get(&env, a))));
+                            results.get(&g).cloned().unwrap_or_default()
+                        }
+                        None => Set::new(),
+                    },
+                };
+                env.insert(l.var, src);
+            }
+            for (key, set) in pass {
+                changed |= grow(params.entry(key).or_default(), &set);
+            }
+            let result = env.get(&f.body.result).cloned().unwrap_or_default();
+            changed |= grow(results.entry(fid).or_default(), &result);
+            for p in &f.params {
+                out.insert(name(p.var), env.get(&p.var).cloned().unwrap_or_default());
+            }
+            for l in &f.body.lets {
+                out.insert(name(l.var), env.get(&l.var).cloned().unwrap_or_default());
+            }
+        }
+        if !changed {
+            break;
         }
     }
     out
@@ -816,7 +1020,75 @@ impl Roles {
                 roles.insert(name(l.var), role);
             }
         }
-        Roles(roles, Vec::new())
+        Roles(roles, Vec::new(), Roles::facts(core))
+    }
+
+    /// Every stored value's [`Facts`] but its sum's terms: a sum's or a
+    /// contraction's operands, the values a divisor reads, and each group's
+    /// literals, which its root computes.
+    fn facts(core: &presk_core::Program) -> BTreeMap<String, Facts> {
+        use presk_core::ir::{Lit, PrimOp, Rhs, VarId};
+        use std::collections::HashMap;
+        let mut out: BTreeMap<String, Facts> = BTreeMap::new();
+        let sources = value_sources(core);
+        for f in &core.funcs {
+            let plan = presk_core::fusion::plan(f);
+            let name = |v: VarId| format!("{}/%{}", f.name, v.0);
+            // The stored values a variable may be: its own site for a let
+            // that stores one, its sources otherwise.
+            let of = |v: VarId| -> Vec<String> {
+                let site = name(v);
+                match sources.get(&site) {
+                    Some(s) if !s.is_empty() => s.iter().cloned().collect(),
+                    _ => vec![site],
+                }
+            };
+            let rhs: HashMap<VarId, &Rhs> = f.body.lets.iter().map(|l| (l.var, &l.rhs)).collect();
+            let mut root_of: HashMap<VarId, VarId> = HashMap::new();
+            for g in plan.groups.values() {
+                for m in &g.members {
+                    root_of.insert(*m, g.root);
+                }
+            }
+            for l in &f.body.lets {
+                match &l.rhs {
+                    Rhs::Prim { op: PrimOp::Dot | PrimOp::Matmul | PrimOp::Ein { .. } | PrimOp::DotVjpL | PrimOp::DotVjpR, args } => {
+                        let e = out.entry(name(l.var)).or_default();
+                        e.operands = args.iter().map(|a| of(*a)).collect();
+                        e.products = (args.len() as f64 - 1.0).max(0.0);
+                    }
+                    Rhs::Prim { op: PrimOp::Sum { .. } | PrimOp::SumAll | PrimOp::SumTo | PrimOp::Mean { .. } | PrimOp::MeanAll | PrimOp::SumSquares, args } => {
+                        let e = out.entry(name(l.var)).or_default();
+                        e.operands = args.iter().take(1).map(|a| of(*a)).collect();
+                        e.products = if matches!(l.rhs, Rhs::Prim { op: PrimOp::SumSquares, .. }) { 1.0 } else { 0.0 };
+                    }
+                    // A divisor stored, or computed in its group's arithmetic
+                    // (LayerNorm's root, AdamW's `√v̂ + ε`).
+                    Rhs::Prim { op: PrimOp::Div, args } if args.len() == 2 => match root_of.get(&args[1]).filter(|_| plan.interior.contains(&args[1]) && matches!(rhs.get(&args[1]), Some(Rhs::Prim { .. }))) {
+                        Some(root) => out.entry(name(*root)).or_default().divides.push(name(args[1])),
+                        None => {
+                            for site in of(args[1]) {
+                                out.entry(site).or_default().divisor = true;
+                            }
+                        }
+                    },
+                    Rhs::Lit(Lit::Float(_)) | Rhs::Prim { op: PrimOp::Real, .. } => match root_of.get(&l.var).filter(|_| plan.interior.contains(&l.var)) {
+                        Some(root) => out.entry(name(*root)).or_default().consts.push(name(l.var)),
+                        None => out.entry(name(l.var)).or_default().constant = true,
+                    },
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// These roles with each sum's terms, by site.
+    pub fn with_sums(mut self, sums: &BTreeMap<String, f64>) -> Roles {
+        for (site, k) in sums {
+            self.2.entry(site.clone()).or_default().k = Some(*k);
+        }
+        self
     }
 
     pub fn role(&self, site: &str) -> Role {
@@ -825,7 +1097,7 @@ impl Roles {
 
     /// These roles with the parameters the solver offers besides the sites.
     pub fn with_params(self, params: Vec<ParamSite>) -> Roles {
-        Roles(self.0, params)
+        Roles(self.0, params, self.2)
     }
 }
 
@@ -850,9 +1122,61 @@ struct Split {
     /// For each decision, whether the rules offer it ([`Split::offer`]);
     /// every one until then.
     offered: Vec<bool>,
+    /// For each decision, whether a division divides by it, the smallest
+    /// values of the divisors its nest computes, and whether it is a
+    /// constant (D208).
+    divisor: Vec<bool>,
+    divides: Vec<Vec<f64>>,
+    constant: Vec<bool>,
+    /// For each decision, the rungs the range rules refuse it, and why.
+    refusals: Vec<Vec<(Rung, Refusal)>>,
+    /// Under a target, what its terms read of the program (D208).
+    ctx: Option<Ctx>,
 }
 
-fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTerm) -> Split {
+/// What a target's terms read of the program (plan 0.18.0 step 5, D208).
+struct Ctx {
+    t: Arc<Target>,
+    /// The range rules' margin.
+    margin: f64,
+    /// For each decision that is a sum or a contraction, its terms.
+    sums: Vec<Option<SumAt>>,
+    /// For each decision, the sums whose operand it is.
+    readers: Vec<Vec<usize>>,
+    /// For each nest, its affine rungs, their formats computed from the
+    /// envelope at its site.
+    affines: Vec<Vec<(Rung, Affine)>>,
+    /// For each decision, the constants its nest computes, their values.
+    consts: Vec<Vec<f64>>,
+    /// Every value the entry stores, which the realization gives the
+    /// target's arithmetic.
+    stored: Vec<String>,
+}
+
+/// A sum as the target's terms read it.
+struct SumAt {
+    k: f64,
+    /// `Σ|terms|`, measured, or `k` times its largest product.
+    abs: f64,
+    /// Its largest product, its operands' largest magnitudes multiplied.
+    largest: f64,
+    products: f64,
+    /// Per operand, every stored value it may be.
+    operands: Vec<Vec<Operand>>,
+}
+
+/// Where a sum's operand is stored.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Operand {
+    /// A decision of the solver.
+    Decision(usize),
+    /// A value the solver does not see, in the default type.
+    Default,
+    /// A member of the sum's own group, computed in its arithmetic.
+    Member,
+}
+
+fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTerm, menu: &Menu, margin: f64) -> Split {
     let mut decisions = Vec::new();
     let mut pending = Vec::new();
     let param_fields: std::collections::BTreeSet<&str> = roles.1.iter().flat_map(|p| p.fields.iter().map(String::as_str)).collect();
@@ -866,7 +1190,7 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTe
     }
     let nests = decisions.len();
     for p in &roles.1 {
-        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true, round: p.round, ints: p.ints.clone() });
+        decisions.push(Site { name: p.path.clone(), elems: p.elems, mag: p.mag, sens: p.sens, work: 0.0, param: true, round: p.round.clone(), ints: p.ints.clone(), floor: 0.0, range: None });
     }
     let index: BTreeMap<&str, usize> = decisions[..nests].iter().enumerate().map(|(i, s)| (s.name.as_str(), i)).collect();
     let mut led = vec![Vec::new(); decisions.len()];
@@ -906,8 +1230,108 @@ fn split(env: &Envelope, sens: &Sensitivity, roles: &Roles, rounding: RoundingTe
         }
         readers[i].1 = outside;
     }
-    let offered = vec![true; decisions.len()];
-    Split { decisions, followers, led, readers, reads, rounding, offered }
+    let n = decisions.len();
+    let offered = vec![true; n];
+    let divisor: Vec<bool> = decisions.iter().map(|s| !s.param && roles.2.get(&s.name).is_some_and(|f| f.divisor)).collect();
+    let constant: Vec<bool> = decisions.iter().map(|s| !s.param && roles.2.get(&s.name).is_some_and(|f| f.constant)).collect();
+    let divides: Vec<Vec<f64>> = decisions.iter().map(|s| roles.2.get(&s.name).filter(|_| !s.param).map(|f| f.divides.iter().filter_map(|d| env.floor(d)).collect()).unwrap_or_default()).collect();
+    let ctx = menu.2.as_ref().map(|t| {
+        // A field site and the parameters it reads, every one.
+        let mut field_of: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (k, p) in roles.1.iter().enumerate() {
+            for f in &p.fields {
+                field_of.entry(f.as_str()).or_default().push(nests + k);
+            }
+        }
+        let affines = decisions.iter().map(|s| if s.param { Vec::new() } else { t.scaled.iter().filter_map(|sc| sc.resolve(s.mag, s.range).ok().map(|a| (Rung::Affine { int: a.int, rule: sc.scheme }, a))).collect() }).collect();
+        let sums: Vec<Option<SumAt>> = decisions
+            .iter()
+            .map(|s| {
+                let f = roles.2.get(&s.name).filter(|_| !s.param)?;
+                let k = f.k?;
+                // Each value an operand may be: a decision, the parameters a
+                // field reads, a member of the sum's own group, a value the
+                // solver does not see; one the envelope saw no real values
+                // of (a key, an index) is none of them.
+                let resolve = |o: &String| -> Vec<Operand> {
+                    if let Some(j) = index.get(o.as_str()) {
+                        return vec![Operand::Decision(*j)];
+                    }
+                    if let Some(js) = field_of.get(o.as_str()) {
+                        return js.iter().map(|j| Operand::Decision(*j)).collect();
+                    }
+                    if env.elems(o) == 0 && env.get(o).is_none() {
+                        return Vec::new();
+                    }
+                    match roles.role(o) {
+                        Role::Follows(ls) if ls.len() == 1 && ls[0] == s.name => vec![Operand::Member],
+                        Role::Follows(ls) if ls.len() == 1 => vec![index.get(ls[0].as_str()).map_or(Operand::Default, |j| Operand::Decision(*j))],
+                        _ => vec![Operand::Default],
+                    }
+                };
+                let operands: Vec<Vec<Operand>> = f.operands.iter().map(|os| {
+                    let mut v: Vec<Operand> = os.iter().flat_map(resolve).collect();
+                    v.dedup();
+                    if v.is_empty() {
+                        v.push(Operand::Default);
+                    }
+                    v
+                }).collect();
+                let mags: Vec<f64> = f.operands.iter().zip(&operands).map(|(os, ops)| {
+                    let seen = os.iter().filter_map(|o| env.get(o)).fold(0.0, f64::max);
+                    ops.iter().map(|op| match op {
+                        Operand::Decision(j) => decisions[*j].mag,
+                        _ => seen,
+                    }).fold(seen, f64::max)
+                }).collect();
+                let mut largest: f64 = mags.iter().product();
+                if f.products == 1.0 && mags.len() == 1 {
+                    largest *= mags[0];
+                }
+                let abs = env.terms(&s.name).map(|t| t.abs).unwrap_or(k * largest);
+                Some(SumAt { k, abs, largest, products: f.products, operands })
+            })
+            .collect();
+        let mut readers = vec![Vec::new(); n];
+        for (i, sum) in sums.iter().enumerate() {
+            for o in sum.iter().flat_map(|x| x.operands.iter().flatten()) {
+                if let Operand::Decision(d) = o
+                    && !readers[*d].contains(&i)
+                {
+                    readers[*d].push(i);
+                }
+            }
+        }
+        let consts = decisions.iter().map(|s| roles.2.get(&s.name).map(|f| f.consts.iter().filter_map(|c| env.get(c)).collect()).unwrap_or_default()).collect();
+        let stored = env.sites.keys().filter(|k| roles.role(k) == Role::Decision && !param_fields.contains(k.as_str())).cloned().collect();
+        Ctx { t: t.clone(), margin, sums, readers, affines, consts, stored }
+    });
+    let mut sp = Split { decisions, followers, led, readers, reads, rounding, offered, divisor, divides, constant, refusals: Vec::new(), ctx };
+    sp.refusals = (0..n).map(|i| menu.rungs().filter_map(|r| sp.refusal(i, r, margin).map(|w| (r, w))).collect()).collect();
+    sp
+}
+
+/// Whether a product format counts a sum of scaled values in their unit.
+fn counts(f: Format) -> bool {
+    matches!(f, Format::Int(_) | Format::Fixed(_))
+}
+
+/// A site's term per unit of sensitivity in a format: the envelope's
+/// measured rounding where it records it, under the measured term; the unit
+/// roundoff times the magnitude in a native type, as until 0.18.0; any
+/// other format's bound of [`formats::rounding`] (D208).
+fn unit_err(s: &Site, f: Format, rounding: RoundingTerm) -> f64 {
+    match f {
+        Format::Float(x) => {
+            let d = Dtype::new(x);
+            match (rounding, s.round.as_ref().and_then(|r| r.at(d))) {
+                (RoundingTerm::Measured, Some(r)) => r,
+                _ if d.is_native() => d.unit_roundoff() * s.mag,
+                _ => formats::rounding(f, s.seen()),
+            }
+        }
+        other => formats::rounding(other, s.seen()),
+    }
 }
 
 impl Split {
@@ -916,7 +1340,7 @@ impl Split {
     /// type narrower than `default`, saves less than `min_gain` of the
     /// all-default traffic. Both in bytes, at the elements the solver
     /// prices. The integer rungs (D177) do not change the first step, which
-    /// is `f32`.
+    /// is `f32`. The range rules' refusals (D208) are listed beside them.
     fn offer(&mut self, menu: &Menu, default: Dtype, min_gain: f64) -> Offers {
         let narrower = || menu.0.iter().copied().filter(|d| d.bytes() < default.bytes());
         let first = narrower().max_by_key(|d| d.bytes());
@@ -937,17 +1361,66 @@ impl Split {
             self.offered[i] = false;
             excluded.push(Excluded { name: s.name.clone(), param: s.param, rule, elems: s.elems, gain, forgone });
         }
-        Offers { base, min_gain, excluded }
+        let refused = self.decisions.iter().zip(&self.refusals).flat_map(|(s, v)| v.iter().map(|(r, w)| Refused { name: s.name.clone(), param: s.param, rung: *r, why: w.clone() })).collect();
+        Offers { base, min_gain, excluded, refused }
+    }
+
+    /// The format decision `i` stores its value in under a rung: a float's,
+    /// an affine format computed at its site, none for integer weights.
+    fn stored(&self, i: usize, r: Rung) -> Option<Format> {
+        match r {
+            Rung::Float(d) => Some(Format::Float(d.format())),
+            Rung::Affine { .. } => self.ctx.as_ref()?.affines.get(i)?.iter().find(|(x, _)| *x == r).map(|(_, a)| Format::Affine(*a)),
+            Rung::Int { .. } => None,
+        }
+    }
+
+    /// The range rules (D208): why decision `i` is not offered a rung, if
+    /// it is not. A float its values with the margin pass, a float or an
+    /// affine format whose smallest normal number or step is above the
+    /// smallest value a divisor reads, a format a constant of its nest
+    /// rounds to zero or past its largest number in.
+    fn refusal(&self, i: usize, r: Rung, margin: f64) -> Option<Refusal> {
+        let s = &self.decisions[i];
+        let f = self.stored(i, r)?;
+        if let Some(w) = formats::refusal(f, s.seen(), margin, self.divisor[i]) {
+            return Some(w);
+        }
+        // A constant stored in a format that does not hold it.
+        if self.constant[i] && !formats::holds_constant(f, s.mag) {
+            return Some(Refusal::Constant { value: s.mag });
+        }
+        // The format the nest computes in: the target's for it, else its
+        // storage type's arithmetic type.
+        let alpha = match (&self.ctx, f) {
+            (Some(ctx), f) => ctx.t.arith_for(f)?,
+            (None, Format::Float(x)) => Format::Float(Dtype::new(x).arith().format()),
+            (None, _) => return None,
+        };
+        // A divisor the nest computes under its arithmetic's smallest
+        // normal number.
+        if let Format::Float(a) = alpha
+            && let Some(floor) = self.divides[i].iter().copied().find(|x| *x < formats::normal(a))
+        {
+            return Some(Refusal::Divisor { floor, normal: formats::normal(a) });
+        }
+        self.ctx.as_ref()?.consts[i].iter().find(|c| !formats::holds_constant(alpha, **c)).map(|c| Refusal::Constant { value: *c })
     }
 
     /// The rungs decision `i` may take: the menu's float types, then for a
-    /// parameter the menu's integer rungs it is priced in (D177).
+    /// parameter the menu's integer rungs it is priced in (D177); under a
+    /// target, a nest's its storage formats and affine ones, a parameter's
+    /// its parameters' (D208); none the range rules refuse.
     fn rungs(&self, i: usize, menu: &Menu) -> Vec<Rung> {
         let s = &self.decisions[i];
-        menu.rungs().filter(|r| match r {
-            Rung::Float(_) => true,
-            Rung::Int { bits, scheme } => s.int(*bits, *scheme).is_some(),
-        }).collect()
+        menu.rungs()
+            .filter(|r| match r {
+                Rung::Float(d) => self.ctx.as_ref().is_none_or(|c| if s.param { c.t.param_floats().contains(d) } else { c.t.storage.contains(d) }),
+                Rung::Int { bits, scheme } => s.int(*bits, *scheme).is_some(),
+                Rung::Affine { .. } => !s.param && self.stored(i, *r).is_some(),
+            })
+            .filter(|r| !self.refusals.get(i).is_some_and(|v| v.iter().any(|(x, _)| x == r)))
+            .collect()
     }
 
     /// The fewest bytes decision `i` can move: its narrowest rung.
@@ -956,21 +1429,48 @@ impl Split {
         self.rungs(i, menu).into_iter().min_by(|a, b| bytes_at(s, *a).total_cmp(&bytes_at(s, *b))).unwrap_or(Rung::Float(Dtype::F64))
     }
 
+    /// The widest rung decision `i` may take, of two of the same bytes the
+    /// one of the smaller term: where the proposal starts it under a target.
+    fn widest(&self, i: usize, menu: &Menu, default: Dtype) -> Rung {
+        let s = &self.decisions[i];
+        self.rungs(i, menu).into_iter().min_by(|a, b| bytes_at(s, *b).total_cmp(&bytes_at(s, *a)).then(self.err_of(i, *a).total_cmp(&self.err_of(i, *b)))).unwrap_or(default.into())
+    }
+
     /// The rung of decision `i` next to `cur` on the side `wider` says: the
     /// fewest bytes above its own, or the most below them, and of two rungs
     /// of the same bytes (`int8` under `absmax` and under `pow2`) the one of
-    /// the smaller term.
-    fn step(&self, i: usize, menu: &Menu, cur: Rung, wider: bool) -> Option<Rung> {
+    /// the smaller term. Under a target, the first such rung that leaves
+    /// every sum it is an operand of in one of the target's modes.
+    fn step(&self, i: usize, menu: &Menu, cur: Rung, wider: bool, chosen: &[Rung], default: Dtype) -> Option<Rung> {
         let s = &self.decisions[i];
         let b = bytes_at(s, cur);
         let key = |r: &Rung| {
             let x = bytes_at(s, *r);
-            (if wider { x } else { -x }, err_at(s, *r, self.rounding))
+            (if wider { x } else { -x }, self.err_of(i, *r))
         };
-        self.rungs(i, menu).into_iter().filter(|r| if wider { bytes_at(s, *r) > b } else { bytes_at(s, *r) < b }).min_by(|x, y| {
+        let mut steps: Vec<Rung> = self.rungs(i, menu).into_iter().filter(|r| if wider { bytes_at(s, *r) > b } else { bytes_at(s, *r) < b }).collect();
+        steps.sort_by(|x, y| {
             let (kx, ky) = (key(x), key(y));
             kx.0.total_cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
+        });
+        if self.ctx.is_none() {
+            return steps.first().copied();
+        }
+        steps.into_iter().find(|r| {
+            let mut moved = chosen.to_vec();
+            moved[i] = *r;
+            self.share(i, &moved, default).is_finite()
         })
+    }
+
+    /// Decision `i`'s term per unit of sensitivity in a rung, alone: its
+    /// rounding there.
+    fn err_of(&self, i: usize, r: Rung) -> f64 {
+        let s = &self.decisions[i];
+        match self.stored(i, r) {
+            Some(f @ Format::Affine(_)) => s.sens * formats::rounding(f, s.seen()),
+            _ => err_at(s, r, self.rounding),
+        }
     }
 
     /// The narrowest type the nests reading parameter `i` round it to, the
@@ -985,9 +1485,12 @@ impl Split {
     /// is rounded at rest and again at the nest's edge. In integers, the
     /// larger of their move at rest and the narrowest reader's rounding of
     /// the parameter (D177): the dequantized `f32` is rounded again only by
-    /// a narrower nest.
+    /// a narrower nest. Under a target, [`Split::target_err`].
     fn decision_err(&self, i: usize, chosen: &[Rung], default: Dtype) -> f64 {
         let s = &self.decisions[i];
+        if self.ctx.is_some() {
+            return self.target_err(i, chosen, default);
+        }
         match chosen[i] {
             Rung::Float(d) if s.param => {
                 let t = self.edge(i, chosen, default).into_iter().chain(std::iter::once(d)).min_by_key(|d| d.bytes()).unwrap_or(d);
@@ -995,7 +1498,204 @@ impl Split {
             }
             r @ Rung::Float(_) => err_at(s, r, self.rounding),
             r @ Rung::Int { .. } => err_at(s, r, self.rounding).max(self.edge(i, chosen, default).map_or(0.0, |d| err_at(s, d.into(), self.rounding))),
+            r @ Rung::Affine { .. } => self.err_of(i, r),
         }
+    }
+
+    /// A decision's term under a target (D208). A parameter's at rest: a
+    /// nest reads it as it is (D206). A nest's: one rounding of its value,
+    /// in the format it is stored in, or in its result's format where that
+    /// one holds it exactly (a sum's accumulator, a nest's arithmetic), a
+    /// counted sum's count converted once; and a sum's own operations in
+    /// the formats of the target's mode its operands' formats select, under
+    /// the target's order. Infinite where its stored format has no
+    /// arithmetic in the target, or its operands no mode, or the range rules
+    /// refuse its sum's formats.
+    fn target_err(&self, i: usize, chosen: &[Rung], default: Dtype) -> f64 {
+        let s = &self.decisions[i];
+        if s.param {
+            return self.err_of(i, chosen[i]);
+        }
+        let ctx = self.ctx.as_ref().expect("a target");
+        let Some(stored) = self.stored(i, chosen[i]) else { return f64::INFINITY };
+        let Some(alpha) = ctx.t.arith_for(stored) else { return f64::INFINITY };
+        let (result, ops) = match &ctx.sums[i] {
+            None => (Some(alpha), 0.0),
+            Some(sum) => match self.mode(i, chosen, default) {
+                None => return f64::INFINITY,
+                Some((mu, kappa)) => (if counts(mu) { None } else { Some(kappa) }, self.sum_err(sum, mu, kappa, chosen, default, ctx)),
+            },
+        };
+        let at = match result {
+            Some(f) if stored.contains(f) => f,
+            _ => stored,
+        };
+        s.sens * (unit_err(s, at, self.rounding) + ops)
+    }
+
+    /// The formats a sum's products and additions are rounded to under the
+    /// target: its mode's, selected by its operands' formats, or its
+    /// arithmetic format for a plain sum or a target with no mode. `None`
+    /// for no sum, or operands no mode takes.
+    fn mode(&self, i: usize, chosen: &[Rung], default: Dtype) -> Option<(Format, Format)> {
+        let ctx = self.ctx.as_ref()?;
+        let sum = ctx.sums[i].as_ref()?;
+        let alpha = ctx.t.arith_for(self.stored(i, chosen[i])?)?;
+        if sum.operands.len() < 2 || ctx.t.contractions.is_empty() {
+            return Some((alpha, alpha));
+        }
+        let kind = |o: &Operand| match o {
+            Operand::Decision(d) => Some(match chosen[*d] {
+                Rung::Float(x) => Kind::Float(x.format()),
+                Rung::Int { .. } | Rung::Affine { .. } => Kind::Int,
+            }),
+            Operand::Default => Some(Kind::Float(default.format())),
+            Operand::Member => match alpha {
+                Format::Float(f) => Some(Kind::Float(f)),
+                _ => None,
+            },
+        };
+        // An operand's values all of one kind, which the mode takes.
+        let kinds: Option<Vec<Kind>> = sum
+            .operands
+            .iter()
+            .map(|os| {
+                let ks: Option<Vec<Kind>> = os.iter().map(kind).collect();
+                let ks = ks?;
+                ks.windows(2).all(|w| w[0] == w[1]).then(|| ks[0])
+            })
+            .collect();
+        ctx.t.mode_for(&kinds?).map(|m| (m.product, m.accum))
+    }
+
+    /// The name of the mode decision `i` sums in, for the report.
+    fn mode_name(&self, i: usize, chosen: &[Rung], default: Dtype) -> Option<String> {
+        let ctx = self.ctx.as_ref()?;
+        let sum = ctx.sums[i].as_ref()?;
+        if sum.operands.len() < 2 || ctx.t.contractions.is_empty() {
+            return None;
+        }
+        let (mu, kappa) = self.mode(i, chosen, default)?;
+        ctx.t.contractions.iter().find(|m| m.product == mu && m.accum == kappa).map(|m| m.label())
+    }
+
+    /// A sum's own operations' term per unit of sensitivity, in its formats
+    /// ([`formats::sum_rounding`]): its products exact where its operands'
+    /// formats multiply exactly in the product format, its count exact
+    /// while its operands' codes keep it inside its accumulator.
+    fn sum_err(&self, sum: &SumAt, mu: Format, kappa: Format, chosen: &[Rung], default: Dtype, ctx: &Ctx) -> f64 {
+        let float = |o: &Operand| match o {
+            Operand::Decision(d) => chosen[*d].float().map(|x| x.format()),
+            Operand::Default => Some(default.format()),
+            Operand::Member => None,
+        };
+        // An operand's float, when all its values are of one.
+        let common = |os: &Vec<Operand>| -> Option<presk_format::Float> {
+            let fs: Option<Vec<presk_format::Float>> = os.iter().map(float).collect();
+            let fs = fs?;
+            fs.windows(2).all(|w| w[0] == w[1]).then(|| fs[0])
+        };
+        let exact = match (mu, sum.operands.as_slice()) {
+            (Format::Float(f), [a, b]) => common(a).zip(common(b)).is_some_and(|(a, b)| formats::exact_product(a, b, f)),
+            _ => sum.products == 0.0,
+        };
+        let code = |o: &Operand| match o {
+            Operand::Decision(d) => match chosen[*d] {
+                r @ Rung::Affine { .. } => match self.stored(*d, r) {
+                    Some(Format::Affine(a)) => Some(formats::largest_code(a)),
+                    _ => None,
+                },
+                Rung::Int { bits, .. } => Some(((1i64 << (bits - 1)) - 1) as f64),
+                Rung::Float(_) => None,
+            },
+            _ => None,
+        };
+        // An operand's largest code over all its values.
+        let codes = |os: &Vec<Operand>| os.iter().map(code).try_fold(0.0f64, |m, c| c.map(|c| m.max(c)));
+        let count = if counts(mu) { sum.operands.iter().map(codes).try_fold(sum.k, |n, c| c.map(|c| n * c)) } else { None };
+        let s = formats::Sum { k: sum.k, abs: sum.abs, largest: sum.largest, additions: crate::propagate::order_constant(ctx.t.order, sum.k), products: (!exact).then_some(sum.products), count };
+        formats::sum_rounding(mu, kappa, &s, ctx.margin)
+    }
+
+    /// Under a target, a start the proposal can narrow from: each decision
+    /// at its widest rung, then each sum whose operands no mode takes given
+    /// its operands the widest rungs of the mode that takes them of the
+    /// smallest estimate, in three passes at most (D208).
+    fn start(&self, menu: &Menu, default: Dtype, offered: &[bool]) -> Vec<Rung> {
+        let n = self.decisions.len();
+        let mut chosen: Vec<Rung> = (0..n).map(|i| if offered[i] || self.ctx.is_some() { self.widest(i, menu, default) } else { default.into() }).collect();
+        let Some(ctx) = &self.ctx else { return chosen };
+        for _ in 0..3 {
+            let mut changed = false;
+            for j in 0..n {
+                let Some(sum) = &ctx.sums[j] else { continue };
+                if self.mode(j, &chosen, default).is_some() {
+                    continue;
+                }
+                let mut best: Option<(f64, Vec<Rung>)> = None;
+                for m in &ctx.t.contractions {
+                    let moved = self.put(sum, m, &chosen, menu);
+                    if self.mode(j, &moved, default).is_some() {
+                        let e = self.estimate(&moved, default);
+                        if best.as_ref().is_none_or(|(b, _)| e < *b) {
+                            best = Some((e, moved));
+                        }
+                    }
+                }
+                if let Some((_, moved)) = best {
+                    chosen = moved;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        chosen
+    }
+
+    /// `chosen` with sum `j`'s operands at the widest rungs mode `m` takes.
+    fn put(&self, sum: &SumAt, m: &crate::target::Mode, chosen: &[Rung], menu: &Menu) -> Vec<Rung> {
+        let mut moved = chosen.to_vec();
+        for (os, spec) in sum.operands.iter().zip(&m.operands) {
+            let fits = |r: &Rung| match (spec.as_str(), r) {
+                ("*", _) => true,
+                ("int", Rung::Int { .. } | Rung::Affine { .. }) => true,
+                ("int", Rung::Float(_)) => false,
+                (name, Rung::Float(x)) => presk_format::Float::parse(name).is_ok_and(|g| g == x.format()),
+                _ => false,
+            };
+            for o in os {
+                let Operand::Decision(d) = *o else { continue };
+                let s = &self.decisions[d];
+                if let Some(r) = self.rungs(d, menu).into_iter().filter(fits).min_by(|a, b| bytes_at(s, *b).total_cmp(&bytes_at(s, *a)).then(self.err_of(d, *a).total_cmp(&self.err_of(d, *b)))) {
+                    moved[d] = r;
+                }
+            }
+        }
+        moved
+    }
+
+    /// Under a target, every contraction put in another of the target's
+    /// modes than its own, its operands at that mode's widest rungs, where
+    /// the estimate stays finite: `(estimate, sum, mode, choices)`, the
+    /// smallest estimate first (D208). The measurement's lateral moves.
+    fn switches(&self, menu: &Menu, default: Dtype, chosen: &[Rung]) -> Vec<(f64, usize, String, Vec<Rung>)> {
+        let Some(ctx) = &self.ctx else { return Vec::new() };
+        let mut out = Vec::new();
+        for (j, sum) in ctx.sums.iter().enumerate() {
+            let Some(sum) = sum.as_ref().filter(|s| s.operands.len() >= 2) else { continue };
+            let Some(now) = self.mode(j, chosen, default) else { continue };
+            for m in ctx.t.contractions.iter().filter(|m| (m.product, m.accum) != now) {
+                let moved = self.put(sum, m, chosen, menu);
+                let e = self.estimate(&moved, default);
+                if self.mode(j, &moved, default) == Some((m.product, m.accum)) && e.is_finite() {
+                    out.push((e, j, m.label(), moved));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out
     }
 
     /// A follower's type: the narrowest of its leaders', the default for a
@@ -1006,8 +1706,16 @@ impl Split {
         ids.iter().map(|i| chosen[*i].read_as()).chain(outside.then_some(default)).min_by_key(|d| d.bytes()).unwrap_or(default)
     }
 
+    /// A follower's term: at its type, or under a target at the
+    /// arithmetic format of its leaders it is computed in, the largest
+    /// (D208).
     fn follower_err(&self, f: usize, chosen: &[Rung], default: Dtype) -> f64 {
-        err_at(&self.followers[f].0, self.follower_type(f, chosen, default).into(), self.rounding)
+        let (s, ids, outside) = &self.followers[f];
+        if let Some(ctx) = &self.ctx {
+            let alphas = ids.iter().map(|i| self.stored(*i, chosen[*i]).and_then(|x| ctx.t.arith_for(x))).chain(outside.then(|| ctx.t.arith_for(Format::Float(default.format()))));
+            return alphas.map(|a| a.map_or(f64::INFINITY, |a| s.sens * unit_err(s, a, self.rounding))).fold(0.0, f64::max);
+        }
+        err_at(s, self.follower_type(f, chosen, default).into(), self.rounding)
     }
 
     /// The estimate: every decision's term and every follower's.
@@ -1024,17 +1732,23 @@ impl Split {
     }
 
     /// What decision `i`, the followers it leads and the parameters it
-    /// reads add to the estimate.
+    /// reads add to the estimate; under a target, the sums whose operand it
+    /// is too, whose mode its format selects.
     fn share(&self, i: usize, chosen: &[Rung], default: Dtype) -> f64 {
-        self.decision_err(i, chosen, default) + self.led[i].iter().map(|f| self.follower_err(*f, chosen, default)).sum::<f64>() + self.reads[i].iter().map(|p| self.decision_err(*p, chosen, default)).sum::<f64>()
+        let readers = self.ctx.as_ref().map_or(0.0, |c| c.readers[i].iter().map(|j| self.decision_err(*j, chosen, default)).sum::<f64>());
+        self.decision_err(i, chosen, default) + self.led[i].iter().map(|f| self.follower_err(*f, chosen, default)).sum::<f64>() + self.reads[i].iter().map(|p| self.decision_err(*p, chosen, default)).sum::<f64>() + readers
     }
 
     /// A realization of `default` with these choices: the nests' in
     /// `storage`, the parameters' in `params` (a parameter in the default
     /// type is named nowhere), a parameter's integers in `quant` (D177).
+    /// Under a target (D208), an activation's affine format in `scaled`,
+    /// every value the entry stores computing in the target's arithmetic,
+    /// each sum's products and additions in its mode's formats, and the
+    /// target's order.
     fn realization(&self, chosen: &[Rung], default: Dtype, envelope: &str) -> Realization {
         let mut r = Realization::uniform(default);
-        for (s, rung) in self.decisions.iter().zip(chosen) {
+        for (i, (s, rung)) in self.decisions.iter().zip(chosen).enumerate() {
             match *rung {
                 Rung::Float(d) if d == default => {}
                 Rung::Float(d) if s.param => {
@@ -1047,6 +1761,28 @@ impl Split {
                     if let Some(q) = s.int(bits, scheme) {
                         r.quant.insert(s.name.clone(), q.quant());
                     }
+                }
+                Rung::Affine { .. } => {
+                    if let Some(Format::Affine(a)) = self.stored(i, *rung) {
+                        r.scaled.insert(s.name.clone(), Scale::Static(a));
+                    }
+                }
+            }
+        }
+        if let Some(ctx) = &self.ctx {
+            r.order = ctx.t.order;
+            if let Some(a) = ctx.t.arith_for(Format::Float(default.format())) {
+                for site in &ctx.stored {
+                    r.arith.insert(site.clone(), a);
+                }
+            }
+            for (i, s) in self.decisions.iter().enumerate().filter(|(_, s)| !s.param) {
+                if let Some(a) = self.stored(i, chosen[i]).and_then(|f| ctx.t.arith_for(f)) {
+                    r.arith.insert(s.name.clone(), a);
+                }
+                if let Some((mu, kappa)) = self.mode(i, chosen, default) {
+                    r.product.insert(s.name.clone(), mu);
+                    r.accum.insert(s.name.clone(), kappa);
                 }
             }
         }
@@ -1099,6 +1835,8 @@ pub struct SiteCost {
     /// The same in the widest type of the menu.
     pub widest_err: f64,
     pub widest_cost: f64,
+    /// Under a target, the contraction mode its sum is computed in (D208).
+    pub mode: Option<String>,
 }
 
 /// Every site the solver offers, decisions first, then the followers and
@@ -1114,13 +1852,16 @@ pub fn breakdown(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realizat
 #[allow(clippy::too_many_arguments)]
 pub fn breakdown_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Realization, menu: &Menu, default: Dtype, machine: &dyn Machine, rounding: RoundingTerm) -> Vec<SiteCost> {
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
-    let sp = split(env, sens, roles, rounding);
+    let sp = split(env, sens, roles, rounding, menu, Options::default().range_margin);
     let chosen: Vec<Rung> = sp
         .decisions
         .iter()
-        .map(|s| match r.quant.get(&s.name).filter(|_| s.param).and_then(|q| s.int(q.bits, q.scheme)) {
-            Some(q) => q.rung(),
-            None => Rung::Float(if s.param { r.params.get(&s.name) } else { r.storage.get(&s.name) }.copied().unwrap_or(r.default)),
+        .enumerate()
+        .map(|(i, s)| match (r.quant.get(&s.name).filter(|_| s.param).and_then(|q| s.int(q.bits, q.scheme)), r.scaled.get(&s.name)) {
+            (Some(q), _) => q.rung(),
+            // An affine format the target's rungs computed at the site.
+            (_, Some(Scale::Static(a))) if !s.param => sp.ctx.as_ref().and_then(|c| c.affines[i].iter().find(|(_, b)| b == a).map(|(x, _)| *x)).unwrap_or(Rung::Float(r.default)),
+            _ => Rung::Float(if s.param { r.params.get(&s.name) } else { r.storage.get(&s.name) }.copied().unwrap_or(r.default)),
         })
         .collect();
     let mut out: Vec<SiteCost> = sp
@@ -1131,18 +1872,18 @@ pub fn breakdown_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Rea
         .map(|(i, (s, d))| {
             let int = match d {
                 Rung::Int { bits, scheme } => s.int(*bits, *scheme).cloned(),
-                Rung::Float(_) => None,
+                Rung::Float(_) | Rung::Affine { .. } => None,
             };
-            SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, rung: *d, int, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), bytes: bytes_at(s, *d), widest_err: err_at(s, widest.into(), rounding), widest_cost: cost_at(s, widest.into(), machine) }
+            SiteCost { name: s.name.clone(), param: s.param, role: Role::Decision, rung: *d, int, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.decision_err(i, &chosen, r.default), cost: cost_at(s, *d, machine), bytes: bytes_at(s, *d), widest_err: err_at(s, widest.into(), rounding), widest_cost: cost_at(s, widest.into(), machine), mode: sp.mode_name(i, &chosen, r.default) }
         })
         .collect();
     for (f, (s, _, _)) in sp.followers.iter().enumerate() {
         let d = sp.follower_type(f, &chosen, r.default);
-        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), rung: d.into(), int: None, elems: s.elems, mag: s.mag, sens: s.sens, err: err_at(s, d.into(), rounding), cost: 0.0, bytes: 0.0, widest_err: err_at(s, widest.into(), rounding), widest_cost: 0.0 });
+        out.push(SiteCost { name: s.name.clone(), param: false, role: roles.role(&s.name), rung: d.into(), int: None, elems: s.elems, mag: s.mag, sens: s.sens, err: sp.follower_err(f, &chosen, r.default), cost: 0.0, bytes: 0.0, widest_err: err_at(s, widest.into(), rounding), widest_cost: 0.0, mode: None });
     }
     for s in sites(env, sens) {
         if roles.role(&s.name) == Role::Carried {
-            out.push(SiteCost { name: s.name.clone(), param: false, role: Role::Carried, rung: r.default.into(), int: None, elems: s.elems, mag: s.mag, sens: s.sens, err: 0.0, cost: 0.0, bytes: 0.0, widest_err: 0.0, widest_cost: 0.0 });
+            out.push(SiteCost { name: s.name.clone(), param: false, role: Role::Carried, rung: r.default.into(), int: None, elems: s.elems, mag: s.mag, sens: s.sens, err: 0.0, cost: 0.0, bytes: 0.0, widest_err: 0.0, widest_cost: 0.0, mode: None });
         }
     }
     out
@@ -1154,12 +1895,14 @@ pub fn breakdown_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, r: &Rea
 /// integers, `s_v · max |ŵ − w|` under either term, the move computed
 /// exactly (D177).
 fn err_at(s: &Site, d: Rung, rounding: RoundingTerm) -> f64 {
-    match (d, rounding, s.round) {
+    match d {
         // A site is offered only the integer rungs it is priced in; one it
         // is not is charged its whole magnitude.
-        (Rung::Int { bits, scheme }, _, _) => s.sens * s.int(bits, scheme).map_or(s.mag, |q| q.round),
-        (Rung::Float(d), RoundingTerm::Measured, Some(r)) => s.sens * r.at(d),
-        (Rung::Float(d), _, _) => s.sens * d.unit_roundoff() * s.mag,
+        Rung::Int { bits, scheme } => s.sens * s.int(bits, scheme).map_or(s.mag, |q| q.round),
+        // A format no backend computes in, unmeasured: its bound (D208).
+        Rung::Float(d) => s.sens * unit_err(s, Format::Float(d.format()), rounding),
+        // Its format is the site's, which `Split::err_of` reads.
+        Rung::Affine { .. } => s.sens * s.mag,
     }
 }
 
@@ -1167,6 +1910,7 @@ fn bytes_at(s: &Site, d: Rung) -> f64 {
     match d {
         Rung::Float(d) => s.elems * d.bytes() as f64,
         Rung::Int { bits, scheme } => s.int(bits, scheme).map_or(s.elems * bits as f64 / 8.0, |q| q.bytes),
+        Rung::Affine { int, .. } => s.elems * f64::from(int.bits.div_ceil(8)),
     }
 }
 
@@ -1230,30 +1974,34 @@ pub fn solve_with_heldout(
     menu: &Menu,
     default: Dtype,
     machine: &dyn Machine,
-    mut verify: Option<&mut dyn FnMut(&Realization) -> f64>,
+    verify: Option<&mut dyn FnMut(&Realization) -> f64>,
     mut heldout: Option<&mut dyn FnMut(&Realization) -> f64>,
     options: Options,
 ) -> Solution {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
     let budget_abs = budget.absolute(out_mag);
-    let mut sp = split(env, sens, roles, options.rounding);
+    let mut sp = split(env, sens, roles, options.rounding, menu, options.range_margin);
     let offers = sp.offer(menu, default, options.min_gain);
     let sp = sp;
     let sites = &sp.decisions;
     let offered = &sp.offered;
+    let on_target = sp.ctx.is_some();
 
     let widest = menu.0.iter().copied().max_by_key(|d| d.bytes()).unwrap_or(default);
     let top = Rung::Float(widest);
     // Each decision's rungs: the float types, and a parameter's integers
-    // (D177).
+    // (D177); under a target, its own and its affine formats (D208).
     let rungs: Vec<Vec<Rung>> = (0..sites.len()).map(|i| sp.rungs(i, menu)).collect();
-    let baseline_bytes: f64 = sites.iter().map(|s| cost_at(s, top, machine)).sum();
+    let baseline_bytes: f64 = sites.iter().map(|s| cost_at(s, if on_target { default.into() } else { top }, machine)).sum();
     let relaxation_bytes: f64 = sites.iter().zip(offered).enumerate().map(|(i, (s, o))| cost_at(s, if *o { sp.narrowest(i, menu) } else { default.into() }, machine)).sum();
 
     // Propose: every site offered at the widest type, the others at the
     // default (D169), then narrow in order of bytes saved per unit of error
-    // added (its followers' with its own), while the estimate fits.
-    let mut chosen: Vec<Rung> = offered.iter().map(|o| Rung::Float(if *o { widest } else { default })).collect();
+    // added (its followers' with its own), while the estimate fits. Under a
+    // target, each decision at its widest rung, its sums put in a mode
+    // (D208).
+    let start: Vec<Rung> = if on_target { sp.start(menu, default, offered) } else { offered.iter().map(|o| Rung::Float(if *o { widest } else { default })).collect() };
+    let mut chosen = start.clone();
     // The proposal's target (D161): the budget under the sum; under the
     // root-sum-square the budget over the margin, compared on the squares,
     // which add as the sum's terms do.
@@ -1263,10 +2011,10 @@ pub fn solve_with_heldout(
     let mut moves: Vec<(f64, usize, Rung)> = Vec::new();
     for (i, s) in sites.iter().enumerate().filter(|(i, _)| offered[*i]) {
         for d in &rungs[i] {
-            if bytes_at(s, *d) >= bytes_at(s, top) {
+            if bytes_at(s, *d) >= bytes_at(s, start[i]) {
                 continue;
             }
-            let saved = cost_at(s, top, machine) - cost_at(s, *d, machine);
+            let saved = cost_at(s, start[i], machine) - cost_at(s, *d, machine);
             let mut moved = chosen.clone();
             moved[i] = *d;
             let added = if rss { sp.estimate_sq(&moved, default) - sp.estimate_sq(&chosen, default) } else { sp.share(i, &moved, default) - sp.share(i, &chosen, default) };
@@ -1304,16 +2052,53 @@ pub fn solve_with_heldout(
     let proposed_bytes: f64 = sp.cost(&chosen, machine);
 
     let build = |chosen: &[Rung]| -> Realization { sp.realization(chosen, default, &env.program) };
+    // Under a target, a value whose term stays infinite has no realization
+    // in the target's types: nothing is measured (D208).
+    let infeasible: Vec<String> = if on_target { (0..sites.len()).filter(|i| !sp.decision_err(*i, &chosen, default).is_finite()).map(|i| sites[i].name.clone()).collect() } else { Vec::new() };
+    let mut verify = if infeasible.is_empty() { verify } else { None };
 
     // Verify, and tighten while the *measured* gap exceeds the budget.
     let mut rounds = 0usize;
     let mut measured = None;
     let mut measurements = 0usize;
+    // The smallest gap measured, and its choices (D208).
+    let mut best: Option<(f64, Vec<Rung>)> = None;
+    let mut note = |gap: f64, chosen: &[Rung]| {
+        if best.as_ref().is_none_or(|(g, _)| gap < *g) {
+            best = Some((gap, chosen.to_vec()));
+        }
+    };
     if let Some(v) = verify.as_mut() {
+        // Under a target, a decision no step widens inside the target's
+        // modes is left where it is, and the contractions' other modes are
+        // tried, each switch kept when it measures smaller (D208).
+        let mut stuck = vec![false; sites.len()];
+        let mut tried: std::collections::BTreeSet<(usize, String)> = Default::default();
+        let mut pending: Option<(Vec<Rung>, f64, usize, String)> = None;
+        let mut carried: Option<f64> = None;
         loop {
-            let r = build(&chosen);
-            let gap = v(&r);
-            measurements += 1;
+            let gap = match carried.take() {
+                Some(g) => g,
+                None => {
+                    let g = v(&build(&chosen));
+                    measurements += 1;
+                    note(g, &chosen);
+                    g
+                }
+            };
+            let gap = match pending.take() {
+                Some((prev, prev_gap, j, mode)) => {
+                    let kept = gap < prev_gap;
+                    log.push(Move::Switched { round: rounds, site: sites[j].name.clone(), mode, gap, kept });
+                    if kept {
+                        gap
+                    } else {
+                        chosen = prev;
+                        prev_gap
+                    }
+                }
+                None => gap,
+            };
             measured = Some(gap);
             if gap <= budget_abs || rounds >= sites.len() * menu.len() {
                 break;
@@ -1325,18 +2110,36 @@ pub fn solve_with_heldout(
             // estimate (every sensitivity zero, as happens on an untrained
             // model) it walks the whole assignment back to `f64` and reports
             // no saving at all.
-            let worst = (0..sites.len()).filter(|i| offered[*i] && bytes_at(&sites[*i], chosen[*i]) < bytes_at(&sites[*i], top)).max_by(|a, b| {
+            let narrowed = |i: usize| if on_target { offered[i] && !stuck[i] && sp.step(i, menu, chosen[i], true, &chosen, default).is_some() } else { offered[i] && bytes_at(&sites[i], chosen[i]) < bytes_at(&sites[i], top) };
+            let worst = (0..sites.len()).filter(|i| narrowed(*i)).max_by(|a, b| {
                 let (ea, eb) = (sp.share(*a, &chosen, default), sp.share(*b, &chosen, default));
                 ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
             });
             match worst {
                 Some(i) => {
                     let cur = chosen[i];
-                    let next = sp.step(i, menu, cur, true).unwrap_or(top);
+                    let next = match sp.step(i, menu, cur, true, &chosen, default) {
+                        Some(r) => r,
+                        None if on_target => {
+                            stuck[i] = true;
+                            carried = Some(gap);
+                            continue;
+                        }
+                        None => top,
+                    };
                     chosen[i] = next;
                     rounds += 1;
                     log.push(Move::Widened { round: rounds, site: sites[i].name.clone(), from: cur, to: next, gap });
                 }
+                None if on_target => match sp.switches(menu, default, &chosen).into_iter().find(|(_, j, m, _)| !tried.contains(&(*j, m.clone()))) {
+                    Some((_, j, mode, moved)) => {
+                        tried.insert((j, mode.clone()));
+                        pending = Some((chosen.clone(), gap, j, mode));
+                        chosen = moved;
+                        rounds += 1;
+                    }
+                    None => break,
+                },
                 None => break,
             }
         }
@@ -1358,7 +2161,7 @@ pub fn solve_with_heldout(
                 .filter(|i| offered[*i])
                 .filter_map(|i| {
                     let cur = chosen[i];
-                    let next = sp.step(i, menu, cur, false)?;
+                    let next = sp.step(i, menu, cur, false, &chosen, default)?;
                     let saved = cost_at(&sites[i], cur, machine) - cost_at(&sites[i], next, machine);
                     (saved > 0.0).then_some((saved, i, next))
                 })
@@ -1374,6 +2177,7 @@ pub fn solve_with_heldout(
                 chosen[i] = next;
                 let gap = v(&build(&chosen));
                 measurements += 1;
+                note(gap, &chosen);
                 let kept = gap <= limit;
                 log.push(Move::Narrowed { pass, site: sites[i].name.clone(), from: cur, to: next, gap, kept });
                 if kept {
@@ -1415,6 +2219,17 @@ pub fn solve_with_heldout(
         }
     }
 
+    // Under a target, a realization measured outside its budget is not
+    // returned when one inside was, nor when none was: then the one of the
+    // smallest gap, which the report says is outside (D208).
+    let smallest = best.as_ref().map(|(g, _)| *g);
+    if on_target
+        && measured.is_some_and(|g| g > budget_abs)
+        && let Some((g, b)) = best.take()
+    {
+        chosen = b;
+        measured = Some(g);
+    }
     let bytes: f64 = sp.cost(&chosen, machine);
     let traffic: f64 = sp.traffic(&chosen);
     let estimated_error: f64 = if rss { sp.estimate_sq(&chosen, default).sqrt() } else { sp.estimate(&chosen, default) };
@@ -1433,12 +2248,60 @@ pub fn solve_with_heldout(
         undone,
         heldout: heldout_gap,
         measurements,
+        smallest,
+        infeasible,
         options,
         considered: sites.len(),
         offers,
         traffic,
         moves: log,
     }
+}
+
+/// What the range rules offer a stored value (plan 0.18.0 step 5, D208):
+/// the menu's rungs it is offered, and those refused with the rule and why;
+/// what `presk solve --offers` writes, with what the rules read.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Offered {
+    pub site: String,
+    pub mag: f64,
+    /// Its smallest non-zero magnitude, 0 where the envelope saw none.
+    pub floor: f64,
+    pub divisor: bool,
+    /// The smallest values of the divisors its nest computes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub divides: Vec<f64>,
+    pub constant: bool,
+    /// The values of the constants its nest computes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub consts: Vec<f64>,
+    pub offered: Vec<String>,
+    /// `(rung, rule, why)`.
+    pub refused: Vec<(String, String, String)>,
+}
+
+/// Every value the envelope saw stored, with a magnitude and elements, and
+/// what the range rules offer it from the menu, without a sensitivity: the
+/// rules read the envelope and the program alone.
+pub fn offered(env: &Envelope, roles: &Roles, menu: &Menu, options: Options) -> Vec<Offered> {
+    let sens = Sensitivity { sites: env.sites.keys().map(|k| (k.clone(), 1.0)).collect() };
+    let roles = Roles(roles.0.clone(), Vec::new(), roles.2.clone());
+    let sp = split(env, &sens, &roles, options.rounding, menu, options.range_margin);
+    sp.decisions
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Offered {
+            site: s.name.clone(),
+            mag: s.mag,
+            floor: s.floor,
+            divisor: sp.divisor[i],
+            divides: sp.divides[i].clone(),
+            consts: sp.ctx.as_ref().map(|c| c.consts[i].clone()).unwrap_or_else(|| roles.2.get(&s.name).map(|f| f.consts.iter().filter_map(|c| env.get(c)).collect()).unwrap_or_default()),
+            constant: sp.constant[i],
+            offered: sp.rungs(i, menu).iter().map(|r| r.name()).collect(),
+            refused: sp.refusals[i].iter().map(|(r, w)| (r.name(), w.name().to_string(), w.to_string())).collect(),
+        })
+        .collect()
 }
 
 /// The best assignment by exhaustive search, for programs small enough that
@@ -1458,7 +2321,7 @@ pub fn exhaustive(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site
 pub fn exhaustive_with(env: &Envelope, sens: &Sensitivity, roles: &Roles, output_site: &str, budget: Budget, menu: &Menu, default: Dtype, machine: &dyn Machine, max_states: u64, options: Options) -> Option<(Realization, f64)> {
     let out_mag = env.get(output_site).unwrap_or(1.0).max(f64::MIN_POSITIVE);
     let budget_abs = budget.absolute(out_mag);
-    let mut sp = split(env, sens, roles, options.rounding);
+    let mut sp = split(env, sens, roles, options.rounding, menu, options.range_margin);
     sp.offer(menu, default, options.min_gain);
     let sites = &sp.decisions;
     let free: Vec<usize> = (0..sites.len()).filter(|i| sp.offered[*i]).collect();

@@ -53,6 +53,13 @@ pub struct Envelope {
     /// that step, which is why it defaults to empty rather than failing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub minima: BTreeMap<String, f64>,
+    /// The smallest and the largest value at each site, signed, when the
+    /// envelope was measured with `presk calibrate --range` (plan 0.18.0
+    /// step 4, D207): what an asymmetric scale and its zero point are
+    /// computed from (`presk scales`, `minmax`). Absent otherwise, so that
+    /// an envelope measured without it is the text it always was.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub range: BTreeMap<String, [f64; 2]>,
     /// The largest rounding error of each site's values in each storage type
     /// (D155): `max |fl_d(x) − x|` over the values seen, rounded as the
     /// runtime rounds them. It is what the estimate's term `u(d) · max|x|`
@@ -125,27 +132,32 @@ pub struct StepSpec {
     pub remat: Option<String>,
 }
 
-/// A site's largest rounding error in each type of the menu: `max |fl_d(x)
-/// − x|`, a maximum over its elements and the samples (D155).
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Rounding {
-    pub f64: f64,
-    pub f32: f64,
-    pub bf16: f64,
-}
+/// A site's largest rounding error in each format it was measured in:
+/// `max |fl_d(x) − x|`, a maximum over its elements and the samples (D155).
+///
+/// A map by format since D204, written in the formats' order, the most
+/// precise first: a site measured in `f64`, `f32` and `bf16` is the same
+/// text as the record of three fields it was until then. A format that was
+/// not measured is absent, and the solver prices it by the unit term.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Rounding(pub BTreeMap<presk_format::Float, f64>);
 
 impl Rounding {
-    pub fn at(&self, d: presk_rt::Dtype) -> f64 {
-        match d {
-            presk_rt::Dtype::F64 => self.f64,
-            presk_rt::Dtype::F32 => self.f32,
-            presk_rt::Dtype::Bf16 => self.bf16,
-        }
+    /// The error in a type, if it was measured.
+    pub fn at(&self, d: presk_rt::Dtype) -> Option<f64> {
+        self.0.get(&d.format()).copied()
     }
 
-    /// From the interpreter's record, `[f64, f32, bf16]`.
-    pub fn of(r: [f64; 3]) -> Rounding {
-        Rounding { f64: r[0], f32: r[1], bf16: r[2] }
+    /// From the interpreter's record.
+    pub fn of(r: BTreeMap<presk_format::Float, f64>) -> Rounding {
+        Rounding(r)
+    }
+
+    /// The errors in `f64`, `f32` and `bf16`, in that order: the record of
+    /// three fields before D204.
+    pub fn three(r: [f64; 3]) -> Rounding {
+        Rounding(BTreeMap::from([(presk_format::F64, r[0]), (presk_format::F32, r[1]), (presk_format::BF16, r[2])]))
     }
 }
 
@@ -197,7 +209,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 impl Envelope {
     pub fn new(program: &str, entry: &str, bits: u32, measured: &str) -> Envelope {
-        Envelope { program: program.into(), entry: entry.into(), samples: 0, measured: measured.into(), bits, dims: Vec::new(), consts: Vec::new(), sites: BTreeMap::new(), minima: BTreeMap::new(), rounding: BTreeMap::new(), elems: BTreeMap::new(), per_sample: BTreeMap::new(), ops: BTreeMap::new(), terms: BTreeMap::new(), weights: None, data: None, step: None }
+        Envelope { program: program.into(), entry: entry.into(), samples: 0, measured: measured.into(), bits, dims: Vec::new(), consts: Vec::new(), sites: BTreeMap::new(), minima: BTreeMap::new(), range: BTreeMap::new(), rounding: BTreeMap::new(), elems: BTreeMap::new(), per_sample: BTreeMap::new(), ops: BTreeMap::new(), terms: BTreeMap::new(), weights: None, data: None, step: None }
     }
 
     /// Fold one run's magnitudes in: the envelope of a set of samples is the
@@ -210,6 +222,15 @@ impl Envelope {
             }
         }
         self.samples += 1;
+    }
+
+    /// Fold one run's ranges in: the smallest of the smallest values, the
+    /// largest of the largest.
+    pub fn observe_range(&mut self, r: &BTreeMap<String, (f64, f64)>) {
+        for (site, (lo, hi)) in r {
+            let e = self.range.entry(site.clone()).or_insert([*lo, *hi]);
+            *e = [e[0].min(*lo), e[1].max(*hi)];
+        }
     }
 
     /// Fold one run's minima in: the pointwise *minimum*, since a floor must
@@ -228,19 +249,20 @@ impl Envelope {
     /// has an infinite error there, kept as `f64::MAX`, since the file is
     /// JSON and JSON has no infinity: the type cannot hold the site, and no
     /// estimate under it fits a budget.
-    pub fn observe_rounding(&mut self, m: &BTreeMap<String, [f64; 3]>) {
+    pub fn observe_rounding(&mut self, m: &BTreeMap<String, BTreeMap<presk_format::Float, f64>>) {
         let fit = |x: f64| x.min(f64::MAX);
         for (site, r) in m {
             let e = self.rounding.entry(site.clone()).or_default();
-            e.f64 = e.f64.max(fit(r[0]));
-            e.f32 = e.f32.max(fit(r[1]));
-            e.bf16 = e.bf16.max(fit(r[2]));
+            for (f, x) in r {
+                let v = e.0.entry(*f).or_insert(0.0);
+                *v = v.max(fit(*x));
+            }
         }
     }
 
     /// The largest rounding error at a site in a type, if it was recorded.
     pub fn rounding(&self, site: &str, d: presk_rt::Dtype) -> Option<f64> {
-        self.rounding.get(site).map(|r| r.at(d))
+        self.rounding.get(site).and_then(|r| r.at(d))
     }
 
     /// Fold one run's element counts in.
@@ -412,18 +434,19 @@ mod tests {
 
     #[test]
     fn the_rounding_is_the_pointwise_maximum_and_optional_in_the_file() {
+        let three = |r: [f64; 3]| BTreeMap::from([(presk_format::F64, r[0]), (presk_format::F32, r[1]), (presk_format::BF16, r[2])]);
         let mut e = Envelope::new("p.psk", "loss", 128, "2026-10-19");
-        e.observe_rounding(&BTreeMap::from([("f/%1".into(), [0.0, 1e-8, 1e-3])]));
-        e.observe_rounding(&BTreeMap::from([("f/%1".into(), [1e-17, 0.0, 2e-3])]));
-        assert_eq!(e.rounding("f/%1", presk_rt::Dtype::Bf16), Some(2e-3));
+        e.observe_rounding(&BTreeMap::from([("f/%1".into(), three([0.0, 1e-8, 1e-3]))]));
+        e.observe_rounding(&BTreeMap::from([("f/%1".into(), three([1e-17, 0.0, 2e-3]))]));
+        assert_eq!(e.rounding("f/%1", presk_rt::Dtype::BF16), Some(2e-3));
         assert_eq!(e.rounding("f/%1", presk_rt::Dtype::F32), Some(1e-8));
         assert_eq!(e.rounding("f/%1", presk_rt::Dtype::F64), Some(1e-17));
-        assert_eq!(e.rounding("f/%2", presk_rt::Dtype::Bf16), None);
+        assert_eq!(e.rounding("f/%2", presk_rt::Dtype::BF16), None);
         let back: Envelope = serde_json::from_str(&e.to_json()).unwrap();
         assert_eq!(back, e);
         // A value that overflows a type is kept as the largest double, so
         // that the file stays JSON (gap.rs's overflowing group).
-        e.observe_rounding(&BTreeMap::from([("f/%3".into(), [0.0, f64::INFINITY, f64::INFINITY])]));
+        e.observe_rounding(&BTreeMap::from([("f/%3".into(), three([0.0, f64::INFINITY, f64::INFINITY]))]));
         assert_eq!(e.rounding("f/%3", presk_rt::Dtype::F32), Some(f64::MAX));
         let back: Envelope = serde_json::from_str(&e.to_json()).unwrap();
         assert_eq!(back, e);
@@ -434,6 +457,14 @@ mod tests {
         assert!(!text.contains("rounding"), "an empty field is not written");
         let back: Envelope = serde_json::from_str(&text).unwrap();
         assert!(back.rounding.is_empty());
+        // The map is written as the record of three fields was, in its
+        // order, and a format measured beside them is read back.
+        let text = e.to_json();
+        assert!(text.contains("\"f/%1\": {\n      \"f64\": 1e-17,\n      \"f32\": 1e-8,\n      \"bf16\": 0.002\n    }"), "{text}");
+        e.observe_rounding(&BTreeMap::from([("f/%1".into(), BTreeMap::from([(presk_format::F16, 4e-4)]))]));
+        let back: Envelope = serde_json::from_str(&e.to_json()).unwrap();
+        assert_eq!(back.rounding["f/%1"].0.get(&presk_format::F16), Some(&4e-4));
+        assert_eq!(back.rounding("f/%1", presk_rt::Dtype::F32), Some(1e-8));
     }
 
     #[test]

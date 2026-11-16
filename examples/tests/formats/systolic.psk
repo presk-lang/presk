@@ -1,0 +1,41 @@
+-- systolic.psk — the tiles of a systolic array and the rescalings beside
+-- it, for checking a machine's arithmetic modes against its simulator, a
+-- batch of tiles at a time (plan 0.18.0 step 6, D209). Each entry reads its
+-- operands from a data file, one tile a sample; a realization states what
+-- each nest stores and computes in, and `presk run --codes` prints the
+-- result's codes, which the simulator's are compared with.
+
+dim B
+dim N
+
+-- One 32 × 32 × 32 tile, A · W. Each operand is a nest of its own, x + 0,
+-- so that a realization can store it in a format of its own, an 8-bit float
+-- or an affine format's integer codes, whose products a nest then counts.
+fn tile(t : (ℝ[batch: B, row: 32, k: 32], ℝ[batch: B, k: 32, col: 32])) -> ℝ[batch: B, row: 32, col: 32] =
+  let (a, w) = t
+  let qa = a + (0 : ℝ)
+  let qw = w + (0 : ℝ)
+  ein[batch, row, col](qa * qw)
+
+-- A tile and an addend, A · W + C: the sum, then one addition. The addend
+-- keeps the entry's format.
+fn tile_add(t : (ℝ[batch: B, row: 32, k: 32], ℝ[batch: B, k: 32, col: 32], ℝ[batch: B, row: 32, col: 32])) -> ℝ[batch: B, row: 32, col: 32] =
+  let (a, w, c) = t
+  let qa = a + (0 : ℝ)
+  let qw = w + (0 : ℝ)
+  ein[batch, row, col](qa * qw) + c
+
+-- Three tiles along k, accumulated: A · W over 96 terms, which a chunked
+-- order of 32 sums as three tiles and then their sums.
+fn tiles3(t : (ℝ[batch: B, row: 32, k: 96], ℝ[batch: B, k: 96, col: 32])) -> ℝ[batch: B, row: 32, col: 32] =
+  let (a, w) = t
+  let qa = a + (0 : ℝ)
+  let qw = w + (0 : ℝ)
+  ein[batch, row, col](qa * qw)
+
+-- A conversion, x · 1: one nest, whose result a realization stores in
+-- another format than its operand's, or rescales into an affine one.
+fn convert(x : ℝ[batch: B, i: N]) -> ℝ[batch: B, i: N] = x * (1 : ℝ)
+
+-- The rescaling of a rectified value, relu(x).
+fn convert_relu(x : ℝ[batch: B, i: N]) -> ℝ[batch: B, i: N] = relu(x)

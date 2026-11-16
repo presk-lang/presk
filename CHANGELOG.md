@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.18.0 — 2026-11-15
+
+Every machine type of an accelerator that computes in its own types
+(`presk-specs/implementation/presk-plan-0.18.0.md`, D203–D209; the user's
+request of 2026-11-11): a format described by its parameters; a
+realization that says what a nest computes in and stores activations as
+integer codes; every format emulated bit for bit by the kernel
+interpreter, which a machine's simulator agrees with on its tiles; the
+solver pricing every format and solving in a machine's description. The
+native, LLVM and C backends compute in `f64`, `f32` and `bf16` alone and
+refuse the other formats (`E7005`); fast code for them is version 0.18.1.
+- D203, plan 0.18.0 opened (version `0.18.0-dev`): every machine type as
+  data, emulated by the kernel interpreter and priced by the solver;
+  questions 81–86. No change to the compiler at this step.
+- D204, formats as data: the crate `presk-format` describes a float, an
+  integer or a scaled format by its parameters, with one generic rounding,
+  conversions as paths and the encodings; `f64`, `f32` and `bf16` are three
+  formats with their bits (checked on every `f32`), `Dtype` a handle on
+  one, and a realization or a menu naming another format is refused
+  (`E7004`); the interpreter's rounding record and the envelope's are maps
+  by format, the envelope's text unchanged; `.psk.d` version 3 stores a
+  leaf in a format by its parameters. Nothing moves (MT0).
+- D205, the emulation: the kernel interpreter runs a kernel in any format
+  (`presk_kernel::exec::run_kernel_in`), a float's operations in `f32` or
+  `f64` rounded once to it, an integer's and a fixed-point number's
+  (`fixed(i64,frac=18)`, new in `presk-format` with `Format`) exactly then
+  wrapped or clamped, every load, store and constant converted; each run
+  counts its saturations, infinities, NaNs and wraps. A buffer of any
+  format is `Buf::Format`, which no other backend reads. The example
+  `convert` prints every code's image. MT1 holds: binary16 is the machine's
+  on every pair of codes, `bf16` 0.17.1's, the saturating E4M3 and the
+  shift the target's simulator's.
+- D206, what a nest computes in: a realization stores a value in any float
+  format (`--realize f16`) and states per site the formats its operations,
+  its sums' products of terms and its sums' additions are rounded to
+  (`arith`, `product`, `accum`, any format, an integer and a fixed-point
+  one included), and the order `chunked(n)`; a kernel carries its formats
+  and marks its sums' additions and products, which every native backend
+  reads as before; the kernel interpreter rounds each operation once to
+  its own format, exactly where a kernel has several, and `presk run`
+  prints what the formats produced. The native and LLVM backends and the C
+  export refuse a realization they do not compute (`E7005`, new); question
+  67's refusal of a declared accumulation type (`E7002`) goes. MT0 and MT1
+  hold at the step.
+- D207, quantized activations: a realization stores a site's value in an
+  affine format (`scaled`: `affine(u8/sat,scale=…,zero=…)`, integer codes
+  with a static scale and a zero point), rounded into it once by its
+  rescaling (ties to even, or a machine's readings: `tie=away`,
+  `rounds=x/s+zero`, `quotient=f32`); `presk calibrate --range` records
+  each site's smallest and largest value and `presk scales` (new) computes
+  a realization's scales from an envelope by `absmax`, `pow2` or `minmax`;
+  a nest whose product format is an integer one sums its scaled operands'
+  integers in their unit, the sum of an integer unit (W8A8). The kernel
+  interpreter computes it; the native backends refuse it (`E7005`), and
+  every executor a scale not computed (`E7006`, new).
+- D208, the solver in every format: each format has its terms in the error
+  analysis and the solver (`presk_precision::formats`: a float's rounding
+  through its subnormals and past its largest number, an affine format's
+  half step and what its clamp cuts, a sum's operations at its product and
+  accumulation formats, an integer count exact under its range condition),
+  so that `presk check --precision` bounds every realization; range rules
+  refuse a format a value's magnitude with a margin passes
+  (`--range-margin`), a divisor under its smallest normal number, a
+  constant it rounds to zero, and `presk solve --offers` writes what they
+  offer; `--menu` takes any float format; `presk solve --target FILE`
+  reads a machine's description (its storage, affine and integer formats,
+  each nest's arithmetic, its contraction modes by their operands' formats,
+  its order) and offers exactly it, a sum's operands followed through
+  calls to select its mode, and writes no realization when none in the
+  target's types is inside the budget (exit 3); `presk calibrate
+  --formats` records a value's rounding in more formats; a parameter's own
+  type is any float narrower than `f64`; `presk explain` and the network
+  diagram label a site's formats. MT3 holds on the six envelopes of the
+  binary16 study; MT4 holds on the course GPT at D = 64.
+- D209, the tiles, the rows and the version: the kernel interpreter counts
+  what its host's conversions produce too (an argument stored in its type,
+  an operand at a nest's edge, a parameter in its own type), where a value
+  that saturated at a nest's edge was counted nowhere; `presk run --codes`
+  prints a result as its formats' codes; `presk run --data` reads a
+  version 3 file's leaf in a format as that format's values, −0 included;
+  a float format's `nans=default`, an operation's NaN the default one, a
+  machine's default-NaN mode; `presk solve --target … --refused FILE`
+  writes the realization of smallest gap when none is inside the budget;
+  `examples/tests/formats/systolic.psk`; `make machine-types` (MT5, MT6).
+  MT2 holds: 100 tiles of each of the accelerator's simulator's fourteen
+  modes give its bits, 1 356 800 values. MT5, reported: the course GPT's
+  logits at D = 64 in the accelerator's types are inside none of
+  ε*(10⁻¹), ε*(10⁻²), ε*(10⁻³), 3.1 % of the decisions changed on 461
+  held-out windows, its 8-bit operands, not its binary16 sums, carrying
+  the gap. MT6 holds: with `e8m15` on the menu the logits at ε*(10⁻³)
+  store 10.7 % fewer bytes than D170's realization and change no
+  decision. MT0 holds on the version's tree. A solve under a target
+  labels its baseline by the target's widest format. Version `0.18.0`.
+
 ## 0.17.2 — 2026-11-13
 
 Every Presk program in `examples/`, two timers, and SR5 on the

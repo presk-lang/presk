@@ -2,7 +2,7 @@
 //! margin as the narrowing's threshold, the root-sum-square estimate aimed
 //! at the budget over the margin, and early stopping on held-out samples.
 
-use presk_precision::envelope::Envelope;
+use presk_precision::envelope::{Envelope, Rounding};
 use presk_precision::sensitivity::Sensitivity;
 use presk_precision::solve::{self, Budget, Estimate, Menu, Narrow, Options, RoundingTerm};
 use presk_rt::{Dtype, Realization};
@@ -10,11 +10,11 @@ use presk_rt::{Dtype, Realization};
 /// Sites of magnitude 1 and sensitivity 1, with these elements, their
 /// rounding the unit term's.
 fn envelope(sites: &[(&str, u64)]) -> (Envelope, Sensitivity) {
-    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::Bf16.unit_roundoff()];
+    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::BF16.unit_roundoff()];
     let mut e = Envelope::new("p.psk", "f", 128, "2026-10-19");
     e.observe(&sites.iter().map(|(s, _)| (s.to_string(), 1.0)).collect());
     e.observe_elems(&sites.iter().map(|(s, n)| (s.to_string(), *n)).collect());
-    e.observe_rounding(&sites.iter().map(|(s, _)| (s.to_string(), rounds)).collect());
+    e.observe_rounding(&sites.iter().map(|(s, _)| (s.to_string(), Rounding::three(rounds).0)).collect());
     let sens = Sensitivity { sites: sites.iter().map(|(s, _)| (s.to_string(), 1.0)).collect() };
     (e, sens)
 }
@@ -25,10 +25,11 @@ fn solve(env: &Envelope, sens: &Sensitivity, budget: f64, options: Options, veri
 
 /// A "measurement" adding 1e-6 a site in `f32` and 1e-3 a site in `bf16`.
 fn gap(r: &Realization) -> f64 {
-    r.storage.values().map(|d| match d {
+    r.storage.values().map(|d| match *d {
         Dtype::F64 => 0.0,
         Dtype::F32 => 1e-6,
-        Dtype::Bf16 => 1e-3,
+        Dtype::BF16 => 1e-3,
+        d => d.unreachable(),
     }).sum()
 }
 
@@ -56,7 +57,7 @@ fn the_rss_estimate_aims_at_the_budget_over_the_margin() {
     // A bf16 term is 2⁻⁸ ≈ 3.9·10⁻³: the sum fits one under 6·10⁻³, the
     // root-sum-square two (√2 · 3.9·10⁻³ = 5.5·10⁻³).
     let budget = 6e-3;
-    let bf16 = |s: &solve::Solution| s.realization.storage.values().filter(|d| **d == Dtype::Bf16).count();
+    let bf16 = |s: &solve::Solution| s.realization.storage.values().filter(|d| **d == Dtype::BF16).count();
     let sum = solve(&env, &sens, budget, Options { rounding: RoundingTerm::Unit, ..Options::default() }, None, None);
     let rss1 = solve(&env, &sens, budget, Options { rounding: RoundingTerm::Unit, estimate: Estimate::Rss, margin: 1.0, ..Options::default() }, None, None);
     let rss = solve(&env, &sens, budget, Options { rounding: RoundingTerm::Unit, estimate: Estimate::Rss, ..Options::default() }, None, None);
@@ -80,7 +81,7 @@ fn held_out_samples_undo_the_last_narrowings_until_they_fit() {
     let s = solve(&env, &sens, budget, Options { narrow: Narrow::Heldout, margin: 1.0, ..Options::default() }, Some(&mut m), Some(&mut h));
     // Narrowed: %1 and %2 in bf16, 2.0·10⁻³ on the envelope, 3.0·10⁻³ held
     // out; %2 undone, 1.5·10⁻³ held out.
-    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::BF16));
     assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::F32));
     assert_eq!((s.narrowed, s.undone), (1, 1));
     assert_eq!(held, 2);

@@ -34,48 +34,84 @@ pub use quant::{AxisRef, QBuf, QTensor, Quant, QuantScheme};
 
 type IValue = presk_interp::Value<Float>;
 
-/// A machine type a real tensor can be stored in.
+/// A machine type a real tensor can be stored in: a float format.
+///
+/// Since plan 0.18.0 step 1 (D204) a type is a format described by its
+/// parameters ([`presk_format::Float`]), and `f64`, `f32` and `bf16` are
+/// three of them; every property of a type is its format's. Since step 3
+/// (D206) a realization may store a value in any float format: the native,
+/// LLVM and C backends compute in the three *native* types alone
+/// ([`Dtype::is_native`]) and refuse a realization that names another
+/// (`E7005`, [`Realization::check_native`]), and the kernel interpreter
+/// emulates it. The solver's menu offers the native types until step 5
+/// ([`Dtype::native`], `E7004`).
 ///
 /// `Bf16` is **storage only**: buffers hold sixteen bits, arithmetic is done
 /// in `f32`, and conversion happens on load and on store with
 /// round-to-nearest-even. That is the standard mixed-precision idiom, it is
 /// exactly implementable, and it is what gives a solver a third rung with a
-/// real traffic win on the memory-bound sweeps. There is no `f16`: its
-/// dynamic range is a separate problem (plan 0.5.0 §3.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Dtype {
-    F64,
-    F32,
-    Bf16,
-}
+/// real traffic win on the memory-bound sweeps.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Dtype(presk_format::Float);
 
 impl Dtype {
-    pub fn parse(s: &str) -> Option<Dtype> {
-        match s {
-            "f64" => Some(Dtype::F64),
-            "f32" => Some(Dtype::F32),
-            "bf16" => Some(Dtype::Bf16),
-            _ => None,
+    pub const F64: Dtype = Dtype(presk_format::F64);
+    pub const F32: Dtype = Dtype(presk_format::F32);
+    pub const BF16: Dtype = Dtype(presk_format::BF16);
+    /// The types a backend computes in, the native types, the most precise
+    /// first.
+    pub const ALL: [Dtype; 3] = [Dtype::F64, Dtype::F32, Dtype::BF16];
+
+    /// The type of a float format.
+    pub fn new(f: presk_format::Float) -> Dtype {
+        Dtype(f)
+    }
+
+    /// The type of a format, if it is a native type: what the solver's menu
+    /// offers until step 5 of plan 0.18.0 (`E7004` otherwise).
+    pub fn native(f: presk_format::Float) -> std::result::Result<Dtype, String> {
+        match Dtype::ALL.into_iter().find(|d| d.0 == f) {
+            Some(d) => Ok(d),
+            None => Err(format!("[E7004] `{f}` is a format the solver does not offer yet: its floats are f64, f32 and bf16")),
         }
     }
 
+    /// Whether the backends compute in this type: `f64`, `f32` or `bf16`.
+    pub fn is_native(self) -> bool {
+        Dtype::ALL.contains(&self)
+    }
+
+    /// The type a float format's name denotes; `None` for a name that is
+    /// no float format's.
+    pub fn parse(s: &str) -> Option<Dtype> {
+        Dtype::of_name(s).ok()
+    }
+
+    /// The type a float format's name denotes, or why there is none.
+    pub fn of_name(s: &str) -> std::result::Result<Dtype, String> {
+        presk_format::Float::parse(s).map(Dtype)
+    }
+
+    /// The format this type is.
+    pub fn format(self) -> presk_format::Float {
+        self.0
+    }
+
+    /// The format's name: its alias (`f16`), else its parameters, each
+    /// distinct spelling kept once for the run.
     pub fn name(self) -> &'static str {
-        match self {
-            Dtype::F64 => "f64",
-            Dtype::F32 => "f32",
-            Dtype::Bf16 => "bf16",
+        if let Some(a) = self.0.alias() {
+            return a;
         }
+        static NAMES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<presk_format::Float, &'static str>>> = std::sync::OnceLock::new();
+        let mut names = NAMES.get_or_init(Default::default).lock().expect("the names' table");
+        names.entry(self.0).or_insert_with(|| Box::leak(self.0.spelling().into_boxed_str()))
     }
 
     /// Bytes a stored element occupies. This is the number the roofline's `Q`
     /// is counted in, so it is what a narrower storage type actually buys.
     pub fn bytes(self) -> usize {
-        match self {
-            Dtype::F64 => 8,
-            Dtype::F32 => 4,
-            Dtype::Bf16 => 2,
-        }
+        self.0.bits().div_ceil(8) as usize
     }
 
     /// Lanes a 128-bit vector register holds of this type, which is the only
@@ -87,19 +123,14 @@ impl Dtype {
     /// width. Deriving it from the default is how a mixed realization came to
     /// ask for a two-lane `bf16` kernel, which is refused.
     pub fn natural_lanes(self) -> usize {
-        match self {
-            Dtype::F64 => 2,
-            Dtype::F32 => 4,
-            Dtype::Bf16 => 1,
-        }
+        if self == Dtype::F64 || self == Dtype::F32 { 128 / self.0.bits() as usize } else { 1 }
     }
 
-    /// The type arithmetic is carried out in. `bf16` computes in `f32`.
+    /// The type arithmetic is carried out in, α(τ): the type itself for
+    /// `f64` and `f32`, and `f32` for a narrower format `f32` holds, so
+    /// `bf16` computes in `f32`.
     pub fn arith(self) -> Dtype {
-        match self {
-            Dtype::Bf16 => Dtype::F32,
-            other => other,
-        }
+        if self != Dtype::F64 && presk_format::F32.contains(self.0) { Dtype::F32 } else { self }
     }
 
     /// The unit roundoff `u` of this type: half an ulp of 1, and the constant
@@ -109,17 +140,68 @@ impl Dtype {
     /// step 8, every `bf16` rounding counted at half its size (the language
     /// reference's chapter 4).
     pub fn unit_roundoff(self) -> f64 {
-        match self {
-            Dtype::F64 => f64::EPSILON / 2.0,
-            Dtype::F32 => f32::EPSILON as f64 / 2.0,
-            Dtype::Bf16 => 2f64.powi(-8),
+        self.0.unit_roundoff()
+    }
+
+    /// What a native backend's match over `f64`, `f32` and `bf16` does with
+    /// any other type: never reached, since a native backend refuses a
+    /// realization that names one before anything runs
+    /// ([`Realization::check_native`]).
+    pub fn unreachable(self) -> ! {
+        unreachable!("{self}: a native backend computes in f64, f32 and bf16 only (checked by `Realization::check_native`)")
+    }
+}
+
+/// The format a value of the type is: what a realization's `arith`,
+/// `product` and `accum` name.
+impl From<Dtype> for presk_format::Format {
+    fn from(d: Dtype) -> presk_format::Format {
+        presk_format::Format::Float(d.format())
+    }
+}
+
+/// The variants' names of the enum this type was until 0.18.0, which keys
+/// built from `{:?}` still read.
+impl std::fmt::Debug for Dtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Dtype::F64 => f.write_str("F64"),
+            Dtype::F32 => f.write_str("F32"),
+            Dtype::BF16 => f.write_str("Bf16"),
+            Dtype(other) => write!(f, "Dtype({other})"),
         }
+    }
+}
+
+/// The most precise first: `f64` < `f32` < `bf16`, the order of the enum.
+impl PartialOrd for Dtype {
+    fn partial_cmp(&self, other: &Dtype) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Dtype {
+    fn cmp(&self, other: &Dtype) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
     }
 }
 
 impl std::fmt::Display for Dtype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+impl serde::Serialize for Dtype {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(self.name())
+    }
+}
+
+/// By name, as [`Dtype::of_name`] reads it: any float format.
+impl<'de> serde::Deserialize<'de> for Dtype {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Dtype, D::Error> {
+        <presk_format::Float as serde::Deserialize>::deserialize(d).map(Dtype)
     }
 }
 
@@ -159,13 +241,19 @@ pub enum ReductionOrder {
     /// micro-kernel, a thread split. This one **reassociates**, so it is a
     /// different realization and owes a measured gap (D31).
     Interleaved { partials: u32 },
+    /// Sums of `size` consecutive terms each, from zero and in index order,
+    /// the chunks' sums then added in order from zero, the last chunk
+    /// shorter when `size` does not divide the terms (plan 0.18.0 step 3,
+    /// D206): a systolic array's tiles along the summed axis. It
+    /// reassociates, as `Interleaved` does.
+    Chunked { size: u32 },
 }
 
 impl ReductionOrder {
     /// Whether this order preserves the exact order of additions, and so is
     /// bit-identical to `Sequential` at the same dtype.
     pub fn is_exact(self) -> bool {
-        !matches!(self, ReductionOrder::Interleaved { .. })
+        !matches!(self, ReductionOrder::Interleaved { .. } | ReductionOrder::Chunked { .. })
     }
 
     pub fn name(self) -> String {
@@ -173,7 +261,84 @@ impl ReductionOrder {
             ReductionOrder::Sequential => "sequential".into(),
             ReductionOrder::Blocked { width } => format!("blocked({width})"),
             ReductionOrder::Interleaved { partials } => format!("interleaved({partials})"),
+            ReductionOrder::Chunked { size } => format!("chunked({size})"),
         }
+    }
+}
+
+/// A site's value stored in an affine format (plan 0.18.0 step 4, D207): a
+/// quantized activation, its integer codes and its static scale and zero
+/// point. The realization records the format itself, its numbers, which is
+/// what every executor reads; or the scheme they are to be computed by from
+/// an envelope's magnitudes at the site, which `presk scales` turns into the
+/// format and every executor refuses until then (`E7006`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Scale {
+    Static(presk_format::Affine),
+    Scheme(ScaleScheme),
+}
+
+/// How a site's scale and zero point are computed from the envelope.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScaleScheme {
+    /// The codes' integer format, which saturates: `i8/sat`, `u8/sat`.
+    pub int: String,
+    pub scheme: ScaleRule,
+    /// The rescaling's parameters, as an affine format's spelling writes
+    /// them (`away`, `x/s+zero`, `f32`); its defaults where absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tie: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quotient: Option<String>,
+}
+
+/// The rule a static scale is computed by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScaleRule {
+    /// Symmetric, `s = max|x| / qmax` ([`presk_format::Affine::absmax`]).
+    Absmax,
+    /// Symmetric, a power of two ([`presk_format::Affine::pow2`]).
+    Pow2,
+    /// Asymmetric, from the smallest and the largest value, with a zero
+    /// point ([`presk_format::Affine::minmax`]): an envelope measured with
+    /// `presk calibrate --range`.
+    Minmax,
+}
+
+impl ScaleRule {
+    pub fn name(self) -> &'static str {
+        match self {
+            ScaleRule::Absmax => "absmax",
+            ScaleRule::Pow2 => "pow2",
+            ScaleRule::Minmax => "minmax",
+        }
+    }
+}
+
+impl ScaleScheme {
+    /// The format the scheme computes from a site's largest `|x|` and, for
+    /// `minmax`, its smallest and largest value.
+    pub fn resolve(&self, max_abs: f64, range: Option<(f64, f64)>) -> std::result::Result<presk_format::Affine, String> {
+        let mut spelling = format!("affine({},scale=1", self.int);
+        for (key, value) in [("tie", &self.tie), ("rounds", &self.rounds), ("quotient", &self.quotient)] {
+            if let Some(v) = value {
+                spelling.push_str(&format!(",{key}={v}"));
+            }
+        }
+        spelling.push(')');
+        let t = presk_format::Affine::parse(&spelling)?;
+        let a = match (self.scheme, range) {
+            (ScaleRule::Absmax, _) => presk_format::Affine::absmax(t.int, max_abs),
+            (ScaleRule::Pow2, _) => presk_format::Affine::pow2(t.int, max_abs),
+            (ScaleRule::Minmax, Some((lo, hi))) => presk_format::Affine::minmax(t.int, lo, hi),
+            (ScaleRule::Minmax, None) => return Err("`minmax` needs the site's smallest and largest value, which an envelope measured with `presk calibrate --range` records".into()),
+        }?;
+        Ok(presk_format::Affine { tie: t.tie, zero_rounded: t.zero_rounded, quotient: t.quotient, ..a })
     }
 }
 
@@ -200,8 +365,34 @@ pub struct Realization {
     /// D52). A site named in `storage` overrides it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub functions: BTreeMap<String, Dtype>,
+    /// The format a site's operations are rounded to, its *arithmetic
+    /// format*, by site (plan 0.18.0 step 3, D206): every elementary
+    /// operation of the nest, and every operand it loads, converted to it.
+    /// A site the map does not mention computes in its storage type's
+    /// arithmetic type, `Dtype::arith` ([`Realization::arith_at`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub accum: BTreeMap<String, Dtype>,
+    pub arith: BTreeMap<String, presk_format::Format>,
+    /// The format each product of a sum's terms is rounded to, by site
+    /// (D206); the site's arithmetic format where it is not mentioned.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub product: BTreeMap<String, presk_format::Format>,
+    /// The format each addition of a sum is rounded to, its *accumulation
+    /// format*, by site; the site's arithmetic format where it is not
+    /// mentioned. A format since D206, an integer and a fixed-point one
+    /// included.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accum: BTreeMap<String, presk_format::Format>,
+    /// Values stored in an affine format, by site (plan 0.18.0 step 4,
+    /// D207): a quantized activation. Its nest rounds its result into the
+    /// format by its rescaling, and every nest reads it as it is,
+    /// `(q − z)·s`, never converted to its own storage type; the nest
+    /// computes in its storage type's arithmetic type unless `arith` says
+    /// otherwise. Where a nest's product format is an integer or a
+    /// fixed-point one, it reads such a value, and an integer weight, as its
+    /// integer counted in its scale (the kernel interpreter's counts,
+    /// `presk_kernel::exec::Mixed`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scaled: BTreeMap<String, Scale>,
     pub order: ReductionOrder,
     /// The magnitude envelope any bound about this realization assumed
     /// (step 3). A bound without one is a different and unsupported claim
@@ -228,18 +419,20 @@ impl Realization {
     /// One dtype everywhere, additions in index order: what `--realize f64`
     /// and `--realize f32` meant in every version up to 0.4.0, and still do.
     pub fn uniform(d: Dtype) -> Realization {
-        Realization { default: d, storage: BTreeMap::new(), functions: BTreeMap::new(), accum: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None, params: BTreeMap::new(), quant: BTreeMap::new() }
+        Realization { default: d, storage: BTreeMap::new(), functions: BTreeMap::new(), arith: BTreeMap::new(), product: BTreeMap::new(), accum: BTreeMap::new(), scaled: BTreeMap::new(), order: ReductionOrder::Sequential, envelope: None, params: BTreeMap::new(), quant: BTreeMap::new() }
     }
 
-    /// `f64`, `f32`, `bf16`, or `@PATH` for a realization file.
+    /// `f64`, `f32`, `bf16`, another float format's name (`f16`, every
+    /// value stored in it and computed in its arithmetic type), or `@PATH`
+    /// for a realization file.
     pub fn parse(spec: &str) -> std::result::Result<Realization, String> {
         if let Some(path) = spec.strip_prefix('@') {
             let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
             return serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"));
         }
-        match Dtype::parse(spec) {
-            Some(d) => Ok(Realization::uniform(d)),
-            None => Err(format!("unknown realization `{spec}`; expected f64, f32, bf16 or @FILE")),
+        match Dtype::of_name(spec) {
+            Ok(d) => Ok(Realization::uniform(d)),
+            Err(_) => Err(format!("unknown realization `{spec}`; expected f64, f32, bf16, another float format's name or @FILE")),
         }
     }
 
@@ -258,17 +451,121 @@ impl Realization {
         }
     }
 
-    /// The accumulator type of a site's contraction. It defaults to the
-    /// *arithmetic* type of the storage, so `bf16` storage accumulates in
-    /// `f32` unless something says otherwise — the idiom, not a surprise.
-    pub fn accum_at(&self, site: &str) -> Dtype {
-        if let Some(d) = self.accum.get(site) {
-            return *d;
+    /// A site's entry in one of the maps by site, or its base's in the
+    /// forward pass a gradient keeps (`fwd_base`) when the site has no type
+    /// of its own.
+    fn by_site<V: Clone>(&self, map: &BTreeMap<String, V>, site: &str) -> Option<V> {
+        if let Some(f) = map.get(site) {
+            return Some(f.clone());
         }
         match fwd_base(site) {
-            Some(base) if !self.storage.contains_key(site) && !site.rsplit_once('/').is_some_and(|(f, _)| self.functions.contains_key(f)) => self.accum_at(&base),
-            _ => self.dtype_at(site).arith(),
+            Some(base) if !self.storage.contains_key(site) && !site.rsplit_once('/').is_some_and(|(f, _)| self.functions.contains_key(f)) => self.by_site(map, &base),
+            _ => None,
         }
+    }
+
+    /// The arithmetic format of a site: its own (`arith`), else the
+    /// *arithmetic* type of its storage, α(σ), so that `bf16` storage
+    /// computes in `f32` (plan 0.18.0 step 3, D206).
+    pub fn arith_at(&self, site: &str) -> presk_format::Format {
+        self.by_site(&self.arith, site).unwrap_or(presk_format::Format::Float(self.dtype_at(site).arith().format()))
+    }
+
+    /// The format a site's products of terms are rounded to: its own
+    /// (`product`), else its arithmetic format.
+    pub fn product_at(&self, site: &str) -> presk_format::Format {
+        self.by_site(&self.product, site).unwrap_or_else(|| self.arith_at(site))
+    }
+
+    /// The accumulation format of a site's sums: its own (`accum`), else
+    /// its arithmetic format, so that `bf16` storage accumulates in `f32`
+    /// unless something says otherwise — the idiom, not a surprise.
+    pub fn accum_at(&self, site: &str) -> presk_format::Format {
+        self.by_site(&self.accum, site).unwrap_or_else(|| self.arith_at(site))
+    }
+
+    /// The affine format a site's value is stored in (plan 0.18.0 step 4,
+    /// D207), its own or its base's in the forward pass a gradient keeps;
+    /// `None` where it is stored in its storage type. A scheme whose scale
+    /// is not computed yet is refused (`E7006`).
+    pub fn scaled_at(&self, site: &str) -> Result<Option<presk_format::Affine>> {
+        match self.by_site(&self.scaled, site) {
+            None => Ok(None),
+            Some(Scale::Static(a)) => Ok(Some(a)),
+            Some(Scale::Scheme(s)) => Err(unresolved(site, &s)),
+        }
+    }
+
+    /// The formats a site is stored and computed in, as `presk explain` and
+    /// the network diagram label it (plan 0.18.0 step 5, D208): its storage
+    /// type's name, or an affine format's by its integer; then, where they
+    /// are not its storage type's arithmetic type, the format its
+    /// operations are rounded to and its sums' products and additions:
+    /// `f16 in f16`, `affine(i8/sat) (i32×, i32+)`. A site that states none
+    /// is its type's name, as until then.
+    pub fn label_at(&self, site: &str) -> String {
+        let d = self.dtype_at(site);
+        let mut out = match self.by_site(&self.scaled, site) {
+            Some(Scale::Static(a)) => format!("affine({})", a.int),
+            Some(Scale::Scheme(s)) => format!("affine({})", s.int),
+            None => d.name().to_string(),
+        };
+        let (alpha, native) = (self.arith_at(site), presk_format::Format::Float(d.arith().format()));
+        if alpha != native {
+            out.push_str(&format!(" in {alpha}"));
+        }
+        let (mu, kappa) = (self.product_at(site), self.accum_at(site));
+        if mu != alpha || kappa != alpha {
+            out.push_str(&format!(" ({mu}×, {kappa}+)"));
+        }
+        out
+    }
+
+    /// Every scale stated as a scheme refused (`E7006`): an executor reads
+    /// a format's numbers, which `presk scales` computes from an envelope.
+    pub fn check_scales(&self) -> Result<()> {
+        match self.scaled.iter().find_map(|(site, s)| if let Scale::Scheme(s) = s { Some((site, s)) } else { None }) {
+            Some((site, s)) => Err(unresolved(site, s)),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether every site computes as a native backend does, in the native
+    /// types alone and each nest in its storage type's arithmetic type
+    /// (plan 0.18.0 step 3, D206): the condition under which the native and
+    /// LLVM backends and the C export run a realization. `E7005` otherwise,
+    /// naming the first site or member that fails it; the kernel
+    /// interpreter emulates any format.
+    pub fn check_native(&self, executor: &str) -> Result<()> {
+        let fail = |what: String| err("E7005", format!("the realization {what}: {executor} computes in f64, f32 and bf16, each nest in its storage type's arithmetic type; the kernel interpreter emulates any format (`--backend kernel`)"));
+        let stored = std::iter::once((String::from("every value"), self.default)).chain(self.storage.iter().map(|(s, d)| (format!("`{s}`"), *d))).chain(self.functions.iter().map(|(f, d)| (format!("the function `{f}`"), *d))).chain(self.params.iter().map(|(p, d)| (format!("the parameter `{p}`"), *d)));
+        for (what, d) in stored {
+            if !d.is_native() {
+                return fail(format!("stores {what} in {d}"));
+            }
+        }
+        for (map, what) in [(&self.arith, "computes"), (&self.product, "rounds the products of"), (&self.accum, "accumulates")] {
+            for (site, f) in map {
+                let native = presk_format::Format::Float(self.dtype_at(site).arith().format());
+                if *f != native {
+                    return fail(format!("{what} `{site}` in {f}, where its storage type's arithmetic type is {native}"));
+                }
+            }
+        }
+        if let Some((site, s)) = self.scaled.iter().next() {
+            return fail(match s {
+                Scale::Static(a) => format!("stores `{site}` in {a}"),
+                Scale::Scheme(s) => format!("stores `{site}` in an affine format of {} ({})", s.int, s.scheme.name()),
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether some site computes otherwise than a native backend does
+    /// ([`Realization::check_native`] fails): what the kernel interpreter
+    /// emulates, and counts.
+    pub fn emulates(&self) -> bool {
+        self.check_native("").is_err()
     }
 
     /// Whether a fusion group can compute a value otherwise than its site
@@ -284,8 +581,11 @@ impl Realization {
     /// accumulators and the order are the contractions', which no group
     /// holds.
     pub fn groups_visible(&self) -> bool {
-        let bf16 = self.default == Dtype::Bf16 || self.storage.values().chain(self.functions.values()).any(|d| *d == Dtype::Bf16);
-        bf16 || self.storage.iter().any(|(site, d)| {
+        // A type stored apart from its arithmetic, `bf16` or a format of
+        // plan 0.18.0 step 3, or a site computing apart from its storage.
+        let narrow = std::iter::once(&self.default).chain(self.storage.values()).chain(self.functions.values()).any(|d| d.arith() != *d);
+        let apart = self.arith.iter().any(|(site, f)| *f != presk_format::Format::Float(self.dtype_at(site).format()));
+        narrow || apart || !self.scaled.is_empty() || self.storage.iter().any(|(site, d)| {
             let mut without = self.clone();
             without.storage.remove(site);
             without.dtype_at(site) != *d
@@ -296,7 +596,7 @@ impl Realization {
     /// their order. Uniform realizations are the ones earlier versions could
     /// express, and the ones whose goldens must not move.
     pub fn is_uniform(&self) -> bool {
-        self.storage.is_empty() && self.functions.is_empty() && self.accum.is_empty() && self.order == ReductionOrder::Sequential && self.params.is_empty() && self.quant.is_empty()
+        self.storage.is_empty() && self.functions.is_empty() && self.arith.is_empty() && self.product.is_empty() && self.accum.is_empty() && self.scaled.is_empty() && self.order == ReductionOrder::Sequential && self.params.is_empty() && self.quant.is_empty()
     }
 
     /// A short name for reports and cache keys.
@@ -310,6 +610,14 @@ impl Realization {
         }
         if !self.functions.is_empty() {
             s.push_str(&format!("+{}fns", self.functions.len()));
+        }
+        for (map, what) in [(&self.arith, "arith"), (&self.product, "product"), (&self.accum, "accum")] {
+            if !map.is_empty() {
+                s.push_str(&format!("+{}{what}", map.len()));
+            }
+        }
+        if !self.scaled.is_empty() {
+            s.push_str(&format!("+{}scaled", self.scaled.len()));
         }
         if !self.params.is_empty() {
             s.push_str(&format!("+{}params", self.params.len()));
@@ -334,7 +642,7 @@ impl Realization {
     /// given; the identity when the record types and quantises nothing.
     pub fn stored_params(&self, theta: &Value) -> Result<Value> {
         self.check_params(Some(theta))?;
-        let typed = if self.params.is_empty() { theta.clone() } else { quant::typed_leaves(theta, theta, &self.params) };
+        let typed = if self.params.is_empty() { theta.clone() } else { quant::typed_leaves(theta, theta, &self.params, self.emulates()) };
         if self.quant.is_empty() {
             return Ok(typed);
         }
@@ -342,14 +650,16 @@ impl Realization {
     }
 
     /// The conditions on `params` (the reference's chapter 4, realized
-    /// types, item 3): each type `f32` or `bf16`, no path also in `quant`,
-    /// and, given the entry's parameter tree, each path a real leaf of it.
-    /// A misspelt path quietly typing nothing would be the worst failure
-    /// this could have, as for `quant`.
+    /// types, item 3): each type a float format narrower than `f64` (`f32`
+    /// or `bf16` until plan 0.18.0 step 5, D208; the native backends refuse
+    /// any other, `E7005`), no path also in `quant`, and, given the entry's
+    /// parameter tree, each path a real leaf of it. A misspelt path quietly
+    /// typing nothing would be the worst failure this could have, as for
+    /// `quant`.
     pub fn check_params(&self, theta: Option<&Value>) -> Result<()> {
         for (path, d) in &self.params {
-            if !matches!(d, Dtype::F32 | Dtype::Bf16) {
-                return err("E7001", format!("the realization stores the parameter `{path}` in `{d}`: a parameter's own type is `f32` or `bf16`, and every other parameter is stored in the default type"));
+            if *d == Dtype::F64 {
+                return err("E7001", format!("the realization stores the parameter `{path}` in `{d}`: a parameter's own type is a float format narrower than `f64`, and every other parameter is stored in the default type"));
             }
             if self.quant.contains_key(path) {
                 return err("E7001", format!("the realization both stores the parameter `{path}` in `{d}` and quantises it: a parameter is typed or quantised, not both"));
@@ -395,7 +705,7 @@ impl Realization {
             && let (Some(theta @ Value::Record(_)), Some(slot)) = (args.first(), out.first_mut())
         {
             self.check_params(Some(theta))?;
-            *slot = quant::typed_leaves(slot, theta, &self.params);
+            *slot = quant::typed_leaves(slot, theta, &self.params, self.emulates());
         }
         self.store_params(&mut out)?;
         Ok(out)
@@ -430,6 +740,12 @@ pub enum Buf {
     /// Integers with a scale per channel (0.6.0 step 5b, D44): a parameter a
     /// realization quantises. Read anywhere as `f32(q)·s`.
     Quant(std::sync::Arc<QBuf>),
+    /// Values of a format no backend computes in natively, each held exactly
+    /// as an `f64` ([`presk_format::Format::exact_in_f64`]): what the kernel
+    /// interpreter's emulation reads and writes (plan 0.18.0 step 2, D205).
+    /// No realization stores a value in such a format yet, so no other
+    /// backend meets one ([`Buf::unemulated`]).
+    Format(presk_format::Format, Elems<f64>),
 }
 
 impl Buf {
@@ -441,6 +757,7 @@ impl Buf {
             Buf::Bf16(v) => v.len(),
             Buf::I64(v) => v.len(),
             Buf::Quant(q) => q.len(),
+            Buf::Format(_, v) => v.len(),
         }
     }
 
@@ -460,6 +777,7 @@ impl Buf {
             Buf::Bf16(v) => v[lo..hi].iter().map(|x| bf16_to_f32(*x) as f64).collect(),
             Buf::I64(v) => v[lo..hi].iter().map(|x| *x as f64).collect(),
             Buf::Quant(q) => (lo..hi).map(|e| q.value(e) as f64).collect(),
+            Buf::Format(_, v) => v[lo..hi].to_vec(),
         }
     }
 
@@ -471,16 +789,53 @@ impl Buf {
             Buf::Bf16(v) => v.iter().map(|x| bf16_to_f32(*x) as f64).collect(),
             Buf::I64(v) => v.iter().map(|x| *x as f64).collect(),
             Buf::Quant(q) => (0..q.len()).map(|e| q.value(e) as f64).collect(),
+            Buf::Format(_, v) => v.to_vec(),
         }
     }
 
-    /// A buffer of `n` reals in the machine type `d`, rounded once from `f64`.
+    /// A buffer of values of the format `f` ([`Buf::Format`]): each of `v`
+    /// as it is when it is a number or a special value of a float format,
+    /// −0 included where a conversion never gives it (the code a file or a
+    /// machine's memory holds), else rounded once to it, ties to even.
+    pub fn in_format(f: presk_format::Format, v: &[f64]) -> Buf {
+        assert!(f.exact_in_f64(), "a buffer of {f} holds values no f64 holds");
+        let held = |x: f64| matches!(f, presk_format::Format::Float(g) if g.holds(x));
+        Buf::Format(f, v.iter().map(|x| if held(*x) { *x } else { f.round_noted(*x, presk_format::Tie::Even).0 }).collect())
+    }
+
+    /// What a backend that computes only in `f64`, `f32` and `bf16` does
+    /// with a [`Buf::Format`]: nothing, since such a backend refuses a
+    /// realization that stores a value in another format before anything
+    /// runs ([`Realization::check_native`], plan 0.18.0 step 3).
+    pub fn unemulated(&self) -> ! {
+        unreachable!("a buffer of {} reached a backend that does not compute in it: only the kernel interpreter emulates it", self.dtype())
+    }
+
+    /// A buffer of `n` reals in the machine type `d`, rounded once from
+    /// `f64`; `bf16` through `f32`, twice (D38). A type other than the
+    /// native ones is a [`Buf::Format`], each value rounded once, ties to
+    /// even (plan 0.18.0 step 3, D206): [`presk_format::Float::store`].
     pub fn of(d: Dtype, v: &[f64]) -> Buf {
         match d {
             Dtype::F64 => Buf::F64(v.to_vec().into()),
             Dtype::F32 => Buf::F32(v.iter().map(|x| *x as f32).collect()),
-            Dtype::Bf16 => Buf::Bf16(v.iter().map(|x| f32_to_bf16(*x as f32)).collect()),
+            Dtype::BF16 => Buf::Bf16(v.iter().map(|x| f32_to_bf16(*x as f32)).collect()),
+            d => Buf::Format(presk_format::Format::Float(d.format()), v.iter().map(|x| d.format().store(*x)).collect()),
         }
+    }
+
+    /// [`Buf::of`], counting in `c` what the type's overflow rule produced
+    /// (plan 0.18.0 step 6, D209): a conversion the kernel interpreter makes
+    /// outside a kernel when it emulates, an argument stored in its type or
+    /// an operand at a nest's edge, counted as a kernel counts its own.
+    pub fn of_counted(d: Dtype, v: &[f64], c: &mut presk_format::Counts) -> Buf {
+        let b = Buf::of(d, v);
+        let f = presk_format::Format::Float(d.format());
+        for (x, y) in v.iter().zip(b.to_f64()) {
+            let (_, o) = f.round_noted(*x, presk_format::Tie::Even);
+            c.note(f, y, o, x.is_infinite(), x.is_nan());
+        }
+        b
     }
 
     /// Zeros of the machine type `d`.
@@ -488,18 +843,20 @@ impl Buf {
         match d {
             Dtype::F64 => Buf::F64(vec![0.0; n].into()),
             Dtype::F32 => Buf::F32(vec![0.0; n].into()),
-            Dtype::Bf16 => Buf::Bf16(vec![0u16; n].into()),
+            Dtype::BF16 => Buf::Bf16(vec![0u16; n].into()),
+            d => Buf::Format(presk_format::Format::Float(d.format()), vec![0.0; n].into()),
         }
     }
 
-    pub fn dtype(&self) -> &'static str {
+    pub fn dtype(&self) -> std::borrow::Cow<'static, str> {
         match self {
-            Buf::Exact(_) => "exact",
-            Buf::F64(_) => "f64",
-            Buf::F32(_) => "f32",
-            Buf::Bf16(_) => "bf16",
-            Buf::I64(_) => "i64",
-            Buf::Quant(q) => q.dtype(),
+            Buf::Exact(_) => "exact".into(),
+            Buf::F64(_) => "f64".into(),
+            Buf::F32(_) => "f32".into(),
+            Buf::Bf16(_) => "bf16".into(),
+            Buf::I64(_) => "i64".into(),
+            Buf::Quant(q) => q.dtype().into(),
+            Buf::Format(f, _) => f.name(),
         }
     }
 }
@@ -531,6 +888,11 @@ impl Tensor {
 pub fn fwd_base(site: &str) -> Option<String> {
     let (f, rest) = site.rsplit_once('/')?;
     f.strip_suffix(".fwd").map(|g| format!("{g}/{rest}"))
+}
+
+/// The refusal of a scale stated as a scheme (`E7006`).
+fn unresolved(site: &str, s: &ScaleScheme) -> RtError {
+    RtError { code: "E7006", message: format!("the realization stores `{site}` in {} with a scale computed by `{}`, and states no scale: `presk scales --realize @FILE --precision ENVELOPE.json` computes it from an envelope", s.int, s.scheme.name()), span: None }
 }
 
 /// A runtime value: the interpreter's value shapes, with machine or exact buffers.
@@ -611,6 +973,7 @@ impl Value {
                     Buf::Bf16(v) => v.iter().map(|x| Float::with_val(prec, bf16_to_f32(*x))).collect(),
                     Buf::I64(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                     Buf::Quant(q) => (0..q.len()).map(|e| Float::with_val(prec, q.value(e))).collect(),
+                    Buf::Format(_, v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                 },
             }),
             Value::Idx { bound, t } => IValue::Idx {
@@ -875,6 +1238,13 @@ pub trait Backend {
     /// as compiling. `(0, 0.0)` for a backend that compiles nothing.
     fn compile_stats(&self) -> (u64, f64) {
         (0, 0.0)
+    }
+    /// What the formats a realization emulates produced so far besides
+    /// rounding (plan 0.18.0 step 3, D206): the kernel interpreter's counts
+    /// under a realization the native backends would refuse; `None` for a
+    /// backend or a realization that emulates nothing.
+    fn counts(&self) -> Option<presk_format::Counts> {
+        None
     }
 }
 

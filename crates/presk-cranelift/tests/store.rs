@@ -138,7 +138,7 @@ fn stored_residuals_give_the_recomputed_bits() {
     for (rel, consts, entry, dims, trainings) in cases {
         let mut launches = (0, 0, 0, 0);
         for &training in *trainings {
-            for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+            for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
                 let (stored, n) = run(rel, consts, entry, dims, d, training, Remat::Store.into());
                 let (recomputed, m) = run(rel, consts, entry, dims, d, training, Remat::Recompute.into());
                 let zero = f64::to_bits(0.0);
@@ -149,7 +149,7 @@ fn stored_residuals_give_the_recomputed_bits() {
                 assert_eq!(stored, recomputed, "{rel} {entry} ({d:?}, training {training}): storing changed a bit");
                 assert!(n <= m, "{rel} {entry} ({d:?}): {n} launches storing, {m} recomputing");
                 launches = (m, n, launches.2, launches.3);
-                if d == Dtype::Bf16 {
+                if d == Dtype::BF16 {
                     continue;
                 }
                 // Nothing held, every residual shared: the same bits.

@@ -15,7 +15,7 @@ fn tree() -> Value {
 #[test]
 fn a_typed_realization_survives_its_file_form() {
     let mut r = Realization::uniform(Dtype::F64);
-    r.params.insert("blocks.up.w".into(), Dtype::Bf16);
+    r.params.insert("blocks.up.w".into(), Dtype::BF16);
     r.params.insert("head".into(), Dtype::F32);
     let text = r.to_json();
     assert!(text.contains("\"params\": {") && text.contains("\"blocks.up.w\": \"bf16\""), "{text}");
@@ -33,7 +33,7 @@ fn a_typed_realization_survives_its_file_form() {
 #[test]
 fn typed_parameters_meet_the_records_conditions() {
     let mut r = Realization::uniform(Dtype::F64);
-    r.params.insert("blocks.up.w".into(), Dtype::Bf16);
+    r.params.insert("blocks.up.w".into(), Dtype::BF16);
     r.params.insert("tok".into(), Dtype::F32);
     assert!(r.check_params(None).is_ok());
     assert!(r.check_params(Some(&tree())).is_ok());
@@ -43,7 +43,14 @@ fn typed_parameters_meet_the_records_conditions() {
     wide.params.insert("head".into(), Dtype::F64);
     let e = wide.check_params(None).unwrap_err();
     assert_eq!(e.code, "E7001");
-    assert!(e.message.contains("`head`") && e.message.contains("`f32` or `bf16`"), "{}", e.message);
+    assert!(e.message.contains("`head`") && e.message.contains("narrower than `f64`"), "{}", e.message);
+    // Any narrower float since plan 0.18.0 step 5 (D208), which the native
+    // backends refuse (E7005).
+    let mut half = r.clone();
+    half.params.insert("head".into(), Dtype::of_name("f16").unwrap());
+    assert!(half.check_params(None).is_ok());
+    let e = half.check_native("the native backend").unwrap_err();
+    assert!(e.code == "E7005" && e.message.contains("the parameter `head` in f16"), "{}", e.message);
 
     // Typed or quantised, not both.
     let mut both = r.clone();

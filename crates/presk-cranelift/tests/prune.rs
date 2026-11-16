@@ -94,7 +94,7 @@ fn gradients_are_bit_identical_without_their_dead_code() {
     let mut report = String::new();
     for (rel, consts, entry, dims, training) in cases {
         let mut launches = (0, 0);
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let (with, n) = run(rel, consts, entry, dims, d, *training, true);
             let (without, m) = run(rel, consts, entry, dims, d, *training, false);
             assert_eq!(with, without, "{rel} {entry} ({d:?}): the pass changed a bit");

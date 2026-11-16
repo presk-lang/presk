@@ -25,8 +25,8 @@ use crate::lower::{Contraction, Operand};
 use presk_rt::layout::Split;
 
 /// The kind of the nest a primitive is launched as, at these operands.
-/// `accum` is the accumulation type the realization states for the nest.
-pub fn nest_kind(op: &PrimOp, ins: &[Operand], order: ReductionOrder, dtype: Dtype, accum: Dtype) -> NestKind {
+/// `accum` is the accumulation format the realization states for the nest.
+pub fn nest_kind(op: &PrimOp, ins: &[Operand], order: ReductionOrder, dtype: Dtype, accum: presk_format::Format) -> NestKind {
     if let Some(c) = Contraction::of(op, ins, order) {
         return NestKind::Contraction(c.kind(dtype, accum));
     }
@@ -164,32 +164,6 @@ pub fn split_as(kernels: &[Kernel], split: Split, workers: Option<usize>) -> Res
     Ok(kernels)
 }
 
-/// The kernels accumulate a contraction in the arithmetic type of its
-/// storage (`bf16` in `f32`) whatever the realization's `accum` declares,
-/// and condition 7 reads the declared type: a declared accumulation type
-/// other than the storage's arithmetic type would admit layouts whose bits
-/// differ from the default's (D97). Such a realization is refused on the
-/// kernel and native backends (`E7002`, plan 0.10.0 step 8), by their
-/// `prepare`, before anything runs, until the kernels honour `accum`
-/// (question 67). Not by [`check_plan`], which runs whatever the executor:
-/// the reference interpreter computes exactly and reads no realization.
-pub fn check_accum(realize: &presk_rt::Realization) -> Result<(), RtError> {
-    for (site, declared) in &realize.accum {
-        let storage = realize.dtype_at(site);
-        if *declared != storage.arith() {
-            return Err(RtError {
-                code: "E7002",
-                message: format!(
-                    "the realization accumulates `{site}` in {declared}, and the kernels accumulate its {storage} storage in {}: a declared accumulation type other than the storage's arithmetic type is honoured by no kernel (question 67)",
-                    storage.arith()
-                ),
-                span: None,
-            });
-        }
-    }
-    Ok(())
-}
-
 /// Checks a plan against the program it is run on, before anything runs:
 /// every nest it names exists and is a nest (condition 1: the root of a
 /// fusion group, or a primitive of its own), and states only decisions its
@@ -289,21 +263,21 @@ mod tests {
         let q = t(&[("batch", 2), ("heads", 6), ("seq", 16), ("hd", 64)]);
         let k = t(&[("batch", 2), ("heads", 6), ("seq2", 16), ("hd", 64)]);
         let scores = PrimOp::Ein { operands: vec![names(&["batch", "heads", "seq", "hd"]), names(&["batch", "heads", "seq2", "hd"])], output: names(&["batch", "heads", "seq", "seq2"]) };
-        let NestKind::Contraction(c) = nest_kind(&scores, &[q, k], seq, Dtype::F32, Dtype::F32) else { panic!("the scores ein is a contraction") };
+        let NestKind::Contraction(c) = nest_kind(&scores, &[q, k], seq, Dtype::F32, Dtype::F32.into()) else { panic!("the scores ein is a contraction") };
         assert_eq!((c.dot, c.i, c.j, c.k, c.nt, c.width), (false, 16, 16, 64, true, 4));
         let a = t(&[("batch", 2), ("heads", 6), ("seq", 16), ("seq2", 16)]);
         let v = t(&[("batch", 2), ("heads", 6), ("seq2", 16), ("hd", 64)]);
         let values = PrimOp::Ein { operands: vec![names(&["batch", "heads", "seq", "seq2"]), names(&["batch", "heads", "seq2", "hd"])], output: names(&["batch", "heads", "seq", "hd"]) };
-        let NestKind::Contraction(c) = nest_kind(&values, &[a.clone(), v.clone()], seq, Dtype::Bf16, Dtype::F32) else { panic!("the values ein is a contraction") };
+        let NestKind::Contraction(c) = nest_kind(&values, &[a.clone(), v.clone()], seq, Dtype::BF16, Dtype::F32.into()) else { panic!("the values ein is a contraction") };
         assert_eq!((c.i, c.j, c.k, c.nt, c.accum_is_storage, c.width), (16, 64, 16, false, false, 1));
         // The output in another order is not the pattern.
         let swapped = PrimOp::Ein { operands: vec![names(&["batch", "heads", "seq", "seq2"]), names(&["batch", "heads", "seq2", "hd"])], output: names(&["batch", "heads", "hd", "seq"]) };
-        assert_eq!(nest_kind(&swapped, &[a, v], seq, Dtype::F32, Dtype::F32), NestKind::Other);
+        assert_eq!(nest_kind(&swapped, &[a, v], seq, Dtype::F32, Dtype::F32.into()), NestKind::Other);
         // A dot with a rank-two right operand is one; under an interleaved order it is not.
         let (x, w) = (t(&[("batch", 2), ("seq", 16), ("model", 384)]), t(&[("i", 384), ("o", 92)]));
-        let NestKind::Contraction(c) = nest_kind(&PrimOp::Dot, &[x.clone(), w.clone()], seq, Dtype::F64, Dtype::F64) else { panic!("a dot is a contraction") };
+        let NestKind::Contraction(c) = nest_kind(&PrimOp::Dot, &[x.clone(), w.clone()], seq, Dtype::F64, Dtype::F64.into()) else { panic!("a dot is a contraction") };
         assert_eq!((c.dot, c.i, c.j, c.k, c.width), (true, 16, 92, 384, 2));
-        assert_eq!(nest_kind(&PrimOp::Dot, &[x, w], ReductionOrder::Interleaved { partials: 4 }, Dtype::F64, Dtype::F64), NestKind::Other);
+        assert_eq!(nest_kind(&PrimOp::Dot, &[x, w], ReductionOrder::Interleaved { partials: 4 }, Dtype::F64, Dtype::F64.into()), NestKind::Other);
     }
 
     #[test]
@@ -319,14 +293,14 @@ mod tests {
         // dot_vjp_r: xᵀ · ct over batch and seq, flattened: K = 16 · 256, a k-block on seq.
         let r = Contraction::of(&PrimOp::DotVjpR, &[x.clone(), ct.clone()], seq).expect("dot_vjp_r is a contraction");
         assert_eq!((r.name.as_str(), r.outer.len(), r.i, r.j, r.k, r.ks.clone(), r.nt), ("dot_vjp_r", 0, 384, 1536, 4096, vec![16, 256], false));
-        let NestKind::Contraction(c) = nest_kind(&PrimOp::DotVjpR, &[x.clone(), ct.clone()], seq, Dtype::F32, Dtype::F32) else { panic!("dot_vjp_r is a contraction") };
+        let NestKind::Contraction(c) = nest_kind(&PrimOp::DotVjpR, &[x.clone(), ct.clone()], seq, Dtype::F32, Dtype::F32.into()) else { panic!("dot_vjp_r is a contraction") };
         assert_eq!((c.k, c.k_inner, c.dot), (4096, 256, false));
         // Their defaults are 0.9.0's kernels: one accumulator, no lanes.
         let d = Layout::default_for(&NestKind::Contraction(c));
         assert_eq!((d.tile, d.lanes, d.pack), (Some((1, 1)), Some(1), Some(false)));
         // A k-block divides the innermost summed axis, not only their product.
         let small = [t(&[("batch", 2), ("seq", 16), ("model", 8)]), t(&[("batch", 2), ("seq", 16), ("o", 8)])];
-        let NestKind::Contraction(c) = nest_kind(&PrimOp::DotVjpR, &small, seq, Dtype::F32, Dtype::F32) else { panic!("dot_vjp_r is a contraction") };
+        let NestKind::Contraction(c) = nest_kind(&PrimOp::DotVjpR, &small, seq, Dtype::F32, Dtype::F32.into()) else { panic!("dot_vjp_r is a contraction") };
         let kb32 = Layout { kblock: Some(presk_rt::layout::KBlock::Width(32)), ..Layout::default() };
         assert!(kb32.check(&NestKind::Contraction(c)).unwrap_err().contains("innermost"), "K = 32, and seq = 16");
         assert!(Layout::space(&NestKind::Contraction(c)).iter().all(|l| l.kblock != Some(presk_rt::layout::KBlock::Width(32))));

@@ -98,6 +98,14 @@ enum Command {
         /// exact arithmetic to be printed.
         #[arg(long)]
         result_only: bool,
+        /// Print the result as the codes its storage formats hold, in
+        /// hexadecimal, as JSON: a float's sign, exponent and significand
+        /// fields (binary16, an 8-bit float, `f32`, `bf16`), an integer's or
+        /// an affine format's integer code in two's complement, a machine's
+        /// memory image of it (plan 0.18.0 step 6). On the kernel
+        /// interpreter and the native backends, whose values are a format's.
+        #[arg(long, conflicts_with_all = ["json", "verbose"])]
+        codes: bool,
         /// Unroll `stack{L}` into L calls instead of a fold (debugging aid).
         #[arg(long)]
         unroll_stack: bool,
@@ -824,6 +832,17 @@ enum Command {
         bits: u32,
         #[arg(long, value_name = "FILE.json")]
         out: Option<PathBuf>,
+        /// Also record each site's smallest and largest value, which an
+        /// asymmetric scale and its zero point are computed from (`presk
+        /// scales`, plan 0.18.0 step 4).
+        #[arg(long)]
+        range: bool,
+        /// Also record each site's largest rounding error in these float
+        /// formats, comma-separated, beside `f64`, `f32` and `bf16` (plan
+        /// 0.18.0 step 5, D208): what the solver charges a value in a
+        /// format it measured, and the unit term's bound in one it did not.
+        #[arg(long, value_name = "FORMATS")]
+        formats: Option<String>,
         /// Report how far this envelope and another disagree. A ratio near 1
         /// means the magnitudes are a property of the program rather than of
         /// the sample drawn, which is what a bound quoting one needs.
@@ -921,6 +940,32 @@ enum Command {
         /// than in a pass after it as `--quant` does.
         #[arg(long, value_name = "RUNGS")]
         menu: Option<String>,
+        /// A machine's description (plan 0.18.0 step 5, D208): the formats
+        /// it stores values in, the affine formats an activation is and the
+        /// integer weights it reads, what each nest computes in and its
+        /// contraction modes, by which a sum's products and additions are
+        /// rounded according to its operands' formats, and its order. The
+        /// solve offers exactly that menu, measures on the kernel
+        /// interpreter, and writes no realization when none it measured is
+        /// inside the budget (exit 3).
+        #[arg(long, value_name = "FILE.json", conflicts_with_all = ["menu", "quant"])]
+        target: Option<PathBuf>,
+        /// Under --target, where none of the realizations measured is inside
+        /// the budget, write the one of smallest gap here (plan 0.18.0 step
+        /// 6, D209): the refusal's evidence, to be run and judged; `--out`
+        /// still gets nothing, and the exit is still 3.
+        #[arg(long, value_name = "FILE.json", requires = "target")]
+        refused: Option<PathBuf>,
+        /// The range rules' margin (D208): a float format is not offered a
+        /// value whose largest magnitude, times it, passes the format's
+        /// largest finite number, nor a sum whose terms or products do.
+        #[arg(long, value_name = "FACTOR", default_value_t = 2.0)]
+        range_margin: f64,
+        /// Write what the range rules offer each stored value from the menu
+        /// here, and stop (D208): read from the envelope and the program,
+        /// with no sweep and no measurement.
+        #[arg(long, value_name = "FILE.json")]
+        offers: Option<PathBuf>,
         /// The estimate's rounding term (D155): `measured`, the envelope's
         /// largest `|fl_d(x) − x|` over the sampled values, which is 0 where
         /// every value is exact in the type, the default since 0.16.0 (an
@@ -989,6 +1034,26 @@ enum Command {
         /// `.vjp` (0.10.0 step 4). The same bits either way.
         #[arg(long, value_enum, default_value_t = RematArg::Store)]
         remat: RematArg,
+    },
+    /// Compute a realization's static scales from an envelope (plan 0.18.0
+    /// step 4, D207).
+    ///
+    /// Every site the realization's `scaled` map states by a scheme
+    /// (`absmax`, `pow2`, `minmax`) is given the affine format the scheme
+    /// computes from the envelope's magnitudes at the site, its scale and
+    /// zero point as numbers; the realization then names the envelope it is
+    /// conditional on, as every bound is (D35).
+    Scales {
+        /// The realization, a file with a `scaled` map (`@FILE`).
+        #[arg(long)]
+        realize: String,
+        /// The envelope the scales are computed from (`presk calibrate
+        /// --precision`, with `--range` for `minmax`).
+        #[arg(long, value_name = "ENVELOPE.json")]
+        precision: PathBuf,
+        /// Where the realization with its scales is written.
+        #[arg(long, value_name = "FILE.json")]
+        out: PathBuf,
     },
     /// Quantise parameters as a realization's `quant` map says, and measure
     /// the gap in two parts: the weights' rounding and the arithmetic.
@@ -1426,7 +1491,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, result_only, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads, remat } => { set_threads(threads); set_remat(remat); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, (json, verbose, result_only), unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
+        Command::Run { file, entry, dims, consts, seed, bits, digits, json, verbose, result_only, codes, unroll_stack, backend, realize, plan, opt, profile, data, samples, from, weights, threads, remat } => { set_threads(threads); set_remat(remat); run(&file, entry.as_deref(), &dims, &consts, seed, bits, digits as usize, (json, verbose, result_only, codes), unroll_stack, backend, &parse_plan(plan.as_deref(), &realize), Opt { on: opt, profile }, data, samples, from, weights) }
         Command::Export { file, target: ExportTarget::C, mode: Some(ExportMode::Scop), out, shapes, stack, conformance_entry, train, serve, dims, consts, seed, opt, profile, entry, realize, weights, plan, threads, no_exact, straight_line, placed: _, llvm: _, remat } => {
             set_remat(remat);
             let pytorch = [("--shapes", shapes.is_some()), ("--stack", stack.is_some()), ("--conformance-entry", conformance_entry.is_some()), ("--train", train), ("--opt", opt), ("--profile", profile.is_some())];
@@ -1529,14 +1594,22 @@ fn main() -> ExitCode {
             let a = step::StepArgs { file: &file, consts: &consts, weights: &weights, warmup, data: data.as_deref(), from, samples: samples.unwrap_or(2), steps, seed, bits };
             step::calibrate(&a, &realize, out.as_deref(), profile.as_deref(), native_reference)
         }
-        Command::Calibrate { file, precision, entry, dims, consts, data, samples, from, seed, bits, out, compare, weights, steps, realize, profile, reference, remat, .. } => {
+        Command::Calibrate { file, precision, entry, dims, consts, data, samples, from, seed, bits, out, range, formats, compare, weights, steps, realize, profile, reference, remat, .. } => {
             set_remat(remat);
             if steps.is_some() || !realize.is_empty() || profile.is_some() || reference != "exact" {
                 eprintln!("presk calibrate: --steps, --realize, --profile and --reference are for a training step: add --step");
                 return ExitCode::from(2);
             }
-            calibrate_precision(&file, precision, entry.as_deref(), &dims, &consts, data.as_deref(), samples, from, seed, bits, out.as_deref(), compare.as_deref(), weights.as_deref())
+            let formats = match formats.as_deref().map(|l| presk_format::split_names(l).into_iter().map(presk_format::Float::parse).collect::<Result<Vec<_>, _>>()).transpose() {
+                Ok(f) => f.unwrap_or_default(),
+                Err(m) => {
+                    eprintln!("presk calibrate: --formats: {m}");
+                    return ExitCode::from(2);
+                }
+            };
+            calibrate_precision(&file, precision, entry.as_deref(), &dims, &consts, data.as_deref(), samples, from, seed, bits, out.as_deref(), range, formats, compare.as_deref(), weights.as_deref())
         }
+        Command::Scales { realize, precision, out } => scales(&realize, &precision, &out),
         Command::Quantize { file, realize, list, entry, dims, consts, weights, backend, data, samples, from, bits, seed } => quantize(&file, &parse_realize(&realize), list, &entry, &dims, &consts, weights.as_deref(), backend, data.as_deref().map(|d| (d, from, samples)), bits, seed),
         Command::Solve { file, precision, budget, no_verify, bits, out, profile, step: true, grain, remat, .. } => {
             set_remat(remat);
@@ -1546,7 +1619,7 @@ fn main() -> ExitCode {
             };
             step::solve(&file, &precision, budget, bits, !no_verify, out.as_deref(), profile.as_deref(), grain)
         }
-        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, menu, rounding, narrow, estimate, margin, heldout, min_gain, sweep, measure, remat, .. } => {
+        Command::Solve { file, precision, budget, budget_abs, weights, no_verify, bits, seed, out, sites, profile, quant, scheme, menu, target, refused, range_margin, offers, rounding, narrow, estimate, margin, heldout, min_gain, sweep, measure, remat, .. } => {
             set_remat(remat);
             let scheme = match scheme.as_str() {
                 "absmax" => presk_rt::QuantScheme::Absmax,
@@ -1577,7 +1650,12 @@ fn main() -> ExitCode {
                 margin,
                 heldout,
                 min_gain,
+                range_margin,
             };
+            if !(range_margin.is_finite() && range_margin >= 1.0) {
+                eprintln!("presk solve: --range-margin must be a number of at least 1, not {range_margin}");
+                return ExitCode::from(2);
+            }
             if !(margin.is_finite() && margin >= 1.0) {
                 eprintln!("presk solve: --margin must be a number of at least 1, not {margin}");
                 return ExitCode::from(2);
@@ -1586,13 +1664,25 @@ fn main() -> ExitCode {
                 eprintln!("presk solve: --min-gain is a fraction of the entry's traffic, at least 0 and below 1, not {min_gain}");
                 return ExitCode::from(2);
             }
-            let menu = match menu.as_deref().map(presk_precision::solve::Menu::parse).transpose() {
-                Ok(m) => m.unwrap_or_default(),
-                Err(m) => {
-                    eprintln!("presk solve: --menu: {m}");
-                    return ExitCode::from(2);
-                }
+            let menu = match &target {
+                Some(path) => match presk_precision::target::Target::load(path).and_then(presk_precision::solve::Menu::of_target) {
+                    Ok(m) => m,
+                    Err(m) => {
+                        eprintln!("presk solve: --target: {m}");
+                        return ExitCode::from(2);
+                    }
+                },
+                None => match menu.as_deref().map(presk_precision::solve::Menu::parse).transpose() {
+                    Ok(m) => m.unwrap_or_default(),
+                    Err(m) => {
+                        eprintln!("presk solve: --menu: {m}");
+                        return ExitCode::from(2);
+                    }
+                },
             };
+            if let Some(path) = offers {
+                return solve_offers(&file, &precision, &menu, options, &path);
+            }
             if quant && !menu.1.is_empty() {
                 eprintln!("presk solve: --quant quantizes in a pass after the solve, and --menu's integers in the solve itself: one or the other");
                 return ExitCode::from(2);
@@ -1607,7 +1697,7 @@ fn main() -> ExitCode {
                     MeasureArg::Native => presk_driver::precision::Measure::Native,
                 },
             };
-            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, out.as_deref(), sites, profile, quant.then_some(scheme), menu, options, exec)
+            solve_precision(&file, &precision, budget, weights.as_deref(), !no_verify, bits, seed, (out.as_deref(), refused.as_deref()), sites, profile, quant.then_some(scheme), menu, options, exec)
         }
         Command::Plan { file, entry, dims, consts, realize, mode, profile, nest, space, cost, out, seed, remat } => match ra4::Space::parse(&space).inspect(|_| {
             set_remat(remat);
@@ -1841,7 +1931,39 @@ fn serve(file: &Path, consts: &[String], entry: Option<&str>, opts: presk_serve:
 
 /// `presk solve`: a budget in, a realization out (plan 0.5.0 §3.4).
 #[allow(clippy::too_many_arguments)]
-fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, out: Option<&Path>, list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, menu: presk_precision::solve::Menu, options: presk_precision::solve::Options, exec: presk_driver::precision::SolveExec) -> ExitCode {
+/// `presk solve --offers`: what the range rules offer every value the
+/// envelope saw stored, from the menu (plan 0.18.0 step 5, D208).
+fn solve_offers(file: &Path, env_path: &Path, menu: &presk_precision::solve::Menu, options: presk_precision::solve::Options, out: &Path) -> ExitCode {
+    let env = match presk_precision::envelope::Envelope::load(env_path) {
+        Ok(e) => e,
+        Err(m) => {
+            eprintln!("presk solve: {m}");
+            return ExitCode::from(1);
+        }
+    };
+    let (sm, _, mut core) = match core(file, &env.consts, false) {
+        Err(c) => return c,
+        Ok(x) => x,
+    };
+    // The gradients' functions too, which a step's envelope has sites of.
+    let diags = differentiate(&mut core, true);
+    eprint!("{}", render_all(&diags, &sm, color()));
+    if has_errors(&diags) {
+        return ExitCode::from(1);
+    }
+    let rows = presk_precision::solve::offered(&env, &presk_precision::solve::Roles::of(&core), menu, options);
+    let refused: Vec<&(String, String, String)> = rows.iter().flat_map(|r| &r.refused).collect();
+    let by = |rule: &str| refused.iter().filter(|(_, r, _)| r == rule).count();
+    let text = serde_json::to_string_pretty(&serde_json::json!({ "envelope": env_path.display().to_string(), "margin": options.range_margin, "menu": menu.rungs().map(|r| r.name()).collect::<Vec<_>>(), "values": rows })).expect("rows serialize");
+    if let Err(e) = std::fs::write(out, text) {
+        eprintln!("presk solve: {}: {e}", out.display());
+        return ExitCode::from(1);
+    }
+    println!("presk solve: {} stored values of `{}`, {} formats refused by the range rules ({} range, {} divisor, {} constant), margin {}: wrote {}", rows.len(), env.entry, refused.len(), by("range"), by("divisor"), by("constant"), options.range_margin, out.display());
+    ExitCode::SUCCESS
+}
+
+fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve::Budget, weights: Option<&Path>, verify: bool, bits: u32, seed: u64, (out, refused): (Option<&Path>, Option<&Path>), list: usize, profile: Option<PathBuf>, quant: Option<presk_rt::QuantScheme>, menu: presk_precision::solve::Menu, options: presk_precision::solve::Options, exec: presk_driver::precision::SolveExec) -> ExitCode {
     let env = match presk_precision::envelope::Envelope::load(env_path) {
         Ok(e) => e,
         Err(m) => {
@@ -1882,6 +2004,20 @@ fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve:
         println!("{line}");
     }
     let sol = &solved.solution;
+    // Under a target, a realization outside its budget is not written
+    // (D208): none in the target's types was found inside it.
+    if solved.menu.2.is_some() && (sol.measured.is_some_and(|g| g > sol.budget_abs) || !sol.infeasible.is_empty()) {
+        // The one of smallest gap, where one was measured, asked apart
+        // (D209): what the refusal rests on.
+        if let Some(path) = refused.filter(|_| sol.infeasible.is_empty()) {
+            if let Err(e) = write_creating(path, &sol.realization.to_json()) {
+                eprintln!("presk solve: {e}");
+                return ExitCode::from(1);
+            }
+            println!("presk solve: wrote {}, the realization of smallest gap, outside the budget: the refusal's evidence, not a solution", path.display());
+        }
+        return ExitCode::from(3);
+    }
     if let Some(path) = out {
         if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty())
             && let Err(e) = std::fs::create_dir_all(d)
@@ -1896,6 +2032,14 @@ fn solve_precision(file: &Path, env_path: &Path, budget: presk_precision::solve:
         println!("presk solve: wrote {} — run it with `--realize @{}`", path.display(), path.display());
     }
     ExitCode::SUCCESS
+}
+
+/// Writes `text` to `path`, its directory made first.
+fn write_creating(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(path, text)
 }
 
 /// `presk quantize`: the quantised parameters, and the gap of the
@@ -2152,7 +2296,7 @@ fn check_precision(file: &Path, env_path: &Path, realize: &presk_rt::Realization
             eprintln!("presk check: `{}` is not an entry of {}", env.entry, file.display());
             return ExitCode::from(1);
         }
-        Err(presk_driver::precision::BoundError::Measure(m)) => {
+        Err(presk_driver::precision::BoundError::Measure(m) | presk_driver::precision::BoundError::Formats(m)) => {
             eprintln!("presk check: {m}");
             return ExitCode::from(1);
         }
@@ -2165,6 +2309,66 @@ fn check_precision(file: &Path, env_path: &Path, realize: &presk_rt::Realization
 
 /// `presk calibrate --precision`: the magnitude envelope of plan 0.5.0 §3.2.
 #[allow(clippy::too_many_arguments)]
+/// `presk scales`: every scale a realization states by a scheme computed
+/// from the envelope's magnitudes at its site.
+fn scales(spec: &str, envelope: &Path, out: &Path) -> ExitCode {
+    let mut r = match presk_rt::Realization::parse(spec) {
+        Ok(r) => r,
+        Err(m) => {
+            eprintln!("presk scales: {m}");
+            return ExitCode::from(2);
+        }
+    };
+    let env = match presk_precision::envelope::Envelope::load(envelope) {
+        Ok(e) => e,
+        Err(m) => {
+            eprintln!("presk scales: {m}");
+            return ExitCode::from(1);
+        }
+    };
+    if r.scaled.is_empty() {
+        eprintln!("presk scales: the realization has no `scaled` map, so no scale to compute");
+        return ExitCode::from(2);
+    }
+    for (site, sc) in r.scaled.iter_mut() {
+        let scheme = match sc {
+            presk_rt::Scale::Static(a) => {
+                println!("presk scales: {site}: {a} (stated)");
+                continue;
+            }
+            presk_rt::Scale::Scheme(s) => s.clone(),
+        };
+        // A gradient's forward copy reads its base's magnitudes.
+        let at = if env.sites.contains_key(site.as_str()) { site.clone() } else { presk_rt::fwd_base(site).filter(|b| env.sites.contains_key(b)).unwrap_or_else(|| site.clone()) };
+        let Some(m) = env.sites.get(&at).copied() else {
+            eprintln!("presk scales: the envelope has no site `{site}` ({} measured {} sites of `{}`)", envelope.display(), env.sites.len(), env.entry);
+            return ExitCode::from(1);
+        };
+        let range = env.range.get(&at).map(|r| (r[0], r[1]));
+        match scheme.resolve(m, range) {
+            Ok(a) => {
+                let from = match (scheme.scheme, range) {
+                    (presk_rt::ScaleRule::Minmax, Some((lo, hi))) => format!("[{lo:e}, {hi:e}]"),
+                    _ => format!("max|x| = {m:e}"),
+                };
+                println!("presk scales: {site}: {} of {from}: {a}", scheme.scheme.name());
+                *sc = presk_rt::Scale::Static(a);
+            }
+            Err(m) => {
+                eprintln!("presk scales: {site}: {m}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    r.envelope = Some(envelope.display().to_string());
+    if let Err(e) = std::fs::write(out, r.to_json() + "\n") {
+        eprintln!("presk scales: {}: {e}", out.display());
+        return ExitCode::from(1);
+    }
+    println!("presk scales: wrote {}", out.display());
+    ExitCode::SUCCESS
+}
+
 fn calibrate_precision(
     file: &Path,
     precision: bool,
@@ -2177,6 +2381,8 @@ fn calibrate_precision(
     seed: u64,
     bits: u32,
     out: Option<&Path>,
+    range: bool,
+    formats: Vec<presk_format::Float>,
     compare: Option<&Path>,
     weights: Option<&Path>,
 ) -> ExitCode {
@@ -2209,7 +2415,7 @@ fn calibrate_precision(
         eprintln!("presk calibrate: --samples counts the samples read from --data; without --data the entry runs on the one input --seed synthesizes (bind a batch axis with --dim to measure several rows)");
         return ExitCode::from(2);
     }
-    let c = presk_driver::precision::Calibrate { file, entry, dims, consts, data, samples, from, seed, bits, weights };
+    let c = presk_driver::precision::Calibrate { file, entry, dims, consts, data, samples, from, seed, bits, weights, range, formats };
     let env = match presk_driver::precision::calibrate(&core, &prog, &c) {
         Ok(e) => e,
         Err(m) => {
@@ -2344,7 +2550,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         }
     }
     let mut want: Vec<(String, presk_rt::Realization)> =
-        [presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16].iter().map(|d| (format!("{side} {d}"), uniform(*d))).collect();
+        [presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::BF16].iter().map(|d| (format!("{side} {d}"), uniform(*d))).collect();
     // A realization given on the command line is timed too, whatever it is:
     // a solved assignment or a declared reduction order is exactly the thing
     // one wants a row for.
@@ -2359,11 +2565,7 @@ fn bench(file: &Path, entry: &str, dims: &[String], consts: &[String], bits: u32
         // types are 128 bits, so four `f32` or two `f64`. A lane is an
         // independent output column, so the vector row is bit-identical to
         // the scalar one and the only thing that differs is the time.
-        let lanes = match r.default {
-            presk_rt::Dtype::F32 => 4,
-            presk_rt::Dtype::F64 => 2,
-            presk_rt::Dtype::Bf16 => 1,
-        };
+        let lanes = r.default.natural_lanes();
         for (suffix, n) in [("", 1usize), (" +lanes", lanes)] {
             if n == 1 && !suffix.is_empty() {
                 continue;
@@ -2603,7 +2805,7 @@ fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func:
     // Under `--plan-only` the plan's kernels are all that is asked: timing
     // them again under every other realization's default layout takes most
     // of the run on one thread (plan 0.17.0 step 1).
-    let others: &[presk_rt::Dtype] = if plan_only { &[] } else { &[presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::Bf16] };
+    let others: &[presk_rt::Dtype] = if plan_only { &[] } else { &[presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::BF16] };
     for &d in others {
         let r = presk_rt::Realization::uniform(d);
         let label = r.label();
@@ -3506,7 +3708,7 @@ fn parse_dims(dims: &[String]) -> Result<Vec<(String, u64)>, ExitCode> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, (json, verbose, result_only): (bool, bool, bool), unroll_stack: bool, backend: BackendKind, plan: &presk_rt::Plan, opt: Opt, data: Option<PathBuf>, samples: Option<usize>, from: usize, weights: Option<PathBuf>) -> ExitCode {
+fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], seed: u64, bits: u32, digits: usize, (json, verbose, result_only, codes): (bool, bool, bool, bool), unroll_stack: bool, backend: BackendKind, plan: &presk_rt::Plan, opt: Opt, data: Option<PathBuf>, samples: Option<usize>, from: usize, weights: Option<PathBuf>) -> ExitCode {
     let realize = &plan.realization;
     let dims = match parse_dims(dims) {
         Ok(d) => d,
@@ -3544,8 +3746,31 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
     if let Err(c) = check_plan(plan, &core, &sm) {
         return c;
     }
+    if codes && matches!(backend, BackendKind::Interp) {
+        eprintln!("presk run: --codes prints the codes of the formats a value is stored in, and the reference interpreter's values are exact reals: run on --backend kernel, native or llvm");
+        return ExitCode::from(2);
+    }
     let opts = presk_interp::RunOptions { entry: entry.to_string(), dims, seed, bits, digits };
-    let evaluate = |b: &mut dyn presk_rt::Backend| match (&data, &weights) {
+    // The result as the backend gave it, for `--codes`.
+    let raw: std::cell::RefCell<Option<presk_rt::Value>> = std::cell::RefCell::new(None);
+    let compute = |b: &mut dyn presk_rt::Backend| match (&data, &weights) {
+        // `--codes`: the run of the arms below, the result kept as it is.
+        (_, None) if codes => {
+            let (func, fdims, inputs, mut args) = match &data {
+                Some(path) => presk_train::args_on_data(&core, &prog, &opts, path, from, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span })?,
+                None => {
+                    let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts)?;
+                    let args = inputs.iter().map(|(_, v)| presk_rt::Value::from_interp(v)).collect::<presk_rt::Result<Vec<_>>>()?;
+                    (func, fdims, inputs, args)
+                }
+            };
+            realize.store_params(&mut args)?;
+            let p = b.prepare(func, &fdims, realize)?;
+            let result = b.call(&p, args)?;
+            let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (prog.dim_name(*v), *n)).collect();
+            *raw.borrow_mut() = Some(result);
+            Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: presk_interp::Value::Nat(0) })
+        }
         (Some(path), None) => presk_train::run_on_data_from(b, &core, &prog, &opts, realize.clone(), path, from, samples).map_err(|e| presk_rt::RtError { code: e.code, message: e.message, span: e.span }),
         (None, None) => presk_rt::run_with(b, &core, &prog, &opts, realize),
         // Trained parameters: the arguments built as above, the first one
@@ -3580,8 +3805,21 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
             let p = b.prepare(func, &fdims, realize)?;
             let result = b.call(&p, args)?;
             let dims_named: Vec<(String, u64)> = fdims.iter().map(|(v, n)| (prog.dim_name(*v), *n)).collect();
+            if codes {
+                *raw.borrow_mut() = Some(result);
+                return Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: presk_interp::Value::Nat(0) });
+            }
             Ok(presk_interp::RunOutput { entry: opts.entry.clone(), func, dims: dims_named, inputs, result: result.to_interp(opts.bits) })
         }
+    };
+    // What the formats a realization emulates produced (plan 0.18.0 step 3,
+    // D206): on the kernel interpreter, after every run that emulates.
+    let evaluate = |b: &mut dyn presk_rt::Backend| {
+        let out = compute(b);
+        if let Some(c) = b.counts() {
+            eprintln!("presk run: the realization's formats, emulated: {c}");
+        }
+        out
     };
     match with_backend(backend, &core, &prog, bits, plan, evaluate) {
         Err(e) => {
@@ -3594,6 +3832,19 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
             // values (D99's addendum), though it is indices below 2 at run time.
             let f = core.func(out.func);
             let param_ty = |i: usize| f.params.get(i).map_or(&presk_types::Ty::Nat, |p| &p.ty);
+            if let Some(v) = raw.borrow().as_ref() {
+                return match codes_json(v) {
+                    Ok(c) => {
+                        let j = serde_json::json!({ "entry": out.entry, "dims": out.dims.iter().map(|(n, v)| (n.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>(), "result": c });
+                        println!("{}", serde_json::to_string_pretty(&j).unwrap());
+                        ExitCode::SUCCESS
+                    }
+                    Err(m) => {
+                        eprintln!("presk run: --codes: {m}");
+                        ExitCode::from(1)
+                    }
+                };
+            }
             if json {
                 let inputs: serde_json::Map<String, serde_json::Value> = if result_only { serde_json::Map::new() } else { out.inputs.iter().enumerate().map(|(i, (n, v))| (n.clone(), presk_interp::run::to_json_typed(v, param_ty(i), digits))).collect() };
                 let mut j = serde_json::json!({
@@ -3620,6 +3871,48 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
             }
             ExitCode::SUCCESS
         }
+    }
+}
+
+/// A result as the codes its storage formats hold, in hexadecimal
+/// (`presk run --codes`, plan 0.18.0 step 6, D209): a float's sign, exponent
+/// and significand fields ([`presk_format::Float::encode`], a NaN the quiet
+/// one of its sign), an integer's, a fixed-point number's units and an
+/// affine format's integer code in two's complement in their width, `f64`,
+/// `f32` and `bf16` by their bits; each code as many hexadecimal digits as
+/// its format's bits take.
+fn codes_json(v: &presk_rt::Value) -> Result<serde_json::Value, String> {
+    use presk_format::Format;
+    use presk_rt::{Buf, Value};
+    let hex = |c: u64, bits: u32| format!("{c:0w$x}", w = bits.div_ceil(4) as usize);
+    let mask = |bits: u32| if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    match v {
+        Value::Real(t) | Value::Idx { t, .. } => {
+            let (format, codes): (String, Vec<String>) = match &t.data {
+                Buf::F64(e) => ("f64".into(), e.iter().map(|x| hex(x.to_bits(), 64)).collect()),
+                Buf::F32(e) => ("f32".into(), e.iter().map(|x| hex(u64::from(x.to_bits()), 32)).collect()),
+                Buf::Bf16(e) => ("bf16".into(), e.iter().map(|x| hex(u64::from(*x), 16)).collect()),
+                Buf::I64(e) => ("i64".into(), e.iter().map(|x| hex(*x as u64, 64)).collect()),
+                Buf::Format(f, e) => {
+                    let code = |x: f64| -> Option<u64> {
+                        match f {
+                            Format::Float(g) => g.encode(x),
+                            Format::Int(i) => Some(x as i64 as u64 & mask(i.bits)),
+                            Format::Fixed(x_) => Some((x * 2f64.powi(x_.frac)) as i64 as u64 & mask(x_.int.bits)),
+                            Format::Affine(a) => Some(((x / a.scale()).round() as i64 + a.zero) as u64 & mask(a.int.bits)),
+                        }
+                    };
+                    let codes = e.iter().map(|x| code(*x).map(|c| hex(c, f.bits())).ok_or_else(|| format!("{x} is no value of {f}"))).collect::<Result<Vec<_>, String>>()?;
+                    (f.name().into_owned(), codes)
+                }
+                Buf::Exact(_) => return Err("the reference interpreter's exact reals are no format's codes".into()),
+                Buf::Quant(_) => return Err("a result of integer weights, whose codes are a parameter's".into()),
+            };
+            Ok(serde_json::json!({ "format": format, "axes": t.axes.iter().map(|a| serde_json::json!({ "name": a.name, "len": a.len })).collect::<Vec<_>>(), "codes": codes }))
+        }
+        Value::Tuple(vs) => Ok(serde_json::Value::Array(vs.iter().map(codes_json).collect::<Result<_, _>>()?)),
+        Value::Record(fs) => Ok(serde_json::Value::Object(fs.iter().map(|(n, x)| Ok((n.clone(), codes_json(x)?))).collect::<Result<_, String>>()?)),
+        other => Err(format!("a {} is no tensor of a format", other.kind())),
     }
 }
 

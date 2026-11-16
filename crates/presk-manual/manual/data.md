@@ -10,11 +10,13 @@ and the `presk data` command.
 
 ```text
 magic      "PSKD"                      4 bytes
-version    u16 = 1 or 2                little-endian
+version    u16 = 1, 2 or 3             little-endian
 type_len   u32, then the type, UTF-8   the sample type in Presk syntax
 count      u64                         number of samples
-leaves     u32, version 2 only         the leaves of the type
-encodings  u8 a leaf, version 2 only   0 f64 (and every idx), 1 f32, 2 bf16
+leaves     u32, versions 2 and 3       the leaves of the type
+encodings  u8 a leaf, versions 2, 3    0 f64 (and every idx), 1 f32, 2 bf16;
+                                       3 a format by its parameters (version 3),
+                                       followed by six bytes
 data                                   the samples, back to back
 ```
 
@@ -32,6 +34,31 @@ the leaf's encoding does not hold (`E9004`), and `presk data info` lists
 the encodings. A version 1 file of the same leaves is read to the same
 bits, whatever the version.
 
+**Version 3** (0.18.0 step 1, D204) stores a leaf in any float format,
+given by its parameters (the `precision` chapter, "Formats"): encoding 3,
+followed in the header by the format's six bytes,
+
+```text
+p      u8    bits of significand
+emin   i16   little-endian
+emax   i16   little-endian
+flags  u8    bit 0 subnormals; bits 1–2 the special values (0 IEEE, 1 NaN,
+             2 none); bits 3–4 the overflow (0 an infinity, 1 NaN, 2
+             saturation); bit 5 an underflow to +0
+```
+
+and each element of the leaf as its code in the fewest whole bytes that
+hold the format's bits, little-endian: a byte for an 8-bit or a 4-bit
+format, two bytes for binary16, three for `e8m15`. `f64`, `f32` and `bf16`
+keep their codes, so a file is version 3 only when a leaf is in another
+format; `write_encoded` writes one by its parameters, and `presk data
+info` names it (`float(p=4,emin=-6,emax=8,specials=none,underflow=+0)`).
+Every number of a format is a number of `f64`, so the leaf is read
+exactly. A header that describes no format, or encoding 3 in a version 2
+file, is refused (`E9002`). The C export's and the PyTorch export's
+readers take versions 1 and 2 and refuse version 3 (`E9002`): no program
+they run computes in another format before version 0.18.1.
+
 A sample is the concatenation of the leaves of its type, in order: for a
 tuple, its elements left to right; for a parameter tree, its fields in
 declaration order. Each leaf is a tensor in row-major order:
@@ -39,7 +66,7 @@ declaration order. Each leaf is a tensor in row-major order:
 | Leaf type | Element on disk |
 |---|---|
 | `idx[N][…]` | the smallest of `u8`, `u16`, `u32`, `u64` that holds `N − 1`, little-endian |
-| `ℝ[…]` | `f64`, little-endian; in version 2, the leaf's encoding |
+| `ℝ[…]` | `f64`, little-endian; in versions 2 and 3, the leaf's encoding |
 
 Two rules follow from the language's semantics:
 

@@ -110,7 +110,7 @@ fn parameters_in_their_own_types_are_rounded_once_on_every_executor() {
         let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
         let Some(theta @ Value::Record(_)) = args.first() else { continue };
         let paths = presk_rt::quant::param_paths(theta);
-        for (default, own) in [(Dtype::F64, Dtype::F32), (Dtype::F64, Dtype::Bf16), (Dtype::F32, Dtype::Bf16), (Dtype::Bf16, Dtype::F32)] {
+        for (default, own) in [(Dtype::F64, Dtype::F32), (Dtype::F64, Dtype::BF16), (Dtype::F32, Dtype::BF16), (Dtype::BF16, Dtype::F32)] {
             let plain = Realization::uniform(default);
             let mut r = plain.clone();
             r.params = paths.iter().map(|p| (p.clone(), own)).collect();
@@ -166,7 +166,7 @@ fn a_parameter_in_its_own_type_is_not_converted_at_an_edge() {
         let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
         let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
         let paths = presk_rt::quant::param_paths(&args[0]);
-        for (default, own) in [(Dtype::F64, Dtype::Bf16), (Dtype::F64, Dtype::F32), (Dtype::F32, Dtype::Bf16)] {
+        for (default, own) in [(Dtype::F64, Dtype::BF16), (Dtype::F64, Dtype::F32), (Dtype::F32, Dtype::BF16)] {
             let mut r = Realization::uniform(default);
             r.params = paths.iter().map(|p| (p.clone(), own)).collect();
             let stored = r.realize_args(&args).unwrap();

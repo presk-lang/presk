@@ -283,7 +283,7 @@ impl Lanes<'_> {
                 }
                 Some(Expr::VLoad(*buf, self.scaled_ix(ix)))
             }
-            Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div), x, y) => {
+            Expr::Bin(op, x, y) if matches!(op.plain(), BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) => {
                 Some(Expr::VBin(*op, Box::new(self.vec(x, assigned)?), Box::new(self.vec(y, assigned)?)))
             }
             _ => None,
@@ -380,7 +380,7 @@ mod tests {
     }
 
     fn kernel(d: Dtype, inputs: &[&[usize]], output: &[usize], nloops: usize, nreal: usize, body: Vec<Stmt>) -> Kernel {
-        Kernel { name: "k".into(), dtype: d, inputs: inputs.iter().map(|s| spec(s)).collect(), output: spec(output), nloops, nreal, nint: 0, nvec: 0, lanes: 1, body, threads: Threads::Default }
+        Kernel { name: "k".into(), dtype: d, arith: presk_kernel::ir::Arith::native(d), inputs: inputs.iter().map(|s| spec(s)).collect(), output: spec(output), nloops, nreal, nint: 0, nvec: 0, lanes: 1, body, threads: Threads::Default }
     }
 
     fn add(x: Expr, y: Expr) -> Expr {

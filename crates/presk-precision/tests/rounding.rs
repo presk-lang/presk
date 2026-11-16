@@ -1,10 +1,12 @@
 //! The estimate's rounding term measured on the envelope, and the narrowing
 //! step decided by measurement (D155).
 
-use presk_precision::envelope::Envelope;
+use presk_precision::envelope::{Envelope, Rounding};
 use presk_precision::sensitivity::Sensitivity;
 use presk_precision::solve::{self, Budget, Menu, Narrow, Options, RoundingTerm};
 use presk_rt::{Dtype, Realization};
+
+const THREE: [presk_format::Float; 3] = [presk_format::F64, presk_format::F32, presk_format::BF16];
 
 /// Sites of magnitude 1 and sensitivity 1, with these elements and these
 /// rounding errors `[f64, f32, bf16]`.
@@ -12,7 +14,7 @@ fn envelope(sites: &[(&str, u64, [f64; 3])]) -> (Envelope, Sensitivity) {
     let mut e = Envelope::new("p.psk", "f", 128, "2026-10-19");
     e.observe(&sites.iter().map(|(s, _, _)| (s.to_string(), 1.0)).collect());
     e.observe_elems(&sites.iter().map(|(s, n, _)| (s.to_string(), *n)).collect());
-    e.observe_rounding(&sites.iter().map(|(s, _, r)| (s.to_string(), *r)).collect());
+    e.observe_rounding(&sites.iter().map(|(s, _, r)| (s.to_string(), Rounding::three(*r).0)).collect());
     let sens = Sensitivity { sites: sites.iter().map(|(s, _, _)| (s.to_string(), 1.0)).collect() };
     (e, sens)
 }
@@ -25,14 +27,14 @@ fn solve_with(env: &Envelope, sens: &Sensitivity, budget: f64, options: Options,
 fn a_value_exact_in_bf16_costs_nothing_under_the_measured_term() {
     // A mask of ones (exact in every type) and a value that rounds as the
     // unit term says, under a budget `bf16`'s unit term exceeds.
-    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::Bf16.unit_roundoff()];
+    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::BF16.unit_roundoff()];
     let (env, sens) = envelope(&[("f/%1", 1000, [0.0; 3]), ("f/%2", 10, rounds)]);
     let budget = 1e-4;
-    assert!(Dtype::Bf16.unit_roundoff() > budget);
+    assert!(Dtype::BF16.unit_roundoff() > budget);
     let unit = solve_with(&env, &sens, budget, Options { rounding: RoundingTerm::Unit, narrow: Narrow::Off, ..Options::default() }, None);
     assert_eq!(unit.realization.storage.get("f/%1"), Some(&Dtype::F32), "the unit term charges the ones");
     let measured = solve_with(&env, &sens, budget, Options { rounding: RoundingTerm::Measured, narrow: Narrow::Off, ..Options::default() }, None);
-    assert_eq!(measured.realization.storage.get("f/%1"), Some(&Dtype::Bf16), "measured, they cost nothing in bf16");
+    assert_eq!(measured.realization.storage.get("f/%1"), Some(&Dtype::BF16), "measured, they cost nothing in bf16");
     assert_eq!(measured.realization.storage.get("f/%2"), Some(&Dtype::F32), "and the other value is charged as before");
     assert!(measured.bytes < unit.bytes);
     // An envelope without the measured term keeps the unit one.
@@ -53,14 +55,15 @@ fn the_default_options_are_the_measured_term_without_narrowing() {
 fn narrowing_keeps_a_step_only_while_the_measurement_fits() {
     // Three sites whose `bf16` the estimate refuses; the "measurement" adds
     // 1e-6 a site in `f32` and 1e-3 a site in `bf16`.
-    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::Bf16.unit_roundoff()];
+    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::BF16.unit_roundoff()];
     let (env, sens) = envelope(&[("f/%1", 300, rounds), ("f/%2", 200, rounds), ("f/%3", 100, rounds)]);
     let budget = 2.5e-3;
     let gap = |r: &Realization| -> f64 {
-        r.storage.values().map(|d| match d {
+        r.storage.values().map(|d| match *d {
             Dtype::F64 => 0.0,
             Dtype::F32 => 1e-6,
-            Dtype::Bf16 => 1e-3,
+            Dtype::BF16 => 1e-3,
+            d => d.unreachable(),
         }).sum()
     };
     let mut calls = 0usize;
@@ -78,8 +81,8 @@ fn narrowing_keeps_a_step_only_while_the_measurement_fits() {
     };
     let on = solve_with(&env, &sens, budget, Options { rounding: RoundingTerm::Unit, narrow: Narrow::Measured, margin: 1.0, ..Options::default() }, Some(&mut measure));
     // Largest saving first: %1 and %2 fit in bf16, %3 does not, twice.
-    assert_eq!(on.realization.storage.get("f/%1"), Some(&Dtype::Bf16));
-    assert_eq!(on.realization.storage.get("f/%2"), Some(&Dtype::Bf16));
+    assert_eq!(on.realization.storage.get("f/%1"), Some(&Dtype::BF16));
+    assert_eq!(on.realization.storage.get("f/%2"), Some(&Dtype::BF16));
     assert_eq!(on.realization.storage.get("f/%3"), Some(&Dtype::F32));
     assert_eq!(on.narrowed, 2);
     assert_eq!(on.narrow_passes, 2, "a second pass, since the first changed something, which changes nothing");
@@ -93,7 +96,7 @@ fn narrowing_keeps_a_step_only_while_the_measurement_fits() {
 
 #[test]
 fn the_narrowing_undoes_every_step_the_measurement_refuses() {
-    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::Bf16.unit_roundoff()];
+    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::BF16.unit_roundoff()];
     let (env, sens) = envelope(&[("f/%1", 300, rounds), ("f/%2", 200, rounds)]);
     // Every realization but all-f64 fails: the widening walks back to f64,
     // and every narrowing step from there is measured and undone.
@@ -123,11 +126,11 @@ fn the_interpreters_bf16_is_the_runtimes() {
     // A double's rounding: exact where it is representable, at most the
     // unit term elsewhere.
     for x in [1.0f64, 32.0, 0.5, -2.0, 0.0] {
-        assert_eq!(presk_interp::eval::rounding_of_f64(x), [0.0; 3], "{x}");
+        assert_eq!(presk_interp::eval::rounding_of_f64(x, &THREE), [0.0; 3], "{x}");
     }
     for x in [1.0f64 / 3.0, 0.2, 5.656854249492381, -1e-5, 123.456] {
-        let r = presk_interp::eval::rounding_of_f64(x);
+        let r = presk_interp::eval::rounding_of_f64(x, &THREE);
         assert!(r[1] > 0.0 && r[1] <= Dtype::F32.unit_roundoff() * x.abs(), "{x}: {r:?}");
-        assert!(r[2] > 0.0 && r[2] <= Dtype::Bf16.unit_roundoff() * x.abs(), "{x}: {r:?}");
+        assert!(r[2] > 0.0 && r[2] <= Dtype::BF16.unit_roundoff() * x.abs(), "{x}: {r:?}");
     }
 }

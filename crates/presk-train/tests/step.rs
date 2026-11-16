@@ -110,10 +110,10 @@ fn a_realization_by_function_reaches_the_optimizer() {
     };
     let base = run(Realization::uniform(Dtype::F64));
     let mut opt = Realization::uniform(Dtype::F64);
-    opt.functions.insert("adamw.step".into(), Dtype::Bf16);
+    opt.functions.insert("adamw.step".into(), Dtype::BF16);
     assert!(run(opt).dist2_f64(&base) > 0.0, "adamw.step in bf16 moved θ");
     let mut none = Realization::uniform(Dtype::F64);
-    none.functions.insert("no.such.function".into(), Dtype::Bf16);
+    none.functions.insert("no.such.function".into(), Dtype::BF16);
     assert_eq!(run(none).dist2_f64(&base), 0.0);
 }
 
@@ -190,14 +190,14 @@ fn the_step_s_sites_are_the_training_loop_s() {
         let looped: std::collections::BTreeSet<String> = b.interp.magnitudes.take().unwrap().into_keys().collect();
         // Every step site in `bf16`, carried to the loop's plan.
         let mut r = Realization::uniform(Dtype::F64);
-        r.storage = step.iter().map(|k| (k.clone(), Dtype::Bf16)).collect();
+        r.storage = step.iter().map(|k| (k.clone(), Dtype::BF16)).collect();
         let p = presk_train::plan_for_loop(&presk_rt::Plan::from_realization(r), &core, &fns);
         let (vjp, vv) = (core.func(fns.vjp).name.clone(), core.func(fns.value_vjp).name.clone());
         let missing: Vec<&String> = step
             .iter()
             .filter(|k| {
                 let carried = k.strip_prefix(vjp.as_str()).filter(|r| r.starts_with('/')).map(|r| format!("{vv}{r}"));
-                !looped.contains(*k) && !carried.is_some_and(|c| looped.contains(&c) && p.realization.storage.get(&c) == Some(&Dtype::Bf16))
+                !looped.contains(*k) && !carried.is_some_and(|c| looped.contains(&c) && p.realization.storage.get(&c) == Some(&Dtype::BF16))
             })
             .collect();
         assert!(step.len() > 100, "{remat:?}: {} sites", step.len());

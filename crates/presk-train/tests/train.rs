@@ -184,7 +184,7 @@ fn training_refuses_parameters_in_their_own_types() {
     let (prog, typed, mut core) = prepare("examples/tests/train/dropout_reg.psk", &[]);
     let fns = prepare_training(&mut core, &prog, &typed).unwrap();
     let mut r = Realization::uniform(Dtype::F64);
-    r.params.insert("l1.w".into(), Dtype::Bf16);
+    r.params.insert("l1.w".into(), Dtype::BF16);
     let topts = TrainOptions { data: None, steps: Some(1), epochs: None, seed: 0, bits: 64, realize: r, ckpt: None, checkpoints: false };
     let mut b = InterpBackend::new(&core, &prog, 64);
     let e = train(&mut b, &core, &prog, &typed, &fns, &topts, |_| {}).unwrap_err();

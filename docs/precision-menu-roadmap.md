@@ -4,7 +4,7 @@
 > user left for later when deciding to keep `--quant` a pass on top of the
 > float assignment (plan 0.12.0's step 4 asked for one menu; D123 kept
 > two). To be turned into a plan when a version takes quantization further
-> (an `fp8` type, Petal's `int8`, a GPU's narrow types).
+> (an `fp8` type, an accelerator's `int8` arithmetic, a GPU's narrow types).
 
 ## What runs now (0.12.0)
 

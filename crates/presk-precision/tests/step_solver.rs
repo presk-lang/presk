@@ -9,7 +9,7 @@ use presk_precision::solve::{Group, Menu, by_function, solve_step, step_cost};
 use presk_rt::{Dtype, Realization};
 
 fn group(name: &str, f64_cost: f64) -> Group {
-    let cost = BTreeMap::from([(Dtype::F64, f64_cost), (Dtype::F32, f64_cost / 2.0), (Dtype::Bf16, f64_cost / 3.0)]);
+    let cost = BTreeMap::from([(Dtype::F64, f64_cost), (Dtype::F32, f64_cost / 2.0), (Dtype::BF16, f64_cost / 3.0)]);
     Group { name: name.into(), sites: 1, elems: 1, cost, gap: BTreeMap::new() }
 }
 
@@ -27,11 +27,11 @@ fn measure_with(isolated: &BTreeMap<(String, Dtype), f64>, interact: bool) -> im
 fn isolated() -> BTreeMap<(String, Dtype), f64> {
     [
         (("adamw.step", Dtype::F32), 1e-4),
-        (("adamw.step", Dtype::Bf16), 0.9),
+        (("adamw.step", Dtype::BF16), 0.9),
         (("Linear.apply.vjp", Dtype::F32), 1e-6),
-        (("Linear.apply.vjp", Dtype::Bf16), 1e-3),
+        (("Linear.apply.vjp", Dtype::BF16), 1e-3),
         (("GPT.apply", Dtype::F32), 1e-7),
-        (("GPT.apply", Dtype::Bf16), 5e-4),
+        (("GPT.apply", Dtype::BF16), 5e-4),
     ]
     .into_iter()
     .map(|((f, d), g)| ((f.to_string(), d), g))
@@ -46,8 +46,8 @@ fn the_proposal_fits_the_budget() {
     let groups = vec![group("adamw.step", 10.0), group("Linear.apply.vjp", 30.0), group("GPT.apply", 20.0)];
     let s = solve_step(groups.clone(), 1e-2, &Menu::default(), Dtype::F64, &mut measure_with(&iso, false), true);
     assert_eq!(s.chosen["adamw.step"], Dtype::F32);
-    assert_eq!(s.chosen["Linear.apply.vjp"], Dtype::Bf16);
-    assert_eq!(s.chosen["GPT.apply"], Dtype::Bf16);
+    assert_eq!(s.chosen["Linear.apply.vjp"], Dtype::BF16);
+    assert_eq!(s.chosen["GPT.apply"], Dtype::BF16);
     assert_eq!(s.rounds, 0);
     assert!((s.measured.unwrap() - s.estimate).abs() < 1e-15);
     assert!((step_cost(&s.groups, &s.realization) - s.cost).abs() < 1e-12);

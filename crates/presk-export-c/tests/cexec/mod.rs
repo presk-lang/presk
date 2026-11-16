@@ -263,6 +263,7 @@ fn ptr(b: &Buf) -> Result<*mut u8, RtError> {
         // output (`CExec::run`), as the native backend passes them.
         Buf::Quant(q) => q.data.as_ptr() as *mut u8,
         Buf::Exact(_) => return Err(RtError { code: "E10001", message: "the C executor: an exact buffer".into(), span: None }),
+        Buf::Format(..) => b.unemulated(),
     })
 }
 
@@ -348,6 +349,7 @@ fn sentinel(b: &Buf) -> u64 {
         Buf::Bf16(_) => 0x7f81,
         Buf::I64(_) => (i64::MIN + 0xbeef) as u64,
         Buf::Exact(_) | Buf::Quant(_) => unreachable!("an output is a machine buffer"),
+        Buf::Format(..) => b.unemulated(),
     }
 }
 
@@ -360,6 +362,7 @@ fn sentinels(b: &Buf) -> Buf {
         Buf::Bf16(x) => Buf::Bf16(vec![s as u16; x.len()].into()),
         Buf::I64(x) => Buf::I64(vec![s as i64; x.len()].into()),
         Buf::Exact(_) | Buf::Quant(_) => unreachable!("an output is a machine buffer"),
+        Buf::Format(..) => b.unemulated(),
     }
 }
 
@@ -376,6 +379,7 @@ fn raw_buf(b: &Buf) -> Vec<u64> {
         Buf::Bf16(x) => x.iter().map(|y| *y as u64).collect(),
         Buf::I64(x) => x.iter().map(|y| *y as u64).collect(),
         Buf::Exact(_) | Buf::Quant(_) => panic!("an exact or integer-weight result"),
+        Buf::Format(..) => b.unemulated(),
     }
 }
 

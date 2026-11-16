@@ -52,28 +52,28 @@ fn indices_and_scalars() {
 fn a_realization_survives_its_file_form() {
     use presk_rt::{Dtype, Realization, ReductionOrder};
     let mut r = Realization::uniform(Dtype::F32);
-    r.storage.insert("loss/%17".into(), Dtype::Bf16);
+    r.storage.insert("loss/%17".into(), Dtype::BF16);
     r.storage.insert("loss/%23".into(), Dtype::F64);
-    r.accum.insert("loss/%17".into(), Dtype::F32);
+    r.accum.insert("loss/%17".into(), Dtype::F32.into());
     r.order = ReductionOrder::Interleaved { partials: 8 };
     r.envelope = Some("out/envelope.json".into());
     let back: Realization = serde_json::from_str(&r.to_json()).unwrap();
     assert_eq!(back, r);
 
     // The defaults a site inherits, and the one that is not the storage type.
-    assert_eq!(back.dtype_at("loss/%17"), Dtype::Bf16);
+    assert_eq!(back.dtype_at("loss/%17"), Dtype::BF16);
     assert_eq!(back.dtype_at("loss/%99"), Dtype::F32, "an unmentioned site takes the default");
-    assert_eq!(back.accum_at("loss/%23"), Dtype::F64, "an unmentioned accumulator follows its storage");
-    assert_eq!(back.accum_at("loss/%42"), Dtype::F32);
+    assert_eq!(back.accum_at("loss/%23"), Dtype::F64.into(), "an unmentioned accumulator follows its storage");
+    assert_eq!(back.accum_at("loss/%42"), Dtype::F32.into());
 
     // By function (0.6.0 step 7b): a site takes its function's type unless
     // it is named itself, and a file written before the field still loads.
     let mut f = back.clone();
-    f.functions.insert("adamw.step".into(), Dtype::Bf16);
+    f.functions.insert("adamw.step".into(), Dtype::BF16);
     f.functions.insert("loss".into(), Dtype::F64);
-    assert_eq!(f.dtype_at("adamw.step/%3"), Dtype::Bf16);
+    assert_eq!(f.dtype_at("adamw.step/%3"), Dtype::BF16);
     assert_eq!(f.dtype_at("Linear.apply.vjp/%3"), Dtype::F32, "another function takes the default");
-    assert_eq!(f.dtype_at("loss/%17"), Dtype::Bf16, "a site named itself overrides its function");
+    assert_eq!(f.dtype_at("loss/%17"), Dtype::BF16, "a site named itself overrides its function");
     assert_eq!(f.dtype_at("loss/%99"), Dtype::F64);
     let again: Realization = serde_json::from_str(&f.to_json()).unwrap();
     assert_eq!(again, f);
@@ -97,7 +97,7 @@ fn a_realization_sees_the_groups_under_bf16_or_a_site_apart() {
     use presk_rt::{AxisRef, Dtype, Quant, QuantScheme, Realization};
     assert!(!Realization::uniform(Dtype::F64).groups_visible());
     assert!(!Realization::uniform(Dtype::F32).groups_visible());
-    assert!(Realization::uniform(Dtype::Bf16).groups_visible());
+    assert!(Realization::uniform(Dtype::BF16).groups_visible());
     let mut f = Realization::uniform(Dtype::F64);
     f.functions.insert("Linear.apply.vjp".into(), Dtype::F32);
     f.functions.insert("adamw.step".into(), Dtype::F32);
@@ -113,11 +113,11 @@ fn a_realization_sees_the_groups_under_bf16_or_a_site_apart() {
     fwd.storage.insert("Block.apply/%7".into(), Dtype::F64);
     assert!(fwd.groups_visible(), "a forward site apart, which `Block.apply.fwd/%7` takes too");
     let mut b = f.clone();
-    b.functions.insert("adamw.lr".into(), Dtype::Bf16);
+    b.functions.insert("adamw.lr".into(), Dtype::BF16);
     assert!(b.groups_visible());
     let mut q = Realization::uniform(Dtype::F32);
     q.quant.insert("blocks.ff.up.w".into(), Quant { bits: 8, over: AxisRef::Pos(-2), scheme: QuantScheme::Absmax });
-    q.accum.insert("loss/%3".into(), Dtype::F64);
+    q.accum.insert("loss/%3".into(), Dtype::F64.into());
     assert!(!q.groups_visible(), "integer weights and accumulators are the contractions'");
 }
 
@@ -158,4 +158,120 @@ fn a_checkpoint_of_other_dimensions_is_refused() {
     assert_eq!(load_params(&path, &tree(8)).unwrap(), tree(8), "the same dimensions load");
     assert_eq!(load_params(&path, &tree(4)).unwrap_err().code, "E9005", "a longer file is a model of other dimensions");
     assert_eq!(load_params(&path, &tree(16)).unwrap_err().code, "E9003", "a shorter one is truncated");
+}
+
+/// A type is a format (plan 0.18.0 step 1, D204): `f64`, `f32` and `bf16`
+/// keep every property, name, order and spelling they had as an enum. Since
+/// step 3 (D206) a realization stores a value in any float format, named
+/// by its alias or its parameters; the native types are the three, which
+/// the solver's menu alone keeps to (`E7004`), and a realization that
+/// names another is one the native backends refuse (`E7005`).
+#[test]
+fn types_are_formats() {
+    use presk_rt::Realization;
+    assert_eq!([Dtype::F64.format(), Dtype::F32.format(), Dtype::BF16.format()], [presk_format::F64, presk_format::F32, presk_format::BF16]);
+    assert_eq!(Dtype::ALL.map(|d| d.bytes()), [8, 4, 2]);
+    assert_eq!(Dtype::ALL.map(|d| d.natural_lanes()), [2, 4, 1]);
+    assert_eq!(Dtype::ALL.map(|d| d.arith()), [Dtype::F64, Dtype::F32, Dtype::F32]);
+    assert_eq!(Dtype::ALL.map(|d| d.unit_roundoff().to_bits()), [(f64::EPSILON / 2.0).to_bits(), (f32::EPSILON as f64 / 2.0).to_bits(), 2f64.powi(-8).to_bits()]);
+    assert!(Dtype::F64 < Dtype::F32 && Dtype::F32 < Dtype::BF16);
+    assert_eq!(Dtype::ALL.map(|d| format!("{d:?} {d}")), ["F64 f64", "F32 f32", "Bf16 bf16"]);
+    assert_eq!(serde_json::to_string(&Dtype::ALL).unwrap(), r#"["f64","f32","bf16"]"#);
+    assert_eq!(serde_json::from_str::<Vec<Dtype>>(r#"["bf16","f64"]"#).unwrap(), [Dtype::BF16, Dtype::F64]);
+    assert_eq!(Dtype::of_name("float(p=8,emin=-126,emax=127)"), Ok(Dtype::BF16));
+    assert!(Dtype::ALL.iter().all(|d| d.is_native()));
+    // Every other float format is a type the kernel interpreter emulates.
+    let e4m3 = "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)";
+    for name in ["f16", "e4m3fn", e4m3] {
+        let d = Dtype::of_name(name).unwrap();
+        assert!(!d.is_native() && d.name() == name && d.to_string() == name && Dtype::parse(name) == Some(d), "{name}");
+        assert_eq!(serde_json::to_string(&d).unwrap(), format!("\"{name}\""));
+        assert!(Dtype::native(d.format()).unwrap_err().contains("[E7004]"), "{name}");
+        assert_eq!(Realization::parse(name).unwrap(), Realization::uniform(d));
+        let file = format!(r#"{{"default": "f32", "storage": {{"f/%1": "{name}"}}, "order": {{"kind": "sequential"}}}}"#);
+        let r: Realization = serde_json::from_str(&file).unwrap();
+        assert_eq!((r.dtype_at("f/%1"), r.dtype_at("f/%2")), (d, Dtype::F32));
+        let e = r.check_native("the native backend").unwrap_err();
+        assert!(e.code == "E7005" && e.message.starts_with(&format!("the realization stores `f/%1` in {name}: the native backend computes in f64, f32 and bf16")), "{}", e.message);
+    }
+    assert_eq!(Dtype::of_name("f16").unwrap().arith(), Dtype::F32, "f32 holds f16: an f16 value computes in f32, as bf16 does");
+    assert_eq!(Buf::of(Dtype::of_name(e4m3).unwrap(), &[1.0, 3.0, 17.0, 1e6, -0.0]).to_f64(), [1.0, 3.0, 16.0, 480.0, 0.0], "rounded once, saturated, underflowing to +0");
+    assert_eq!(Realization::parse("f8").unwrap_err(), "unknown realization `f8`; expected f64, f32, bf16, another float format's name or @FILE");
+}
+
+/// What a nest computes in (plan 0.18.0 step 3, D206): its arithmetic
+/// format, its storage type's arithmetic type unless the realization says
+/// otherwise; the products of its sums and its sums in that format unless
+/// it says otherwise; each read through a stored gradient's forward pass as
+/// the storage type is. A realization stating any is one the native
+/// backends compute only where it is what they compute anyway.
+#[test]
+fn a_nest_computes_in_its_formats() {
+    use presk_format::Format;
+    use presk_rt::{Realization, ReductionOrder};
+    let f16 = Format::Float(presk_format::F16);
+    let json = r#"{"default": "f32", "storage": {"g/%2": "bf16"}, "arith": {"g/%1": "f16"}, "product": {"g/%1": "f16"}, "accum": {"g/%1": "fixed(i64,frac=18)", "g/%2": "f32"}, "order": {"kind": "chunked", "size": 32}}"#;
+    let r: Realization = serde_json::from_str(json).unwrap();
+    assert_eq!((r.arith_at("g/%1"), r.product_at("g/%1"), r.accum_at("g/%1")), (f16, f16, Format::parse("fixed(i64,frac=18)").unwrap()));
+    // Unmentioned: the storage type's arithmetic type, `bf16`'s `f32`.
+    assert_eq!((r.arith_at("g/%2"), r.product_at("g/%2"), r.accum_at("g/%2")), (Dtype::F32.into(), Dtype::F32.into(), Dtype::F32.into()));
+    assert_eq!((r.arith_at("g/%3"), r.accum_at("g/%3")), (Dtype::F32.into(), Dtype::F32.into()));
+    // A stored gradient's forward pass reads `g`'s.
+    assert_eq!((r.arith_at("g.fwd/%1"), r.accum_at("g.fwd/%1")), (f16, r.accum_at("g/%1")));
+    assert_eq!(r.order, ReductionOrder::Chunked { size: 32 });
+    assert_eq!((r.order.name(), r.order.is_exact()), ("chunked(32)".to_string(), false));
+    assert!(!r.is_uniform() && r.emulates() && r.label() == "f32+chunked(32)+1sites+1arith+1product+2accum", "{}", r.label());
+    assert_eq!(serde_json::from_str::<Realization>(&r.to_json()).unwrap(), r);
+    let e = r.check_native("the native backend").unwrap_err();
+    assert!(e.message.starts_with("the realization computes `g/%1` in f16, where its storage type's arithmetic type is f32"), "{}", e.message);
+    // The formats a native backend computes in anyway are native.
+    let mut native = Realization::uniform(Dtype::BF16);
+    native.arith.insert("g/%1".into(), Dtype::F32.into());
+    native.accum.insert("g/%1".into(), Dtype::F32.into());
+    native.order = ReductionOrder::Chunked { size: 4 };
+    assert!(native.check_native("the native backend").is_ok() && !native.emulates());
+}
+
+/// A value stored in an affine format (plan 0.18.0 step 4, D207): the
+/// realization records its format, or the scheme an envelope computes it
+/// by, which every executor refuses until `presk scales` has (`E7006`); a
+/// gradient's forward pass reads its base's; a native backend refuses it.
+#[test]
+fn a_value_is_stored_in_an_affine_format() {
+    use presk_format::Affine;
+    use presk_rt::{Realization, Scale, ScaleRule};
+    let json = r#"{"default": "f32", "scaled": {"g/%1": "affine(u8/sat,scale=0.025,zero=12)", "g/%2": {"int": "i8/sat", "scheme": "absmax"}, "g/%3": {"int": "u8/sat", "scheme": "minmax", "tie": "away", "rounds": "x/s+zero", "quotient": "f32"}}, "product": {"g/%4": "i32"}, "accum": {"g/%4": "i32"}, "order": {"kind": "sequential"}}"#;
+    let r: Realization = serde_json::from_str(json).unwrap();
+    let a = Affine::parse("affine(u8/sat,scale=0.025,zero=12)").unwrap();
+    assert_eq!(r.scaled_at("g/%1").unwrap(), Some(a));
+    assert_eq!(r.scaled_at("g.fwd/%1").unwrap(), Some(a));
+    assert_eq!(r.scaled_at("g/%4").unwrap(), None);
+    assert_eq!(serde_json::from_str::<Realization>(&r.to_json()).unwrap(), r);
+    let e = r.scaled_at("g/%2").unwrap_err();
+    assert_eq!(e.code, "E7006");
+    assert!(e.message.contains("`g/%2` in i8/sat with a scale computed by `absmax`") && e.message.contains("presk scales"), "{}", e.message);
+    assert_eq!(r.check_scales().unwrap_err().code, "E7006");
+    assert!(!r.is_uniform() && r.emulates() && r.groups_visible());
+    assert_eq!(r.label(), "f32+sequential+1product+1accum+3scaled");
+    let e = r.check_native("the native backend").unwrap_err();
+    assert!(e.message.contains("rounds the products of `g/%4` in i32"), "{}", e.message);
+    // The schemes, from a site's magnitudes.
+    let (Scale::Scheme(abs), Scale::Scheme(mm)) = (&r.scaled["g/%2"], &r.scaled["g/%3"]) else { panic!("schemes") };
+    assert_eq!(abs.scheme, ScaleRule::Absmax);
+    assert_eq!(abs.resolve(2.54, None).unwrap(), Affine::absmax(presk_format::Int::parse("i8/sat").unwrap(), 2.54).unwrap());
+    assert!(mm.resolve(3.0, None).unwrap_err().contains("--range"));
+    let m = mm.resolve(3.0, Some((-1.0, 3.0))).unwrap();
+    assert_eq!(m.name(), "affine(u8/sat,scale=0.015686275,zero=64,tie=away,rounds=x/s+zero,quotient=f32)");
+    // Resolved, it runs where the formats are emulated, and nowhere else.
+    let mut ok = r.clone();
+    ok.scaled.insert("g/%2".into(), Scale::Static(abs.resolve(2.54, None).unwrap()));
+    ok.scaled.insert("g/%3".into(), Scale::Static(m));
+    ok.product.clear();
+    ok.accum.clear();
+    assert!(ok.check_scales().is_ok());
+    let e = ok.check_native("the native backend").unwrap_err();
+    assert!(e.message.starts_with("the realization stores `g/%1` in affine(u8/sat,scale=0.025,zero=12)"), "{}", e.message);
+    for bad in [r#"{"default": "f32", "scaled": {"g/%1": "affine(i8,scale=0.5)"}, "order": {"kind": "sequential"}}"#, r#"{"default": "f32", "scaled": {"g/%1": {"int": "i8/sat", "scheme": "median"}}, "order": {"kind": "sequential"}}"#, r#"{"default": "f32", "scaled": {"g/%1": {"int": "i8/sat", "scheme": "absmax", "colour": "red"}}, "order": {"kind": "sequential"}}"#] {
+        assert!(serde_json::from_str::<Realization>(bad).is_err(), "{bad}");
+    }
 }

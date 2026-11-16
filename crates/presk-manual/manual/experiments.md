@@ -2148,6 +2148,56 @@ and D124's stay, and these are new rows beside them.
   roadmap's section on a launch slower inside a call than alone takes it
   up (`docs/kernels-roadmap.md`).
 
+## 34. The course GPT's logits in a machine's types (D209)
+
+Plan 0.18.0's MT5 and MT6, on the version's binary. `make machine-types
+TARGET=FILE` runs `experiments/machine_types.sh` and writes
+`out/machine-types/report.md`: the course GPT's logits at D = 64 on V6's
+envelope and weights (D170), each realization judged as `make margins`
+judges a row, its logits against the exact ones and its decisions on the
+Code civil's 461 held-out windows, 118 016 positions, but on the kernel
+interpreter, which emulates every format. ε\*(δ) comes from `make
+margins`' exact margins by D118's rule: 4.735·10⁻² at δ = 10⁻¹ (computed
+here; D118 gave 10⁻² to 10⁻⁴), 5.36·10⁻³ and 4.67·10⁻⁴.
+
+**MT5, in the accelerator's types** (reported; the target description
+is kept with the machine, outside this tree). At each of the three ε\*
+the solve returns none inside: in its types every contraction takes
+8-bit operands, E4M3 or integer codes, and the smallest gap measured on
+the envelope is 0.544, 11.5 times ε\*(10⁻¹). The three budgets give one
+realization, byte for byte, which `--refused` writes: 7 stored values and
+7 weight matrices in E4M3, the rest in binary16, the four contractions in
+the 8-bit float mode (products in binary16, sums in binary16 in chunks of
+32), 1.50·10⁶ bytes of traffic against 3.83·10⁶ for D170's realization
+and 7.51·10⁶ all-`f64`, 1.52·10⁵ bytes of parameters at rest. On the 461
+windows:
+
+| sums in | gap on the logits | flips | of the decisions | correct |
+|---|---|---|---|---|
+| binary16 (the target's, its ISA's four fp16 lanes) | 0.677 | 3 657 | 3.10 % | 28 489 |
+| `f32` | 0.674 | 3 652 | 3.09 % | 28 452 |
+| exact, `fixed(i48,frac=18)` | 0.674 | 3 652 | 3.09 % | 28 452 |
+
+The exact model is right on 28 612. The bound #{m < 2ε} is every
+position, since twice the gap exceeds every margin. The accumulator's
+width moves 5 decisions of 3 657: on this model the gap is the 8-bit
+operands', not the sums'. An exact sum and an `f32` one give the same
+bits after the store to binary16.
+
+**MT6, binary16 and `e8m15` on the menu** (holds). At V6's budget,
+4.67·10⁻⁴, the solve puts five stored values in `e8m15`, the three-byte
+float with `f32`'s exponent, none in binary16, and keeps the parameters
+in `f32`, D170's:
+- 3.42·10⁶ bytes stored, the parameters once and each stored value of a
+  sample, against D170's 3.83·10⁶ (2.20× under all-`f64` against
+  1.96×); the parameters at rest are D170's, 5.20·10⁵ bytes;
+- measured 4.06·10⁻⁵ on the envelope, inside the budget;
+- 7.97·10⁻⁵ on the 461 windows, 0.17 ε\*, and no decision changed.
+
+The measurements ran on the kernel interpreter, every realization's in a
+few minutes on sixteen jobs; the native backends compute these formats
+in 0.18.1.
+
 ## What these experiments do not show
 
 - **Speed against a mature stack, beyond one model on one machine.** §3's

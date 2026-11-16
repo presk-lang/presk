@@ -334,7 +334,7 @@ fn subjects() -> Vec<Recorded> {
     vec![
         record("examples/spec/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::F32, |a| draw_zeros(a)),
         record("examples/spec/mlp/mlp.psk", &[], &[("D", 4), ("B", 2)], "mse_grad", Dtype::F64, |a| draw_zeros(a)),
-        record("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 8)], "SelfAttention.apply", Dtype::Bf16, |a| draw_zeros(a)),
+        record("examples/corpus/nlp/05_gpt.psk", &[("V", 92), ("D", 16), ("H", 2), ("L", 1)], &[("B", 2), ("T", 8)], "SelfAttention.apply", Dtype::BF16, |a| draw_zeros(a)),
     ]
 }
 
@@ -428,7 +428,7 @@ fn a_bf16_input_rounded_once_changes_the_outputs() {
     let f = TIE as f32;
     assert_eq!(f.to_bits() & 0xffff, 0x8000, "the f32 rounding lands on a bf16 tie");
     assert_eq!(presk_rt::f32_to_bf16(f), 0x3f80, "which ties to even");
-    let r = record("examples/spec/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::Bf16, |args| {
+    let r = record("examples/spec/layernorm/layernorm.psk", &[], &[("batch", 3)], "LayerNorm{8}.apply", Dtype::BF16, |args| {
         let Value::Real(t) = &mut args[1] else { panic!("x is a tensor") };
         let Buf::Exact(d) = &mut t.data else { panic!("an exact input") };
         d[0] = Float::with_val(256, TIE);
@@ -705,7 +705,7 @@ fn a_folds_value_returned_as_it_is_is_copied_into_the_callers_buffer() {
     let d = [("B", 2)];
     let subjects = [
         record("examples/tests/export_c/fold_value.psk", &[], &d, "Norms.apply", Dtype::F32, |a| draw_zeros(a)),
-        record("examples/tests/export_c/fold_value.psk", &[], &d, "scaled", Dtype::Bf16, |a| draw_zeros(a)),
+        record("examples/tests/export_c/fold_value.psk", &[], &d, "scaled", Dtype::BF16, |a| draw_zeros(a)),
     ];
     for (i, r) in subjects.iter().enumerate() {
         let st = host::structure(&r.kernels, &r.rec, 1).unwrap();

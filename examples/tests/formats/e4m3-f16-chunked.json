@@ -1,0 +1,6 @@
+{
+  "default": "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)",
+  "storage": { "tile/%2": "f16" },
+  "arith": { "tile/%2": "f16" },
+  "order": { "kind": "chunked", "size": 32 }
+}

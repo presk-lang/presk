@@ -499,6 +499,15 @@ between the pragmas, were not run: none was on the machine.
   nests against RA4's ranking of their layouts, with the driver's times;
   pet, PPCG and PLUTO not run; integer weights and the host's own kernels
   (positions, masks) not in that mode.
+- **Formats other than `f64`, `f32` and `bf16`**: since 0.18.0 step 3
+  (D206) a realization may store a value in any float format and compute a
+  nest in any format, which the kernel interpreter emulates; the export,
+  whose C computes in the native types, each nest in its storage type's
+  arithmetic type, refuses such a realization before it writes anything
+  (`E7005`), and so does its SCoP mode (the `precision` chapter, "What a
+  nest computes in"); so is a realization storing a quantized activation
+  in an affine format (step 4, D207). The C for `f16` and the
+  16-bit-significand float is version 0.18.1's.
 - **A GPU** and the matrix unit, which come after 0.9.0 (plan 0.9.0,
   decision 0).
 - **Where C4's ratios come from**, the code generator or the host, is not

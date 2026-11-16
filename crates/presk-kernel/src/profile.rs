@@ -305,6 +305,8 @@ pub fn buf_bytes(b: &Buf) -> u64 {
         Buf::Bf16(v) => v.len() * 2,
         Buf::I64(v) => v.len() * 8,
         Buf::Quant(q) => std::mem::size_of_val(q.data.as_slice()) + std::mem::size_of_val(q.scales.as_slice()),
+        // Emulated values, held as `f64`s.
+        Buf::Format(_, v) => v.len() * 8,
     }) as u64
 }
 
@@ -318,6 +320,7 @@ pub fn buf_span(b: &Buf) -> (usize, u64) {
         Buf::Bf16(v) => v.as_ptr() as usize,
         Buf::I64(v) => v.as_ptr() as usize,
         Buf::Quant(q) => q.data.as_ptr() as usize,
+        Buf::Format(_, v) => v.as_ptr() as usize,
     };
     (at, buf_bytes(b))
 }

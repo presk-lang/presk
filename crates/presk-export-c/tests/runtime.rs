@@ -189,7 +189,7 @@ fn dtype(d: i32) -> Dtype {
     match d {
         F64 => Dtype::F64,
         F32 => Dtype::F32,
-        BF16 => Dtype::Bf16,
+        BF16 => Dtype::BF16,
         _ => unreachable!(),
     }
 }
@@ -492,8 +492,11 @@ fn psk_d_errors_are_presk_datas() {
         ("missing", 9002, open(&rt.dir.join("none.psk.d"), ty, &cleaves)),
         ("short", 9002, open(&variant("short.psk.d", &|b| b.truncate(3)), ty, &cleaves)),
         ("magic", 9002, open(&variant("magic.psk.d", &|b| b[0] = b'Q'), ty, &cleaves)),
-        // Version 3 is no version (2 is, since plan 0.17.0 step 7).
-        ("version", 9002, open(&variant("version.psk.d", &|b| b[4] = 3), ty, &cleaves)),
+        // Version 4 is no version (2 is, since plan 0.17.0 step 7, and 3
+        // in presk-data since plan 0.18.0 step 1, D204); this reader takes
+        // neither 3 nor 4.
+        ("version", 9002, open(&variant("version.psk.d", &|b| b[4] = 4), ty, &cleaves)),
+        ("version 3", 9002, open(&variant("version3.psk.d", &|b| b[4] = 3), ty, &cleaves)),
         ("header", 9003, open(&variant("header.psk.d", &|b| b.truncate(head - 3)), ty, &cleaves)),
         ("type", 9005, open(&good, "(ℝ[3], idx[6][2])", &cleaves)),
         ("truncated", 9003, open(&variant("trunc.psk.d", &|b| b.truncate(b.len() - 1)), ty, &cleaves)),

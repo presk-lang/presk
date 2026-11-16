@@ -95,7 +95,8 @@ impl Store {
         match d {
             Dtype::F64 => Store::F64,
             Dtype::F32 => Store::F32,
-            Dtype::Bf16 => Store::Bf16,
+            Dtype::BF16 => Store::Bf16,
+            d => d.unreachable(),
         }
     }
 

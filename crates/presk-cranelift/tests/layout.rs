@@ -82,10 +82,10 @@ fn every_point_of_a_contractions_layout_space_is_exact() {
                 _ => unreachable!(),
             })
             .collect();
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let r = Realization::uniform(d);
             let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(d)).collect();
-            let kind = presk_kernel::plan::nest_kind(op, &operands, ReductionOrder::Sequential, d, d.arith());
+            let kind = presk_kernel::plan::nest_kind(op, &operands, ReductionOrder::Sequential, d, d.arith().into());
             assert!(!matches!(kind, presk_rt::NestKind::Other), "{nest} is a contraction or a softmax");
             let space = Layout::space(&kind);
             let kernels = std::cell::RefCell::new(std::collections::BTreeSet::new());
@@ -263,7 +263,7 @@ fn every_point_of_a_derivative_nest_is_exact() {
     let mut shapes = std::collections::BTreeSet::new();
     for (file, entry, consts, dims) in GRADIENTS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let launches = derivative_launches(&prog, &core, entry, dims, d);
             assert!(launches.len() >= 4, "{entry} ({file}, {d}): {} derivative launches", launches.len());
             for (n, mut l) in launches.into_iter().enumerate() {
@@ -325,7 +325,7 @@ fn a_gradient_with_its_derivatives_planned_is_exact() {
     let mut rounds = 0usize;
     for (file, entry, consts, dims) in GRADIENTS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let r = Realization::uniform(d);
             let launches = derivative_launches(&prog, &core, entry, dims, d);
             let (fid, fdims, args) = entry_args(&prog, &core, entry, dims, d);
@@ -485,9 +485,9 @@ fn every_point_with_its_epilogue_is_exact() {
     // The three types. A realization accumulating `f32` storage in `f64`,
     // which the kernels do not honour, is refused since 0.10.0 step 8
     // (`a_declared_accumulation_type_the_kernels_do_not_honour_is_refused`).
-    let realizations = [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::Bf16)];
+    let realizations = [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::BF16)];
     for entry in ["linear", "bias_first", "scores", "values", "rows"] {
-        for (n, r) in realizations.iter().enumerate() {
+        for r in &realizations {
             let d = r.default;
             let mut launches: Vec<Launch> = captured(&prog, &core, entry, &[], r).into_iter().filter(|l| l.epilogue.is_some()).collect();
             assert_eq!(launches.len(), 1, "{entry} ({}): one product with an epilogue", r.label());
@@ -526,7 +526,7 @@ fn every_point_of_a_derivative_nest_with_an_epilogue_is_exact() {
     let mut several = false;
     for (file, entry, consts, dims) in GRADIENTS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             for (n, mut l) in derivative_launches(&prog, &core, entry, dims, d).into_iter().enumerate() {
                 for (i, b) in l.inputs.iter_mut().enumerate() {
                     *b = Buf::of(d, &drawn(b.to_f64().len(), (n * 3 + i) as u64 + 1));
@@ -613,7 +613,7 @@ fn a_program_with_its_epilogues_planned_is_exact() {
     let mut rounds = 0usize;
     for (file, entry, consts, dims) in PROGRAMS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let r = Realization::uniform(d);
             let launches = captured(&prog, &core, entry, dims, &r);
             assert!(launches.iter().any(|l| l.epilogue.is_some()), "{entry} ({file}, {d}): no product takes an epilogue");
@@ -645,8 +645,8 @@ fn an_epilogue_under_a_mixed_realization() {
     let (prog, core) = prepare_grad(file, consts);
     let base = Realization::uniform(Dtype::F32);
     let mut both = base.clone();
-    both.storage.insert("Linear.apply/%3".into(), Dtype::Bf16);
-    both.storage.insert("Linear.apply/%5".into(), Dtype::Bf16);
+    both.storage.insert("Linear.apply/%3".into(), Dtype::BF16);
+    both.storage.insert("Linear.apply/%5".into(), Dtype::BF16);
     for r in [both] {
         let launches = captured(&prog, &core, entry, dims, &r);
         assert!(launches.iter().any(|l| l.nest == "Linear.apply/%3" && l.epilogue.is_some()), "{}: no epilogue noted", r.to_json());
@@ -661,7 +661,7 @@ fn an_epilogue_under_a_mixed_realization() {
         }
     }
     let mut apart = base.clone();
-    apart.storage.insert("Linear.apply/%5".into(), Dtype::Bf16);
+    apart.storage.insert("Linear.apply/%5".into(), Dtype::BF16);
     let launches = captured(&prog, &core, entry, dims, &apart);
     assert!(launches.iter().all(|l| l.nest != "Linear.apply/%3" || l.epilogue.is_none()), "an epilogue noted across two types");
     let plan = Plan { realization: apart.clone(), realization_ref: None, profile: None, layout: BTreeMap::from([("Linear.apply/%3".to_string(), Layout { epilogue: Some(true), ..Layout::default() })]) };
@@ -676,32 +676,32 @@ fn an_epilogue_under_a_mixed_realization() {
 }
 
 /// A declared accumulation type other than the storage's arithmetic type
-/// (0.10.0 step 8, D97's finding): `bf16` accumulated in `bf16`, under
-/// which condition 7 admitted a spill whose bits differ from the default's
-/// since the kernels accumulate in `f32`, and `f32` in `f64`. Refused
-/// (`E7002`) by the kernel and native backends' `prepare`, before anything
-/// runs; the storage's own arithmetic type, `bf16` in `f32`, is accepted,
-/// and the reference interpreter, which reads no realization, runs either.
+/// (0.10.0 step 8, D97's finding; plan 0.18.0 step 3, D206): `bf16`
+/// accumulated in `bf16`, and `f32` in `f64`. The native backend computes a
+/// nest in its storage type's arithmetic type alone and refuses either
+/// before anything runs (`E7005`); the kernel interpreter computes each sum
+/// in it, and the reference interpreter, which reads no realization, runs
+/// either. The storage's own arithmetic type, `bf16` in `f32`, is the
+/// native kernels' and accepted by all three.
 #[test]
-fn a_declared_accumulation_type_the_kernels_do_not_honour_is_refused() {
+fn a_declared_accumulation_type_is_emulated_and_refused_natively() {
     let (prog, core) = prepare("examples/tests/plan/contractions.psk");
     let accum = |storage: Dtype, sum: Dtype| {
         let mut r = Realization::uniform(storage);
-        r.accum.insert("linear/%2".into(), sum);
+        r.accum.insert("linear/%2".into(), sum.into());
         r
     };
     let (fid, fdims, _) = entry_args(&prog, &core, "linear", &[], Dtype::F32);
-    for (r, refused) in [(accum(Dtype::Bf16, Dtype::Bf16), true), (accum(Dtype::F32, Dtype::F64), true), (accum(Dtype::Bf16, Dtype::F32), false), (accum(Dtype::F64, Dtype::F64), false)] {
+    for (r, refused) in [(accum(Dtype::BF16, Dtype::BF16), true), (accum(Dtype::F32, Dtype::F64), true), (accum(Dtype::BF16, Dtype::F32), false), (accum(Dtype::F64, Dtype::F64), false)] {
         let mut kernel = presk_kernel::KernelBackend::new(&core, &prog, &r);
+        assert!(presk_rt::Backend::prepare(&mut kernel, fid, &fdims, &r).is_ok(), "{}", r.to_json());
         let mut native = presk_cranelift::native_backend_with_threads(&core, &prog, &r, 2).unwrap();
-        for b in [&mut kernel as &mut dyn presk_rt::Backend, &mut native] {
-            match presk_rt::Backend::prepare(b, fid, &fdims, &r) {
-                Err(e) => {
-                    assert!(refused, "{}: {}", r.to_json(), e.message);
-                    assert!(e.code == "E7002" && e.message.contains("honoured by no kernel"), "{}", e.message);
-                }
-                Ok(_) => assert!(!refused, "{}: not refused", r.to_json()),
+        match presk_rt::Backend::prepare(&mut native, fid, &fdims, &r) {
+            Err(e) => {
+                assert!(refused, "{}: {}", r.to_json(), e.message);
+                assert!(e.code == "E7005" && e.message.contains("accumulates `linear/%2` in"), "{}", e.message);
             }
+            Ok(_) => assert!(!refused, "{}: not refused", r.to_json()),
         }
         let mut interp = presk_rt::InterpBackend::new(&core, &prog, 64);
         assert!(presk_rt::Backend::prepare(&mut interp, fid, &fdims, &r).is_ok());

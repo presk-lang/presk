@@ -20,7 +20,7 @@ fn envelope(sites: &[(&str, u64)]) -> (Envelope, Sensitivity) {
     let mut e = Envelope::new("p.psk", "f", 128, "2026-10-28");
     e.observe(&sites.iter().map(|(s, _)| (s.to_string(), 1.0)).collect());
     e.observe_elems(&sites.iter().map(|(s, n)| (s.to_string(), *n)).collect());
-    e.observe_rounding(&sites.iter().map(|(s, _)| (s.to_string(), rounds)).collect());
+    e.observe_rounding(&sites.iter().map(|(s, _)| (s.to_string(), Rounding::three(rounds).0)).collect());
     let sens = Sensitivity { sites: sites.iter().map(|(s, _)| (s.to_string(), 1.0)).collect() };
     (e, sens)
 }
@@ -32,7 +32,7 @@ fn rung(bits: u8, scheme: QuantScheme, round: f64, bytes: f64) -> IntRung {
 /// A parameter of `elems` elements, magnitude and sensitivity 1, its float
 /// roundings the unit term's, read where `fields` say.
 fn param(path: &str, elems: f64, fields: &[&str], ints: Vec<IntRung>) -> ParamSite {
-    ParamSite { path: path.into(), elems, mag: 1.0, sens: 1.0, fields: fields.iter().map(|f| f.to_string()).collect(), round: Some(Rounding::of([0.0, U32, U16])), ints }
+    ParamSite { path: path.into(), elems, mag: 1.0, sens: 1.0, fields: fields.iter().map(|f| f.to_string()).collect(), round: Some(Rounding::three([0.0, U32, U16])), ints }
 }
 
 /// A matrix of 1000 elements: `int8` stores 1100 bytes, `int4` 600, each
@@ -67,9 +67,16 @@ fn a_menu_is_parsed_in_one_order() {
     assert_eq!(m.rungs().map(|r| r.name()).collect::<Vec<_>>(), ["f64", "f32", "bf16", "int8", "int8/pow2", "int4", "int4/pow2"]);
     assert_eq!(Menu::parse("int4/pow2,f64,int8/absmax").unwrap().1, [(8, QuantScheme::Absmax), (4, QuantScheme::Pow2)]);
     assert!(Menu::parse("int8,int4").is_err(), "a menu needs a float type");
-    assert!(Menu::parse("f64,f16").is_err());
+    // Any float format since plan 0.18.0 step 5 (D208; E7004 until then).
+    assert_eq!(Menu::parse("f64,f16").unwrap().0, [Dtype::F64, Dtype::of_name("f16").unwrap()]);
+    assert_eq!(Menu::parse("e4m3fn,f16,f32").unwrap().0.iter().map(|d| d.name()).collect::<Vec<_>>(), ["f32", "f16", "e4m3fn"]);
+    // A format by its parameters, its commas inside its parentheses.
+    let m = Menu::parse("f16, float(p=4,emin=-6,emax=8,specials=none,underflow=+0),int8").unwrap();
+    assert_eq!(m.0.iter().map(|d| d.name()).collect::<Vec<_>>(), ["f16", "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)"]);
+    assert_eq!(m.1.len(), 2);
+    assert!(Menu::parse("f64,f8").unwrap_err().starts_with("`f8` is not a rung"));
     // A rung's name is its float type's, so that no output moves (QM0).
-    assert_eq!(Rung::from(Dtype::Bf16).to_string(), Dtype::Bf16.to_string());
+    assert_eq!(Rung::from(Dtype::BF16).to_string(), Dtype::BF16.to_string());
 }
 
 /// QM0 in the solver: a parameter priced in integers and a menu without
@@ -83,7 +90,7 @@ fn without_integer_rungs_nothing_moves() {
     for (budget, narrow) in [(1.0, Narrow::Off), (1e-2, Narrow::Off), (1e-3, Narrow::Measured), (1e-6, Narrow::Off)] {
         let options = Options { narrow, margin: 1.0, ..Options::default() };
         let run = |roles: &Roles| {
-            let mut m = |r: &Realization| if r.storage.values().chain(r.params.values()).any(|d| *d == Dtype::Bf16) { 1.0 } else { 0.0 };
+            let mut m = |r: &Realization| if r.storage.values().chain(r.params.values()).any(|d| *d == Dtype::BF16) { 1.0 } else { 0.0 };
             solve(&env, &sens, roles, &Menu::default(), budget, options, Some(&mut m))
         };
         let (a, b) = (run(&with), run(&without));
@@ -107,11 +114,11 @@ fn the_proposal_takes_integers_where_they_save_most() {
     let s = solve(&env, &sens, &roles, &menu, 1.0, Options::default(), None);
     assert_eq!(s.realization.quant.get("θ.w"), Some(&quant(4, QuantScheme::Absmax)), "absmax, the smaller move of the two int4");
     assert_eq!(s.realization.params.get("θ.w"), None, "integers replace a float type at rest");
-    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::BF16));
     assert_eq!(s.bytes, 600.0 + 600.0);
     let s = solve(&env, &sens, &roles, &menu, 1e-2, Options::default(), None);
     assert_eq!(s.realization.quant.get("θ.w"), Some(&quant(8, QuantScheme::Absmax)));
-    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::BF16));
     assert_eq!(s.bytes, 1100.0 + 600.0);
     // The int8 under pow2 saves no byte more than absmax's: never tried
     // once absmax is taken, and bf16, wider, neither; both int4 are, and
@@ -135,7 +142,7 @@ fn the_proposal_takes_integers_where_they_save_most() {
 #[test]
 fn the_term_of_integers_is_the_larger_of_their_move_and_the_readers_rounding() {
     let (env, sens) = envelope(&[("f/%1", 300)]);
-    let roles = Roles(BTreeMap::from([("f/%9".to_string(), Role::Follows(vec!["f/%1".into()]))]), vec![param("θ.w", 1000.0, &["f/%9"], matrix())]);
+    let roles = Roles(BTreeMap::from([("f/%9".to_string(), Role::Follows(vec!["f/%1".into()]))]), vec![param("θ.w", 1000.0, &["f/%9"], matrix())], BTreeMap::new());
     let menu = one_menu();
     let term = |nest: Dtype, q: Option<Quant>| {
         let mut r = Realization::uniform(Dtype::F64);
@@ -151,18 +158,18 @@ fn the_term_of_integers_is_the_larger_of_their_move_and_the_readers_rounding() {
         let b = solve::breakdown(&env, &sens, &roles, &r, &menu, Dtype::F64, &solve::Traffic);
         b.into_iter().find(|c| c.name == "θ.w").unwrap()
     };
-    let c = term(Dtype::Bf16, Some(quant(8, QuantScheme::Absmax)));
+    let c = term(Dtype::BF16, Some(quant(8, QuantScheme::Absmax)));
     assert_eq!(c.err, U16, "the bf16 nest rounds it more than int8 moves it");
     assert_eq!((c.rung, c.bytes), (Rung::Int { bits: 8, scheme: QuantScheme::Absmax }, 1100.0));
     assert_eq!(c.int.as_ref().map(|q| (q.axis, q.contracted)), Some((-2, true)));
     assert_eq!(term(Dtype::F32, Some(quant(8, QuantScheme::Absmax))).err, 2e-3);
-    assert_eq!(term(Dtype::Bf16, Some(quant(4, QuantScheme::Absmax))).err, 3e-2);
-    assert_eq!(term(Dtype::Bf16, None).err, U16, "f32 at rest, bf16 at the nest's edge");
+    assert_eq!(term(Dtype::BF16, Some(quant(4, QuantScheme::Absmax))).err, 3e-2);
+    assert_eq!(term(Dtype::BF16, None).err, U16, "f32 at rest, bf16 at the nest's edge");
     // A quant entry the solver did not price, a `--quant` realization's, is
     // read as the float type it replaced.
     let c = term(Dtype::F32, Some(quant(4, QuantScheme::Absmax)));
     assert!(c.int.is_some());
-    let unpriced = Roles(roles.0.clone(), vec![param("θ.w", 1000.0, &["f/%9"], Vec::new())]);
+    let unpriced = Roles(roles.0.clone(), vec![param("θ.w", 1000.0, &["f/%9"], Vec::new())], BTreeMap::new());
     let mut r = Realization::uniform(Dtype::F64);
     r.quant.insert("θ.w".into(), quant(4, QuantScheme::Absmax));
     let c = solve::breakdown(&env, &sens, &unpriced, &r, &Menu::default(), Dtype::F64, &solve::Traffic).into_iter().find(|c| c.name == "θ.w").unwrap();
@@ -208,7 +215,7 @@ fn the_measurement_widens_integers_one_rung_at_a_time() {
     // The second round widens the nest, whose share (bf16's) is then the
     // larger; the third the matrix again.
     assert_eq!(widened, [("θ.w", "int4".into(), "int8".into()), ("f/%1", "bf16".into(), "f32".into()), ("θ.w", "int8".into(), "bf16".into())]);
-    assert_eq!(s.realization.params.get("θ.w"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.params.get("θ.w"), Some(&Dtype::BF16));
     assert_eq!(s.measured, Some(0.0));
 }
 

@@ -204,9 +204,19 @@ pub fn plan_for_loop(plan: &Plan, core: &Program, fns: &TrainingFns) -> Plan {
             p.realization.storage.entry(site).or_insert(*d);
         }
     }
-    for (k, d) in &given.accum {
+    // The formats a site computes in, as its accumulation type always was
+    // (plan 0.18.0 step 3).
+    for (from, to) in [(&given.arith, &mut p.realization.arith), (&given.product, &mut p.realization.product), (&given.accum, &mut p.realization.accum)] {
+        for (k, f) in from {
+            if let Some(site) = of_vjp(k) {
+                to.entry(site).or_insert(*f);
+            }
+        }
+    }
+    // A value stored in an affine format (step 4).
+    for (k, sc) in &given.scaled {
         if let Some(site) = of_vjp(k) {
-            p.realization.accum.entry(site).or_insert(*d);
+            p.realization.scaled.entry(site).or_insert_with(|| sc.clone());
         }
     }
     for (k, l) in &plan.layout {
@@ -219,8 +229,17 @@ pub fn plan_for_loop(plan: &Plan, core: &Program, fns: &TrainingFns) -> Plan {
         if p.realization.dtype_at(&copy) != given.dtype_at(&site) {
             p.realization.storage.insert(copy.clone(), given.dtype_at(&site));
         }
+        if p.realization.arith_at(&copy) != given.arith_at(&site) {
+            p.realization.arith.insert(copy.clone(), given.arith_at(&site));
+        }
+        if p.realization.product_at(&copy) != given.product_at(&site) {
+            p.realization.product.insert(copy.clone(), given.product_at(&site));
+        }
         if p.realization.accum_at(&copy) != given.accum_at(&site) {
             p.realization.accum.insert(copy.clone(), given.accum_at(&site));
+        }
+        if let Some(sc) = given.scaled.get(&site) {
+            p.realization.scaled.insert(copy.clone(), sc.clone());
         }
         if let Some(l) = plan.layout.get(&site) {
             p.layout.insert(copy, l.clone());
@@ -485,7 +504,7 @@ fn args_on_data_as(core: &Program, elab: &ElabProgram, opts: &presk_interp::RunO
     };
     let values: Vec<presk_data::Value> = (from..from + count).map(|i| reader.get(i)).collect::<std::result::Result<_, _>>()?;
     let refs: Vec<&presk_data::Value> = values.iter().collect();
-    let batch = batch_value(&last_ty, &layout, &refs, &fdims)?;
+    let batch = batch_value_in(&last_ty, &layout, &refs, &fdims, &reader.header().encodings, &mut 0)?;
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v)).collect::<std::result::Result<_, _>>()?;
     inputs.last_mut().unwrap().1 = batch.to_interp(opts.bits);
     *args.last_mut().unwrap() = batch;
@@ -508,6 +527,15 @@ fn batch_dim(ty: &Ty, elab: &ElabProgram) -> Option<String> {
 /// `B` samples stacked under the `batch` axis of every leaf of the batch type,
 /// as `f64` buffers (the data file's precision).
 fn batch_value(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &Dims) -> Result<Value> {
+    batch_value_in(ty, layout, samples, dims, &[], &mut 0)
+}
+
+/// [`batch_value`] with the file's encodings, its real leaves in storage
+/// order from `leaf` on: a leaf of a format given by its parameters (a
+/// version 3 file) holds that format's values and is that format's buffer,
+/// −0 included, which no conversion into a format whose underflow is +0
+/// gives (plan 0.18.0 step 6, D209); every other leaf is `f64`, as before.
+fn batch_value_in(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &Dims, encs: &[presk_data::Enc], leaf: &mut usize) -> Result<Value> {
     let b = samples.len();
     match (ty, layout) {
         (Ty::Tuple(ts), Layout::Tuple(ls)) => {
@@ -520,7 +548,7 @@ fn batch_value(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &
                         _ => err("E9005", "sample is not a tuple"),
                     })
                     .collect::<Result<_>>()?;
-                out.push(batch_value(t, l, &subs, dims)?);
+                out.push(batch_value_in(t, l, &subs, dims, encs, leaf)?);
             }
             Ok(Value::Tuple(out))
         }
@@ -530,12 +558,18 @@ fn batch_value(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims: &
                 presk_data::Value::Real(d) => Ok(d.clone()),
                 _ => err("E9005", "reals expected in the sample"),
             })?;
-            Ok(Value::Real(Tensor { axes, data: Buf::F64(data.into()) }))
+            let enc = encs.get(*leaf).copied();
+            *leaf += 1;
+            Ok(Value::Real(Tensor { axes, data: match enc {
+                Some(presk_data::Enc::Format(f)) => Buf::Format(presk_format::Format::Float(f), data.into()),
+                _ => Buf::F64(data.into()),
+            } }))
         }
         (Ty::Idx { bound, shape }, Layout::Leaf(Leaf::Idx { .. })) => {
             let axes = presk_rt::axes_of(shape, dims)?;
             let map: BTreeMap<_, _> = dims.iter().map(|(v, n)| (*v, presk_types::dim::rat(*n as i64))).collect();
             let bound = bound.eval(&map).and_then(|r| r.to_integer().to_string().parse::<u64>().ok()).ok_or_else(|| TrainError { code: "E7001", message: "unbound index bound".into(), span: None })?;
+            *leaf += 1;
             let data = fill(&axes, b, |i| match samples[i] {
                 presk_data::Value::Idx(d) => Ok(d.iter().map(|x| *x as i64).collect()),
                 _ => err("E9005", "indices expected in the sample"),

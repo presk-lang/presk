@@ -214,12 +214,14 @@ fn elem(k: &Kernel, s: &BufSpec) -> Result<&'static str> {
         BufKind::Real => match k.dtype {
             Dtype::F64 => "double",
             Dtype::F32 => "float",
-            Dtype::Bf16 => "uint16_t",
+            Dtype::BF16 => "uint16_t",
+            d => d.unreachable(),
         },
         // Narrower reals a kernel widens as it loads them (plan 0.12.0).
         BufKind::Wide(Dtype::F64) => "double",
         BufKind::Wide(Dtype::F32) => "float",
-        BufKind::Wide(Dtype::Bf16) => "uint16_t",
+        BufKind::Wide(Dtype::BF16) => "uint16_t",
+        BufKind::Wide(d) => d.unreachable(),
         BufKind::Quant { bits: 8, .. } => "int8_t",
         BufKind::Quant { bits: 4, .. } => "uint8_t",
         BufKind::Quant { bits, .. } => return Err(format!("kernel `{}` reads int{bits} weights: only int8 and int4 exist", k.name)),
@@ -538,7 +540,7 @@ impl<'k> Printer<'k> {
     }
 
     fn narrow(&self) -> bool {
-        self.k.dtype == Dtype::Bf16
+        self.k.dtype == Dtype::BF16
     }
 
     /// The linear offset of an index: each axis's index times its stride,
@@ -649,7 +651,7 @@ impl<'k> Printer<'k> {
     /// bits to `float`, a `float` to `double`.
     fn wide_load(&self, d: Dtype, at: String) -> Text {
         let x = match d {
-            Dtype::Bf16 => call("presk_bf16_to_f32", (at, PRIMARY)),
+            Dtype::BF16 => call("presk_bf16_to_f32", (at, PRIMARY)),
             _ => (at, PRIMARY),
         };
         if self.real == "double" { cast("double", x) } else { x }
@@ -676,8 +678,10 @@ impl<'k> Printer<'k> {
                 }
             }
             Expr::Sv(v) => (format!("s{v}"), PRIMARY),
-            Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div), a, b) => {
-                let (s, p) = match op {
+            // A sum's addition and a product of terms print as an addition
+            // and a product: the C program computes in one type.
+            Expr::Bin(op, a, b) if matches!(op.plain(), BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) => {
+                let (s, p) = match op.plain() {
                     BinOp::Add => ("+", ADD),
                     BinOp::Sub => ("-", ADD),
                     BinOp::Mul => ("*", MUL),
@@ -769,9 +773,9 @@ impl<'k> Printer<'k> {
             Expr::VSplat(x) => self.real(x)?,
             Expr::VBin(op, a, b) => {
                 let (s, p) = match op {
-                    BinOp::Add | BinOp::IAdd => ("+", ADD),
+                    BinOp::Add | BinOp::IAdd | BinOp::Accum => ("+", ADD),
                     BinOp::Sub => ("-", ADD),
-                    BinOp::Mul | BinOp::IMul => ("*", MUL),
+                    BinOp::Mul | BinOp::IMul | BinOp::Product => ("*", MUL),
                     BinOp::Div => ("/", MUL),
                 };
                 binary(s, p, self.lane(a)?, self.lane(b)?)
@@ -970,7 +974,7 @@ mod tests {
     }
 
     fn kernel(dtype: Dtype, inputs: Vec<BufSpec>, output: BufSpec, body: Vec<Stmt>) -> Kernel {
-        Kernel { name: "t".into(), dtype, inputs, output, nloops: 4, nreal: 4, nint: 2, nvec: 0, lanes: 1, body, threads: Threads::Default }
+        Kernel { name: "t".into(), dtype, arith: presk_kernel::ir::Arith::native(dtype), inputs, output, nloops: 4, nreal: 4, nint: 2, nvec: 0, lanes: 1, body, threads: Threads::Default }
     }
 
     fn bx(e: Expr) -> Box<Expr> {
@@ -1005,7 +1009,7 @@ mod tests {
         assert_eq!(store(Dtype::F32, Expr::F(f64::NEG_INFINITY)), "out[i0] = -HUGE_VALF;");
         let cmp = Expr::Cmp(CmpOp::Le, bx(a.clone()), bx(b.clone()));
         assert_eq!(store(Dtype::F64, Expr::Select(bx(cmp), bx(Expr::F(0.0)), bx(a.clone()))), "out[i0] = in0[i0] <= in1[i0] ? 0.0 : in0[i0];");
-        assert_eq!(store(Dtype::Bf16, Expr::Un(UnOp::Exp, bx(a))), "out[i0] = presk_f32_to_bf16(presk_expf(presk_bf16_to_f32(in0[i0])));");
+        assert_eq!(store(Dtype::BF16, Expr::Un(UnOp::Exp, bx(a))), "out[i0] = presk_f32_to_bf16(presk_expf(presk_bf16_to_f32(in0[i0])));");
     }
 
     #[test]

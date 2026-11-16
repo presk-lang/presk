@@ -153,7 +153,7 @@ fn load(buf: usize, index: Vec<Expr>) -> Expr {
 }
 
 fn kernel(name: impl Into<String>, dtype: Dtype, ins: &[Operand], out_axes: &[Axis], out_kind: BufKind, b: &B, body: Vec<Stmt>) -> Kernel {
-    Kernel { name: name.into(), dtype, inputs: ins.iter().map(|o| spec(&o.axes, o.kind)).collect(), output: spec(out_axes, out_kind), nloops: b.nloops, nreal: b.nreal, nint: b.nint, nvec: b.nvec, lanes: b.lanes, body, threads: Default::default() }
+    Kernel { name: name.into(), dtype, arith: crate::ir::Arith::native(dtype), inputs: ins.iter().map(|o| spec(&o.axes, o.kind)).collect(), output: spec(out_axes, out_kind), nloops: b.nloops, nreal: b.nreal, nint: b.nint, nvec: b.nvec, lanes: b.lanes, body, threads: Default::default() }
 }
 
 fn done(kernel: Kernel, out_axes: Vec<Axis>) -> Result<Lowered> {
@@ -249,7 +249,7 @@ pub fn lower_ordered(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: Reductio
 /// sums live and which memory they touch, never in the order of additions.
 pub fn lower_planned(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: ReductionOrder, layout: &Layout) -> Option<Result<Lowered>> {
     if let Some(c) = Contraction::of(op, ins, order) {
-        let kind = NestKind::Contraction(c.kind(dtype, dtype.arith()));
+        let kind = NestKind::Contraction(c.kind(dtype, presk_format::Format::Float(dtype.arith().format())));
         return Some(emit_contraction(&c, dtype, ins, &layout.resolve(&kind)));
     }
     Some(match op {
@@ -257,9 +257,11 @@ pub fn lower_planned(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: Reductio
         PrimOp::Neg | PrimOp::Exp | PrimOp::Log | PrimOp::Tanh | PrimOp::Sqrt | PrimOp::Sin | PrimOp::Cos | PrimOp::Abs | PrimOp::Gelu | PrimOp::GeluDeriv | PrimOp::Relu | PrimOp::Heaviside | PrimOp::Sign | PrimOp::Sigmoid | PrimOp::Pow(_) => unary(op, ins, dtype),
         PrimOp::Real if ins.len() == 1 && ins[0].kind == BufKind::Idx => unary(op, ins, dtype),
         PrimOp::Dot | PrimOp::Matmul => dot(ins, dtype, order),
-        PrimOp::DotVjpL => dot_vjp_l(ins, dtype),
-        PrimOp::DotVjpR => dot_vjp_r(ins, dtype),
-        PrimOp::Ein { operands, output } => ein(ins, operands, output, dtype),
+        // The derivatives of `dot` and `ein` take a chunked order (plan
+        // 0.18.0 step 3); `interleaved` is `dot`'s alone, as before.
+        PrimOp::DotVjpL => dot_vjp_l(ins, dtype, chunked(order)),
+        PrimOp::DotVjpR => dot_vjp_r(ins, dtype, chunked(order)),
+        PrimOp::Ein { operands, output } => ein(ins, operands, output, dtype, chunked(order)),
         PrimOp::SumAll | PrimOp::MeanAll => reduce_all(op, ins, dtype),
         PrimOp::Sum { axis } | PrimOp::Mean { axis } => reduce_axis(op, axis, ins, dtype),
         PrimOp::MeanVjp { axis } => mean_vjp(axis.as_deref(), ins, dtype),
@@ -292,6 +294,12 @@ pub fn lower_planned(op: &PrimOp, ins: &[Operand], dtype: Dtype, order: Reductio
         PrimOp::SumSquares if ins.len() == 1 && ins[0].kind == BufKind::Real => sum_squares(ins, dtype),
         _ => return None,
     })
+}
+
+/// The order a contraction other than `dot` is lowered under: a chunked
+/// order, or the sequential one.
+fn chunked(order: ReductionOrder) -> ReductionOrder {
+    if matches!(order, ReductionOrder::Chunked { .. }) { order } else { ReductionOrder::Sequential }
 }
 
 fn tensor_in<'a>(ins: &'a [Operand], i: usize, what: &str) -> Result<&'a Operand> {
@@ -363,13 +371,7 @@ fn unary(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
 }
 
 /// `acc = 0; for k in contracted: acc += x[..]·y[..]; out[..] = acc` for the
-/// given index builders.
-#[allow(clippy::too_many_arguments)]
-fn contraction(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>, outer_dims: Vec<usize>, inner_dims: Vec<usize>, index_x: impl Fn(&[usize], &[usize]) -> Vec<Expr>, index_y: impl Fn(&[usize], &[usize]) -> Vec<Expr>) -> Result<Lowered> {
-    contraction_ordered(name, dtype, ins, out, outer_dims, inner_dims, index_x, index_y, ReductionOrder::Sequential)
-}
-
-/// The same, under a declared reduction order.
+/// given index builders, under a declared reduction order.
 ///
 /// `Interleaved { partials: n }` keeps `n` accumulators over one contracted
 /// axis, each summing every `n`-th term, and adds them at the end. That
@@ -407,7 +409,7 @@ fn contraction_ordered(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>
             inner.push(Stmt::SetL { var: terms[t], value: idx });
             inner.push(Stmt::Set {
                 var: accs[t],
-                value: bin(BinOp::Add, Expr::Sv(accs[t]), bin(BinOp::Mul, load(0, index_x(&ov, &terms[t..t + 1])), load(1, index_y(&ov, &terms[t..t + 1])))),
+                value: bin(BinOp::Accum, Expr::Sv(accs[t]), bin(BinOp::Product, load(0, index_x(&ov, &terms[t..t + 1])), load(1, index_y(&ov, &terms[t..t + 1])))),
             });
         }
         let mut body: Vec<Stmt> = accs.iter().map(|a| Stmt::Set { var: *a, value: f(0.0) }).collect();
@@ -416,9 +418,47 @@ fn contraction_ordered(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>
         // is fixed and declared rather than left to the backend.
         let mut total = Expr::Sv(accs[0]);
         for a in &accs[1..] {
-            total = bin(BinOp::Add, total, Expr::Sv(*a));
+            total = bin(BinOp::Accum, total, Expr::Sv(*a));
         }
         body.push(Stmt::Store { buf: 2, index: ivs(&ov), value: total });
+        let kern = kernel(name, dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &outer_dims, body));
+        return done(kern, out);
+    }
+    // `Chunked { size: c }` (plan 0.18.0 step 3, D206): the terms in chunks
+    // of `c` consecutive ones, each summed from zero in index order into a
+    // partial sum, which is then added to the total in order from zero; the
+    // last chunk holds what is left when `c` does not divide the terms. Over
+    // one summed axis: the term's index is `cb·c + t`, set as interleaved
+    // sets it.
+    if let ReductionOrder::Chunked { size } = order {
+        let [k] = inner_dims[..] else {
+            return Err(format!("{name}: the order chunked({size}) sums one summed axis in chunks, and this sum runs over {} axes", inner_dims.len()));
+        };
+        if size == 0 {
+            return Err(format!("{name}: the order chunked(0) has no chunk"));
+        }
+        let c = size as usize;
+        let mut bd = B::new();
+        let ov = bd.loops(&outer_dims);
+        let (cb, t, kv) = (bd.iv(), bd.iv(), bd.iv());
+        let (acc, part) = (bd.sv(), bd.sv());
+        // One chunk of `len` terms from index `start` (an expression).
+        let chunk = |start: Expr, len: usize| -> Vec<Stmt> {
+            let term = bin(BinOp::Product, load(0, index_x(&ov, &[kv])), load(1, index_y(&ov, &[kv])));
+            vec![
+                Stmt::Set { var: part, value: f(0.0) },
+                Stmt::For { var: t, bound: len, body: vec![Stmt::SetL { var: kv, value: bin(BinOp::IAdd, start.clone(), Expr::Iv(t)) }, Stmt::Set { var: part, value: bin(BinOp::Accum, Expr::Sv(part), term) }] },
+                Stmt::Set { var: acc, value: bin(BinOp::Accum, Expr::Sv(acc), Expr::Sv(part)) },
+            ]
+        };
+        let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }];
+        if k / c > 0 {
+            body.push(Stmt::For { var: cb, bound: k / c, body: chunk(bin(BinOp::IMul, Expr::Iv(cb), Expr::I(c as i64)), c) });
+        }
+        if k % c > 0 {
+            body.extend(chunk(Expr::I((k / c * c) as i64), k % c));
+        }
+        body.push(Stmt::Store { buf: 2, index: ivs(&ov), value: Expr::Sv(acc) });
         let kern = kernel(name, dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &outer_dims, body));
         return done(kern, out);
     }
@@ -426,7 +466,7 @@ fn contraction_ordered(name: &str, dtype: Dtype, ins: &[Operand], out: Vec<Axis>
     let ov = bd.loops(&outer_dims);
     let cv = bd.loops(&inner_dims);
     let acc = bd.sv();
-    let inner = nest(&cv, &inner_dims, vec![Stmt::Set { var: acc, value: bin(BinOp::Add, Expr::Sv(acc), bin(BinOp::Mul, load(0, index_x(&ov, &cv)), load(1, index_y(&ov, &cv)))) }]);
+    let inner = nest(&cv, &inner_dims, vec![Stmt::Set { var: acc, value: bin(BinOp::Accum, Expr::Sv(acc), bin(BinOp::Product, load(0, index_x(&ov, &cv)), load(1, index_y(&ov, &cv)))) }]);
     let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }];
     body.extend(inner);
     body.push(Stmt::Store { buf: 2, index: ivs(&ov), value: Expr::Sv(acc) });
@@ -476,7 +516,7 @@ fn dot(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> 
 /// that is not a contraction nest: a `b` of rank above two, a `ct` of rank
 /// one, or an interleaved order. One accumulator per output element. A
 /// contraction nest is built by [`emit_contraction`] (0.10.0 step 1).
-fn dot_vjp_l(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
+fn dot_vjp_l(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> {
     let (ct, b) = (tensor_in(ins, 0, "dot_vjp_l")?, tensor_in(ins, 1, "dot_vjp_l")?);
     let k = b.axes.len() - 1;
     if ct.axes.len() < k {
@@ -487,7 +527,7 @@ fn dot_vjp_l(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     out.push(b.axes[0].clone());
     let outer = dims(&out);
     let inner: Vec<usize> = b.axes[1..].iter().map(|a| a.len).collect();
-    contraction(
+    contraction_ordered(
         "dot_vjp_l",
         dtype,
         ins,
@@ -504,6 +544,7 @@ fn dot_vjp_l(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
             ix.extend(cv.iter().map(|v| Expr::Iv(*v)));
             ix
         },
+        order,
     )
 }
 
@@ -511,7 +552,7 @@ fn dot_vjp_l(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
 /// that is not a contraction nest: a `ct` of another rank than `a`, an `a` of
 /// rank one, or an interleaved order. One accumulator per output element. A
 /// contraction nest is built by [`emit_contraction`] (0.10.0 step 1).
-fn dot_vjp_r(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
+fn dot_vjp_r(ins: &[Operand], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> {
     let (a, ct) = (tensor_in(ins, 0, "dot_vjp_r")?, tensor_in(ins, 1, "dot_vjp_r")?);
     let lead = a.axes.len() - 1;
     if ct.axes.len() < lead {
@@ -521,7 +562,7 @@ fn dot_vjp_r(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     out.extend(ct.axes[lead..].iter().cloned());
     let outer = dims(&out);
     let inner: Vec<usize> = a.axes[..lead].iter().map(|x| x.len).collect();
-    contraction(
+    contraction_ordered(
         "dot_vjp_r",
         dtype,
         ins,
@@ -538,10 +579,11 @@ fn dot_vjp_r(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
             ix.extend(ov[1..].iter().map(|v| Expr::Iv(*v)));
             ix
         },
+        order,
     )
 }
 
-fn ein(ins: &[Operand], operands: &[Vec<String>], output: &[String], dtype: Dtype) -> Result<Lowered> {
+fn ein(ins: &[Operand], operands: &[Vec<String>], output: &[String], dtype: Dtype, order: ReductionOrder) -> Result<Lowered> {
     let mut names: Vec<(String, usize)> = Vec::new();
     for (t, ns) in ins.iter().zip(operands) {
         for (a, n) in t.axes.iter().zip(ns) {
@@ -560,21 +602,36 @@ fn ein(ins: &[Operand], operands: &[Vec<String>], output: &[String], dtype: Dtyp
     let contracted: Vec<(String, usize)> = names.iter().filter(|(n, _)| !output.contains(n)).cloned().collect();
     let out: Vec<Axis> = output.iter().map(|o| Axis { name: Some(o.clone()), len: names.iter().find(|(n, _)| n == o).unwrap().1 }).collect();
     let all: Vec<String> = output.iter().cloned().chain(contracted.iter().map(|(n, _)| n.clone())).collect();
+    let name = format!("ein[{}]", output.join(", "));
+    // A chunked order (plan 0.18.0 step 3) on a product of two operands
+    // over one summed axis: the contraction's chunked form, each operand's
+    // index read off its axes' names.
+    if let ReductionOrder::Chunked { size } = order {
+        if ins.len() != 2 || contracted.len() != 1 {
+            return Err(format!("{name}: the order chunked({size}) sums the product of two operands over one summed axis in chunks, and this one has {} operands and {} summed axes", ins.len(), contracted.len()));
+        }
+        let index = |ns: &[String]| -> Vec<Option<usize>> { ns.iter().map(|n| output.iter().position(|o| o == n)).collect() };
+        let (ix0, ix1) = (index(&operands[0]), index(&operands[1]));
+        let at = |ix: &[Option<usize>], ov: &[usize], cv: &[usize]| -> Vec<Expr> { ix.iter().map(|p| Expr::Iv(p.map_or(cv[0], |p| ov[p]))).collect() };
+        return contraction_ordered(&name, dtype, ins, out.clone(), dims(&out), vec![contracted[0].1], move |ov, cv| at(&ix0, ov, cv), move |ov, cv| at(&ix1, ov, cv), order);
+    }
     let mut bd = B::new();
     let ov = bd.loops(&dims(&out));
     let cv = bd.loops(&contracted.iter().map(|(_, l)| *l).collect::<Vec<_>>());
     let all_v: Vec<usize> = ov.iter().chain(cv.iter()).copied().collect();
     let acc = bd.sv();
+    // `(1·x₀)·x₁…`: the first product is exact, the arithmetic's; each
+    // other is a product of the term, rounded to the product format.
     let mut prod = f(1.0);
     for (i, ns) in operands.iter().enumerate() {
         let ix: Vec<Expr> = ns.iter().map(|n| Expr::Iv(all_v[all.iter().position(|m| m == n).unwrap()])).collect();
-        prod = bin(BinOp::Mul, prod, load(i, ix));
+        prod = bin(if i == 0 { BinOp::Mul } else { BinOp::Product }, prod, load(i, ix));
     }
-    let inner = nest(&cv, &contracted.iter().map(|(_, l)| *l).collect::<Vec<_>>(), vec![Stmt::Set { var: acc, value: bin(BinOp::Add, Expr::Sv(acc), prod) }]);
+    let inner = nest(&cv, &contracted.iter().map(|(_, l)| *l).collect::<Vec<_>>(), vec![Stmt::Set { var: acc, value: bin(BinOp::Accum, Expr::Sv(acc), prod) }]);
     let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }];
     body.extend(inner);
     body.push(Stmt::Store { buf: ins.len(), index: ivs(&ov), value: Expr::Sv(acc) });
-    let kern = kernel(format!("ein[{}]", output.join(", ")), dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &dims(&out), body));
+    let kern = kernel(name, dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &dims(&out), body));
     done(kern, out)
 }
 
@@ -751,9 +808,10 @@ impl Contraction {
     }
 
     /// What a layout needs to know of this nest, in a storage type and an
-    /// accumulation type.
-    pub fn kind(&self, dtype: Dtype, accum: Dtype) -> presk_rt::layout::Contraction {
-        presk_rt::layout::Contraction { dot: self.dot, i: self.i, j: self.j, k: self.k, k_inner: self.k_inner(), nt: self.nt, accum_is_storage: accum == dtype, width: dtype.natural_lanes() }
+    /// accumulation format: whether a running sum may live in the output
+    /// buffer, which is whether the two are one (condition 7).
+    pub fn kind(&self, dtype: Dtype, accum: presk_format::Format) -> presk_rt::layout::Contraction {
+        presk_rt::layout::Contraction { dot: self.dot, i: self.i, j: self.j, k: self.k, k_inner: self.k_inner(), nt: self.nt, accum_is_storage: accum == presk_format::Format::Float(dtype.format()), width: dtype.natural_lanes() }
     }
 
     /// The innermost of the axes `K` runs over, which a k-block divides.
@@ -955,9 +1013,9 @@ pub fn emit_contraction_with(c: &Contraction, dtype: Dtype, ins: &[Operand], lay
                 (None, false) => load(1, w_at(g)),
             };
             micro.push(if vector {
-                Stmt::VSet { var: *a, value: Expr::VBin(BinOp::Add, Box::new(Expr::Vv(*a)), Box::new(Expr::VBin(BinOp::Mul, Box::new(Expr::VSplat(Box::new(x_of(r)))), Box::new(wv)))) }
+                Stmt::VSet { var: *a, value: Expr::VBin(BinOp::Accum, Box::new(Expr::Vv(*a)), Box::new(Expr::VBin(BinOp::Product, Box::new(Expr::VSplat(Box::new(x_of(r)))), Box::new(wv)))) }
             } else {
-                Stmt::Set { var: *a, value: bin(BinOp::Add, Expr::Sv(*a), bin(BinOp::Mul, x_of(r), wv)) }
+                Stmt::Set { var: *a, value: bin(BinOp::Accum, Expr::Sv(*a), bin(BinOp::Product, x_of(r), wv)) }
             });
         }
     }
@@ -1144,7 +1202,7 @@ fn row_wise(c: &Contraction, dtype: Dtype, ins: &[Operand], epi: Option<(&Epilog
     let sweep = Stmt::For {
         var: jv,
         bound: c.j,
-        body: vec![Stmt::Store { buf: buf_out, index: cix(jv), value: bin(BinOp::Add, load(buf_out, cix(jv)), bin(BinOp::Mul, Expr::Sv(acc), load(1, wix))) }],
+        body: vec![Stmt::Store { buf: buf_out, index: cix(jv), value: bin(BinOp::Accum, load(buf_out, cix(jv)), bin(BinOp::Product, Expr::Sv(acc), load(1, wix))) }],
     };
     let mut body = vec![zero];
     body.extend(nest(&kv, &c.ks, vec![Stmt::Set { var: acc, value: load(0, xix) }, sweep]));
@@ -1166,7 +1224,7 @@ fn reduce_all(op: &PrimOp, ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let iv = bd.loops(&dims(&t.axes));
     let acc = bd.sv();
     let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }];
-    body.extend(nest(&iv, &dims(&t.axes), vec![Stmt::Set { var: acc, value: bin(BinOp::Add, Expr::Sv(acc), load(0, ivs(&iv))) }]));
+    body.extend(nest(&iv, &dims(&t.axes), vec![Stmt::Set { var: acc, value: bin(BinOp::Accum, Expr::Sv(acc), load(0, ivs(&iv))) }]));
     let n = t.axes.iter().map(|a| a.len).product::<usize>() as f64;
     let value = if matches!(op, PrimOp::MeanAll) { bin(BinOp::Div, Expr::Sv(acc), f(n)) } else { Expr::Sv(acc) };
     body.push(Stmt::Store { buf: 1, index: vec![], value });
@@ -1189,7 +1247,7 @@ fn reduce_axis(op: &PrimOp, axis: &str, ins: &[Operand], dtype: Dtype) -> Result
     let acc = bd.sv();
     let mut full: Vec<Expr> = ivs(&ov);
     full.insert(p, Expr::Iv(k));
-    let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }, Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: acc, value: bin(BinOp::Add, Expr::Sv(acc), load(0, full)) }] }];
+    let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }, Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: acc, value: bin(BinOp::Accum, Expr::Sv(acc), load(0, full)) }] }];
     let value = if matches!(op, PrimOp::Mean { .. }) { bin(BinOp::Div, Expr::Sv(acc), f(n as f64)) } else { Expr::Sv(acc) };
     body.push(Stmt::Store { buf: 1, index: ivs(&ov), value });
     let kern = kernel(op.name(), dtype, ins, &out, BufKind::Real, &bd, nest(&ov, &dims(&out), body));
@@ -1229,7 +1287,7 @@ fn softmax_rows(bd: &mut B, buf: usize, axes: &[Axis], p: usize) -> (Vec<usize>,
         Stmt::Set { var: m, value: load(buf, full(Expr::I(0))) },
         Stmt::For { var: k, bound: n, body: vec![Stmt::If { cond: cmp(CmpOp::Gt, load(buf, full(Expr::Iv(k))), Expr::Sv(m)), then: vec![Stmt::Set { var: m, value: load(buf, full(Expr::Iv(k))) }] }] },
         Stmt::Set { var: z, value: f(0.0) },
-        Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: z, value: bin(BinOp::Add, Expr::Sv(z), un(UnOp::Exp, bin(BinOp::Sub, load(buf, full(Expr::Iv(k))), Expr::Sv(m)))) }] },
+        Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: z, value: bin(BinOp::Accum, Expr::Sv(z), un(UnOp::Exp, bin(BinOp::Sub, load(buf, full(Expr::Iv(k))), Expr::Sv(m)))) }] },
     ];
     (ov, m, z, stmts, vec![k, n])
 }
@@ -1284,7 +1342,7 @@ fn softmax_two_pass(axis: &str, ins: &[Operand], dtype: Dtype) -> Result<Lowered
             body: vec![
                 Stmt::Set { var: e, value: un(UnOp::Exp, bin(BinOp::Sub, load(0, at.clone()), Expr::Sv(m))) },
                 Stmt::Store { buf: 1, index: at.clone(), value: Expr::Sv(e) },
-                Stmt::Set { var: z, value: bin(BinOp::Add, Expr::Sv(z), Expr::Sv(e)) },
+                Stmt::Set { var: z, value: bin(BinOp::Accum, Expr::Sv(z), Expr::Sv(e)) },
             ],
         },
         Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 1, index: at.clone(), value: bin(BinOp::Div, load(1, at), Expr::Sv(z)) }] },
@@ -1346,12 +1404,12 @@ fn masked_softmax(axis: &str, ins: &[Operand], dtype: Dtype, two_passes: bool) -
             body: vec![
                 Stmt::Set { var: e, value: select(allowed(), ex(), f(0.0)) },
                 Stmt::Store { buf: 2, index: at.clone(), value: Expr::Sv(e) },
-                Stmt::Set { var: z, value: bin(BinOp::Add, Expr::Sv(z), Expr::Sv(e)) },
+                Stmt::Set { var: z, value: bin(BinOp::Accum, Expr::Sv(z), Expr::Sv(e)) },
             ],
         });
         body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 2, index: at.clone(), value: select(allowed(), bin(BinOp::Div, load(2, at.clone()), Expr::Sv(z)), f(0.0)) }] });
     } else {
-        body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: z, value: bin(BinOp::Add, Expr::Sv(z), select(allowed(), ex(), f(0.0))) }] });
+        body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Set { var: z, value: bin(BinOp::Accum, Expr::Sv(z), select(allowed(), ex(), f(0.0))) }] });
         body.push(Stmt::For { var: k, bound: n, body: vec![Stmt::Store { buf: 2, index: at.clone(), value: select(allowed(), bin(BinOp::Div, ex(), Expr::Sv(z)), f(0.0)) }] });
     }
     let body = if n == 0 { vec![] } else { nest(&ov, &dims(&outer), body) };
@@ -1393,7 +1451,7 @@ fn embed_vjp(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let mut cix = ivs(&iv);
     cix.push(Expr::Iv(j));
     let oix = vec![Expr::LoadI(1, ivs(&iv)), Expr::Iv(j)];
-    body.extend(nest(&iv, &dims(&idx.axes), vec![Stmt::For { var: j, bound: d, body: vec![Stmt::Store { buf: 3, index: oix.clone(), value: bin(BinOp::Add, load(3, oix), load(2, cix)) }] }]));
+    body.extend(nest(&iv, &dims(&idx.axes), vec![Stmt::For { var: j, bound: d, body: vec![Stmt::Store { buf: 3, index: oix.clone(), value: bin(BinOp::Accum, load(3, oix), load(2, cix)) }] }]));
     let kern = kernel("embed_vjp", dtype, ins, &table.axes, BufKind::Real, &bd, body);
     done(kern, table.axes.clone())
 }
@@ -1616,7 +1674,7 @@ fn sum_to(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let mut body = zero_fill(&mut bd, 2, &tmpl.axes);
     let iv = bd.loops(&dims(&x.axes));
     let oix: Vec<Expr> = map.iter().map(|p| Expr::Iv(iv[*p])).collect();
-    body.extend(nest(&iv, &dims(&x.axes), vec![Stmt::Store { buf: 2, index: oix.clone(), value: bin(BinOp::Add, load(2, oix), load(0, ivs(&iv))) }]));
+    body.extend(nest(&iv, &dims(&x.axes), vec![Stmt::Store { buf: 2, index: oix.clone(), value: bin(BinOp::Accum, load(2, oix), load(0, ivs(&iv))) }]));
     let kern = kernel("sum_to", dtype, ins, &tmpl.axes, BufKind::Real, &bd, body);
     done(kern, tmpl.axes.clone())
 }
@@ -1638,7 +1696,7 @@ fn sum_squares(ins: &[Operand], dtype: Dtype) -> Result<Lowered> {
     let iv = bd.loops(&dims(&t.axes));
     let acc = bd.sv();
     let mut body = vec![Stmt::Set { var: acc, value: f(0.0) }];
-    body.extend(nest(&iv, &dims(&t.axes), vec![Stmt::Set { var: acc, value: bin(BinOp::Add, Expr::Sv(acc), bin(BinOp::Mul, load(0, ivs(&iv)), load(0, ivs(&iv)))) }]));
+    body.extend(nest(&iv, &dims(&t.axes), vec![Stmt::Set { var: acc, value: bin(BinOp::Accum, Expr::Sv(acc), bin(BinOp::Product, load(0, ivs(&iv)), load(0, ivs(&iv)))) }]));
     body.push(Stmt::Store { buf: 1, index: vec![], value: Expr::Sv(acc) });
     let kern = kernel("sum_squares", dtype, ins, &[], BufKind::Real, &bd, body);
     done(kern, vec![])

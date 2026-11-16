@@ -113,6 +113,7 @@ crates/presk-interp          reference interpreter                              
 crates/presk-export-pytorch  readable PyTorch export                              (step 7b)
 crates/presk-export-c        the C export: the kernel printer, the host, the runtime, the math functions, the SCoP mode (0.9.0)
 crates/presk-data            .psk.d data files and the training pipeline           (0.2.0 step 1)
+crates/presk-format          machine number formats by their parameters, one generic rounding, their encodings   (0.18.0 step 1)
 crates/presk-rt              the runtime seam: values, the Backend trait, InterpBackend, Layout and Plan (0.3.0 step 1, 0.7.0)
 crates/presk-kernel          PSK-Kernel v0: kernels, their interpreter, the host program, the contraction builder, the layout cost model, the host's recorder   (0.3.0 step 2, 0.7.0, 0.8.0, 0.9.0)
 crates/presk-cranelift       the Cranelift JIT over the kernels, --backend native          (0.3.0 step 3)

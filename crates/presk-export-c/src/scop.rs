@@ -138,7 +138,8 @@ fn elem(k: &Kernel, s: &BufSpec) -> Result<&'static str> {
         (BufKind::Idx, _) => "int64_t",
         (BufKind::Real, Dtype::F64) => "double",
         (BufKind::Real, Dtype::F32) => "float",
-        (BufKind::Real, Dtype::Bf16) => "uint16_t",
+        (BufKind::Real, Dtype::BF16) => "uint16_t",
+        (BufKind::Real, d) => d.unreachable(),
         (BufKind::Quant { .. }, _) => return Err(format!("kernel `{}` reads integer weights, which the SCoP mode does not print", k.name)),
         (BufKind::Wide(_), _) => return Err(format!("kernel `{}` reads reals stored in a narrower type than its own, which the SCoP mode does not print", k.name)),
     })
@@ -461,7 +462,8 @@ fn kind_code(k: &Kernel, s: &BufSpec) -> &'static str {
         (BufKind::Idx, _) => "PRESK_SCOP_IDX",
         (_, Dtype::F64) => "PRESK_SCOP_F64",
         (_, Dtype::F32) => "PRESK_SCOP_F32",
-        (_, Dtype::Bf16) => "PRESK_SCOP_BF16",
+        (_, Dtype::BF16) => "PRESK_SCOP_BF16",
+        (_, d) => d.unreachable(),
     }
 }
 
@@ -811,7 +813,7 @@ mod tests {
     }
 
     fn kernel(dtype: Dtype, inputs: Vec<BufSpec>, output: BufSpec, body: Vec<Stmt>) -> Kernel {
-        Kernel { name: "t".into(), dtype, inputs, output, nloops: 4, nreal: 4, nint: 2, nvec: 0, lanes: 1, body, threads: Threads::One }
+        Kernel { name: "t".into(), dtype, arith: presk_kernel::ir::Arith::native(dtype), inputs, output, nloops: 4, nreal: 4, nint: 2, nvec: 0, lanes: 1, body, threads: Threads::One }
     }
 
     fn bx(e: Expr) -> Box<Expr> {

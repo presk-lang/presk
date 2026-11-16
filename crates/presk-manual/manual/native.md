@@ -18,7 +18,7 @@ the training loop written over the seam reproduces 0.2.0's results digit for
 digit. Input synthesis stays with the interpreter: any backend runs on the
 inputs the reference would.
 
-## The realization: `--realize f64|f32|bf16|@FILE`
+## The realization: `--realize f64|f32|bf16|FORMAT|@FILE`
 
 Versions 0.1.0 to 0.4.0 had a flag here with two values. Since 0.5.0 step 2
 the realization is an **object**, because two separate needs met: the
@@ -46,27 +46,48 @@ record answers both (D34):
   `presk dump --stage core` prints it. The group is the unit because it is
   one loop nest with one set of buffers, so it is the smallest place a type
   is a decision rather than a conversion.
-- **`accum`** is the type a contraction sums in. It defaults to the
-  *arithmetic* type of the storage, so `bf16` storage accumulates in `f32`.
-  Only the error analysis reads it: the kernels sum in the arithmetic type
-  of their storage (found in 0.7.0 step 0, D56), so on the kernel and
-  native backends a realization that declares any other accumulation type
-  (`bf16` over `bf16`, `f64` over `f32`) is refused before anything runs
-  (`E7002`, since 0.10.0 step 8; until then it was run as if absent, and
-  condition 7, which reads it, admitted layouts whose bits differ from the
-  default's, D97). The reference interpreter, which reads no realization,
-  runs it. Kernels that honour it are question 67's.
-- **`order`** is `sequential`, `blocked(width)` or `interleaved(partials)`.
-  The first two are bit-identical — register blocking keeps every addition in
-  index order (D32) — and the third reassociates, which is a different
-  realization owing a measured gap (D31). It is not a performance hint: the
-  constant in front of `u` in a contraction's error rule is a function of it.
+- **`default`, `storage` and `functions`** name any float format since
+  0.18.0 step 3 (D206): `--realize f16` stores every value in binary16, and
+  `float(p=4,emin=-6,emax=8,specials=none,underflow=+0)` is a saturating
+  E4M3. Only the kernel interpreter computes a type other than `f64`, `f32`
+  and `bf16` (below).
+- **`arith`, `product`, `accum`** (since 0.18.0 step 3; `accum` a type
+  since 0.5.0) are the formats a site's operations, its sums' products of
+  terms and its sums' additions are rounded to, each any format (`f16`,
+  `i32`, `fixed(i64,frac=18)`). `arith` defaults to the *arithmetic* type of
+  the storage, so `bf16` storage computes and accumulates in `f32`, and the
+  other two to `arith`. The `precision` chapter's *What a nest computes in*
+  says what a nest computes under them. Until 0.18.0 the kernels summed in
+  the arithmetic type of their storage whatever `accum` said (D56), and a
+  realization declaring another (`bf16` over `bf16`, `f64` over `f32`) was
+  refused (`E7002`, 0.10.0 step 8, D97, question 67); the kernel
+  interpreter honours it now, and the native backends refuse it
+  (`E7005`).
+- **`scaled`** (since 0.18.0 step 4, D207) stores a site's value in an
+  affine format, a quantized activation's integer codes with a static scale
+  and a zero point (`affine(u8/sat,scale=0.009448278,zero=64)`), or states
+  the scheme `presk scales` computes them by from an envelope. Every nest
+  reads such a value as it is; one whose product format is an integer
+  format sums the integers of its scaled operands, an integer unit's sum.
+  The `precision` chapter's *Quantized activations* says what it computes;
+  only the kernel interpreter computes it, and the native backends refuse
+  it (`E7005`).
+- **`order`** is `sequential`, `blocked(width)`, `interleaved(partials)` or,
+  since 0.18.0 step 3, `chunked(size)`. The first two are bit-identical —
+  register blocking keeps every addition in index order (D32) — and the
+  other two reassociate, which is a different realization owing a measured
+  gap (D31): `chunked` sums `size` consecutive terms at a time from zero,
+  then the chunks' sums. It is not a performance hint: the constant in
+  front of `u` in a contraction's error rule is a function of it.
 - **`envelope`** names the magnitude measurements any bound about this
   realization assumed, because a bound without one is a different and
   unsupported claim (D35).
 - **`params`** (since 0.12.0) gives a parameter a floating-point type of its
   own at rest, `f32` or `bf16`, keyed by its path in the tree as `quant`
-  keys integer weights: `"params": { "blocks.ff.up.w": "bf16" }`. Every
+  keys integer weights: `"params": { "blocks.ff.up.w": "bf16" }`. Since
+  0.18.0 step 5 (D208) any float format narrower than `f64`, which the
+  kernel interpreter computes and the native backends refuse but `f32` and
+  `bf16` (`E7005`). Every
   other parameter is stored in `default`. The `precision` chapter's
   *Parameters in their own type* says what is checked and what runs. A
   kernel of a wider type reads such a parameter from an input marked as
@@ -101,7 +122,10 @@ function into groups, which is why a gradient keeps its forward pass's
 groups wherever a realization can see them (D92, D94; the `language`
 chapter, "Residuals"). It halves the traffic of the memory-bound sweeps — `adamw.step`
 is a dozen passes over every parameter — while contractions keep their
-accuracy. There is no `f16`.
+accuracy. The native backends have no `f16`: since 0.18.0 step 3 a
+realization stores a value in binary16 or in any other float format, and
+only the kernel interpreter computes it (below); fast code for them is
+version 0.18.1's.
 
 `presk bench` now times each uniform realization, and the first thing it
 shows is that a narrower type is not automatically faster. On
@@ -289,6 +313,43 @@ binary `.pskk` (spec question 35). Fusion groups (0.4.0), a parallel
 outermost loop split across threads (0.4.0, below), the vector form (0.6.0,
 above), and tile loops, a pack and a split at any depth (0.7.0, below) have
 been added since.
+
+**Any format, emulated (0.18.0 step 2, D205).** The evaluator also runs a
+kernel with every operation in a format no backend computes in: a float
+format's in `f32` or `f64` rounded once to it, an integer's or a
+fixed-point number's exactly, then wrapped or clamped, every load, store
+and constant a conversion, and the run's saturations, infinities, NaNs and
+wraps counted (the `precision` chapter, "Formats"). It is bit for bit the
+machine's binary16 on every pair of codes.
+
+**What a nest computes in (0.18.0 step 3, D206).** A kernel carries the
+formats its operations are rounded to (`presk_kernel::ir::Arith`): its
+arithmetic format, its product format for a sum's products of terms, its
+accumulation format for a sum's additions, which the lowering marks
+(`BinOp::Product`, `BinOp::Accum`; every native backend reads them as a
+product and an addition, so no native kernel's text or code moved).
+`presk dump --stage kernel` writes the formats after the output's type
+where they are not the storage type's arithmetic type. Under a realization
+that computes some site otherwise than natively, the kernel backend runs
+every kernel in its formats (`exec::run_emulated`), a native one with its
+native bits, counts what the formats produced, and `presk run` prints the
+counts; under any other it runs as before. The native and LLVM backends,
+whose executors compute in the native types alone, refuse such a
+realization in `prepare`, before anything runs (`E7005`), and so does the C
+export (the `precision` chapter, "What a nest computes in"). Since step 4
+(D207) a kernel also carries the affine format a site's value is stored
+in, written after its formats (`store affine(i8/sat,scale=0.013830043)`),
+and the kernel interpreter reads a scaled operand's integers where a
+nest's product format is an integer format. Since step 6 (D209) the
+counts hold the host's own conversions too (an argument stored in its
+type, an operand converted to a nest's storage type at its edge, a
+parameter stored in its own type), and a float format may give an
+operation's NaN as its default one (`nans=default`), a machine's
+default-NaN mode. On the tiles of the accelerator plan 0.18.0 targets, a
+systolic array's products and sums in E4M3 and binary16 and in 8-bit
+integers and the conversions beside them, 100 tiles of each of its
+simulator's fourteen modes give the simulator's bits, 1 356 800 values
+(MT2, `examples/tests/formats/systolic.psk`, `presk run --codes`).
 
 ## Conformance
 

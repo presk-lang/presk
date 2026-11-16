@@ -83,6 +83,12 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
             return Err(Stop(2));
         }
     };
+    // The C program computes in f64, f32 and bf16, each nest in its storage
+    // type's arithmetic type (plan 0.18.0 step 3, D206).
+    if let Err(e) = plan.realization.check_native("the C export") {
+        report.diagnostics(&[crate::entry::run_diag(e.code, e.message, None)], &sm);
+        return Err(Stop(1));
+    }
     let mut diags = crate::ad::differentiate(&mut core, o.remat, plan.realization.groups_visible());
     diags.extend(crate::ad::stored_vjps(&core, &plan.realization));
     report.diagnostics(&diags, &sm);
@@ -380,6 +386,10 @@ pub fn export_scop(o: &ScopOptions, report: &mut dyn Report) -> Result<()> {
     if !realize.quant.is_empty() {
         report.line(&format!("presk export --mode scop: `{}` quantizes weights, and the SCoP mode prints nests over arrays of reals and indices: a nest reading integer weights loads `f32(q)·s` from packed integers and their scales", o.realize));
         return Err(Stop(2));
+    }
+    if let Err(e) = realize.check_native("the C export") {
+        report.line(&format!("presk: error[{}]: {}", e.code, e.message));
+        return Err(Stop(1));
     }
     let plan = presk_rt::Plan::from_realization(realize.clone());
     let captured = crate::layout::capture(o.file, o.entry, o.dims, o.consts, &plan, o.seed, &[], crate::layout::Capture::Shapes, o.remat, report)?;

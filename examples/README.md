@@ -162,6 +162,27 @@ The scripts that run them stay in `../experiments/`.
   their Unicode forms (`crates/presk-syntax/tests/snapshots.rs`).
 - `tests/analysis_ok_relu.psk`: a program the analyses accept
   (`crates/presk-core/tests/analysis.rs`).
+- `tests/formats/`: what a nest computes in (plan 0.18.0 step 3),
+  `tests/formats/tile.psk`, one product of two matrices, and
+  `tests/formats/e4m3-f16-chunked.json`, a realization storing its
+  operands in a saturating E4M3 and summing the product in binary16 in
+  chunks of 32 terms (`crates/presk-cli/tests/formats.rs`); and quantized
+  activations (step 4), `tests/formats/w8a8.psk`, one dense layer, and
+  `tests/formats/w8a8.json`, a realization storing its activation and its
+  result in affine formats of eight bits whose scales `presk scales`
+  computes from an envelope, its weights in eight bits, and summing their
+  products in a 32-bit integer (`crates/presk-cli/tests/scaled.rs`); and
+  `tests/formats/systolic.psk` (step 6), the tiles of a systolic array (a
+  32 × 32 × 32 product, with an addend, three along k) and the conversions
+  beside it, a batch of them read from a data file, which `presk run
+  --codes` prints as their formats' codes to compare with a machine's
+  simulator (`crates/presk-cli/tests/formats.rs`; the comparison itself is
+  kept with the machine's description, outside this tree).
+- `tests/targets/accelerator.json`: a target description of presk's own
+  (plan 0.18.0 step 5), a machine whose matrix unit multiplies saturating
+  E4M3 values into binary16 sums or 8-bit integer codes into a wrapping
+  32-bit sum, in chunks of 32 terms, and whose vector unit computes in
+  binary16, for `presk solve --target` (`crates/presk-cli/tests/target.rs`).
 - `tests/precision/heads.psk`: a parameter per way its readers contract it
   (`crates/presk-precision/tests/menu.rs`; a string in the test before
   D199).

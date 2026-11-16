@@ -50,6 +50,12 @@ pub struct Calibrate<'a> {
     pub seed: u64,
     pub bits: u32,
     pub weights: Option<&'a Path>,
+    /// Also record each site's smallest and largest value (`--range`, plan
+    /// 0.18.0 step 4).
+    pub range: bool,
+    /// Also record each site's rounding in these formats, beside `f64`,
+    /// `f32` and `bf16` (`--formats`, plan 0.18.0 step 5).
+    pub formats: Vec<presk_format::Float>,
 }
 
 /// The magnitude envelope of an entry (plan 0.5.0 §3.2): the entry run once
@@ -61,7 +67,15 @@ pub fn calibrate(core: &presk_core::Program, prog: &ElabProgram, c: &Calibrate) 
     let mut backend = InterpBackend::new(core, prog, c.bits);
     backend.interp.magnitudes = Some(Default::default());
     backend.interp.minima = Some(Default::default());
+    if c.range {
+        backend.interp.ranges = Some(Default::default());
+    }
     backend.interp.roundings = Some(Default::default());
+    for f in &c.formats {
+        if !backend.interp.rounding_formats.contains(f) {
+            backend.interp.rounding_formats.push(*f);
+        }
+    }
     backend.interp.elems = Some(Default::default());
     backend.interp.ops = Some(Default::default());
     backend.interp.terms = Some(Default::default());
@@ -77,6 +91,7 @@ pub fn calibrate(core: &presk_core::Program, prog: &ElabProgram, c: &Calibrate) 
     })?;
     env.observe(&backend.interp.magnitudes.take().unwrap_or_default());
     env.observe_minima(&backend.interp.minima.take().unwrap_or_default());
+    env.observe_range(&backend.interp.ranges.take().unwrap_or_default());
     env.observe_rounding(&backend.interp.roundings.take().unwrap_or_default());
     env.observe_elems(&backend.interp.elems.take().unwrap_or_default());
     env.observe_ops(&backend.interp.ops.take().unwrap_or_default());
@@ -121,6 +136,10 @@ pub enum BoundError {
     NotEntry,
     /// The measurement failed; the message `presk check: ` prefixes.
     Measure(String),
+    /// The realization computes a nest in formats the error analysis does
+    /// not bound yet (plan 0.18.0 step 3,
+    /// [`presk_precision::propagate::bounded_formats`]): the message.
+    Formats(String),
 }
 
 /// The bound of the entry the envelope was measured on, under `realize`, by
@@ -131,6 +150,7 @@ pub fn bound(core: &presk_core::Program, prog: &ElabProgram, env: &Envelope, rea
     let Ok((entry, dims)) = entry_dims(core, prog, &env.entry, &env.dims) else {
         return Err(BoundError::NotEntry);
     };
+    presk_precision::propagate::bounded_formats(realize).map_err(BoundError::Formats)?;
     let measured = if measure {
         let opts = RunOptions { entry: env.entry.clone(), dims: env.dims.clone(), seed: 0, bits: env.bits, digits: 17 };
         let weights = env.weights.as_ref().map(PathBuf::from);
@@ -302,6 +322,12 @@ pub struct Solved {
     pub params: Vec<solve::ParamSite>,
     /// What the sweep and the measurements ran on (D185).
     pub exec: SolveExec,
+    /// What the formats' overflow rules produced in the emulated
+    /// measurements (plan 0.18.0 step 5, D208): the realization returned's,
+    /// and every measurement's summed, with how many were emulated.
+    pub counts: Option<presk_format::Counts>,
+    pub all_counts: presk_format::Counts,
+    pub emulated: usize,
 }
 
 /// Why `presk solve` gave no realization; each is printed by the command.
@@ -413,12 +439,18 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     let output_site = format!("{}/%{}", core.func(entry).name, core.func(entry).body.result.0);
 
     let on = a.exec.measure;
+    // Each emulated measurement's counts (D208), by realization.
+    let mut counted: Vec<(Realization, presk_format::Counts)> = Vec::new();
     let mut measure = |r: &Realization| -> f64 {
         let mut b = measuring_backend(on, core, prog, r);
         let Ok(a) = r.realize_args(&args) else {
             return f64::INFINITY;
         };
-        match Backend::prepare(&mut b, entry, &fdims, r).and_then(|p| Backend::call(&mut b, &p, a)) {
+        let got = Backend::prepare(&mut b, entry, &fdims, r).and_then(|p| Backend::call(&mut b, &p, a));
+        if let Some(c) = Backend::counts(&b) {
+            counted.push((r.clone(), c));
+        }
+        match got {
             Ok(v) => leaf_gap(&reference, &v),
             Err(_) => f64::INFINITY,
         }
@@ -463,12 +495,21 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
     // rounded (plan 0.11.0 step 2b, D112); the parameters, each with the
     // field sites that read it (plan 0.12.0 step 4).
     let params = param_sites(core, prog, entry, &args[0], &param_sens, &menu);
-    let roles = solve::Roles::of(core).with_params(params.clone());
+    let mut roles = solve::Roles::of(core).with_params(params.clone());
+    // Under a target, each sum's terms, read off the types at the
+    // envelope's shapes as the error analysis reads them (D208).
+    if menu.2.is_some()
+        && let Ok((e, dims)) = entry_dims(core, prog, &env.entry, &env.dims)
+    {
+        let sums = presk_precision::propagate::propagate(core, prog, e, &dims, env, &Realization::uniform(Dtype::F64)).sums;
+        roles = roles.with_sums(&sums);
+    }
+    let default = menu.default_type();
     let mut sol = if a.verify {
         let heldout: Option<&mut dyn FnMut(&Realization) -> f64> = if held.is_some() { Some(&mut measure_heldout) } else { None };
-        solve::solve_with_heldout(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), Some(&mut measure), heldout, a.options)
+        solve::solve_with_heldout(env, &sens, &roles, &output_site, a.budget, &menu, default, machine.as_ref(), Some(&mut measure), heldout, a.options)
     } else {
-        solve::solve_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), None, a.options)
+        solve::solve_with(env, &sens, &roles, &output_site, a.budget, &menu, default, machine.as_ref(), None, a.options)
     };
     // The integer menu, on top of the float assignment and under what it
     // left of the budget (0.6.0 step 5d). Verified, the measurement is of
@@ -496,9 +537,14 @@ pub fn solve(core: &mut presk_core::Program, prog: &ElabProgram, env: &Envelope,
         (Some(_), None) => return Err(SolveError::QuantWithoutGradient),
         _ => None,
     };
-    let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, Dtype::F64, machine.as_ref(), 200_000, a.options).map(|(_, bytes)| bytes);
-    let breakdown = solve::breakdown_with(env, &sens, &roles, &sol.realization, &menu, Dtype::F64, machine.as_ref(), a.options.rounding);
-    Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time, menu, params, exec: a.exec })
+    let optimal = solve::exhaustive_with(env, &sens, &roles, &output_site, a.budget, &menu, default, machine.as_ref(), 200_000, a.options).map(|(_, bytes)| bytes);
+    let breakdown = solve::breakdown_with(env, &sens, &roles, &sol.realization, &menu, default, machine.as_ref(), a.options.rounding);
+    let counts = counted.iter().rev().find(|(r, _)| *r == sol.realization).map(|(_, c)| *c);
+    let mut all_counts = presk_format::Counts::default();
+    for (_, c) in &counted {
+        all_counts.add(*c);
+    }
+    Ok(Solved { entry, sens, solution: sol, quant, reference_max, output_site, outputs, optimal, breakdown, time, menu, params, exec: a.exec, counts, all_counts, emulated: counted.len() })
 }
 
 /// Whether `f` returns a real tensor, of any shape, an open prefix bound at
@@ -514,8 +560,10 @@ pub fn returns_real(core: &presk_core::Program, f: FuncId) -> bool {
 /// kernel interpreter where the native backend is unavailable.
 fn measuring_backend<'p>(on: Measure, core: &'p presk_core::Program, prog: &'p ElabProgram, r: &Realization) -> presk_kernel::KernelBackend<'p> {
     match on {
-        Measure::Native => presk_cranelift::native_backend(core, prog, r).unwrap_or_else(|_| presk_kernel::KernelBackend::new(core, prog, r)),
-        Measure::Kernel => presk_kernel::KernelBackend::new(core, prog, r),
+        // A realization the native backend does not compute is emulated
+        // (plan 0.18.0 step 5, D208).
+        Measure::Native if !r.emulates() => presk_cranelift::native_backend(core, prog, r).unwrap_or_else(|_| presk_kernel::KernelBackend::new(core, prog, r)),
+        Measure::Native | Measure::Kernel => presk_kernel::KernelBackend::new(core, prog, r),
     }
 }
 
@@ -583,7 +631,9 @@ fn param_sites(core: &presk_core::Program, prog: &ElabProgram, entry: FuncId, th
             let mag = values.iter().fold(0.0f64, |m, x| m.max(x.abs()));
             // Its rounding at rest in each type, from its own values: they
             // are doubles, so the `f64` term is 0 (D155).
-            let round = values.iter().map(|x| presk_interp::eval::rounding_of_f64(*x)).fold([0.0f64; 3], |a, b| [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]);
+            let formats = [presk_format::F64, presk_format::F32, presk_format::BF16];
+            let round = values.iter().map(|x| presk_interp::eval::rounding_of_f64(*x, &formats)).fold(vec![0.0f64; 3], |a, b| a.into_iter().zip(b).map(|(a, b)| a.max(b)).collect());
+            let round = formats.into_iter().zip(round).collect();
             let ints = if declared.get(path).copied().unwrap_or(t.rank()) >= 2 { int_rungs(t, &values, &menu.1, axes.get(path).copied()) } else { Vec::new() };
             out.push(solve::ParamSite { path: path.to_string(), elems: t.numel() as f64, mag, sens: *s, fields: fields.get(path).cloned().unwrap_or_default(), round: Some(presk_precision::envelope::Rounding::of(round)), ints });
         }

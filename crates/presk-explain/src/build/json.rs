@@ -391,7 +391,7 @@ fn facts(s: &State, id: &Id, math: &Math) -> Map<String, Value> {
             let ty = match s.realization.quant.get(site).filter(|_| id.key.starts_with("param ")) {
                 Some(q) => q.name(),
                 None if id.key.starts_with("param ") => s.realization.params.get(site).copied().unwrap_or(s.realization.default).name().to_string(),
-                None => s.realization.dtype_at(site).name().to_string(),
+                None => s.realization.label_at(site),
             };
             m.insert("type".into(), json!(ty));
             if let Some(sv) = &s.solved
@@ -428,15 +428,15 @@ fn facts(s: &State, id: &Id, math: &Math) -> Map<String, Value> {
             }
         }
         Stage::Fusion => {
-            m.insert("type".into(), json!(s.realization.dtype_at(&id.key).name()));
+            m.insert("type".into(), json!(s.realization.label_at(&id.key)));
         }
         Stage::Launch => {
             if let Some((nest, _)) = id.key.rsplit_once(' ') {
-                m.insert("type".into(), json!(s.realization.dtype_at(nest).name()));
+                m.insert("type".into(), json!(s.realization.label_at(nest)));
             }
         }
         Stage::Layout => {
-            m.insert("type".into(), json!(s.realization.dtype_at(&id.key).name()));
+            m.insert("type".into(), json!(s.realization.label_at(&id.key)));
             // A contraction nest: its sum, and the order its terms are added
             // in under the realization.
             if let Some((f, l)) = super::site_let(&s.xcore, &id.key)

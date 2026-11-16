@@ -1,0 +1,5 @@
+-- tile.psk — one product of a 4×64 and a 64×3 matrix, a tile of a systolic
+-- array, for what a nest computes in (plan 0.18.0 step 3): under
+-- `e4m3-f16-chunked.json` its operands are stored in a saturating E4M3 and
+-- its product is summed in binary16, in two chunks of 32 terms.
+fn tile(x : ℝ[4, 64], w : ℝ[64, 3]) -> ℝ[4, 3] = x · w

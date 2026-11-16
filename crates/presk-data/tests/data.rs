@@ -210,3 +210,56 @@ fn version_two_encodings() {
     // An index leaf has no real encoding.
     assert_eq!(bad([Enc::F64, Enc::F64, Enc::F32, Enc::F64], &v), "E9005");
 }
+
+/// Version 3 (plan 0.18.0 step 1, D204): a leaf in a format given by its
+/// parameters, its six bytes in the header and its codes in the fewest
+/// whole bytes, read back exactly; a format of its own code is written by
+/// it; encoding 3 in a version 2 file, or a description that is no format,
+/// is refused.
+#[test]
+fn version_three_formats() {
+    use presk_data::{Enc, write_encoded};
+    let ty = "(ℝ[a: 4], ℝ[b: 3], ℝ[c: 2], idx[5][1])";
+    let layout = Layout::from_type_text(ty).unwrap();
+    // Numbers of the saturating E4M3 (480, 2⁻⁹), of binary16 and of E2M1.
+    let v = Value::Tuple(vec![
+        Value::Real(vec![480.0, -0.375, 2f64.powi(-9), -0.0]),
+        Value::Real(vec![65504.0, 1.0 + 2f64.powi(-10), -2f64.powi(-24)]),
+        Value::Real(vec![6.0, -0.5]),
+        Value::Idx(vec![3]),
+    ]);
+    let encs = [Enc::Format(presk_format::E4M3_SATURATING), Enc::Format(presk_format::F16), Enc::Format(presk_format::E2M1), Enc::F64];
+    let path = tmp("v3.psk.d");
+    write_encoded(&path, ty, &layout, &encs, std::slice::from_ref(&v)).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 3, "a described leaf: version 3");
+    let mut r = Reader::open(&path).unwrap();
+    assert_eq!(r.header().encodings, encs.to_vec());
+    assert_eq!(r.get(0).unwrap(), v, "every value read back exactly");
+    // header (4 + 2 + 4 + type + 8 + 4 + 4 codes + 3·6) + 4·1 + 3·2 + 2·1 + 1
+    let header = 4 + 2 + 4 + ty.len() + 8 + 4 + 4 + 3 * 6;
+    assert_eq!(r.header().len() as usize, header);
+    assert_eq!(bytes.len(), header + 4 + 6 + 2 + 1);
+    assert_eq!(&bytes[header..header + 4], &[0x7f, 0xac, 0x01, 0x80], "the E4M3 codes: 480, −1.5·2⁻², 2⁻⁹, −0");
+    let info = presk_data::info(&mut r, 0).unwrap();
+    assert!(info.contains("leaves  1 × float(p=4,emin=-6,emax=8,specials=none,underflow=+0), 1 × f16, 1 × e2m1, 1 × f64"), "{info}");
+    // A format of its own code: f32 as `Format` is written as f32, version 2.
+    let w = Value::Tuple(vec![Value::Real(vec![1.0; 4]), Value::Real(vec![0.5; 3]), Value::Real(vec![2.0; 2]), Value::Idx(vec![0])]);
+    let p2 = tmp("v3-own.psk.d");
+    write_encoded(&p2, ty, &layout, &[Enc::Format(presk_format::F32), Enc::F64, Enc::F64, Enc::F64], std::slice::from_ref(&w)).unwrap();
+    assert_eq!(Reader::open(&p2).unwrap().header().encodings[0], Enc::F32);
+    assert_eq!(Reader::open(&p2).unwrap().header().version, 2);
+    // A value the format does not hold is refused.
+    let bad = Value::Tuple(vec![Value::Real(vec![481.0, 0.0, 0.0, 0.0]), Value::Real(vec![0.0; 3]), Value::Real(vec![0.0; 2]), Value::Idx(vec![0])]);
+    assert_eq!(write_encoded(&tmp("v3-bad.psk.d"), ty, &layout, &encs, std::slice::from_ref(&bad)).unwrap_err().code, "E9004");
+    // Encoding 3 in a version 2 file; a description that is no format.
+    let mut v2 = bytes.clone();
+    v2[4] = 2;
+    std::fs::write(tmp("v3-as-v2.psk.d"), &v2).unwrap();
+    assert_eq!(Reader::open(&tmp("v3-as-v2.psk.d")).unwrap_err().code, "E9002");
+    let mut odd = bytes.clone();
+    let first = 4 + 2 + 4 + ty.len() + 8 + 4 + 1;
+    odd[first] = 1;
+    std::fs::write(tmp("v3-odd.psk.d"), &odd).unwrap();
+    assert_eq!(Reader::open(&tmp("v3-odd.psk.d")).unwrap_err().code, "E9002");
+}

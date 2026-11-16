@@ -36,9 +36,7 @@ fn elem_bytes(kind: BufKind, dtype: Dtype) -> f64 {
         // The integers; the scales are one per channel and are not counted.
         (BufKind::Quant { bits, .. }, _) => bits as f64 / 8.0,
         (BufKind::Wide(d), _) => d.bytes() as f64,
-        (BufKind::Real, Dtype::F64) => 8.0,
-        (BufKind::Real, Dtype::F32) => 4.0,
-        (BufKind::Real, Dtype::Bf16) => 2.0,
+        (BufKind::Real, d) => d.bytes() as f64,
     }
 }
 
@@ -799,7 +797,7 @@ mod tests {
         let t = |a: usize, b: usize| Operand { axes: vec![Axis { name: None, len: a }, Axis { name: None, len: b }], kind: BufKind::Real };
         let ins = [t(n, n), t(n, n)];
         let c = Contraction::of(&presk_core::PrimOp::Dot, &ins, ReductionOrder::Sequential).unwrap();
-        let kind = presk_rt::NestKind::Contraction(c.kind(Dtype::F32, Dtype::F32));
+        let kind = presk_rt::NestKind::Contraction(c.kind(Dtype::F32, Dtype::F32.into()));
         let mut k = emit_contraction(&c, Dtype::F32, &ins, &layout.resolve(&kind)).unwrap().kernel;
         // One worker, so that two layouts compare as kernels and not as
         // splits: the executor's default would split one and not the other.
@@ -867,7 +865,7 @@ mod tests {
         let load = |b: usize| Expr::Load(b, vec![Expr::Iv(0), Expr::Iv(1)]);
         let store = Stmt::Store { buf: 2, index: vec![Expr::Iv(0), Expr::Iv(1)], value: Expr::Bin(BinOp::Add, Box::new(load(0)), Box::new(load(1))) };
         let body = vec![Stmt::For { var: 0, bound: rows, body: vec![Stmt::For { var: 1, bound: cols, body: vec![store] }] }];
-        Kernel { name: "add".into(), dtype: Dtype::F32, inputs: vec![spec.clone(), spec.clone()], output: spec, nloops: 2, nreal: 0, nint: 0, nvec: 0, lanes: 1, threads: Threads::One, body }
+        Kernel { name: "add".into(), dtype: Dtype::F32, arith: crate::ir::Arith::native(Dtype::F32), inputs: vec![spec.clone(), spec.clone()], output: spec, nloops: 2, nreal: 0, nint: 0, nvec: 0, lanes: 1, threads: Threads::One, body }
     }
 
     /// Plan 0.8.0 step 4 (4c): each rule a profile may name moves the term
@@ -936,6 +934,7 @@ mod tests {
         let k = Kernel {
             name: "add".into(),
             dtype: Dtype::F64,
+            arith: crate::ir::Arith::native(Dtype::F64),
             inputs: vec![spec.clone(), spec.clone()],
             output: spec,
             nloops: 2,

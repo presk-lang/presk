@@ -261,7 +261,7 @@ pub fn recipe(functions: &[String], opt: &str) -> Realization {
     // Every function of the optimizer (`adamw.step`, `adamw.lr`) stays wide.
     let optimizer = opt.rsplit_once('.').map_or(opt, |(o, _)| o);
     let mut r = Realization::uniform(Dtype::F32);
-    r.functions = functions.iter().filter(|f| f.rsplit_once('.').map(|(o, _)| o) != Some(optimizer)).map(|f| (f.clone(), Dtype::Bf16)).collect();
+    r.functions = functions.iter().filter(|f| f.rsplit_once('.').map(|(o, _)| o) != Some(optimizer)).map(|f| (f.clone(), Dtype::BF16)).collect();
     r
 }
 
@@ -369,9 +369,9 @@ pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool,
             println!("{:<30} {:>6} {:>12} {:>11} {:>11} {:>8}", "function", "sites", "f64 cost", "gap f32", "gap bf16", "chosen");
             for g in &sol.groups {
                 let gap = |d| g.gap.get(&d).map(|x: &f64| format!("{x:.2e}")).unwrap_or_else(|| "-".into());
-                println!("{:<30} {:>6} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.sites, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::Bf16), sol.chosen[&g.name].name());
+                println!("{:<30} {:>6} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.sites, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::BF16), sol.chosen[&g.name].name());
             }
-            println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::Bf16));
+            println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::BF16));
             println!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), {unit}", sol.cost, sol.baseline, sol.speedup());
         }
         Grain::Value => {
@@ -385,13 +385,14 @@ pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool,
                 e[match sol.chosen[&g.name] {
                     Dtype::F64 => 1,
                     Dtype::F32 => 2,
-                    Dtype::Bf16 => 3,
+                    Dtype::BF16 => 3,
+                    d => d.unreachable(),
                 }] += 1;
             }
             println!("{:<34} {:>9} {:>12} {:>11} {:>11} {:>8}", "value", "elements", "f64 cost", "gap f32", "gap bf16", "chosen");
             for g in &sol.groups {
                 let gap = |d| g.gap.get(&d).map(|x: &f64| format!("{x:.2e}")).unwrap_or_else(|| "-".into());
-                println!("{:<34} {:>9} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.elems, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::Bf16), sol.chosen[&g.name].name());
+                println!("{:<34} {:>9} {:>12.3e} {:>11} {:>11} {:>8}", g.name, g.elems, g.cost.get(&Dtype::F64).copied().unwrap_or(0.0), gap(Dtype::F32), gap(Dtype::BF16), sol.chosen[&g.name].name());
             }
             println!("{:<30} {:>7} {:>6} {:>6} {:>6}", "function", "values", "f64", "f32", "bf16");
             for (f, c) in &by_fn {
@@ -401,7 +402,7 @@ pub fn solve(file: &Path, env_path: &Path, budget: f64, bits: u32, verify: bool,
             // per-function realization's choice on these values.
             let all32 = sol.groups.iter().map(|g| g.gap.get(&Dtype::F32).copied().unwrap_or(0.0).powi(2)).sum::<f64>().sqrt();
             println!("  all f32     {all32:.3e} (√Σ of every value's isolated gap in f32)");
-            println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::Bf16));
+            println!("  chosen      {} f64, {} f32, {} bf16", n(Dtype::F64), n(Dtype::F32), n(Dtype::BF16));
             println!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), {unit}, over the values offered", sol.cost, sol.baseline, sol.speedup());
             // The whole step by role (D178): what compares with a
             // realization by function, `presk calibrate --step` pricing both.
@@ -447,8 +448,8 @@ mod tests {
         let fns: Vec<String> = ["Linear.apply", "Linear.apply.vjp", "loss.vjp", "adamw.step", "adamw.lr"].iter().map(|s| s.to_string()).collect();
         let r = recipe(&fns, "adamw.step");
         assert_eq!(r.default, Dtype::F32);
-        assert_eq!(r.dtype_at("Linear.apply.vjp/%3"), Dtype::Bf16);
-        assert_eq!(r.dtype_at("loss.vjp/%0"), Dtype::Bf16);
+        assert_eq!(r.dtype_at("Linear.apply.vjp/%3"), Dtype::BF16);
+        assert_eq!(r.dtype_at("loss.vjp/%0"), Dtype::BF16);
         assert_eq!(r.dtype_at("adamw.step/%3"), Dtype::F32);
         assert_eq!(r.dtype_at("adamw.lr/%1"), Dtype::F32);
     }

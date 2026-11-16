@@ -244,7 +244,8 @@ impl NativeExec {
         // the element size part company here, and nowhere else.
         let fty = match k.dtype {
             Dtype::F64 => types::F64,
-            Dtype::F32 | Dtype::Bf16 => types::F32,
+            Dtype::F32 | Dtype::BF16 => types::F32,
+            d => d.unreachable(),
         };
         let real_bytes = k.dtype.bytes() as i64;
         // Declare the libm functions the kernel needs before building.
@@ -256,7 +257,8 @@ impl NativeExec {
         for n in needed {
             let name = match (k.dtype, n) {
                 (Dtype::F64, n) => n.to_string(),
-                (Dtype::F32 | Dtype::Bf16, n) => format!("{n}f"),
+                (Dtype::F32 | Dtype::BF16, n) => format!("{n}f"),
+                (d, _) => d.unreachable(),
             };
             libm_ids.insert(n, self.libm_fn(&name, fty)?);
         }
@@ -330,7 +332,7 @@ impl NativeExec {
             let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
             let wide: Vec<Option<Dtype>> = k.inputs.iter().map(|s| if let BufKind::Wide(d) = s.kind { Some(d) } else { None }).collect();
             let affine_loops = affine_loops(&k.body, k.nloops);
-            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::Bf16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, out: k.inputs.len(), depth_of: vec![0; k.nloops], idepth_of: vec![0; k.nint], depth: 0, promo: None, vecs, libm: refs, keep, line: 1, affine_loops, guarded: 0 };
+            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::BF16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, out: k.inputs.len(), depth_of: vec![0; k.nloops], idepth_of: vec![0; k.nint], depth: 0, promo: None, vecs, libm: refs, keep, line: 1, affine_loops, guarded: 0 };
             // The loop a split divides — the outermost by default, the one at
             // the depth the plan states (0.7.0 step 3) — runs over the range
             // the caller gives; the loops enclosing it run in full. One
@@ -622,7 +624,7 @@ impl Gen<'_> {
         let d = self.wide(buf).expect("a narrower input");
         let a = self.addr(buf, index);
         let x = match d {
-            Dtype::Bf16 => {
+            Dtype::BF16 => {
                 let h = self.b.ins().load(types::I16, MemFlags::trusted(), a, (2 * lane) as i32);
                 let w = self.b.ins().uextend(types::I32, h);
                 let up = self.b.ins().ishl_imm(w, 16);
@@ -778,7 +780,7 @@ impl Gen<'_> {
             // Four `bf16` lanes into `f32`: eight bytes, each sixteen bits
             // moved to the top of its lane; two `f32` lanes into `f64`: eight
             // bytes, promoted. The same widening as the scalar load.
-            Expr::VLoad(buf, ix) if self.wide(*buf) == Some(Dtype::Bf16) && vty == types::F32X4 => {
+            Expr::VLoad(buf, ix) if self.wide(*buf) == Some(Dtype::BF16) && vty == types::F32X4 => {
                 let a = self.addr(*buf, ix);
                 let w = self.b.ins().load(types::I64, MemFlags::trusted(), a, 0);
                 let v = self.b.ins().scalar_to_vector(types::I64X2, w);
@@ -826,10 +828,12 @@ impl Gen<'_> {
             }
             Expr::VBin(op, a, c) => {
                 let (x, y) = (self.gen_v(a), self.gen_v(c));
+                // A sum's addition and a product of terms are an addition
+                // and a product: a native kernel computes in one format.
                 match op {
-                    BinOp::Add | BinOp::IAdd => self.b.ins().fadd(x, y),
+                    BinOp::Add | BinOp::IAdd | BinOp::Accum => self.b.ins().fadd(x, y),
                     BinOp::Sub => self.b.ins().fsub(x, y),
-                    BinOp::Mul | BinOp::IMul => self.b.ins().fmul(x, y),
+                    BinOp::Mul | BinOp::IMul | BinOp::Product => self.b.ins().fmul(x, y),
                     BinOp::Div => self.b.ins().fdiv(x, y),
                 }
             }
@@ -866,7 +870,7 @@ impl Gen<'_> {
             Expr::Sv(v) => self.b.use_var(self.reals[*v]),
             Expr::Bin(op, x, y) if !matches!(op, BinOp::IAdd | BinOp::IMul) => {
                 let (a, c) = (self.gen_f(x), self.gen_f(y));
-                match op {
+                match op.plain() {
                     BinOp::Add => self.b.ins().fadd(a, c),
                     BinOp::Sub => self.b.ins().fsub(a, c),
                     BinOp::Mul => self.b.ins().fmul(a, c),
@@ -1474,6 +1478,7 @@ fn buf_ptr(b: &Buf) -> Result<*mut u8> {
         Buf::I64(v) => v.as_ptr() as *mut u8,
         Buf::Quant(q) => q.data.as_ptr() as *mut u8,
         Buf::Exact(_) => return err("native backend: an exact buffer reached a kernel"),
+        Buf::Format(f, _) => return err(format!("native backend: a buffer of {f}, which only the kernel interpreter emulates, reached a kernel")),
     })
 }
 
@@ -1542,6 +1547,7 @@ impl KernelExec for NativeExec {
             Buf::Bf16(v) => v.as_mut_ptr() as *mut u8,
             Buf::I64(v) => v.as_mut_ptr() as *mut u8,
             Buf::Exact(_) | Buf::Quant(_) => return err("native backend: an exact or integer output buffer"),
+            Buf::Format(f, _) => return err(format!("native backend: an output buffer of {f}, which only the kernel interpreter emulates")),
         });
         // The scales of the integer inputs, after the output (`compile`).
         for (b, spec) in inputs.iter().zip(&k.inputs) {

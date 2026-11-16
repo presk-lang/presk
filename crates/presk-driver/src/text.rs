@@ -7,6 +7,8 @@
 //! time or a path the document does not print is the command's alone, and
 //! stays in the command.
 
+use std::collections::BTreeMap;
+
 use presk_precision::envelope::Envelope;
 use presk_precision::sensitivity::Sensitivity;
 
@@ -99,11 +101,11 @@ pub fn bound(env: &Envelope, env_path: &str, realize: &str, b: &Bounded, sites: 
 pub fn rules(sol: &presk_precision::solve::Solution) -> Vec<String> {
     use presk_precision::solve::Rule;
     let o = &sol.offers;
+    let mut out = range_rules(sol);
     if o.excluded.is_empty() {
-        return Vec::new();
+        return out;
     }
     let names = |r: Rule, gain: bool| o.by(r).map(|e| if gain { format!("{} {:.3e}", e.name, e.gain) } else { e.name.clone() }).collect::<Vec<_>>().join(", ");
-    let mut out = Vec::new();
     let one = o.by(Rule::OneElement).count();
     if one > 0 {
         out.push(format!("  rules       {one} of one element not offered (rule 1): {}", names(Rule::OneElement, false)));
@@ -121,6 +123,48 @@ pub fn rules(sol: &presk_precision::solve::Solution) -> Vec<String> {
     }
     let share = if sol.traffic > 0.0 { o.forgone() / sol.traffic } else { 0.0 };
     out.push(format!("              at most {:.4e} bytes forgone (their saving in the menu's narrowest type), {:.2} % of the realization's traffic, {:.4e} bytes", o.forgone(), 100.0 * share, sol.traffic));
+    out
+}
+
+/// The range rules' line (plan 0.18.0 step 5, D208), when they refused a
+/// format: how many, by rule, at which margin, and the first few.
+fn range_rules(sol: &presk_precision::solve::Solution) -> Vec<String> {
+    let r = &sol.offers.refused;
+    if r.is_empty() {
+        return Vec::new();
+    }
+    let by = |rule: &str| r.iter().filter(|x| x.why.name() == rule).count();
+    let first: Vec<String> = r.iter().take(4).map(|x| format!("{} not in {}, {}", x.name, x.rung.name(), x.why)).collect();
+    vec![
+        format!("  range       {} formats not offered by the range rules (D208): {} range at the margin {}, {} divisor, {} constant", r.len(), by("range"), sol.options.range_margin, by("divisor"), by("constant")),
+        format!("              {}{}", first.join("; "), if r.len() > first.len() { "; …" } else { "" }),
+    ]
+}
+
+/// What a target solve chose (D208): its description, the formats its
+/// values are stored in and the modes its sums are computed in.
+fn target_lines(solved: &Solved) -> Vec<String> {
+    let Some(t) = &solved.menu.2 else { return Vec::new() };
+    let modes = if t.contractions.is_empty() { "no contraction mode".to_string() } else { format!("{} contraction modes ({})", t.contractions.len(), t.contractions.iter().map(|m| m.label()).collect::<Vec<_>>().join(", ")) };
+    let arith: Vec<String> = t.arith.iter().map(|(k, f)| format!("{k} in {f}")).collect();
+    let mut out = vec![format!(
+        "  target      `{}`: stores in {}{}, computes {}, {modes}, order {}",
+        t.name,
+        t.storage.iter().map(|d| d.name()).collect::<Vec<_>>().join(", "),
+        if t.scaled.is_empty() { String::new() } else { format!(" and {} affine format(s)", t.scaled.len()) },
+        arith.join(", "),
+        t.order.name()
+    )];
+    let mut stored: BTreeMap<String, usize> = BTreeMap::new();
+    let mut modes: BTreeMap<String, usize> = BTreeMap::new();
+    for c in solved.breakdown.iter().filter(|c| c.role == presk_precision::solve::Role::Decision) {
+        *stored.entry(c.rung.name()).or_default() += 1;
+        if let Some(m) = &c.mode {
+            *modes.entry(m.clone()).or_default() += 1;
+        }
+    }
+    let list = |m: &BTreeMap<String, usize>| m.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", ");
+    out.push(format!("  formats     decisions {}{}", list(&stored), if modes.is_empty() { String::new() } else { format!("; contractions {}", list(&modes)) }));
     out
 }
 
@@ -162,7 +206,9 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
     let (out_sites, out_params) = (offers.excluded.iter().filter(|e| !e.param).count(), offers.excluded.iter().filter(|e| e.param).count());
     let stored = sol.considered - params.len();
     let of = |n: usize, out: usize, what: &str| if out > 0 { format!(" ({n} {what}, {out} not offered)") } else { String::new() };
-    let mut out = vec![head, format!("  sites       {} narrowable, {} assigned away from f64{}", stored - out_sites, sol.realization.storage.len(), of(stored, out_sites, "stored values"))];
+    let mut out = vec![head];
+    out.extend(target_lines(solved));
+    out.push(format!("  sites       {} narrowable, {} assigned away from {}{}", stored - out_sites, sol.realization.storage.len() + sol.realization.scaled.len(), sol.realization.default.name(), of(stored, out_sites, "stored values")));
     if !params.is_empty() {
         let typed = |d: presk_rt::Dtype| sol.realization.params.values().filter(|t| **t == d).count();
         // The one menu's integers (D177), said when it decided some: a
@@ -170,13 +216,22 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
         let ints: Vec<&&presk_precision::solve::SiteCost> = params.iter().filter(|c| c.int.is_some()).collect();
         let int_typed = |bits: u8| ints.iter().filter(|c| c.int.as_ref().is_some_and(|q| q.bits == bits)).count();
         let int_part = if ints.is_empty() { String::new() } else { format!(", {} int8, {} int4", int_typed(8), int_typed(4)) };
+        // Under a target (D208), by the formats it stores them in.
+        let types = if solved.menu.2.is_some() {
+            let mut by: BTreeMap<String, usize> = BTreeMap::new();
+            for c in params.iter().filter(|c| c.rung != presk_precision::solve::Rung::Float(sol.realization.default)) {
+                *by.entry(c.rung.name()).or_default() += 1;
+            }
+            by.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")
+        } else {
+            format!("{} f32, {} bf16{int_part}", typed(presk_rt::Dtype::F32), typed(presk_rt::Dtype::BF16))
+        };
         out.push(format!(
-            "  parameters  {} offered{}, {} stored away from f64 ({} f32, {} bf16{int_part}): {:.4e} bytes at rest against {:.4e} in f64",
+            "  parameters  {} offered{}, {} stored away from {} ({types}): {:.4e} bytes at rest against {:.4e} in f64",
             params.len() - out_params,
             if out_params > 0 { format!(" of {}", params.len()) } else { String::new() },
             sol.realization.params.len() + ints.len(),
-            typed(presk_rt::Dtype::F32),
-            typed(presk_rt::Dtype::Bf16),
+            sol.realization.default.name(),
             params.iter().map(|c| c.bytes).sum::<f64>(),
             params.iter().map(|c| c.elems * 8.0).sum::<f64>()
         ));
@@ -187,7 +242,9 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
     out.extend(rules(sol));
     let per = if solved.outputs > 1 { "first order, of a mean output element" } else { "first order" };
     out.extend([
-        format!("  cost        {:.4e} against {:.4e} all-f64 ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, sol.speedup(), sol.relaxation_bytes),
+        // Under a target the baseline is its widest format (D208): every
+        // value in it, as the solve starts (D209 found the label `all-f64`).
+        format!("  cost        {:.4e} against {:.4e} all-{} ({:.2}x), relaxation floor {:.4e}", sol.bytes, sol.baseline_bytes, solved.menu.default_type(), sol.speedup(), sol.relaxation_bytes),
     ]);
     // The cost per sample (D157), said where the envelope has several.
     if !env.per_sample.is_empty() {
@@ -200,8 +257,32 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
         format!("  estimate    {:.3e} (sensitivity-weighted, {per}: it ranks, it does not guarantee)", sol.estimated_error),
     ]);
     match sol.measured {
+        // Under a target, none measured inside (D208): the smallest gap is
+        // what the solve found, and no realization is written.
+        Some(g) if g > sol.budget_abs && solved.menu.2.is_some() => out.push(format!(
+            "  measured    none of the {} realizations measured in the target's types is inside the budget: the smallest gap found {:.3e}, after {} widening round(s); no realization is written",
+            sol.measurements,
+            sol.smallest.unwrap_or(g),
+            sol.rounds
+        )),
         Some(g) => out.push(format!("  measured    {:.3e} against the exact reference, after {} widening round(s) — {}", g, sol.rounds, if g <= sol.budget_abs { "inside the budget" } else { "OUTSIDE the budget" })),
+        None if !sol.infeasible.is_empty() => out.push(format!(
+            "  measured    nothing: no realization in the target's types holds {} value(s), a sum its operands put in no mode, or a format the range rules refuse and none replaces: {}; no realization is written",
+            sol.infeasible.len(),
+            sol.infeasible.iter().take(6).cloned().collect::<Vec<_>>().join(", ")
+        )),
         None => out.push("  measured    not checked (--no-verify)".to_string()),
+    }
+    // The contraction modes tried by measurement (D208).
+    let switched: Vec<(&String, bool)> = sol.moves.iter().filter_map(|m| if let presk_precision::solve::Move::Switched { site, kept, .. } = m { Some((site, *kept)) } else { None }).collect();
+    if !switched.is_empty() {
+        out.push(format!("  modes       {} contraction(s) put in another mode of the target by measurement, {} kept (D208)", switched.len(), switched.iter().filter(|(_, k)| *k).count()));
+    }
+    // What the formats' overflow rules produced (D208), said where a
+    // measurement was emulated.
+    if solved.emulated > 0 {
+        let own = solved.counts.map_or("not measured".to_string(), |c| c.to_string());
+        out.push(format!("  emulated    the realization's run: {own}; the {} emulated measurements: {}", solved.emulated, solved.all_counts));
     }
     // The options of D155: the rounding term, whichever it is (the measured
     // one the default since 0.16.0, D157), and the narrowing when it is on.
@@ -291,7 +372,7 @@ pub fn solve(env: &Envelope, budget: presk_precision::solve::Budget, solved: &So
         out.push(head);
         for p in solved.params.iter().filter(|p| !p.ints.is_empty()) {
             let axis = p.ints.first().map(|q| format!("{}{}", q.axis, if q.contracted { "" } else { "*" })).unwrap_or_default();
-            let f32_term = p.round.map(|r| p.sens * r.f32).unwrap_or(f64::NAN);
+            let f32_term = p.round.as_ref().and_then(|r| r.at(presk_rt::Dtype::F32)).map(|r| p.sens * r).unwrap_or(f64::NAN);
             let mut line = format!("{:<28} {:>5} {:>10.3e} {:>10.3e}", p.path, axis, p.sens, f32_term);
             for (bits, scheme) in &solved.menu.1 {
                 match p.ints.iter().find(|q| q.bits == *bits && q.scheme == *scheme) {
@@ -323,12 +404,12 @@ pub fn rounding(env: &Envelope) -> Vec<String> {
         return Vec::new();
     }
     let ratio = |site: &str| -> f64 {
-        let (m, r) = (env.get(site).unwrap_or(0.0), env.rounding(site, Dtype::Bf16).unwrap_or(0.0));
-        if m > 0.0 { r / (Dtype::Bf16.unit_roundoff() * m) } else { 1.0 }
+        let (m, r) = (env.get(site).unwrap_or(0.0), env.rounding(site, Dtype::BF16).unwrap_or(0.0));
+        if m > 0.0 { r / (Dtype::BF16.unit_roundoff() * m) } else { 1.0 }
     };
     let mut sites: Vec<&String> = env.rounding.keys().filter(|s| env.get(s).is_some_and(|m| m > 0.0)).collect();
     sites.sort_by(|a, b| ratio(a).partial_cmp(&ratio(b)).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b)));
-    let exact = sites.iter().filter(|s| env.rounding(s, Dtype::Bf16) == Some(0.0)).count();
+    let exact = sites.iter().filter(|s| env.rounding(s, Dtype::BF16) == Some(0.0)).count();
     let under = sites.iter().filter(|s| ratio(s) < 0.1).count();
     let mut out = vec![format!(
         "presk calibrate: the largest rounding error of each site's values (D155): {} sites, {exact} exact in bf16, {under} below a tenth of u·max|x| there",
@@ -341,7 +422,7 @@ pub fn rounding(env: &Envelope) -> Vec<String> {
             site,
             env.get(site).unwrap_or(0.0),
             env.rounding(site, Dtype::F32).unwrap_or(0.0),
-            env.rounding(site, Dtype::Bf16).unwrap_or(0.0),
+            env.rounding(site, Dtype::BF16).unwrap_or(0.0),
             ratio(site)
         ));
     }

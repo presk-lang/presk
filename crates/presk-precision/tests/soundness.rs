@@ -145,7 +145,7 @@ fn the_bound_is_above_the_measured_gap() {
     let mut report = String::from("\nentry                   realization   measured         k  normwise      cond       rss   k/gap  norm/gap cond/gap  rss/gap\n");
     let mut ratios: [Vec<f64>; 4] = Default::default();
     for (rel, consts, entry, dims) in CASES {
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
             let r = Realization::uniform(d);
             let (measured, bounds) = measure_all(rel, consts, entry, dims, &r);
             for (m, bound) in Model::ALL.iter().zip(bounds) {

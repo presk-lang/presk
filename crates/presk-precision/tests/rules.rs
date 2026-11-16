@@ -2,7 +2,7 @@
 //! nor a value whose first narrowing, `f64` to `f32`, saves less than θ of
 //! the entry's all-`f64` traffic.
 
-use presk_precision::envelope::Envelope;
+use presk_precision::envelope::{Envelope, Rounding};
 use presk_precision::sensitivity::Sensitivity;
 use presk_precision::solve::{self, Budget, Menu, Options, ParamSite, Roles, Rule};
 use presk_rt::{Dtype, Realization};
@@ -10,11 +10,11 @@ use presk_rt::{Dtype, Realization};
 /// Sites of magnitude 1 and sensitivity 1, with these elements, their
 /// rounding the unit term's.
 fn envelope(sites: &[(&str, u64)]) -> (Envelope, Sensitivity) {
-    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::Bf16.unit_roundoff()];
+    let rounds = [Dtype::F64.unit_roundoff(), Dtype::F32.unit_roundoff(), Dtype::BF16.unit_roundoff()];
     let mut e = Envelope::new("p.psk", "f", 128, "2026-10-22");
     e.observe(&sites.iter().map(|(s, _)| (s.to_string(), 1.0)).collect());
     e.observe_elems(&sites.iter().map(|(s, n)| (s.to_string(), *n)).collect());
-    e.observe_rounding(&sites.iter().map(|(s, _)| (s.to_string(), rounds)).collect());
+    e.observe_rounding(&sites.iter().map(|(s, _)| (s.to_string(), Rounding::three(rounds).0)).collect());
     let sens = Sensitivity { sites: sites.iter().map(|(s, _)| (s.to_string(), 1.0)).collect() };
     (e, sens)
 }
@@ -36,8 +36,8 @@ fn a_stored_value_of_one_element_is_not_offered() {
     let s = solve(&env, &sens, &Roles::default(), LOOSE, Options::default(), None);
     assert_eq!(excluded(&s), [("f/%3", Rule::OneElement)]);
     assert_eq!(s.realization.storage.get("f/%3"), None, "it keeps the default type");
-    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::Bf16));
-    assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.storage.get("f/%1"), Some(&Dtype::BF16));
+    assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::BF16));
     // No move names it, and the cost counts it at f64.
     assert!(s.moves.iter().all(|m| !matches!(m, solve::Move::Tried { site, .. } if site == "f/%3")));
     assert_eq!(s.bytes, (300.0 + 200.0) * 2.0 + 8.0);
@@ -56,7 +56,7 @@ fn a_parameter_of_one_element_is_not_offered() {
     assert_eq!(excluded(&s), [("θ.t", Rule::OneElement)]);
     assert!(s.offers.excluded[0].param);
     assert_eq!(s.realization.params.get("θ.t"), None);
-    assert_eq!(s.realization.params.get("θ.w"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.params.get("θ.w"), Some(&Dtype::BF16));
 }
 
 #[test]
@@ -76,12 +76,12 @@ fn rule_2_on_either_side_of_its_threshold() {
     let (env, sens) = envelope(&[("f/%1", 1000), ("f/%2", 21)]);
     let s = solve(&env, &sens, &Roles::default(), LOOSE, theta, None);
     assert!(s.offers.excluded.is_empty());
-    assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::BF16));
     // θ = 0 turns rule 2 off.
     let (env, sens) = envelope(&[("f/%1", 1000), ("f/%2", 20)]);
     let s = solve(&env, &sens, &Roles::default(), LOOSE, Options { min_gain: 0.0, ..Options::default() }, None);
     assert!(s.offers.excluded.is_empty());
-    assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::Bf16));
+    assert_eq!(s.realization.storage.get("f/%2"), Some(&Dtype::BF16));
 }
 
 #[test]
@@ -105,8 +105,8 @@ fn the_measurement_never_widens_or_narrows_a_value_not_offered() {
     // A "measurement" over the budget until f/%1 is widened twice: the
     // tightening walks f/%1 alone, never the value of one element.
     let (env, sens) = envelope(&[("f/%1", 300), ("f/%2", 1)]);
-    let mut m = |r: &Realization| match r.storage.get("f/%1") {
-        Some(Dtype::Bf16) | Some(Dtype::F32) => 2.0,
+    let mut m = |r: &Realization| match r.storage.get("f/%1").copied() {
+        Some(Dtype::BF16) | Some(Dtype::F32) => 2.0,
         _ => 0.0,
     };
     let s = solve(&env, &sens, &Roles::default(), LOOSE, Options::default(), Some(&mut m));

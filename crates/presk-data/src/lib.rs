@@ -26,6 +26,28 @@
 //! writer writes version 1 unless a leaf is narrower, so that a file of
 //! `f64` leaves is the same bytes as before.
 //!
+//! Version 3 (plan 0.18.0 step 1, D204) adds encoding 3, a float format
+//! given by its parameters (`presk_format::Float`), the code followed in the
+//! header by six bytes:
+//!
+//! ```text
+//! p         u8                           bits of significand
+//! emin      i16                          little-endian
+//! emax      i16                          little-endian
+//! flags     u8                           bit 0 subnormals; bits 1–2 the
+//!                                        special values (0 IEEE, 1 NaN, 2
+//!                                        none); bits 3–4 the overflow (0 an
+//!                                        infinity, 1 NaN, 2 saturation);
+//!                                        bit 5 an underflow to +0;
+//!                                        bit 6 a default NaN (0.18.0
+//!                                        step 6, D209)
+//! ```
+//!
+//! and each element of such a leaf is its code in the fewest whole bytes
+//! that hold the format's bits, little-endian. `f64`, `f32` and `bf16` keep
+//! codes 0 to 2, and a file is version 3 only when a leaf is in another
+//! format.
+//!
 //! Real values are `f64` and are injected exactly into ℝ when read (the
 //! hyperparameter rule of the language). The type is parsed with the Presk
 //! parser; a *closed* type (every dimension a literal) gives the leaf layout
@@ -51,6 +73,10 @@ pub const MAGIC: &[u8; 4] = b"PSKD";
 pub const VERSION: u16 = 1;
 /// The version of a file with a leaf narrower than `f64`.
 pub const VERSION_ENCODED: u16 = 2;
+/// The version of a file with a leaf in a format given by its parameters.
+pub const VERSION_FORMATS: u16 = 3;
+/// Bytes of a format's parameters in a version 3 header.
+const DESCRIPTION: usize = 6;
 
 /// How a real leaf's elements are stored (version 2). Each is exactly a
 /// number of `f64`.
@@ -59,15 +85,84 @@ pub enum Enc {
     F64,
     F32,
     Bf16,
+    /// Any other float format, by its parameters (version 3): its codes, in
+    /// the fewest whole bytes that hold them.
+    Format(presk_format::Float),
 }
 
 impl Enc {
+    /// The encoding of a format: `f64`, `f32` and `bf16` by their own
+    /// codes, any other by its parameters.
+    pub fn of(f: presk_format::Float) -> Enc {
+        match f {
+            presk_format::F64 => Enc::F64,
+            presk_format::F32 => Enc::F32,
+            presk_format::BF16 => Enc::Bf16,
+            other => Enc::Format(other),
+        }
+    }
+
+    /// The format the elements are numbers of.
+    pub fn format(self) -> presk_format::Float {
+        match self {
+            Enc::F64 => presk_format::F64,
+            Enc::F32 => presk_format::F32,
+            Enc::Bf16 => presk_format::BF16,
+            Enc::Format(f) => f,
+        }
+    }
+
     pub fn code(self) -> u8 {
         match self {
             Enc::F64 => 0,
             Enc::F32 => 1,
             Enc::Bf16 => 2,
+            Enc::Format(_) => 3,
         }
+    }
+
+    /// A format's parameters as a version 3 header holds them.
+    fn description(f: presk_format::Float) -> [u8; DESCRIPTION] {
+        use presk_format::{Nans, Overflow, Specials, Underflow};
+        let specials = match f.specials {
+            Specials::Ieee => 0,
+            Specials::Nan => 1,
+            Specials::None => 2,
+        };
+        let overflow = match f.overflow {
+            Overflow::Infinity => 0,
+            Overflow::Nan => 1,
+            Overflow::Saturate => 2,
+        };
+        let flags = u8::from(f.subnormals) | specials << 1 | overflow << 3 | u8::from(f.underflow == Underflow::Positive) << 5 | u8::from(f.nans == Nans::Default) << 6;
+        let (lo, hi) = ((f.emin as i16).to_le_bytes(), (f.emax as i16).to_le_bytes());
+        [f.p as u8, lo[0], lo[1], hi[0], hi[1], flags]
+    }
+
+    /// The format six bytes of a version 3 header describe.
+    fn of_description(b: &[u8]) -> std::result::Result<presk_format::Float, String> {
+        use presk_format::{Nans, Overflow, Specials, Underflow};
+        let flags = b[5];
+        let specials = match flags >> 1 & 3 {
+            0 => Specials::Ieee,
+            1 => Specials::Nan,
+            2 => Specials::None,
+            c => return Err(format!("special values {c}")),
+        };
+        let overflow = match flags >> 3 & 3 {
+            0 => Overflow::Infinity,
+            1 => Overflow::Nan,
+            2 => Overflow::Saturate,
+            c => return Err(format!("overflow {c}")),
+        };
+        if flags >> 7 != 0 {
+            return Err(format!("flags {flags:#04x}"));
+        }
+        let underflow = if flags & 32 != 0 { Underflow::Positive } else { Underflow::Signed };
+        let nans = if flags & 64 != 0 { Nans::Default } else { Nans::Operand };
+        let emin = i16::from_le_bytes([b[1], b[2]]) as i32;
+        let emax = i16::from_le_bytes([b[3], b[4]]) as i32;
+        presk_format::Float { p: u32::from(b[0]), emin, emax, subnormals: flags & 1 == 1, specials, overflow, underflow, nans }.check()
     }
 
     pub fn of_code(c: u8) -> Option<Enc> {
@@ -79,12 +174,8 @@ impl Enc {
         })
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Enc::F64 => "f64",
-            Enc::F32 => "f32",
-            Enc::Bf16 => "bf16",
-        }
+    pub fn name(self) -> std::borrow::Cow<'static, str> {
+        self.format().name()
     }
 
     /// Bytes of one real element.
@@ -93,6 +184,7 @@ impl Enc {
             Enc::F64 => 8,
             Enc::F32 => 4,
             Enc::Bf16 => 2,
+            Enc::Format(f) => f.bits().div_ceil(8) as usize,
         }
     }
 
@@ -115,6 +207,10 @@ impl Enc {
                 }
                 out.extend_from_slice(&((bits >> 16) as u16).to_le_bytes());
             }
+            Enc::Format(f) => match f.encode(x) {
+                Some(code) => out.extend_from_slice(&code.to_le_bytes()[..self.width()]),
+                None => return err("E9004", format!("{x} is not a number of {f}")),
+            },
         }
         Ok(())
     }
@@ -125,6 +221,11 @@ impl Enc {
             Enc::F64 => f64::from_le_bytes(b[..8].try_into().unwrap()),
             Enc::F32 => f64::from(f32::from_le_bytes(b[..4].try_into().unwrap())),
             Enc::Bf16 => f64::from(f32::from_bits(u32::from(u16::from_le_bytes(b[..2].try_into().unwrap())) << 16)),
+            Enc::Format(f) => {
+                let mut code = [0u8; 8];
+                code[..self.width()].copy_from_slice(&b[..self.width()]);
+                f.decode(u64::from_le_bytes(code))
+            }
         }
     }
 }
@@ -436,7 +537,7 @@ pub struct Header {
     /// The sample type, in Presk syntax.
     pub sample_ty: String,
     pub count: u64,
-    /// Version 2: each leaf's encoding, in storage order. Empty in a
+    /// Versions 2 and 3: each leaf's encoding, in storage order. Empty in a
     /// version 1 file, whose real leaves are all `f64`.
     pub encodings: Vec<Enc>,
 }
@@ -445,7 +546,8 @@ impl Header {
     /// Bytes of the header on disk.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u64 {
-        let v2 = if self.version == VERSION_ENCODED { 4 + self.encodings.len() } else { 0 };
+        let described = self.encodings.iter().filter(|e| matches!(e, Enc::Format(_))).count();
+        let v2 = if self.version >= VERSION_ENCODED { 4 + self.encodings.len() + DESCRIPTION * described } else { 0 };
         (4 + 2 + 4 + self.sample_ty.len() + 8 + v2) as u64
     }
 
@@ -462,16 +564,16 @@ pub fn write<'a>(path: &Path, sample_ty: &str, layout: &Layout, samples: impl In
 }
 
 /// [`write`], each real leaf in its encoding (`encs` in storage order,
-/// empty for every leaf in `f64`). The file is version 2 when a real leaf
-/// is narrower than `f64`, and version 1 otherwise, byte for byte what
-/// [`write`] writes. A value that is not a number of its leaf's encoding is
+/// empty for every leaf in `f64`). The file is version 3 when a real leaf is
+/// in a format given by its parameters, version 2 when one is in `f32` or
+/// `bf16`, and version 1 otherwise, byte for byte what [`write`] writes. A value that is not a number of its leaf's encoding is
 /// refused (`E9004`): the file holds the numbers it is given, exactly.
 pub fn write_encoded<'a>(path: &Path, sample_ty: &str, layout: &Layout, encs: &[Enc], samples: impl IntoIterator<Item = &'a Value>) -> Result<u64> {
     let leaves = layout.leaves();
     if !encs.is_empty() && encs.len() != leaves.len() {
         return err("E9005", format!("{} encodings for {} leaves", encs.len(), leaves.len()));
     }
-    let enc = |i: usize| encs.get(i).copied().unwrap_or(Enc::F64);
+    let enc = |i: usize| encs.get(i).map_or(Enc::F64, |e| Enc::of(e.format()));
     let narrow = leaves.iter().enumerate().any(|(i, l)| matches!(l, Leaf::Real { .. }) && enc(i) != Enc::F64);
     if let Some((i, _)) = leaves.iter().enumerate().find(|(i, l)| matches!(l, Leaf::Idx { .. }) && enc(*i) != Enc::F64) {
         return err("E9005", format!("leaf {i} holds indices, which have no real encoding"));
@@ -479,14 +581,22 @@ pub fn write_encoded<'a>(path: &Path, sample_ty: &str, layout: &Layout, encs: &[
     let f = File::create(path).map_err(io)?;
     let mut w = BufWriter::new(f);
     w.write_all(MAGIC).map_err(io)?;
-    w.write_all(&(if narrow { VERSION_ENCODED } else { VERSION }).to_le_bytes()).map_err(io)?;
+    let described = (0..leaves.len()).any(|i| matches!(enc(i), Enc::Format(_)));
+    let version = if described { VERSION_FORMATS } else if narrow { VERSION_ENCODED } else { VERSION };
+    w.write_all(&version.to_le_bytes()).map_err(io)?;
     w.write_all(&(sample_ty.len() as u32).to_le_bytes()).map_err(io)?;
     w.write_all(sample_ty.as_bytes()).map_err(io)?;
     let count_pos = 4 + 2 + 4 + sample_ty.len() as u64;
     w.write_all(&0u64.to_le_bytes()).map_err(io)?;
     if narrow {
         w.write_all(&(leaves.len() as u32).to_le_bytes()).map_err(io)?;
-        let codes: Vec<u8> = (0..leaves.len()).map(|i| enc(i).code()).collect();
+        let mut codes: Vec<u8> = Vec::new();
+        for i in 0..leaves.len() {
+            codes.push(enc(i).code());
+            if let Enc::Format(f) = enc(i) {
+                codes.extend(Enc::description(f));
+            }
+        }
         w.write_all(&codes).map_err(io)?;
     }
     let mut count = 0u64;
@@ -545,8 +655,8 @@ impl Reader {
         let mut b2 = [0u8; 2];
         r.read_exact(&mut b2).map_err(io)?;
         let version = u16::from_le_bytes(b2);
-        if version != VERSION && version != VERSION_ENCODED {
-            return err("E9002", format!("{}: .psk.d version {version}, this tool reads versions {VERSION} and {VERSION_ENCODED}", path.display()));
+        if !(VERSION..=VERSION_FORMATS).contains(&version) {
+            return err("E9002", format!("{}: .psk.d version {version}, this tool reads versions {VERSION} to {VERSION_FORMATS}", path.display()));
         }
         let mut b4 = [0u8; 4];
         r.read_exact(&mut b4).map_err(io)?;
@@ -558,13 +668,27 @@ impl Reader {
         r.read_exact(&mut b8).map_err(|_| DataError { code: "E9003", message: format!("{}: truncated header", path.display()) })?;
         let count = u64::from_le_bytes(b8);
         let mut encodings = Vec::new();
-        if version == VERSION_ENCODED {
-            r.read_exact(&mut b4).map_err(|_| DataError { code: "E9003", message: format!("{}: truncated header", path.display()) })?;
+        if version >= VERSION_ENCODED {
+            let truncated = || DataError { code: "E9003", message: format!("{}: truncated header", path.display()) };
+            r.read_exact(&mut b4).map_err(|_| truncated())?;
             let n = u32::from_le_bytes(b4) as usize;
-            let mut codes = vec![0u8; n];
-            r.read_exact(&mut codes).map_err(|_| DataError { code: "E9003", message: format!("{}: truncated header", path.display()) })?;
-            for (i, c) in codes.iter().enumerate() {
-                encodings.push(Enc::of_code(*c).ok_or_else(|| DataError { code: "E9002", message: format!("{}: leaf {i}: unknown encoding {c}", path.display()) })?);
+            for i in 0..n {
+                let mut c = [0u8; 1];
+                r.read_exact(&mut c).map_err(|_| truncated())?;
+                let bad = |m: String| DataError { code: "E9002", message: format!("{}: leaf {i}: {m}", path.display()) };
+                let e = match (c[0], version) {
+                    (3, VERSION_FORMATS) => {
+                        let mut d = [0u8; DESCRIPTION];
+                        r.read_exact(&mut d).map_err(|_| truncated())?;
+                        let f = Enc::of_description(&d).map_err(|m| bad(format!("a format the encoding does not describe ({m})")))?;
+                        if Enc::of(f) != Enc::Format(f) {
+                            return Err(bad(format!("{f} described by its parameters, which has its own code")));
+                        }
+                        Enc::Format(f)
+                    }
+                    (c, _) => Enc::of_code(c).ok_or_else(|| bad(format!("unknown encoding {c}")))?,
+                };
+                encodings.push(e);
             }
         }
         let header = Header { version, sample_ty, count, encodings };
@@ -676,10 +800,10 @@ impl Reader {
     }
 }
 
-/// A version 2 header has one encoding per leaf of the type, and none of an
-/// index leaf.
+/// A version 2 or 3 header has one encoding per leaf of the type, and none
+/// of an index leaf.
 fn check_encodings(layout: &Layout, header: &Header, path: &Path) -> Result<()> {
-    if header.version != VERSION_ENCODED {
+    if header.version < VERSION_ENCODED {
         return Ok(());
     }
     let leaves = layout.leaves();
@@ -842,7 +966,8 @@ pub fn info(reader: &mut Reader, n: usize) -> Result<String> {
     let h = reader.header().clone();
     let mut s = format!("type    {}\ncount   {}\nversion {}\n", h.sample_ty, h.count, h.version);
     if !h.encodings.is_empty() {
-        // Version 2: the leaves' encodings, runs of one encoding together.
+        // Versions 2 and 3: the leaves' encodings, runs of one encoding
+        // together.
         let mut runs: Vec<(Enc, usize)> = Vec::new();
         for e in &h.encodings {
             match runs.last_mut() {

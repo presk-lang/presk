@@ -1417,6 +1417,430 @@ bits, not 1024, and the training step only checked at four digits
 precision); `docs/delta-p-2026-10-02.md` has every number, the commands
 and the two defects the measurement found (D98).
 
+## Formats (0.18.0)
+
+A machine type is a **format**, described by its parameters (0.18.0 step 1,
+D204; the crate `presk-format`). A float format has p bits of significand
+(the implicit one included), an exponent range `emin..=emax`, subnormals or
+not, its special values (IEEE's infinities and NaN, a NaN alone as OFP8's
+E4M3 has it, or none), what a result past its largest finite gives (an
+infinity, a NaN, or saturation), and the sign a result that rounds to zero
+keeps. Its finite numbers are ±m·2^(e−p+1), m < 2^p, and its encoding is
+IEEE 754's layout. An integer format has a width, a sign and an overflow
+rule (wrap or clamp); a scaled format is an integer read with a scale per
+tensor, per channel or per block, the scale in a float format or a power of
+two, with a zero point or none.
+
+The formats the field names keep their names, and any other is written by
+its parameters:
+
+| Name | p | emin | emax | Special values | Overflow | Largest finite |
+|---|---|---|---|---|---|---|
+| `f64` | 53 | −1022 | 1023 | IEEE | ∞ | 1.8·10³⁰⁸ |
+| `f32` | 24 | −126 | 127 | IEEE | ∞ | 3.4·10³⁸ |
+| `e8m15` | 16 | −126 | 127 | IEEE | ∞ | 3.4·10³⁸ |
+| `f16` | 11 | −14 | 15 | IEEE | ∞ | 65 504 |
+| `bf16` | 8 | −126 | 127 | IEEE | ∞ | 3.4·10³⁸ |
+| `e4m3fn` | 4 | −6 | 8 | NaN | NaN | 448 |
+| `e5m2` | 3 | −14 | 15 | IEEE | ∞ | 57 344 |
+| `e2m1` | 2 | 0 | 2 | none | saturation | 6 |
+| `float(p=4,emin=-6,emax=8,specials=none,underflow=+0)` | 4 | −6 | 8 | none | saturation | 480 |
+
+`e8m15` is the three-byte float with `f32`'s exponent that SR6 certified
+the weights at (D196); the last row is an E4M3 of bias 7 whose every code
+is finite, which saturates and rounds an underflow to +0. A spelling that
+describes a named format is that format (`float(p=8,emin=-126,emax=127)` is
+`bf16`), and formats are ordered the most precise first, so `f64`, `f32`,
+`bf16` print in the order they always have.
+
+**The NaN an operation gives** (0.18.0 step 6, D209), which IEEE 754 leaves
+to the machine: by default an operand's NaN, quieted, with its sign, as
+falicon's own instructions give it and the emulation computes it;
+`nans=default` makes it the format's default NaN, positive and quiet,
+whatever the operands, a machine's default-NaN mode (an ARM core's
+`FPCR.DN`). `float(p=11,emin=-14,emax=15,nans=default)` is binary16 summed
+so: the accelerator plan 0.18.0 checks adds that way in its matrix unit,
+and MT2 found it on the NaN addends of its tiles. A conversion into such a
+format gives the default NaN too; a code a file or a machine's memory
+holds is read as it is. A format with no NaN refuses the parameter.
+
+**One rounding for all.** A real held as an `f64` rounds to any float
+format under a tie rule, to even or away from zero: the significand is
+rounded with an unbounded exponent above and `emin` below, so that a value
+below the smallest normal rounds among the subnormals, and a result past
+the largest finite gives what the format's overflow says (the IEEE rule:
+65 520 is an infinity in `f16`). A conversion between two formats is a path
+of such roundings and a tie rule; the runtime stores a real in a format by
+one rounding of its `f64` (`Float::store`), but in `bf16` through `f32`, as
+a `bf16` buffer always was (D38; every format narrower than `f32` until
+step 3, D206). `f64`,
+`f32` and `bf16` are three formats among the others and keep their bits:
+the rounding to `bf16` of each of the 2³² `f32`s is the runtime's
+`f32_to_bf16`, and the rounding to `f32` is Rust's cast on each midpoint
+between two neighbouring `f32`s and the doubles on either side of it (3·2³¹
+inputs; `cargo test --release -p presk-format -- --ignored`, 31 s).
+
+**What computes.** The native, LLVM and C backends compute in `f64`, `f32`
+and `bf16`, the *native* types, each nest in its storage type's arithmetic
+type, and refuse a realization that says otherwise before anything runs
+(`E7005`). Since step 3 a realization stores a value in any float format
+and says what each nest computes in ("What a nest computes in", below);
+the kernel interpreter emulates it (step 2, below). The solver's menu
+(`--menu`) offered the native types until step 5, and refused another
+format where it is read (`E7004`); since step 5 it takes any float format
+("The solver in every format", below).
+
+**The emulation** (step 2, D205). The kernel interpreter runs a kernel
+with every operation in one format (`presk_kernel::exec::run_kernel_in`):
+- a float format's operations in the narrower native type that holds the
+  format with at least 2p + 2 bits of significand (`f32` for `f16`, `bf16`
+  and the 8- and 4-bit floats, `f64` for `e8m15`), then rounded once, ties
+  to even, which for +, −, ×, ÷ and √ is the operation correctly rounded;
+  a function (`exp`, `tanh`, …) is the native type's `libm` function
+  rounded once. A float of 26 to 52 bits other than `f32` is refused;
+- an integer format (`i32`, `i16/sat`) or a fixed-point one
+  (`fixed(i64,frac=18)`, an `i64` counting units of 2⁻¹⁸, which sums the
+  products of two E4M3 values exactly) exactly in 128 bits, then wrapped
+  or clamped; such a format has no division and no function;
+- every load, store and constant converted, rounded once, ties to even,
+  from the buffer's format into the arithmetic or out of it, a buffer
+  holding values of any format (`Buf::Format`).
+
+An emulated run counts what the formats' overflow rules produced: the
+saturations (a result past the largest finite, an infinity or a NaN in a
+format without them, an integer clamped), the infinities from finite
+operands, the NaNs from operands that were not, and the integer wraps.
+`f64` and `f32` emulated give the native kernels' bits. Binary16's +, −,
+×, ÷ on all 2³² pairs and √ are falicon's `fadd`, `fsub`, `fmul`, `fdiv`
+and `fsqrt`, and its conversions from and to `f32` its `fcvt`, with the
+same infinities and NaNs (`cargo test --release -p presk-kernel --test
+emulation -- --ignored`, about four minutes). The example `convert`
+(`cargo run --release -p presk-kernel --example convert -- f16 e5m2`)
+prints every code of a format and its image's, for a check by another
+implementation.
+
+## What a nest computes in (0.18.0)
+
+A realization (the `native` chapter, "The realization object") says, for
+each site, besides the type it is stored in (0.18.0 step 3, D206):
+
+| Member | What it states | Unstated |
+|---|---|---|
+| `default`, `storage`, `functions` | the storage type, any float format | `default` |
+| `arith` | the format the nest's operations are rounded to, its arithmetic format, any format | the storage type's arithmetic type α(σ): the type itself for `f64` and `f32`, `f32` for a format `f32` holds (`bf16`, `f16`, the 8-bit floats) |
+| `product` | the format a sum's products of terms are rounded to | the arithmetic format |
+| `accum` | the format a sum's additions are rounded to, its accumulation format | the arithmetic format |
+| `order` | `sequential`, `blocked`, `interleaved` or `chunked` | `sequential` |
+
+A format is a name (`f16`, `e4m3fn`, `i32`, `i16/sat`,
+`fixed(i64,frac=18)`) or a float's parameters
+(`float(p=4,emin=-6,emax=8,specials=none,underflow=+0)`). A site of a
+stored gradient's forward pass takes its base's, as a storage type does.
+`--realize f16` stores every value in binary16 and computes it in `f32`,
+as `bf16` does; to compute in binary16, a file states `arith`:
+
+```json
+{"default": "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)",
+ "storage": {"tile/%2": "f16"}, "arith": {"tile/%2": "f16"},
+ "order": {"kind": "chunked", "size": 32}}
+```
+
+(`examples/tests/formats/e4m3-f16-chunked.json`, for
+`examples/tests/formats/tile.psk`: the operands stored in the saturating
+E4M3, the product summed in binary16, in chunks of 32 terms.)
+
+**What a nest computes.** A nest of storage type σ, arithmetic format α,
+product format μ and accumulation format κ reads each operand converted to
+σ at its edge, as every nest has (a wider value rounded once, `bf16`
+through `f32`), and as it is. Each elementary operation (+, −, ×, ÷, √, a
+negation) gives its exact result rounded once to α, whatever its operands'
+formats; a function (`exp`, `tanh`, …) is the `libm` function of the native
+type α is emulated in, rounded once to α; a constant is rounded to α. A sum
+(a contraction, `sum`, `mean`, `sum_squares`, `sum_to`, the derivative of
+`embed`, a softmax's and a cross-entropy's normalizer) rounds each term that
+is a product to μ and each addition to κ, from zero, in the order; a `mean`
+divides it in α; the result is rounded once to σ. A value the nest reads
+back from its output, a sum kept there, is the one stored. A NaN rounded to
+a format without NaNs saturates with the sign of the first NaN operand,
+else +. Unstated, the three formats are α(σ): what every version computed.
+
+**The chunked order**, `{"kind": "chunked", "size": c}` (question 86):
+the terms of a sum in chunks of `c` consecutive terms, each chunk summed
+from zero in index order, then the chunks' sums added in order from zero,
+the last chunk shorter when `c` does not divide the terms: a systolic
+array's tiles along the summed axis. It reassociates, as `interleaved`
+does, and its bound's constant is `(c − 1) + (⌈k/c⌉ − 1)` additions in
+place of `k − 1`. It is realized for a sum over one summed axis: a `dot`, a
+derivative of one, an `ein` of two operands over one summed axis; a sum
+over several axes refuses it (`E7001`), and a reduction sums in index order
+under it, as under `interleaved`: the order is the contractions'. Its
+kernels are ordinary ones, which every executor runs with one bits.
+
+**Where a sum lives.** A contraction keeps its running sums in variables
+wherever its accumulation format is not its storage type: the default
+layout has the tile (1, 1), and the row-wise form and a spill, which keep a
+sum in the output buffer, are refused (condition 7, the `native` chapter).
+The derivative of `embed` and `sum_to` keep theirs in the output buffer
+and round each to the storage type, as `bf16` always did (question 67).
+
+**Who computes it.** The kernel interpreter (`--backend kernel`) runs every
+kernel of a realization that computes some site otherwise than natively in
+its formats (`presk_kernel::exec::run_emulated`): where a kernel's formats
+are one and hold its buffers' values, in that format as above; otherwise
+with every value held exactly as an `f64` and each operation's exact
+result, its `f64` value and the error an error-free transformation finds,
+rounded once to its own format. Every format of such a kernel must be one
+an `f64` holds: `fixed(i64,frac=18)` sums E4M3 products where the nest
+computes in it alone. The kernels at native sites keep their native bits,
+and `presk run` prints what the formats produced:
+
+```text
+presk run: the realization's formats, emulated: 0 saturations, 0 infinities, 0 NaNs, 0 wraps
+```
+
+Since 0.18.0 step 6 (D209) the counts hold what the host converts too,
+not the kernels' operations alone: each argument stored in its type, each
+parameter stored in its own, each operand converted to a nest's storage
+type at its edge, each constant the host fills. Until then a value that
+saturated at a nest's edge, an `f16` 1000 read by a nest stored in E4M3,
+was counted nowhere: it became 480, and the run reported 0 saturations.
+`presk run --codes` prints a result as its formats' codes, a NaN's sign
+and −0 included (the `cli` chapter); a data file's leaf in a format given
+by its parameters (`.psk.d` version 3) is read as that format's values,
+−0 included, a machine's memory image, where an `f64` leaf is converted
+and its −0 becomes the format's +0 under an underflow to +0.
+
+The native and LLVM backends and the C export refuse such a realization
+before anything runs (`E7005`):
+
+```text
+[E7005] Error: the realization stores every value in f16: the native backend computes in f64, f32 and bf16, each nest in its storage type's arithmetic type; the kernel interpreter emulates any format (`--backend kernel`)
+```
+
+`presk dump --stage kernel` lists the kernels, each with its formats where
+they are not the native ones (`-> %2 : f16[4, 3] arith f16 product f16
+accum f16`). The error analysis (`presk check --precision`) bounds a
+realization whose sums are in another float format, at its unit roundoff,
+and under the chunked order; it refused one that states a nest's
+arithmetic or product format, or sums in an integer or a fixed-point
+format, until step 5 gave the formats their terms ("The solver in every
+format", below).
+
+**The measured rounding** of the envelope (D155) is a map by format since
+D204: the calibration records each site's largest `|fl_d(x) − x|` in the
+formats it is given, `f64`, `f32` and `bf16` by default, and the file writes
+them in the formats' order, so that an envelope is the same text as before.
+A format a site was not measured in is priced by the unit term `u·max|x|`.
+
+## Quantized activations (0.18.0)
+
+A value a nest computes may be stored as integers (0.18.0 step 4, D207):
+the realization's `scaled` map gives a site an **affine format**, an
+integer code `q` that denotes `(q − z)·s`, its scale `s` (a positive
+binary32 number) and its zero point `z` fixed. Spelled
+`affine(u8/sat,scale=0.009448278,zero=64)`, a power-of-two scale as
+`2^-7`; its integer saturates (`i8/sat`, `u8/sat`, `i16/sat`, …), and its
+values are held by an `f64` (a 32-bit code takes a scale of 20 significant
+bits or fewer).
+
+**The rescaling.** A value is stored into it rounded once:
+`q = clamp(⌊x/s⌉ + z)`, the integer nearest the exact quotient, ties to
+even, the zero point added after the rounding. Three parameters give a
+machine's other readings: `tie=away`; `rounds=x/s+zero`, the zero point
+added before the rounding, `clamp(⌊x/s + z⌉)`; `quotient=f32`, the
+quotient computed in binary32. A NaN gives the zero point, the value 0, and
+an infinity the end of its sign; each counts as a saturation, as a clamp
+does. A right shift of an integer by `k` bits, ties to even, clamped, is
+the format of scale `2^k`.
+
+**Static scales from the envelope.** A scale is a number the realization
+records (question 85): a machine takes it as a constant, and nothing at run
+time recomputes it, as an integer weight's scales are recomputed from the
+weights. A realization may state instead the scheme it is computed by, and
+`presk scales` computes it from an envelope's magnitudes at the site:
+
+| Scheme | Scale | Zero point |
+|---|---|---|
+| `absmax` | `max\|x\| / qmax`, rounded to binary32 | 0 |
+| `pow2` | the smallest power of two with `max\|x\| / s ≤ qmax` | 0 |
+| `minmax` | `(hi − lo) / (qmax − qmin)`, rounded to binary32, the range widened to hold 0 | `qmin − ⌊lo / s⌉`, clamped |
+
+`minmax` reads each site's smallest and largest value, which `presk
+calibrate --precision --range` records in the envelope (`range`); without
+`--range` the envelope is the text it always was.
+
+```json
+{"default": "f32",
+ "scaled": {"Dense.apply/%2": {"int": "u8/sat", "scheme": "minmax"},
+            "Dense.apply/%4": {"int": "i8/sat", "scheme": "absmax"}},
+ "product": {"Dense.apply/%4": "i32"}, "accum": {"Dense.apply/%4": "i32"},
+ "order": {"kind": "sequential"}, "quant": {"w": {"bits": 8, "over": 0}}}
+```
+
+```sh
+presk calibrate --precision examples/tests/formats/w8a8.psk --entry layer --range --out env.json
+presk scales --realize @examples/tests/formats/w8a8.json --precision env.json --out w8a8.json
+presk run examples/tests/formats/w8a8.psk --entry layer --backend kernel --realize @w8a8.json
+```
+
+```text
+presk scales: Dense.apply/%2: minmax of [0e0, 2.4093107238960525e0]: affine(u8/sat,scale=0.009448278)
+presk scales: Dense.apply/%4: absmax of max|x| = 1.7564154506020049e0: affine(i8/sat,scale=0.013830043)
+```
+
+(`examples/tests/formats/w8a8.psk`, one dense layer whose activation is a
+`relu`.) The written realization names the envelope it is conditional on
+(`envelope`). Every executor refuses a scheme whose scale is not computed
+yet, before anything runs (`E7006`).
+
+**What a nest computes.** A site in `scaled` is stored by its rescaling,
+once, from its nest's result; its sums stay in variables. Every nest reads
+it as it is, `(q − z)·s`, never converted to its own storage type, as an
+integer weight reaches the nest it is read by. Where a nest's product
+format is an integer or a fixed-point format, it reads a scaled value — an
+affine one, an integer weight — as its integer counted in its scale: a
+product of two is the product of their integers, counted in the product of
+their scales, and the sum adds those integers in its accumulation format,
+which must be an integer or a fixed-point one; the sum `u·n` is stored
+rounded once from its exact value. This is what a machine's integer unit
+sums, `Σ (q_a − z_a)·q_w` in a wrapping or saturating accumulator, then
+rescaled; an integer weight's term is `q·s` there, its integer, not
+`f32(q)·s` as everywhere else. The dense layer above, in eight bits, is the
+integer sum written out from its inputs, rescaled
+(`crates/presk-cli/tests/scaled.rs`).
+
+**Who computes it.** The kernel interpreter, as every format of the
+previous section; `presk dump --stage kernel` writes a kernel's affine
+format after its formats (`… arith f32 product i32 accum i32 store
+affine(i8/sat,scale=0.013830043)`). A kernel that reads back what it
+stores (the derivative of `embed`, `sum_to`, the two-pass softmax's
+exponentials) refuses an affine format: a quantized value is stored once, as its nest ends. The
+native and LLVM backends and the C export refuse a `scaled` site
+(`E7005`); the error analysis bounds one since step 5, at half its scale
+and what its clamp cuts (next section).
+
+## The solver in every format (0.18.0)
+
+Step 5 (D208) gives every format its terms, in the error analysis and in
+the solver, says which formats the solver does not offer a value at all,
+and lets a machine's description say what the solver offers.
+
+**The terms** (`presk_precision::formats`), from what the envelope saw of
+a value, its largest `|x|`, its smallest non-zero `|x|` and, with `presk
+calibrate --range`, its smallest and largest value:
+- one rounding into a float: `u·|x|` in its normal range, `u·2^emin` under
+  it (half the subnormals' step, `2^(emin−1)` without subnormals), and past
+  its largest finite number the excess under saturation, an infinity
+  otherwise;
+- into an affine format: half its step `s/2`, the quotient's rounding when
+  a machine computes it in `f32` (`quotient=f32`), and past the grid's ends
+  what its clamp cuts;
+- a sum's own operations: `c·u·Σ|terms|` at its accumulation format (Higham,
+  `c` the order's constant) and its products' rounding at its product
+  format, unless they are exact: two E4M3 values multiply exactly in
+  binary16. An integer sum counted in its operands' unit is exact while its
+  operands' codes keep the count inside its accumulator (16 terms of 255 by
+  127 in an `i32`, not in an `i16`), and unbounded otherwise.
+
+`presk check --precision` bounds every realization with them: a nest's
+operations at its arithmetic format, its value at the format it is stored
+in where that one does not hold its result's, a sum's operations at its
+formats, an integer weight at half its scale's step. A site that states no
+format of its own is charged as before, so that no bound of record moves.
+The bound is above the gap the emulation measures on E4M3 tiles summed in
+binary16, in chunks or not, on the specification's MLP and layer norm in
+binary16, and on the dense layer of eight bits (`crates/presk-precision/tests/formats.rs`).
+
+**The range rules.** Whatever the budget, the solver does not offer a value
+a format:
+- whose largest value, times a margin (`--range-margin`, 2 by default),
+  passes the format's largest finite number;
+- that a division divides by, its smallest value under the format's
+  smallest normal number (an affine format's step), or whose nest computes
+  a divisor under its arithmetic format's (AdamW's `√v̂ + ε`);
+- that is a constant the format rounds to zero or past its largest number,
+  or whose nest computes one so in its arithmetic format (AdamW's ε = 10⁻⁸
+  in binary16, which made the exported step NaN; presk-project's binary16
+  study, §5).
+
+An affine format's scale is computed from the envelope, so it spans the
+values seen; what it clips out of sample is its term's. `presk solve
+--offers FILE.json` writes what the rules offer every value the envelope
+saw stored, from the menu, with what they read (each value's magnitude,
+its floor, whether it divides or is a constant), with no sweep and no
+measurement:
+
+```text
+presk solve: 6 stored values of `LayerNorm{8}.apply`, 4 formats refused by the range rules (1 range, 1 divisor, 2 constant), margin 2: wrote offers.json
+```
+
+**The menu** takes any float format (`--menu f32,f16,e4m3fn`), a format by
+its parameters among them, its commas inside its parentheses. A
+realization the native backend does not compute is measured on the kernel
+interpreter, `--measure native` or not, and the report says what the
+formats' overflow rules produced in the measurements:
+
+```text
+  emulated    the realization's run: 1 saturation, 0 infinities, 0 NaNs, 0 wraps; the 1 emulated measurements: 1 saturation, 0 infinities, 0 NaNs, 0 wraps
+```
+
+**A target description** (`presk solve --target FILE.json`) says what a
+machine stores and computes in, without naming it: the float formats a
+value is stored in, the affine formats an activation is, by the scheme its
+scale is computed from the envelope by, the formats a parameter is stored
+in and the integer weights it reads, the format a nest computes in by its
+stored format's name, its *contraction modes* (by its operands' formats,
+the formats a sum's products and additions are rounded to) and its order.
+`examples/tests/targets/accelerator.json` is presk's own: a matrix unit
+that multiplies saturating E4M3 values into binary16 sums, or 8-bit integer
+codes into a wrapping `i32`, in chunks of 32 terms, and a vector unit in
+binary16:
+
+```json
+{ "name": "test-accelerator",
+  "storage": ["f16", "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)"],
+  "scaled": [{ "int": "i8/sat", "scheme": "absmax" }],
+  "quant": ["int8/absmax"],
+  "arith": { "*": "f16" },
+  "contractions": [
+    { "name": "fp8", "operands": ["float(p=4,…)", "float(p=4,…)"], "product": "f16", "accum": "f16" },
+    { "name": "int8", "operands": ["int", "int"], "product": "i32", "accum": "i32" } ],
+  "order": { "kind": "chunked", "size": 32 } }
+```
+
+The solve offers exactly that menu. A sum's operands select its mode: each
+operand is followed to the stored values it may be, through the calls,
+folds and closures that pass it, so that `Linear.apply`'s product, called
+for every layer, reads every layer's activation and weight, which one
+realization's site types once. A decision's term counts its sum's
+operations in the mode's formats. The solver starts each contraction in
+the mode of the smallest estimate, makes no move that leaves a contraction
+in no mode, and, when no value can widen inside the modes and the gap is
+over the budget, puts each contraction in another mode by measurement,
+keeping a switch that measures smaller. It writes a realization that
+states every value's arithmetic,
+each sum's formats and the order. A value no realization in the target's
+types holds (a contraction its operands put in no mode, a format the range
+rules refuse and none replaces) is reported, and nothing is measured; when
+none of the realizations measured is inside the budget, the smallest gap
+found is reported and no realization is written (exit 3). On the dense
+layer of eight bits, the integer mode at 10⁻¹ and 10⁻² of its output,
+measured 1.6·10⁻² and 1.1·10⁻², and none at 10⁻³, where the switch to
+the E4M3 mode measures larger (`crates/presk-cli/tests/target.rs`). On the
+course GPT's loss at D = 64, in the types of a machine whose matrix unit
+has those two modes and whose vector unit computes in binary16, the
+realization of 10⁻¹ and 10⁻² measures 1.21·10⁻² on a loss of 2.79, and at
+10⁻³ none of the four measured is inside, the smallest 4.31·10⁻³ (MT4,
+the `status` chapter).
+
+**The envelope** records a value's rounding in more formats with `presk
+calibrate --formats f16,e4m3fn`, beside `f64`, `f32` and `bf16`; a format
+not measured is charged its bound above.
+
+**The labels** of `presk explain`'s stored values and of the network
+diagram name a site's formats where it states them: `affine(i8/sat) (i32×,
+i32+)`, `f16 in f16`.
+
 ## What is left open
 
 0.6.0 set a budget beside MLPerf's accuracy rule on one model, ran BERT-large

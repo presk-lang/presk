@@ -1,0 +1,16 @@
+-- w8a8.psk — one dense layer on integers, for quantized activations (plan
+-- 0.18.0 step 4): under `w8a8.json` the activation `a` is stored in eight
+-- unsigned bits with a scale and a zero point the envelope gives, the
+-- weights in eight bits with a scale per column, and their products are
+-- summed in a wrapping 32-bit integer counted in the two scales' product, as
+-- an integer unit sums them; the result is stored in eight bits again.
+module Dense{In Out : dim} {
+  param w : ℝ[In, Out]  init = xavier_uniform
+
+  fn apply(x : ℝ[..., In]) -> ℝ[..., Out] =
+    let a = relu(x)
+    a · w
+}
+
+fn layer(net : Dense{16, 8}, θ : params net, x : ℝ[4, 16]) -> ℝ[4, 8] =
+  net.apply(θ, x)

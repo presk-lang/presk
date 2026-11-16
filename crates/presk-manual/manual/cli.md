@@ -165,14 +165,15 @@ presk run examples/spec/minigpt/train_minigpt.psk --entry loss \
 | `--json` | machine-readable output: entry, seed, bits, dimensions, inputs and result, reals as decimal strings at `--digits`, a value of type `bool[…]` as its axes and JSON booleans (since 0.10.0 step 8; its text output prints `bool[…]` of `true` and `false` too, by the entry's signature, where a mask is indices below 2 at run time). |
 | `--verbose` | also print the synthesized inputs. |
 | `--result-only` | print the result alone: `--json` without `inputs`, `--verbose` without the inputs' lines (0.17.0 step 7, D180). With `--weights`, the checkpoint is then neither printed nor held in exact arithmetic to be printed: Llama 3.2 1B's 1.2·10⁹ parameters would take tens of gigabytes as JSON. |
+| `--codes` | print the result as the codes of the formats it is stored in, hexadecimal, as JSON (`entry`, `dims`, and `result` with its `format`, `axes` and `codes`; a tuple's as a list, a record's by field): a float's sign, exponent and significand fields, a NaN's sign and −0 included, which `--json` prints as `nan` and `0`; an integer's, a fixed-point number's units and an affine format's integer code in two's complement in their width; `f64`, `f32` and `bf16` by their bits (since 0.18.0 step 6, D209). A machine's memory image of the value, to be compared with its simulator's. The reference interpreter's exact reals have no codes: refused there (exit 2). |
 | `--unroll-stack` | lower `stack{L}` as `L` calls (0.1.0's form) instead of a `fold`; a debugging aid, also on `presk dump`. |
 | `--backend interp\|kernel\|native\|llvm` | the executor behind the runtime seam (0.3.0): the reference interpreter, PSK-Kernel v0 interpreted in the `--realize` machine type, the same kernels compiled by Cranelift (`native` chapter), or, since 0.17.0 step 3, the same kernels printed as C and compiled by LLVM's `clang -O3` on the native backend's host, with the same bits (`native` chapter, "The LLVM backend"). `llvm` needs the `clang` of `make llvm` (or `PRESK_CLANG`) and refuses to run without it (exit code 1); its kernels are kept in a cache (`PRESK_LLVM_CACHE`, else `~/.cache/presk/llvm`). `presk train` and `presk serve` take the same flag. |
-| `--realize f64\|f32\|bf16\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it), and since 0.12.0 step 1 a `params` map giving a parameter its own type at rest, `f32` or `bf16` (`precision` chapter; run by every executor and the C export since step 2). The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
+| `--realize f64\|f32\|bf16\|FORMAT\|@FILE` | the realization (0.3.0, an object since 0.5.0 step 2): a uniform machine type, or since 0.18.0 step 3 any float format's name (`f16`, `e4m3fn`: every value stored in it and computed in its arithmetic type, on the kernel interpreter alone, the native backends and the C export refusing it with `E7005`: the `precision` chapter, "What a nest computes in"; from step 1 to step 3 refused with `E7004`), or `@FILE` for a solved one carrying per-site storage and accumulator types and a declared reduction order (`native` chapter), since 0.18.0 step 3 the formats a site computes in (`arith`, `product`, `accum`) and the order `chunked`, since 0.6.0 step 5a a `quant` map of parameters stored as `int8`/`int4` (`precision` chapter), since 0.6.0 step 7b a `functions` map giving every site of a function one type (a site named in the per-site map overrides it), and since 0.12.0 step 1 a `params` map giving a parameter its own type at rest, `f32` or `bf16` (`precision` chapter; run by every executor and the C export since step 2), since 0.18.0 step 5 any float format narrower than `f64`, on the kernel interpreter alone but for those two. The interpreter ignores the machine types, computing at `--bits`, but **not** the `quant` map: every backend runs on the dequantised parameters. |
 | `--plan @FILE` | a realization plan (`realize` chapter, "The realization plan"; 0.7.0 step 1): a realization and a layout per nest. `--realize R` is the plan with realization `R` and the default layout, so the two flags are exclusive. The plan is checked against the program before anything runs, and each nest's layout against its shapes and its kernel when it is launched; an ill-formed layout is refused (`E7002`), never ignored. Every decision of the reference is lowered since 0.7.0 step 3. The reference interpreter ignores the layout. Also on `presk train`, `presk bench` and `presk dump`. |
 | `--opt` | rewrite the program with the e-graph optimizer first (`optimization` chapter); one summary line on standard error, the whole report with `--verbose`. Also on `presk train`, `presk serve`, `presk bench` and `presk export` (its conformance data). The optimizer writes each function it optimizes back with new numbers, even where no rule changed it, so a realization that types sites (`storage`, `accum`) or a plan's layouts name the program before it: under `--opt` they are refused, `E7002`, each site named with what the optimizer made of it (since 0.13.0 step 1, D134; until then they applied to nothing they named, D133). A uniform realization runs. |
 | `--profile FILE.json` | with `--opt`: extract by the calibrated roofline of this machine profile (`presk bench --calibrate`) instead of operation counts; the run's `--dim`s are the dimensions it evaluates. Also on `train`, `serve`, `bench`, `export`, `dump --stage core-opt`. |
 | `--threads N` | workers a parallel kernel may use on the native backend (`native` chapter); the default is the machine's cores, `1` keeps every kernel on one thread. Also on `presk train` and `presk bench`. |
-| `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`, from sample `--from I` (default 0). The other arguments are synthesized from `--seed` as usual. |
+| `--data FILE.psk.d` | take the entry's **last** argument from a data file instead of synthesizing it, and bind the `batch` axis of that argument to the number of samples read. An objective is then evaluated on its own dataset, and a plain function on a corpus; `--samples N` reads only the first `N`, from sample `--from I` (default 0). The other arguments are synthesized from `--seed` as usual. A leaf the file stores in a format given by its parameters (`.psk.d` version 3) is read as that format's values, −0 included, the code a machine's memory holds, which no conversion into a format whose underflow is +0 gives; every other real leaf is read as `f64` and converted to its storage type (since 0.18.0 step 6, D209). |
 | `--weights ckpt/final.psk.d` | take the entry's **first** argument, its parameters, from a checkpoint (0.6.0 step 7): with `--data`, a trained model's loss on held-out text is one command. The checkpoint must be of the dimensions the entry is run at (`E9005` otherwise). Its parameters are never synthesized first (since 0.17.0 step 7, D180): the checkpoint is read against zeros of their shape, which the kernel backend's host builds without computing anything, so the run holds the model once in the backend's type. `presk export`, `bench`, `quantize`, `solve` and `calibrate` read `--weights` the same way. |
 
 **Inputs** are synthesized from the parameter types: real tensors from a
@@ -644,7 +645,7 @@ serve`, no weights file, or a malformed `--prompt`/`--dim`.
 presk calibrate --precision FILE.psk --entry ENTRY [--data FILE.psk.d]
     [--samples N] [--from K] [--dim NAME=N] [--const NAME=N]
     [--weights ckpt/final.psk.d] [--bits 256] [--seed 0] [--out ENV.json]
-    [--compare OTHER.json] [--remat store|recompute]
+    [--range] [--formats F,…] [--compare OTHER.json] [--remat store|recompute]
 ```
 
 Measures the **magnitude envelope**: the largest `|x|` at each site, on the
@@ -669,7 +670,14 @@ beside the bound, and a realization solved from it, are on the same inputs.
 With `--data` and more than one sample it also runs the entry on the first
 sample alone, for its element counts only, and records them as
 `per_sample` (since 0.16.0, D158): `presk solve` prices the activations at
-them, the same at any `--samples`.
+them, the same at any `--samples`. `--range` also records each site's
+smallest and largest value, signed (`range`, since 0.18.0 step 4, D207),
+which an asymmetric scale and its zero point are computed from (`presk
+scales`); without it the envelope is the text it always was. `--formats
+f16,e4m3fn` also records each site's largest rounding error in those float
+formats, beside `f64`, `f32` and `bf16` (since 0.18.0 step 5, D208), a
+format by its parameters among them, its commas inside its parentheses:
+what the solver charges a value in a format the envelope measured.
 
 ### `presk calibrate --step`: one training step
 
@@ -746,10 +754,10 @@ the `precision` chapter, "Does the condition number rescue the bound?".
 
 ```sh
 presk solve FILE.psk --precision ENV.json [--budget 1e-3 | --budget-abs EPS] [--weights ckpt/final.psk.d]
-    [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--menu f64,f32,bf16,int8,int4]
+    [--profile FILE.json] [--quant [--scheme absmax|pow2]] [--menu f64,f32,bf16,int8,int4 | --target T.json [--refused R.json]]
     [--no-verify] [--bits 128] [--rounding unit|measured] [--narrow off|measured|heldout] [--heldout M]
-    [--estimate sum|rss] [--margin 2.5] [--min-gain 1e-3] [--sweep exact|f64] [--measure kernel|native]
-    [--seed 0] [--out R.json] [--sites N] [--remat store|recompute]
+    [--estimate sum|rss] [--margin 2.5] [--min-gain 1e-3] [--range-margin 2] [--sweep exact|f64] [--measure kernel|native]
+    [--seed 0] [--out R.json] [--sites N] [--offers OFFERS.json] [--remat store|recompute]
 ```
 
 Chooses a machine type per site under an error budget, minimising the
@@ -827,9 +835,35 @@ integer decision is written in the realization's `quant` map; the line
 `parameters` counts them and a line `menu` names the rungs and the
 parameters priced in them. `--menu f64,f32,bf16` solves as no `--menu`,
 whatever order the types are written in. A menu without a float type, or
-an unknown rung, is refused (exit 2), and so is `--quant` with `--menu`'s
-integers: `--quant` quantizes in a pass after the solve, the one menu in
-it (the `precision` chapter, "One menu").
+an unknown rung, is refused (exit 2), and so is `--quant` with `--menu`'s integers: `--quant` quantizes in a pass after the solve, the one menu in
+it (the `precision` chapter, "One menu"). Since 0.18.0 step 5 (D208) the
+menu takes any float format, a format by its parameters among them, its
+commas inside its parentheses (`E7004` from step 1 until then); a
+realization the native backend does not compute is measured on the kernel
+interpreter, `--measure native` or not, and the line `emulated` gives the
+counts of the overflow rules in the realization's run and in all the
+emulated measurements.
+Since 0.18.0 step 5 the solver does not offer a value the formats the
+range rules refuse: one its largest value, times `--range-margin` (2), passes
+the format's largest number, one a division divides by under its smallest
+normal number, or whose nest computes such a divisor or rounds a constant
+of its to zero in its arithmetic format, a constant the format does not
+hold; the line `range` counts them. `--offers OFFERS.json` writes what the
+rules offer every value the envelope saw stored, with what they read, and
+stops, with no sweep: the `precision` chapter, "The solver in every
+format". `--target T.json` reads a machine's description in place of
+`--menu` (and of `--quant`): the formats it stores values in, the affine
+formats an activation is, the integer weights it reads, what each nest
+computes in, its contraction modes and its order
+(`examples/tests/targets/accelerator.json` is presk's own). The solve offers
+exactly that, the lines `target` and `formats` say what it chose, and a
+solve that finds no realization in the target's types inside the budget,
+or one that a value cannot be held in, writes none and exits 3, giving the
+smallest gap measured or the values. Since 0.18.0 step 6 (D209)
+`--refused R.json` writes, in that case, the realization of smallest gap
+measured, the refusal's evidence, to be run and judged as any other
+(`make machine-types` judges the course GPT's on its held-out windows);
+`--out` still gets nothing and the exit is still 3.
 Since 0.17.1 (D185) two options say what the solve runs on, the defaults
 being the solver of record. `--sweep f64` runs the reverse sweep that
 ranks the sites on the reference interpreter's evaluator in binary64
@@ -893,6 +927,26 @@ by role, beside D52's column.
 **Exit codes**: 0, whether or not the measured gap is inside the budget (the
 report says which); 1 a run-time error; 2 an envelope of an entry rather than
 of a step, or of a step calibrated under the other `--remat`.
+
+## `presk scales --realize @R.json --precision ENVELOPE.json --out FILE.json`
+
+Computes a realization's static scales from an envelope (0.18.0 step 4,
+D207): every site its `scaled` map states by a scheme (`{"int": "u8/sat",
+"scheme": "minmax"}`) is given the affine format the scheme computes from
+the envelope's magnitudes at the site — `absmax` and `pow2` from its
+largest `|x|`, `minmax` from its smallest and largest value, which needs an
+envelope measured with `presk calibrate --range` — and the realization is
+written with every scale a number and the envelope named in `envelope`. A
+site already stated as a format is kept. One line per site:
+
+```text
+presk scales: Dense.apply/%2: minmax of [0e0, 2.4093107238960525e0]: affine(u8/sat,scale=0.009448278)
+```
+
+Exit 2 for a realization that is no file or has no `scaled` map; 1 for an
+envelope that does not name a site, a `minmax` without the range, or a file
+that cannot be written. Every executor refuses a scheme not computed so
+(`E7006`). See the `precision` chapter, "Quantized activations".
 
 ## `presk quantize FILE.psk --entry ENTRY --realize @R.json …`
 

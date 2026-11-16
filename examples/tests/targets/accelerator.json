@@ -1,0 +1,13 @@
+{
+  "name": "test-accelerator",
+  "about": "presk's test machine (plan 0.18.0 step 5, D208): a matrix unit that multiplies saturating E4M3 values and sums their products in binary16, or multiplies 8-bit integer codes and sums them in a wrapping 32-bit integer, along the summed axis in chunks of 32 terms; a vector unit that computes in binary16.",
+  "storage": ["f16", "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)"],
+  "scaled": [{ "int": "i8/sat", "scheme": "absmax" }],
+  "quant": ["int8/absmax"],
+  "arith": { "*": "f16" },
+  "contractions": [
+    { "name": "fp8", "operands": ["float(p=4,emin=-6,emax=8,specials=none,underflow=+0)", "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)"], "product": "f16", "accum": "f16" },
+    { "name": "int8", "operands": ["int", "int"], "product": "i32", "accum": "i32" }
+  ],
+  "order": { "kind": "chunked", "size": 32 }
+}

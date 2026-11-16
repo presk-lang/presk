@@ -40,10 +40,10 @@ fn a_mask_takes_its_operand_s_type() {
     let site = |v: presk_core::VarId| format!("{}/%{}", m.func, v.0);
     let presk_core::inference::Operand::Let(x) = m.operand else { panic!("the operand is a let") };
     let mut r = Realization::uniform(Dtype::F64);
-    r.storage.insert(site(x), Dtype::Bf16);
+    r.storage.insert(site(x), Dtype::BF16);
     let typed = presk_train::masks_typed(&Plan::from_realization(r.clone()), &core).realization;
-    assert_eq!(typed.storage.get(&site(m.mask)), Some(&Dtype::Bf16));
-    assert_eq!(typed.storage.get(&site(m.product)), Some(&Dtype::Bf16));
+    assert_eq!(typed.storage.get(&site(m.mask)), Some(&Dtype::BF16));
+    assert_eq!(typed.storage.get(&site(m.product)), Some(&Dtype::BF16));
     // A mask the realization types keeps its type.
     let mut stated = r.clone();
     stated.storage.insert(site(m.mask), Dtype::F32);

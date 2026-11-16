@@ -57,18 +57,55 @@ pub trait KernelExec {
     fn compile_stats(&self) -> (u64, f64) {
         (0, 0.0)
     }
+    /// Whether the executor runs a kernel in any formats (plan 0.18.0 step
+    /// 3, D206), as the kernel interpreter does. One that does not computes
+    /// in the native types alone, and the backend refuses a realization
+    /// that says otherwise before anything runs
+    /// ([`Realization::check_native`], `E7005`).
+    fn emulates(&self) -> bool {
+        false
+    }
+    /// For an executor that emulates: whether the realization run emulates
+    /// some site, so that every kernel is run in its formats and counted.
+    fn set_emulating(&mut self, _on: bool) {}
+    /// What the emulated kernels' formats produced so far, while emulating.
+    fn counts(&self) -> Option<presk_format::Counts> {
+        None
+    }
 }
 
-/// The kernel-IR interpreter as an executor.
-pub struct InterpExec;
+/// The kernel-IR interpreter as an executor. Under a realization that
+/// emulates some site (plan 0.18.0 step 3, D206), every kernel is run in its
+/// formats ([`crate::exec::run_emulated`]), a native one with its native
+/// bits, and what the formats produced is counted; under any other, every
+/// kernel natively ([`run_kernel`]).
+#[derive(Default)]
+pub struct InterpExec {
+    emulating: bool,
+    counts: presk_format::Counts,
+}
 
 impl KernelExec for InterpExec {
     fn name(&self) -> &'static str {
         "kernel"
     }
     fn run(&mut self, _idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()> {
-        run_kernel(k, inputs, out);
+        if !self.emulating {
+            run_kernel(k, inputs, out);
+            return Ok(());
+        }
+        let c = crate::exec::run_emulated(k, inputs, out).map_err(|m| RtError { code: "E7005", message: m, span: None })?;
+        self.counts.add(c);
         Ok(())
+    }
+    fn emulates(&self) -> bool {
+        true
+    }
+    fn set_emulating(&mut self, on: bool) {
+        self.emulating = on;
+    }
+    fn counts(&self) -> Option<presk_format::Counts> {
+        self.emulating.then_some(self.counts)
     }
 }
 
@@ -84,8 +121,8 @@ pub struct Launch {
     pub operands: Vec<Operand>,
     pub dtype: Dtype,
     pub order: presk_rt::ReductionOrder,
-    /// The accumulation type the realization states for the nest.
-    pub accum: Dtype,
+    /// The accumulation format the realization states for the nest.
+    pub accum: presk_format::Format,
     pub inputs: Vec<Buf>,
     /// How many times the entry launches the nest at these operands, the
     /// first included: what `presk plan` weighs a shape's prediction by when
@@ -133,7 +170,7 @@ fn kernel_input(b: &Buf, dtype: Dtype, keep_quant: bool, keep_narrow: bool) -> B
 /// narrower type: [`BufKind::Wide`], its loads widening it exactly (plan
 /// 0.12.0 step 2, D121). `None` for any other buffer.
 pub fn narrower(b: &Buf, dtype: Dtype) -> Option<BufKind> {
-    BufKind::widened(Dtype::parse(b.dtype())?, dtype)
+    BufKind::widened(Dtype::parse(&b.dtype()).filter(|d| d.is_native())?, dtype)
 }
 
 pub struct KernelBackend<'p> {
@@ -145,6 +182,9 @@ pub struct KernelBackend<'p> {
     /// The storage type of the site being executed. Constant for a uniform
     /// realization, which is every realization earlier versions could write.
     pub dtype: Dtype,
+    /// The formats the site being executed computes in (plan 0.18.0 step 3,
+    /// D206): its kernels carry them.
+    arith: crate::ir::Arith,
     /// `"<function>/%<let>"` — the fusion group a dtype is assigned to.
     site: String,
     /// The realization plan (0.7.0 step 1): its layout is read per nest at
@@ -216,6 +256,16 @@ pub struct KernelBackend<'p> {
     /// whether the host profiles or not (plan 0.17.2 step 4, D200): one
     /// clock read on each side of a kernel new to the cache.
     lowering: f64,
+    /// Whether the run emulates some format, so that what the host's own
+    /// conversions produce is counted with the kernels' (plan 0.18.0 step
+    /// 6, D209): an argument stored in its type, an operand converted to a
+    /// nest's storage type at its edge, a constant the host fills.
+    emulating: bool,
+    noted: std::cell::Cell<presk_format::Counts>,
+    /// The tally of parameters stored in their own types when the backend
+    /// was made ([`presk_rt::quant::typed_counts`]): what the run's own
+    /// store adds is the difference.
+    typed_base: presk_format::Counts,
 }
 
 /// One launch as [`KernelBackend::launch_log`] logs it.
@@ -253,11 +303,32 @@ impl Backend for KernelBackend<'_> {
         (self.kernels.len() as u64, self.lowering + self.exec.compile_stats().1)
     }
 
+    /// The kernels' counts and the host's own conversions' (D209): the
+    /// arguments, the parameters stored in their own types since the
+    /// backend was made, every operand converted at a nest's edge.
+    fn counts(&self) -> Option<presk_format::Counts> {
+        self.exec.counts().map(|mut c| {
+            c.add(self.noted.get());
+            c.add(presk_rt::quant::typed_counts().since(self.typed_base));
+            c
+        })
+    }
+
     fn prepare(&mut self, entry: FuncId, dims: &Dims, realize: &Realization) -> Result<Prepared> {
         presk_interp::defined::check(self.prog, self.elab, entry, dims, None)?;
-        crate::plan::check_accum(realize)?;
+        // What a native executor cannot compute is refused before anything
+        // runs; the kernel interpreter emulates it, and counts (D206).
+        // A scale is a number the realization records (plan 0.18.0 step 4).
+        if self.exec.emulates() {
+            realize.check_scales()?;
+            self.exec.set_emulating(realize.emulates());
+            self.emulating = realize.emulates();
+        } else {
+            realize.check_native(&format!("the {} backend", self.exec.name()))?;
+        }
         self.realize = realize.clone();
         self.dtype = realize.default;
+        self.arith = crate::ir::Arith::native(self.dtype);
         Ok(Prepared { func: entry, dims: dims.clone(), realize: realize.clone(), handle: 0 })
     }
 
@@ -281,7 +352,7 @@ impl Backend for KernelBackend<'_> {
 
 impl<'p> KernelBackend<'p> {
     pub fn new(prog: &'p Program, elab: &'p ElabProgram, realize: &Realization) -> Self {
-        Self::with_exec(prog, elab, realize, Box::new(InterpExec))
+        Self::with_exec(prog, elab, realize, Box::new(InterpExec::default()))
     }
 
     /// A kernel backend whose kernels are run by `exec`.
@@ -289,7 +360,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true, lowering: 0.0 }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, arith: crate::ir::Arith::native(dtype), site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true, lowering: 0.0, emulating: false, noted: std::cell::Cell::new(presk_format::Counts::default()), typed_base: presk_rt::quant::typed_counts() }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -333,6 +404,26 @@ impl<'p> KernelBackend<'p> {
 
     /// The layout the plan states for a nest (empty: every decision at its
     /// default).
+    /// A pack copies its operand into the nest's type, and a nest that
+    /// counts its sums in their terms' unit reads a scaled operand's
+    /// integers: it takes no pack of one (plan 0.18.0 step 4).
+    fn packs_scaled(&self, b: &Buf) -> Result<()> {
+        let counts = matches!(self.arith.product, presk_format::Format::Int(_) | presk_format::Format::Fixed(_));
+        if counts && matches!(b, Buf::Quant(_) | Buf::Format(presk_format::Format::Affine(_), _)) {
+            return err("E7002", format!("the plan's layout of `{}`: a pack, and the nest counts its products in {}, reading its scaled operand's integers, which a pack would convert", self.site, self.arith.product));
+        }
+        Ok(())
+    }
+
+    /// The formats a site's kernels compute and store in (plan 0.18.0
+    /// steps 3 and 4): its arithmetic, product and accumulation formats, and
+    /// the affine format it stores its value in, if any. `prepare` refused a
+    /// scale not computed yet.
+    fn arith_at(&self, site: &str) -> crate::ir::Arith {
+        let store = self.realize.scaled_at(site).ok().flatten().map(presk_format::Format::Affine);
+        crate::ir::Arith { arith: self.realize.arith_at(site), product: self.realize.product_at(site), accum: self.realize.accum_at(site), store }
+    }
+
     pub fn layout_at(&self, nest: &str) -> Layout {
         self.plan.layout_at(nest)
     }
@@ -352,7 +443,18 @@ impl<'p> KernelBackend<'p> {
     // ----- buffers and values ------------------------------------------------
 
     fn buf(&self, data: Vec<f64>) -> Buf {
-        Buf::of(self.dtype, &data)
+        self.of(self.dtype, &data)
+    }
+
+    /// [`Buf::of`], counted when the run emulates (D209).
+    fn of(&self, d: Dtype, v: &[f64]) -> Buf {
+        if !self.emulating {
+            return Buf::of(d, v);
+        }
+        let mut c = self.noted.get();
+        let b = Buf::of_counted(d, v, &mut c);
+        self.noted.set(c);
+        b
     }
 
     fn scalar(&self, x: f64) -> Value {
@@ -408,7 +510,11 @@ impl<'p> KernelBackend<'p> {
     /// nothing written but once.
     fn filled(&mut self, x: f64, n: usize) -> Buf {
         let d = self.dtype;
-        self.filled.entry((d, n, x.to_bits())).or_insert_with(|| Buf::of(d, &vec![x; n])).clone()
+        if !self.filled.contains_key(&(d, n, x.to_bits())) {
+            let b = self.of(d, &vec![x; n]);
+            self.filled.insert((d, n, x.to_bits()), b);
+        }
+        self.filled[&(d, n, x.to_bits())].clone()
     }
 
     /// Argument `arg`'s every real leaf in the backend's dtype (exact inputs
@@ -421,7 +527,7 @@ impl<'p> KernelBackend<'p> {
             // Integer weights stay integers: the kernels load them (D44).
             Value::Real(t) if matches!(t.data, Buf::Quant(_)) => leaf.clone(),
             Value::Real(t) if t.data.dtype() == d.name() => leaf.clone(),
-            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: Buf::of(d, &t.data.to_f64()) }),
+            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: self.of(d, &t.data.to_f64()) }),
             other => other.clone(),
         };
         if arg != 0 || self.realize.params.is_empty() {
@@ -467,7 +573,7 @@ impl<'p> KernelBackend<'p> {
 
     /// Records the first launch of the nest being executed at these operand
     /// shapes, when capturing (0.7.0 step 5), and counts the others.
-    fn record(&mut self, what: LaunchOp, operands: &[Operand], dtype: Dtype, accum: Dtype, inputs: &[Buf]) {
+    fn record(&mut self, what: LaunchOp, operands: &[Operand], dtype: Dtype, accum: presk_format::Format, inputs: &[Buf]) {
         let site = self.site.clone();
         let order = self.realize.order;
         let Some(c) = self.capture.as_mut() else { return };
@@ -515,6 +621,12 @@ impl<'p> KernelBackend<'p> {
         // realization marks anything, so that no other kernel changes.
         let wide: Vec<Option<BufKind>> = if self.realize.params.is_empty() { Vec::new() } else { inputs.iter().map(|b| narrower(b, self.dtype)).collect() };
         let key = if wide.iter().any(Option::is_some) { format!("{key}|wide{wide:?}") } else { key };
+        // The formats a site computes in other than its storage type's
+        // arithmetic type are its kernels' (plan 0.18.0 step 3), so part of
+        // the key; no native realization has any. A pack's copy is not the
+        // site's value, and stores in its type (step 4).
+        let arith = if pack { crate::ir::Arith { store: None, ..self.arith } } else { self.arith };
+        let key = if arith == crate::ir::Arith::native(self.dtype) { key } else { format!("{key}|{arith}") };
         let hit = self.cache.get(&key).copied();
         // The key was counted where it was formatted.
         self.tock_time(Phase::Key, t);
@@ -524,6 +636,7 @@ impl<'p> KernelBackend<'p> {
             None => {
                 let t_new = std::time::Instant::now();
                 let mut l = lowered().map_err(|m| RtError { code: "E7001", message: m, span: None })?;
+                l.kernel.arith = arith;
                 for (spec, w) in l.kernel.inputs.iter_mut().zip(&wide) {
                     if let Some(kind) = w
                         && spec.kind == BufKind::Real
@@ -556,6 +669,8 @@ impl<'p> KernelBackend<'p> {
         // per launch of every weight is a cost of the host, not of the
         // realization, and it would be charged to every float row of a
         // benchmark and to none of the integer ones.
+        let emulating = self.emulating;
+        let mut noted = self.noted.get();
         let converted: Vec<std::borrow::Cow<Buf>> = inputs
             .iter()
             .zip(&k.inputs)
@@ -564,12 +679,17 @@ impl<'p> KernelBackend<'p> {
                 // Integer weights reach a kernel whose input the host marked;
                 // any other kernel reads their values, `f32(q)·s`.
                 Buf::Quant(_) if matches!(spec.kind, BufKind::Quant { .. }) => std::borrow::Cow::Borrowed(*b),
+                // A quantized activation is read as it is, `(q − z)·s`, by
+                // every nest (plan 0.18.0 step 4, D207).
+                Buf::Format(presk_format::Format::Affine(_), _) => std::borrow::Cow::Borrowed(*b),
                 b if b.dtype() == k.dtype.name() => std::borrow::Cow::Borrowed(*b),
                 // A narrower parameter the kernel widens as it loads it.
                 b if matches!(spec.kind, BufKind::Wide(d) if b.dtype() == d.name()) => std::borrow::Cow::Borrowed(*b),
+                b if emulating => std::borrow::Cow::Owned(Buf::of_counted(k.dtype, &b.to_f64(), &mut noted)),
                 b => std::borrow::Cow::Owned(Buf::of(k.dtype, &b.to_f64())),
             })
             .collect();
+        self.noted.set(noted);
         let refs: Vec<&Buf> = converted.iter().map(|c| c.as_ref()).collect();
         let owned = || converted.iter().filter(|c| matches!(c, std::borrow::Cow::Owned(_))).map(|c| crate::profile::buf_bytes(c)).sum();
         self.tock(Phase::Convert, t, owned);
@@ -650,7 +770,7 @@ impl<'p> KernelBackend<'p> {
         let mut absorbed: HashMap<VarId, presk_core::fusion::Epilogue> = HashMap::new();
         self.tock(Phase::Groups, t, || 0);
         let outer_site = std::mem::take(&mut self.site);
-        let outer_dtype = self.dtype;
+        let (outer_dtype, outer_arith) = (self.dtype, self.arith);
         // The call this is, when the launches are logged: the caller's `let`.
         let logged = self.launch_log.is_some() && !outer_site.is_empty();
         if logged {
@@ -672,6 +792,7 @@ impl<'p> KernelBackend<'p> {
             let t = self.tick();
             self.site = format!("{}/%{}", func.name, l.var.0);
             self.dtype = self.realize.dtype_at(&self.site);
+            self.arith = self.arith_at(&self.site);
             self.tock(Phase::Site, t, || 0);
             // A product whose plan states its epilogue launches nothing: the
             // `add` that alone reads it launches the product's kernel.
@@ -748,7 +869,7 @@ impl<'p> KernelBackend<'p> {
             r.leave(func.body.result);
         }
         self.site = outer_site;
-        self.dtype = outer_dtype;
+        (self.dtype, self.arith) = (outer_dtype, outer_arith);
         if logged {
             self.calls.pop();
         }
@@ -893,6 +1014,10 @@ impl<'p> KernelBackend<'p> {
         let dp = self.realize.dtype_at(&prod_site);
         if dp != self.dtype {
             return Err(fail(format!("an epilogue adds in the product's kernel, in its type, {dp}, and the `add` that reads it, `{}`, is typed {}", self.site, self.dtype)));
+        }
+        let prod_arith = self.arith_at(&prod_site);
+        if !prod_arith.is_native(dp) || !self.arith.is_native(self.dtype) {
+            return Err(fail("an epilogue is a layout of a nest a native backend computes, and the realization computes this one or its `add` in formats the kernel interpreter emulates (plan 0.18.0 step 3)".into()));
         }
         let (op, prod_ty, [x, w, o]) = self.epilogue_operands(func, e, env).map_err(|m| RtError { code: "E7001", message: m, span: None })?;
         let tensor = |v: &'_ Value, what: &str| -> Result<Tensor> {
@@ -1583,7 +1708,11 @@ impl<'p> KernelBackend<'p> {
         match self.dtype {
             Dtype::F64 => Buf::F64(self.draw(key, n, x)),
             Dtype::F32 => Buf::F32(self.draw(key, n, move |u| x(u) as f32)),
-            Dtype::Bf16 => Buf::Bf16(self.draw(key, n, move |u| presk_rt::f32_to_bf16(x(u) as f32))),
+            Dtype::BF16 => Buf::Bf16(self.draw(key, n, move |u| presk_rt::f32_to_bf16(x(u) as f32))),
+            d => {
+                let v = self.draw(key, n, x);
+                self.of(d, &v)
+            }
         }
     }
 
@@ -1634,7 +1763,11 @@ impl<'p> KernelBackend<'p> {
         // launch's kind and shapes, over the backend's default. It is part of
         // the key, so two nests of one shape with two layouts never share a
         // compiled kernel.
-        let kind = crate::plan::nest_kind(op, &operands, order, dtype, self.realize.accum_at(&self.site));
+        // A value stored in an affine format keeps its sums in variables:
+        // its store rounds it once, by its rescaling (condition 7 read on
+        // what the result is stored in, plan 0.18.0 step 4).
+        let sums_in = self.arith.store.unwrap_or_else(|| self.realize.accum_at(&self.site));
+        let kind = crate::plan::nest_kind(op, &operands, order, dtype, sums_in);
         let layout = self.lowered_layout(&kind)?;
         self.tock(Phase::Layout, t, || 0);
         if self.capture.is_some() {
@@ -1659,6 +1792,7 @@ impl<'p> KernelBackend<'p> {
         if layout.pack == Some(true)
             && let Some(c) = lower::Contraction::of(op, &operands, order)
         {
+            self.packs_scaled(bufs[1])?;
             let w = operands[1].clone();
             let (cc, q1) = (c.clone(), quant[1]);
             let panel = self.launch(format!("pack|{key}"), move || {
@@ -1748,6 +1882,9 @@ fn with_data(t: &Tensor, axes: Vec<Axis>, data: Vec<f64>) -> Tensor {
     let buf = match &t.data {
         Buf::F32(_) => Buf::F32(data.into_iter().map(|x| x as f32).collect()),
         Buf::I64(_) => Buf::I64(data.into_iter().map(|x| x as i64).collect()),
+        // Values of an emulated format keep it: a quantized activation's
+        // stay codes for the nests that count them (plan 0.18.0 step 4).
+        Buf::Format(f, _) => Buf::Format(*f, data.into()),
         _ => Buf::F64(data.into()),
     };
     Tensor { axes, data: buf }

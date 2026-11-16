@@ -33,7 +33,7 @@ pub fn options(remat: Remat, groups: bool) -> Options {
 /// written for a training step is also run on forward entries.
 pub fn stored_vjps(core: &presk_core::Program, r: &presk_rt::Realization) -> Vec<Diagnostic> {
     let names: HashSet<&str> = core.funcs.iter().map(|f| f.name.as_str()).collect();
-    let sites = r.storage.keys().chain(r.accum.keys()).filter_map(|s| s.rsplit_once('/').map(|(f, _)| f));
+    let sites = r.storage.keys().chain(r.arith.keys()).chain(r.product.keys()).chain(r.accum.keys()).chain(r.scaled.keys()).filter_map(|s| s.rsplit_once('/').map(|(f, _)| f));
     let typed: BTreeSet<&str> = r.functions.keys().map(String::as_str).chain(sites).collect();
     let stored = |f: &str| f.strip_suffix(".vjp").is_some_and(|g| names.contains(format!("{g}.bwd").as_str()) && !typed.contains(format!("{g}.bwd").as_str()) && !typed.contains(format!("{g}.fwd").as_str()));
     let named: Vec<&str> = typed.iter().copied().filter(|f| stored(f)).collect();

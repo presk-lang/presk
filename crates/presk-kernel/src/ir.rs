@@ -126,6 +126,26 @@ pub enum BinOp {
     /// Integer arithmetic on index expressions.
     IAdd,
     IMul,
+    /// An addition of a sum, rounded to the kernel's accumulation format
+    /// (plan 0.18.0 step 3, D206): every addition of a contraction's or a
+    /// reduction's running sum, and the additions that combine partial
+    /// sums. An `Add` wherever the kernel's formats are one.
+    Accum,
+    /// A product that is a term of a sum, rounded to the kernel's product
+    /// format (D206). A `Mul` wherever the kernel's formats are one.
+    Product,
+}
+
+impl BinOp {
+    /// The operation a backend that computes in one format performs:
+    /// `Accum` an addition, `Product` a multiplication, every other itself.
+    pub fn plain(self) -> BinOp {
+        match self {
+            BinOp::Accum => BinOp::Add,
+            BinOp::Product => BinOp::Mul,
+            op => op,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,11 +248,62 @@ pub enum Threads {
     At { depth: usize, workers: usize },
 }
 
+/// The formats a kernel's operations are rounded to (plan 0.18.0 step 3,
+/// D206): its arithmetic format, every operation's but the two below; its
+/// product format, a sum's products of terms' ([`BinOp::Product`]); and its
+/// accumulation format, a sum's additions' ([`BinOp::Accum`]); and, where
+/// its result is stored in an affine format rather than in its storage
+/// type, that format (step 4, D207), which its store rounds to by its
+/// rescaling. Every kernel of a native realization computes in its storage
+/// type's arithmetic type alone and stores in its storage type
+/// ([`Arith::native`]); any other is the kernel interpreter's to emulate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Arith {
+    pub arith: presk_format::Format,
+    pub product: presk_format::Format,
+    pub accum: presk_format::Format,
+    pub store: Option<presk_format::Format>,
+}
+
+impl Arith {
+    /// One format for every operation, the result stored in the storage
+    /// type.
+    pub fn one(f: presk_format::Format) -> Arith {
+        Arith { arith: f, product: f, accum: f, store: None }
+    }
+
+    /// The arithmetic type of `dtype` for every operation, α(τ): how every
+    /// kernel computed before 0.18.0.
+    pub fn native(dtype: Dtype) -> Arith {
+        Arith::one(presk_format::Format::Float(dtype.arith().format()))
+    }
+
+    /// Whether a kernel stored in `dtype` with these formats is one the
+    /// native backends compute: a native type, in its arithmetic type.
+    pub fn is_native(self, dtype: Dtype) -> bool {
+        dtype.is_native() && self == Arith::native(dtype)
+    }
+}
+
+impl fmt::Display for Arith {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "arith {} product {} accum {}", self.arith, self.product, self.accum)?;
+        match self.store {
+            Some(s) => write!(f, " store {s}"),
+            None => Ok(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kernel {
     /// `add`, `softmax axis seq2`, …: the primitive it realizes.
     pub name: String,
+    /// The storage type of its real buffers.
     pub dtype: Dtype,
+    /// What its operations are rounded to (plan 0.18.0 step 3, D206):
+    /// [`Arith::native`] of `dtype` but where a realization says otherwise.
+    pub arith: Arith,
     pub inputs: Vec<BufSpec>,
     pub output: BufSpec,
     /// Numbers of loop variables, real scalars and integer scalars.
@@ -443,16 +514,16 @@ impl fmt::Display for Expr {
             Expr::VLoad(b, ix) => write!(f, "%{b}[{}]<v>", ix.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")),
             Expr::VSplat(x) => write!(f, "splat({x})"),
             Expr::VBin(op, a, b) => write!(f, "({a} {} {b})<v>", match op {
-                BinOp::Add | BinOp::IAdd => "+",
+                BinOp::Add | BinOp::IAdd | BinOp::Accum => "+",
                 BinOp::Sub => "-",
-                BinOp::Mul | BinOp::IMul => "*",
+                BinOp::Mul | BinOp::IMul | BinOp::Product => "*",
                 BinOp::Div => "/",
             }),
             Expr::Bin(op, a, b) => {
                 let s = match op {
-                    BinOp::Add | BinOp::IAdd => "+",
+                    BinOp::Add | BinOp::IAdd | BinOp::Accum => "+",
                     BinOp::Sub => "-",
-                    BinOp::Mul | BinOp::IMul => "*",
+                    BinOp::Mul | BinOp::IMul | BinOp::Product => "*",
                     BinOp::Div => "/",
                 };
                 write!(f, "({a} {s} {b})")
@@ -504,7 +575,11 @@ fn fmt_stmts(stmts: &[Stmt], indent: usize, out: &mut String) {
 impl fmt::Display for Kernel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ins: Vec<String> = self.inputs.iter().enumerate().map(|(i, s)| format!("%{i} : {}", spec(s, self.dtype))).collect();
-        writeln!(f, "kernel {} ({}) -> %{} : {} {{", self.name, ins.join(", "), self.out_buf(), spec(&self.output, self.dtype))?;
+        // The formats are written only where they are not the storage
+        // type's arithmetic type, so that every native kernel's text is
+        // what it was before 0.18.0.
+        let arith = if self.arith == Arith::native(self.dtype) { String::new() } else { format!(" {}", self.arith) };
+        writeln!(f, "kernel {} ({}) -> %{} : {}{arith} {{", self.name, ins.join(", "), self.out_buf(), spec(&self.output, self.dtype))?;
         let mut body = String::new();
         fmt_stmts(&self.body, 1, &mut body);
         f.write_str(&body)?;

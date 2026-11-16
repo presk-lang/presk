@@ -863,9 +863,13 @@ mod tests {
         assert_eq!(p.layout_at("f/%3").lanes, Some(1));
         assert!(p.layout_at("f/%4").is_empty());
         let inline: Json = serde_json::from_str(r#"{ "realization": { "default": "bf16", "order": { "kind": "sequential" } } }"#).unwrap();
-        assert_eq!(Plan::from_json(&inline).unwrap().realization, Realization::uniform(crate::Dtype::Bf16));
+        assert_eq!(Plan::from_json(&inline).unwrap().realization, Realization::uniform(crate::Dtype::BF16));
         assert_eq!(Plan::from_json(&serde_json::from_str(&p.to_json()).unwrap()).unwrap(), p);
-        for bad in [r#"{ "layout": {} }"#, r#"{ "realization": "f16" }"#, r#"{ "realization": "f32", "layout": { "f3": {} } }"#, r#"{ "realization": "f32", "extra": 1 }"#] {
+        // Any float format's name is a uniform realization since plan
+        // 0.18.0 step 3; a name that is no format's is not.
+        let f16: Json = serde_json::from_str(r#"{ "realization": "f16" }"#).unwrap();
+        assert_eq!(Plan::from_json(&f16).unwrap().realization, Realization::uniform(crate::Dtype::new(presk_format::F16)));
+        for bad in [r#"{ "layout": {} }"#, r#"{ "realization": "f8" }"#, r#"{ "realization": "f32", "layout": { "f3": {} } }"#, r#"{ "realization": "f32", "extra": 1 }"#] {
             assert!(Plan::from_json(&serde_json::from_str(bad).unwrap()).is_err(), "{bad} was accepted");
         }
         assert!(Plan::parse("plan.json").unwrap_err().contains("@FILE"));

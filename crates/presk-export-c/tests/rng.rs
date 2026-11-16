@@ -263,7 +263,7 @@ fn sample_draws_the_native_backends_tokens() {
     let mut m = Mix(13);
     let mut rows_drawn = 0;
     let mut special = 0;
-    for dtype in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
+    for dtype in [Dtype::F64, Dtype::F32, Dtype::BF16] {
         for seed in [0u64, 1, 42, 0xdead_beef] {
             let r = Realization::uniform(dtype);
             let mut b = presk_cranelift::native_backend(&core, &prog, &r).unwrap();

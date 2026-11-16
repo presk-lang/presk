@@ -10,7 +10,7 @@ in `examples/spec/`, with every other Presk program of the repository
 crate `presk` on crates.io (`cargo install presk`), under the Apache
 License 2.0 (`LICENSE`, `NOTICE`); how to cite it is in `CITATION.cff`.
 
-**Version 0.17.2**: the front-end (`presk check`); an arbitrary-precision
+**Version 0.18.0**: the front-end (`presk check`); an arbitrary-precision
 reference interpreter with automatic differentiation (`presk run`), the oracle
 every other executor is measured against; a native backend — PSK-Kernel v0
 compiled by Cranelift, with fusion groups, threads, blocked contractions and
@@ -101,7 +101,17 @@ computing and `presk bench --host-profile --launches`, each launch of a call
 with its large buffers' addresses; it moves every Presk program under
 `examples/` and times the serving rows of record again on its own binary:
 serving the 1B model is computing, compiling under 0.1 % of it (`make
-sr5`). See `CHANGELOG.md`
+sr5`). Version 0.18.0 takes every machine type of an accelerator that
+computes in its own types: a format described by its parameters (binary16,
+8-bit and 4-bit floats, a three-byte float, integers, fixed point), a
+realization that states what each nest computes in — its arithmetic, its
+sums' products and additions, a chunked order — and stores activations as
+integer codes with static scales (`presk scales`); the kernel interpreter
+emulates every format bit for bit, and a systolic array's tiles give its
+simulator's bits; the solver prices every format, refuses those a value's
+range overflows, and solves in a machine's description (`presk solve
+--target`). The native, LLVM and C backends refuse the new formats until
+0.18.1. See `CHANGELOG.md`
 and the user manual (`make doc`, or docs.presk-lang.org); its tutorial
 chapter (programs in `examples/tutorial/`, commands in `make tutorial`) is the place
 to start.

@@ -53,7 +53,7 @@ fn kernels_from_shapes_are_the_run_s() {
 fn breakdown_sums_to_the_estimate() {
     let file = root().join("examples/tutorial/07_train.psk");
     let (_, prog, mut core) = program(&file, &[]);
-    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None, range: false, formats: Vec::new() };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
     let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default(), exec: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the tutorial's loss solves") };
@@ -80,13 +80,14 @@ fn the_measured_rounding_is_at_most_the_unit_term() {
     use presk_rt::Dtype;
     let file = root().join("examples/tutorial/07_train.psk");
     let (_, prog, mut core) = program(&file, &[]);
-    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None, range: false, formats: Vec::new() };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
     assert!(!env.rounding.is_empty(), "the calibration records it");
     for (site, r) in &env.rounding {
         let m = env.get(site).unwrap_or(0.0);
-        for d in [Dtype::F64, Dtype::F32, Dtype::Bf16] {
-            assert!(r.at(d) <= d.unit_roundoff() * m * (1.0 + 1e-12), "{site} in {d}: {} against u·|x| {}", r.at(d), d.unit_roundoff() * m);
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
+            let r = r.at(d).expect("the three types are recorded");
+            assert!(r <= d.unit_roundoff() * m * (1.0 + 1e-12), "{site} in {d}: {r} against u·|x| {}", d.unit_roundoff() * m);
         }
     }
     let solve = |core: &mut presk_core::Program, options: Options| {
@@ -116,7 +117,7 @@ fn the_measured_rounding_is_at_most_the_unit_term() {
 fn a_tensor_first_argument_is_no_parameter() {
     let file = root().join("examples/experiments/widening.psk");
     let (_, prog, mut core) = program(&file, &[]);
-    let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "attn_softmax", dims: vec![("B".into(), 8)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None, range: false, formats: Vec::new() };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
     let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(1e-3), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu: Default::default(), options: Default::default(), exec: Default::default() };
     let Ok(solved) = presk_driver::precision::solve(&mut core, &prog, &env, &a) else { panic!("the attention row solves") };
@@ -174,7 +175,7 @@ fn module_entry_bound_is_the_wrapper_s() {
     let bound = |file: &str, entry: &str, consts: &[String]| {
         let path = root().join(file);
         let (_, prog, core) = program(&path, consts);
-        let c = presk_driver::precision::Calibrate { file: &path, entry, dims: vec![("batch".into(), 8)], consts, data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+        let c = presk_driver::precision::Calibrate { file: &path, entry, dims: vec![("batch".into(), 8)], consts, data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None, range: false, formats: Vec::new() };
         let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
         let realize = presk_rt::Realization::parse("f32").unwrap();
         let Ok(b) = presk_driver::precision::bound(&core, &prog, &env, &realize, &[presk_precision::propagate::Model::Worst, presk_precision::propagate::Model::Conditioned], false) else { panic!("{entry} is bounded") };
@@ -206,7 +207,7 @@ fn one_menu_offers_the_matrices_their_integers() {
     use presk_precision::solve::{Menu, Rung};
     let file = root().join("examples/tutorial/07_train.psk");
     let (_, prog, mut core) = program(&file, &[]);
-    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+    let c = presk_driver::precision::Calibrate { file: &file, entry: "loss", dims: vec![("B".into(), 4)], consts: &[], data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None, range: false, formats: Vec::new() };
     let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
     let menu = Menu::parse("f64,f32,bf16,int8,int4").unwrap();
     let a = presk_driver::precision::SolveArgs { budget: presk_precision::solve::Budget::Relative(0.5), weights: None, verify: true, bits: 128, seed: 0, profile: None, quant: None, menu, options: Default::default(), exec: Default::default() };
@@ -316,7 +317,7 @@ fn the_executors_change_no_decision() {
         let consts: Vec<String> = consts.iter().map(|c| c.to_string()).collect();
         let (_, prog, mut core) = program(&file, &consts);
         let dims: Vec<(String, u64)> = dims.iter().map(|(n, v)| (n.to_string(), *v)).collect();
-        let c = presk_driver::precision::Calibrate { file: &file, entry, dims, consts: &consts, data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None };
+        let c = presk_driver::precision::Calibrate { file: &file, entry, dims, consts: &consts, data: None, samples: None, from: 0, seed: 0, bits: 128, weights: None, range: false, formats: Vec::new() };
         let env = presk_driver::precision::calibrate(&core, &prog, &c).unwrap();
         let menu = presk_precision::solve::Menu::parse("f64,f32,bf16,int8,int4").unwrap();
         let mut solve = |exec: SolveExec| {

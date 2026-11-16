@@ -46,7 +46,7 @@ use rug::Float;
 
 type IValue = presk_interp::Value<Float>;
 
-const DTYPES: [Dtype; 3] = [Dtype::F64, Dtype::F32, Dtype::Bf16];
+const DTYPES: [Dtype; 3] = [Dtype::F64, Dtype::F32, Dtype::BF16];
 /// The native runs have four workers, as `layout.rs`'s, so a plan's split
 /// takes 2 or 4 (condition 5); the C executor states the same.
 const WORKERS: usize = 4;
@@ -439,7 +439,7 @@ fn check_layouts_with(tag: &str, stride: usize, every: usize, quant: Option<u8>)
             if let Some(bits) = quant {
                 args[qarg] = quantized(&Value::from_interp(&inputs[qarg].1).unwrap(), bits, qover);
             }
-            let kind = presk_kernel::plan::nest_kind(op, &operands, ReductionOrder::Sequential, d, d.arith());
+            let kind = presk_kernel::plan::nest_kind(op, &operands, ReductionOrder::Sequential, d, d.arith().into());
             let space: Vec<Layout> = Layout::space(&kind).into_iter().step_by(stride).collect();
             let mut layouts: Vec<Layout> = space.clone();
             for l in space.iter().step_by(every) {
@@ -599,6 +599,7 @@ fn hand_written_kernels_are_bit_identical_to_the_native_backend() {
     let shift = Kernel {
         name: "shift".into(),
         dtype: Dtype::F32,
+        arith: presk_kernel::ir::Arith::native(Dtype::F32),
         inputs: vec![spec(&[2, 8], BufKind::Real)],
         output: spec(&[2, 8], BufKind::Real),
         nloops: 2,
@@ -621,6 +622,7 @@ fn hand_written_kernels_are_bit_identical_to_the_native_backend() {
     let ints = Kernel {
         name: "ints".into(),
         dtype: Dtype::F64,
+        arith: presk_kernel::ir::Arith::native(Dtype::F64),
         inputs: vec![spec(&[5], BufKind::Real), spec(&[5], BufKind::Idx)],
         output: spec(&[5], BufKind::Idx),
         nloops: 2,
@@ -644,6 +646,7 @@ fn hand_written_kernels_are_bit_identical_to_the_native_backend() {
     let edges = Kernel {
         name: "edges".into(),
         dtype: Dtype::F32,
+        arith: presk_kernel::ir::Arith::native(Dtype::F32),
         inputs: vec![spec(&[5], BufKind::Real)],
         output: spec(&[5], BufKind::Real),
         nloops: 1,

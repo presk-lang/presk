@@ -2082,8 +2082,9 @@ e^{±2ε} bound. No row of record is run again.
 
 ## Version 0.17.2
 
-Version `0.17.2` (D202), done on 2026-11-12, for the user to tag `v0.17.2`
-on 13 November. Opened the same day (D197): plan
+Version `0.17.2` (D202), done on 2026-11-12, tagged `v0.17.2` on
+2026-11-13 on `747f84c` and published the same day. Opened on 2026-11-12
+(D197): plan
 `presk-specs/implementation/presk-plan-0.17.2.md` (presk-specs !109). The
 compiler's code is 0.17.1's; the version adds two timers, which measure
 and change nothing the compiler produces, moves every Presk program under
@@ -2134,3 +2135,75 @@ again.
   activations' placement is left open (D201, `docs/kernels-roadmap.md`).
 - A KV cache: `presk serve` recomputes the context at every token.
 - Every machine type of plan 0.18.0, which starts after the tag.
+
+## Version 0.18.0
+
+Version `0.18.0` (D209), done on 2026-11-14, for the user to tag. Opened
+2026-11-13 (D203): plan
+`presk-specs/implementation/presk-plan-0.18.0.md` (presk-specs !108).
+Every machine type of an accelerator that computes in its own types: a
+format described by its parameters, a conversion by two formats and a tie
+rule; a realization that says what a nest computes in (`arith`,
+`product`, `accum`, a chunked order); quantized activations; every format
+emulated bit for bit by the kernel interpreter, priced and certified by
+the solver. The native, LLVM and C backends refuse the new formats; fast
+code for them is version 0.18.1.
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The version opened (D203): questions 81–86, the target's facts checked on its simulator | done |
+| 1 | Formats as data (D204): the crate `presk-format` (a float, an integer or a scaled format by its parameters, one generic rounding, conversions as paths, the encodings and the names); `Dtype` a handle on a format, `f64`, `f32` and `bf16` with their bits (checked on every `f32`) and any other refused where it is read (`E7004`); the interpreter's and the envelope's rounding records as maps by format; `.psk.d` version 3; MT0 on X1's harness | done |
+| 2 | The emulation (D205): the kernel interpreter runs a kernel in any format (`run_kernel_in`), a float's operations in `f32` or `f64` rounded once, an integer's and a fixed-point number's (`fixed(i64,frac=18)`) exactly then wrapped or clamped, every load, store and constant converted; each run counts its saturations, infinities, NaNs and wraps; `Buf::Format`; MT1 on every input | done |
+| 3 | What a nest computes in (D206): a realization stores a value in any float format and states per site the formats its operations, its sums' products and its sums' additions are rounded to (`arith`, `product`, `accum`, any format), and a chunked order; a kernel carries its formats, the lowering marks a sum's additions and products; the kernel interpreter rounds each operation once to its own format (exactly, by error-free transformations, where a kernel has several) and `presk run` prints the counts; the native and LLVM backends and the C export refuse what they do not compute (`E7005`); the reference's chapters 4, 6, 7 and 8 (presk-specs !114) | done |
+| 4 | Quantized activations (D207): a site's value stored in an affine format (`scaled`: integer codes with a static scale and a zero point), rounded into it once by its rescaling, a machine's readings as parameters; the scales from the envelope (`absmax`, `pow2`, `minmax`; `presk calibrate --range`, `presk scales`, `E7006` until computed); a nest whose product format is an integer one summing its scaled operands' integers in their unit, an integer unit's sum; the native backends and the C export refuse it (`E7005`); the reference at draft v0.30 | done |
+| 5 | The solver in every format (D208): each format's terms (a float's through its subnormals and past its largest number, an affine format's half step and clamp, a sum's operations at its formats, an integer count exact under its range condition), so that `presk check --precision` bounds every realization; the range rules (`--range-margin`, `presk solve --offers`); `--menu` of any float format; a target description (`presk solve --target`): a machine's storage, affine and integer formats, each nest's arithmetic, its contraction modes by their operands' formats (followed through calls), its order; no realization written when none in its types is inside the budget (exit 3); `presk calibrate --formats`; explain's and the diagram's labels | done |
+| 6 | The tiles, the rows and version 0.18.0 (D209): MT2 against the target's simulator, 100 tiles of each of its fourteen modes; MT5 and MT6 on the course GPT's logits (`make machine-types`); the host's conversions counted, `presk run --codes`, a data file's leaves in their format, a format's default NaN (`nans=default`), `presk solve --refused`; MT0, `make test`, `check-examples`, `coverage`, `plan-check`, `run-examples`, `math-check` and `c-conformance` on the version's tree; the manual, the reference at draft v0.31, the report, the slides, the summary, the status note | done (2026-11-14) |
+
+| Statement | Content | Expected | Verdict |
+|---|---|---|---|
+| MT0 | Nothing moves: X1, `quant-table`, `step-table` and `tutorial` give `v0.17.1`'s outputs byte for byte | holds | fixed; holds at steps 1, 2 and 3 (D204–D206); at step 4 every output that was there is unchanged, and the tutorial's `presk --help` gains one line naming the new command `presk scales`, which the statement's exceptions do not name (D207); at step 5 the same, the tutorial's statement Q failing on `scores/%2` in a first run alone, its measured regret 1.05, and holding in a second, 1.04, the baseline's, no pick moving (D208); on the version's tree the same, X1 and the tables unchanged, the tutorial's verdicts the baseline's, one `presk plan` pick moving with its calibrated profile in a first run and back in a second (D209) |
+| MT1 | The conversions are the references', on every input | every bit | holds (D205): binary16's +, −, ×, ÷ on 2³² pairs, √ and its conversions are falicon's instructions; `bf16`'s are 0.17.1's functions; the saturating E4M3's encode and decode and the `int16` → `int8` shift at its 32 shifts are the target's simulator's, 2 162 944 inputs; the exhaustive checks pass again at steps 3 and 4 (D206, D207) |
+| MT2 | The target's tiles: 100 of each mode give its simulator's bits | holds | holds (D209): 100 tiles of each of the simulator's fourteen modes (its `fp8` products in binary16 sums, weight- and output-stationary, with an addend, again over every E4M3 code; its `int8` products in `int32` sums saturated to `int16`, with an addend; the rescalings) under the matching realization, 1 356 800 values, none differs; a first run differed on 1 621 NaNs whose sign the target's adder fixes, which a format's parameter now states (`nans=default`) |
+| MT3 | The solver's range rules see the saturation, overflow and floor thresholds | holds | holds (D208): on the six envelopes of the binary16 study, every float of the catalogue at the margin 2, 3 535 pairs of a value and a format, the refusals (231 range, 12 divisor, 33 constant) those an independent check recomputes from the envelopes' numbers, 0 mismatches; every emulated measurement reports its counts, which missed the host's own conversions until step 6 (D209), MT4's runs again with them counted giving the same 0 |
+| MT4 | The course GPT's loss at D = 64 solved in the target's types, certified or refused | holds | holds (D208): at 10⁻¹ and 10⁻², a realization in the target's types measured 1.21·10⁻² (34 values in binary16, 12 in E4M3, 2 in 8-bit codes, 7 matrices in E4M3), inside both; at 10⁻³ none of the 4 measured is inside, the smallest gap 4.31·10⁻³ after a contraction put in the `int8` mode, and none is written |
+| MT5 | The logits at D = 64 in the target's types against ε\*(δ) of record; the accumulator's readings | reported | reported (D209): at ε\*(10⁻¹), ε\*(10⁻²) and ε\*(10⁻³) none in the target's types is inside, one realization the smallest gap at all three (0.544 on the envelope; 7 values and 7 matrices in E4M3, the four contractions in the 8-bit float mode, 1.50·10⁶ bytes of traffic); on the 461 windows 0.677 and 3 657 flips (3.10 %) summed in binary16, 0.674 and 3 652 in `f32` or exactly: the operands' width, not the sums' |
+| MT6 | Binary16 and a 16-bit-significand float on falicon's menu: fewer bytes than D170's solve at ε\*(10⁻³), no decision changed | holds | holds (D209): five values in `e8m15`, none in binary16, 3.42·10⁶ bytes stored against 3.83·10⁶ (the parameters at rest D170's, all `f32`), measured 4.06·10⁻⁵ inside 4.67·10⁻⁴, 7.97·10⁻⁵ on the 461 windows with no decision changed |
+
+## What 0.18.0 has, and what it does not
+
+**Has.**
+- Formats as data (`presk-format`): a float by its parameters (its
+  significand, its exponent range, its subnormals, its special values,
+  its overflow rule, the sign of an underflow, the NaN an operation
+  gives), an integer, a fixed-point number, an affine format; one
+  rounding for all, a conversion by one rounding, the encodings;
+  `.psk.d` version 3 (D204, D209).
+- A realization that says what a nest computes in: any float as a storage
+  type, per site the formats its operations, its sums' products and its
+  sums' additions are rounded to, a chunked order (D206); activations
+  stored as integer codes with static scales from the envelope (`presk
+  scales`, D207).
+- The kernel interpreter emulates every format bit for bit (binary16 is
+  falicon's on every pair of codes, MT1) and counts what the formats'
+  overflow rules produce, its host's conversions included; a target's
+  simulator gives its bits on 100 tiles of each of its fourteen modes
+  (MT2). `presk run --codes` prints a result as its formats' codes.
+- The solver in every format (D208): each format's terms, so that `presk
+  check --precision` bounds every realization; range rules; `--menu` of
+  any float; `presk solve --target`, a machine's description, with
+  `--refused` the realization of smallest gap where none is inside.
+  On the course GPT at D = 64: its loss solved in the target's types at
+  10⁻¹ and 10⁻² (MT4); its logits in no realization inside ε\*(10⁻¹) in
+  those types, the 8-bit operands, not the sums, carrying the gap (MT5);
+  with `e8m15` on the menu, 10.7 % fewer bytes stored than D170's
+  realization and no decision changed (MT6).
+
+**Does not have.**
+- Fast code for the new formats: the native, LLVM and C backends refuse
+  them (`E7005`); binary16 and `e8m15` on the CPU are version 0.18.1's.
+- The target's code generation and a cost model for its cycles: the
+  solver's objective under a target is bytes.
+- The target's vector functions to the bit (question 84), and its
+  integer result's intermediate store before a rescaling, which a
+  target's contraction modes do not state.
+- Training in a machine's types; convolutions and `scan`.

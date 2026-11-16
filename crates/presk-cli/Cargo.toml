@@ -20,6 +20,7 @@ presk-core.workspace = true
 presk-interp.workspace = true
 presk-data.workspace = true
 presk-train.workspace = true
+presk-format.workspace = true
 presk-rt.workspace = true
 presk-kernel.workspace = true
 presk-realize.workspace = true
