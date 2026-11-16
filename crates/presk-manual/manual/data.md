@@ -57,7 +57,7 @@ Every number of a format is a number of `f64`, so the leaf is read
 exactly. A header that describes no format, or encoding 3 in a version 2
 file, is refused (`E9002`). The C export's and the PyTorch export's
 readers take versions 1 and 2 and refuse version 3 (`E9002`): no program
-they run computes in another format before version 0.18.1.
+they run computes in another format before version 0.18.2.
 
 A sample is the concatenation of the leaves of its type, in order: for a
 tuple, its elements left to right; for a parameter tree, its fields in

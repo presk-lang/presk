@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.18.1 — 2026-11-16
+
+A documentation release (D210; the user's request of 2026-11-16): the
+compiler's code is 0.18.0's.
+- `README.md` written for the compiler's users: what Presk is, how to
+  install it, a first program and an error budget with their outputs, the
+  main commands, where it stands, the repository's layout.
+- `CONTRIBUTING.md` without its sections on the public repository and on
+  how the code was written.
+- The manual's first page opens with what Presk is and lists its
+  chapters; the paragraph on the manual's version and how it is kept, and
+  the table of where things are in the repository, are comments, not shown.
+- Fast code for the new formats on the CPU, which 0.18.0 announced as
+  version 0.18.1's, is version 0.18.2's.
+
 ## 0.18.0 — 2026-11-15
 
 Every machine type of an accelerator that computes in its own types

@@ -23228,3 +23228,66 @@ to !115 and step 6's merge request, then tags `v0.18.0` on the last
 merge, whose tree is this branch's if nothing else merges between, and
 publishes it. The CHANGELOG's date, 2026-11-15, moves if the tag is
 later.
+
+## D210 — Version 0.18.1: a documentation release, a README for the compiler's users and `CONTRIBUTING.md` without two sections; the CPU's fast code for the new formats is 0.18.2's (2026-11-16)
+
+The user, 2026-11-16, on the public repository after 0.18.0's
+publication: `CONTRIBUTING.md` "is bad. Remove sections 'What this
+repository is' and 'How the code was written'. The README.md is also very
+bad, not user oriented at all. It gives a lot of irrelevant details, not
+a way to use the compiler." The README is the tagged tree's, and
+`CONTRIBUTING.md` is laid over the versions an export appends, never over
+those already public, so neither reaches the public repository before a
+tag. Of the three ways put to the user (wait for the next version, a
+documentation release now, a documentation commit between versions in
+the export), the user chose the release, the same day.
+
+**What the version changes** (presk !190 and this merge request):
+- `README.md` is written for the compiler's users: what Presk is; `cargo
+  install presk`; a first program, the tutorial's `01_linear.psk` as a
+  file of its own, with `presk check` and `presk run` and their output; a
+  budget instead of a type, the tutorial's step 15 on `07_train.psk`, its
+  three commands and the two runs' outputs; the main commands; where it
+  stands; the repository's layout; the licence and the citation. The
+  version history is `CHANGELOG.md`'s and the Makefile's experiments are
+  the manual's. `CLAUDE.md` says what the README is for.
+- `CONTRIBUTING.md` loses "What this repository is" and "How the code
+  was written".
+- The manual's index names the version (it said 0.16.0, missed since).
+  On the user's review of !190 ("All this paragraphe is irrelevant. It
+  could be a non visible commentary, but for a end user it's useless"),
+  the paragraph that held it, on the manual's version and how it is
+  kept, is an HTML comment: the first page opens with what Presk is, and
+  the version a reader sees is rustdoc's, beside the crate's name. Its
+  table "Where things are" (the repository's sources, plans, experiments
+  and records) is one too, at the user's word the same day.
+- `publish/mentions.txt`'s README hunk is bound to v0.18.0, the last
+  version whose README has its line.
+- The version `0.18.1`: the 22 pins, `Cargo.lock`, explain's six
+  snapshots and the manual's `explain_loss` chapter (their version line),
+  `CITATION.cff`.
+
+**What it does not change.** The compiler's code is 0.18.0's: no file
+under `crates/*/src/` changes, and every output but the version line is
+0.18.0's. Nothing is measured or run again, and the statements of 0.18.0
+keep their verdicts.
+
+**The numbering.** Plan 0.18.0's §8, decision 1, gave the CPU's fast code
+for the new formats to 0.18.1; it is version 0.18.2's. The living
+documents that announced 0.18.1 say 0.18.2: the manual's `data`,
+`experiments`, `export_c`, `native` and `status` chapters, `CLAUDE.md`,
+and in presk-specs the reference's Status and the report's chapter 8.
+The dated records keep their words: D203–D209, the CHANGELOG's 0.18.0
+section, the plan.
+
+**The documents.** In presk-specs, the reference's Status and the
+report's chapter 8 come to 0.18.1 (a presk-specs merge request). The
+slides, the summary and the questions stay at 0.18.0, and there is no
+status note: nothing was built or measured, and no question was opened.
+
+**Checks.** `make test`; the export's preview of `v0.18.1` audited clean,
+and `cargo publish --workspace --dry-run` on it.
+
+**What follows.** The user merges presk !190, this merge request and the
+presk-specs one, then tags `v0.18.1`, exports it with `make publish`,
+pushes the public refs and publishes the 24 crates.

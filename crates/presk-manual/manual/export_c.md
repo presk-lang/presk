@@ -507,7 +507,7 @@ between the pragmas, were not run: none was on the machine.
   (`E7005`), and so does its SCoP mode (the `precision` chapter, "What a
   nest computes in"); so is a realization storing a quantized activation
   in an affine format (step 4, D207). The C for `f16` and the
-  16-bit-significand float is version 0.18.1's.
+  16-bit-significand float is version 0.18.2's.
 - **A GPU** and the matrix unit, which come after 0.9.0 (plan 0.9.0,
   decision 0).
 - **Where C4's ratios come from**, the code generator or the host, is not

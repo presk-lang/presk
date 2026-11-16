@@ -2147,7 +2147,7 @@ rule; a realization that says what a nest computes in (`arith`,
 `product`, `accum`, a chunked order); quantized activations; every format
 emulated bit for bit by the kernel interpreter, priced and certified by
 the solver. The native, LLVM and C backends refuse the new formats; fast
-code for them is version 0.18.1.
+code for them is version 0.18.2 (0.18.1 is a documentation release).
 
 | Step | Contents | Status |
 |---|---|---|
@@ -2200,10 +2200,22 @@ code for them is version 0.18.1.
 
 **Does not have.**
 - Fast code for the new formats: the native, LLVM and C backends refuse
-  them (`E7005`); binary16 and `e8m15` on the CPU are version 0.18.1's.
+  them (`E7005`); binary16 and `e8m15` on the CPU are version 0.18.2's.
 - The target's code generation and a cost model for its cycles: the
   solver's objective under a target is bytes.
 - The target's vector functions to the bit (question 84), and its
   integer result's intermediate store before a rescaling, which a
   target's contraction modes do not state.
 - Training in a machine's types; convolutions and `scan`.
+
+## Version 0.18.1
+
+Version `0.18.1` (D210), done on 2026-11-16: a documentation release, at
+the user's request of the same day. The compiler's code is 0.18.0's, and
+every output but the version line is 0.18.0's. The version brings to the
+public repository a README written for the compiler's users (what Presk
+is, how to install it, a first program and an error budget with their
+outputs, the main commands, where it stands), `CONTRIBUTING.md` without
+its sections on the public repository and on how the code was written,
+and this manual's first page opening with what Presk is. Fast code for the new formats on
+the CPU, which 0.18.0 announced as 0.18.1's, is version 0.18.2's.

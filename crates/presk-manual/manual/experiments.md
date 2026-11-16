@@ -2196,7 +2196,7 @@ in `f32`, D170's:
 
 The measurements ran on the kernel interpreter, every realization's in a
 few minutes on sixteen jobs; the native backends compute these formats
-in 0.18.1.
+in 0.18.2.
 
 ## What these experiments do not show
 

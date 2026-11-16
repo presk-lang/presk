@@ -1,11 +1,12 @@
 # Presk compiler — user manual
 
-**Version 0.16.0** (plans 0.1.0 to 0.16.0 and the patches 0.10.1 and 0.14.1 done; [`status`]). This
+<!-- For the manual's maintainers, not shown to its readers (the user,
+2026-11-16). **Version 0.18.1** (plans 0.1.0 to 0.18.0 done, with the patches 0.10.1, 0.14.1, 0.16.1, 0.17.1 and 0.17.2, and 0.18.1, a documentation release; [`status`]). This
 manual describes the `presk` tool as it is implemented, no more: every
 chapter was updated at each step of each plan, and features that exist only
 in the language specification are marked *not implemented*. The reference for the language itself is the
 specification repository `presk-specs` (`report/chapters/02-spec.tex`); this
-manual documents what the compiler accepts and does.
+manual documents what the compiler accepts and does. -->
 
 Presk is a domain-specific language for describing, training and running
 neural networks. A Presk program denotes a mathematical function over tensors
@@ -41,6 +42,9 @@ it may be differentiated; randomness is an explicit effect.
 - [`dependencies`] — every tool and library, what it is and why.
 - [`status`] — what is implemented, step by step.
 
+<!-- For the manual's maintainers, not shown to its readers (the user,
+2026-11-16).
+
 ## Where things are
 
 | Item | Location |
@@ -57,3 +61,4 @@ it may be differentiated; randomness is an explicit effect.
 | Architecture decisions | `docs/decisions.md` |
 | Open questions sent to the specification | `docs/spec-questions.md`, copied at each version to `presk-specs/implementation/presk-spec-questions-0.X.0.md` |
 | This manual | `crates/presk-manual/manual/*.md`, rendered by `cargo doc -p presk-manual --open` (or `make doc`) |
+-->

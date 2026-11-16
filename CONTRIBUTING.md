@@ -1,34 +1,5 @@
 # Contributing
 
-## What this repository is
-
-`github.com/presk-lang/presk` is the public copy of the Presk compiler. It
-holds **one commit per version**, each the tree of a tagged version of the
-development repository, exported by a script of that repository: the
-tagged tree without the coding agents' instructions, without the
-development records under `docs/` (the files the manual names and the
-design documents stay) and without the export itself, with the licence and
-citation files laid over it. The intermediate commits of the development
-are not here, by design; the history of a version is its section of
-`CHANGELOG.md`, which is written as the version is made and names the
-decisions each number comes from.
-
-The development happens in a private repository, with merge requests per
-step and the discipline the manual describes (every change exact unless
-declared, every number from a record). The public `main` only ever
-receives release commits.
-
-## How the code was written
-
-The compiler was written by its author with AI coding assistants (Claude
-Code, OpenAI Codex, Mistral Vibe and Google's Antigravity), under the
-author's direction and review: the language's design and every decision of
-record are the author's; the assistants wrote code, tests and documents
-from them. Every claim about the compiler's behaviour is checked by the
-test suite (`make test`, the snapshots under `crates/*/tests/snapshots/`)
-and by the experiments' scripts, whose outputs are the records
-`CHANGELOG.md` cites.
-
 ## Building and testing
 
 ```sh

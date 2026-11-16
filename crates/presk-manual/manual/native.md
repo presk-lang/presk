@@ -125,7 +125,7 @@ is a dozen passes over every parameter — while contractions keep their
 accuracy. The native backends have no `f16`: since 0.18.0 step 3 a
 realization stores a value in binary16 or in any other float format, and
 only the kernel interpreter computes it (below); fast code for them is
-version 0.18.1's.
+version 0.18.2's.
 
 `presk bench` now times each uniform realization, and the first thing it
 shows is that a narrower type is not automatically faster. On
