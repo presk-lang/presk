@@ -2,11 +2,15 @@
 //! D78), against the Rust it stands for:
 //! - `presk_convert` against `Buf::of(to, b.to_f64())`, the native backend's
 //!   conversion at a kernel's edge, bit for bit between every two real
-//!   types, `f64 → f32 → bf16`'s double rounding included;
+//!   types, `f64 → f32 → bf16`'s double rounding included, binary16 and
+//!   `e8m15` among them since plan 0.18.2 step 3 (D217), each rounded once;
 //! - the `.psk.d` reader and writer against `presk-data`: files written in
-//!   Rust read in C, into every real type, and files written in C read by
-//!   `presk-data` and equal byte for byte to the ones it writes; and each
-//!   error of the reader and the writer, with `presk-data`'s code;
+//!   Rust read in C, into every real type, version 2's `f32` and `bf16`
+//!   leaves and version 3's binary16 and `e8m15` ones among them, and files
+//!   written in C read by `presk-data` and equal byte for byte to the ones
+//!   it writes; and each error of the reader and the writer, with
+//!   `presk-data`'s code, a leaf in a format the program does not hold
+//!   among them;
 //! - the arena: alignment, release, a kept result, exhaustion;
 //! - the quantizer (plan 0.9.0 step 7, D84): `presk_quantize` against
 //!   `QTensor::quantize` on over 10⁶ weights in each width and scheme, their
@@ -52,12 +56,15 @@ struct CArena {
     peak: usize,
 }
 
-/// `presk_dtype`: `PRESK_F64`, `PRESK_F32`, `PRESK_BF16`, `PRESK_I64`.
+/// `presk_dtype`: `PRESK_F64`, `PRESK_F32`, `PRESK_BF16`, `PRESK_I64`, and
+/// binary16's and `e8m15`'s codes, `PRESK_F16` and `PRESK_E8M15`.
 const F64: i32 = 0;
 const F32: i32 = 1;
 const BF16: i32 = 2;
 const I64: i32 = 3;
-const REALS: [i32; 3] = [F64, F32, BF16];
+const F16: i32 = 4;
+const E8M15: i32 = 5;
+const REALS: [i32; 5] = [F64, F32, BF16, F16, E8M15];
 
 /// The runtime's functions, from a library of `presk_rt.c` and
 /// `presk_libm.c`.
@@ -161,6 +168,12 @@ fn reals(n: usize, seed: u64) -> Vec<f64> {
         f32::from_bits(1) as f64,
         f32::from_bits(1) as f64 / 2.0,            // a tie with 0 in f32
         f32::from_bits(1) as f64 * 0.75,
+        65504.0,         // binary16's largest
+        65520.0,         // the tie with the infinity, which it rounds to
+        65519.99,
+        2f64.powi(-24),  // binary16's least subnormal
+        2f64.powi(-25),  // the tie with 0
+        2f64.powi(-25) * 1.0000001,
     ];
     let mut rng = Rng(seed);
     // Ties: the midpoint of two neighbouring f32s, and of two bf16s, and
@@ -173,6 +186,16 @@ fn reals(n: usize, seed: u64) -> Vec<f64> {
         let mid = f32::from_bits(b | 0x8000) as f64; // an f32, halfway between two bf16
         let ulp = f32::from_bits(b | 0x8001) as f64 - mid;
         v.extend([mid, mid + ulp / 4.0, mid - ulp / 4.0, -mid, -(mid + ulp / 4.0)]);
+    }
+    // Ties of binary16 and of e8m15, rounded to f32 or not: the midpoint of
+    // two neighbouring codes, and the f64s either side of it.
+    for _ in 0..2000 {
+        for (code, width) in [(rng.next() % 0x7c00, 10u32), (rng.next() % 0x7f_8000, 15)] {
+            let at = |c: u64| if width == 10 { presk_rt::codes::f16_to_f32(c as u16) as f64 } else { presk_rt::codes::e8m15_to_f32(c as u32) as f64 };
+            let hi = if width == 10 && code == 0x7bff { 65536.0 } else if width == 15 && code == 0x7f_7fff { 2f64.powi(128) } else { at(code + 1) };
+            let mid = (at(code) + hi) / 2.0;
+            v.extend([mid, f64::from_bits(mid.to_bits() + 1), f64::from_bits(mid.to_bits() - 1), -mid]);
+        }
     }
     while v.len() < n {
         let r = rng.next();
@@ -190,6 +213,8 @@ fn dtype(d: i32) -> Dtype {
         F64 => Dtype::F64,
         F32 => Dtype::F32,
         BF16 => Dtype::BF16,
+        F16 => Dtype::F16,
+        E8M15 => Dtype::E8M15,
         _ => unreachable!(),
     }
 }
@@ -200,6 +225,7 @@ fn bits(b: &Buf) -> Vec<u64> {
         Buf::F64(x) => x.iter().map(|y| y.to_bits()).collect(),
         Buf::F32(x) => x.iter().map(|y| y.to_bits() as u64).collect(),
         Buf::Bf16(x) => x.iter().map(|y| *y as u64).collect(),
+        Buf::Codes(f, x) => (0..x.len() / presk_rt::codes::width(*f)).map(|e| u64::from(presk_rt::codes::code(*f, x, e))).collect(),
         Buf::I64(x) => x.iter().map(|y| *y as u64).collect(),
         _ => unreachable!(),
     }
@@ -217,6 +243,7 @@ fn buf(d: i32, n: usize) -> Buf {
         F64 => Buf::F64(vec![0.0; n].into()),
         F32 => Buf::F32(vec![0.0; n].into()),
         BF16 => Buf::Bf16(vec![0; n].into()),
+        F16 | E8M15 => Buf::of(dtype(d), &vec![0.0; n]),
         _ => Buf::I64(vec![0; n].into()),
     }
 }
@@ -226,6 +253,7 @@ fn ptr(b: &mut Buf) -> *mut c_void {
         Buf::F64(x) => x.as_mut_ptr() as *mut c_void,
         Buf::F32(x) => x.as_mut_ptr() as *mut c_void,
         Buf::Bf16(x) => x.as_mut_ptr() as *mut c_void,
+        Buf::Codes(_, x) => x.as_mut_ptr() as *mut c_void,
         Buf::I64(x) => x.as_mut_ptr() as *mut c_void,
         _ => unreachable!(),
     }
@@ -408,9 +436,11 @@ fn psk_d_files_are_presk_datas() {
         }
 
         // Version 2 (plan 0.17.0 step 7, D180): presk-data writes every real
-        // leaf in f32, then in bf16, the reals rounded to it first; C reads
-        // each as f64, the same numbers bit for bit.
-        for (d, enc) in [(F32, presk_data::Enc::F32), (BF16, presk_data::Enc::Bf16)] {
+        // leaf in f32, then in bf16, the reals rounded to it first; and
+        // version 3 (plan 0.18.2 step 3), in binary16 and in e8m15. C reads
+        // each as f64, the same numbers bit for bit, a NaN of the last two
+        // the NaN of its sign, as presk-data reads it.
+        for (d, enc) in [(F32, presk_data::Enc::F32), (BF16, presk_data::Enc::Bf16), (F16, presk_data::Enc::of(Dtype::F16.format())), (E8M15, presk_data::Enc::of(Dtype::E8M15.format()))] {
             let narrow: Vec<Value> = values.iter().map(|v| with_reals(v, &mut sample_bufs(v).iter().map(|b| native_convert(b, d).to_f64()))).collect();
             let encs: Vec<presk_data::Enc> = cleaves.iter().map(|l| if l.bound > 0 { presk_data::Enc::F64 } else { enc }).collect();
             let file = rt.dir.join(format!("rust{k}-v2-{}.psk.d", dtype(d).name()));
@@ -420,7 +450,8 @@ fn psk_d_files_are_presk_datas() {
             // SAFETY: the leaves outlive the reader, which is closed below.
             let e = unsafe { (rt.open)(&mut r, cpath(&file).as_ptr(), ctype.as_ptr(), cleaves.as_ptr(), cleaves.len()) };
             assert_eq!(e, 0, "{ty} in {}: {}", dtype(d).name(), rt.error());
-            for (s, v) in narrow.iter().enumerate() {
+            let read = presk_data::Reader::open(&file).ok().and_then(|r| if ty.starts_with("params ") { r.with_layout(layout.clone()).ok() } else { Some(r) }).map(|mut r| r.read_all().unwrap()).unwrap();
+            for (s, v) in read.iter().enumerate() {
                 let want = sample_bufs(v);
                 let mut got: Vec<Buf> = cleaves.iter().zip(&dtypes).map(|(l, t)| buf(*t, l.n as usize)).collect();
                 let ptrs: Vec<*mut c_void> = got.iter_mut().map(ptr).collect();
@@ -435,7 +466,7 @@ fn psk_d_files_are_presk_datas() {
             checked += 1;
         }
 
-        // C writes from f64, f32 and bf16 buffers; presk-data reads it, and
+        // C writes from buffers of every real type; presk-data reads it, and
         // the bytes are those presk-data writes from the same reals.
         for d in REALS {
             let dtypes: Vec<i32> = cleaves.iter().map(|l| if l.bound > 0 { I64 } else { d }).collect();
@@ -493,10 +524,9 @@ fn psk_d_errors_are_presk_datas() {
         ("short", 9002, open(&variant("short.psk.d", &|b| b.truncate(3)), ty, &cleaves)),
         ("magic", 9002, open(&variant("magic.psk.d", &|b| b[0] = b'Q'), ty, &cleaves)),
         // Version 4 is no version (2 is, since plan 0.17.0 step 7, and 3
-        // in presk-data since plan 0.18.0 step 1, D204); this reader takes
-        // neither 3 nor 4.
+        // since plan 0.18.0 step 1, D204, which this reader takes since
+        // plan 0.18.2 step 3).
         ("version", 9002, open(&variant("version.psk.d", &|b| b[4] = 4), ty, &cleaves)),
-        ("version 3", 9002, open(&variant("version3.psk.d", &|b| b[4] = 3), ty, &cleaves)),
         ("header", 9003, open(&variant("header.psk.d", &|b| b.truncate(head - 3)), ty, &cleaves)),
         ("type", 9005, open(&good, "(ℝ[3], idx[6][2])", &cleaves)),
         ("truncated", 9003, open(&variant("trunc.psk.d", &|b| b.truncate(b.len() - 1)), ty, &cleaves)),
@@ -504,6 +534,16 @@ fn psk_d_errors_are_presk_datas() {
         ("leaves of other dimensions", 9005, open(&good, ty, &[CLeaf { bound: 0, n: 2 }, CLeaf { bound: 5, n: 2 }])),
         ("leaves of more elements", 9003, open(&good, ty, &[CLeaf { bound: 0, n: 4 }, CLeaf { bound: 5, n: 2 }])),
     ];
+    // A version 3 leaf in a format the program holds no buffer of: refused
+    // by its name, an aliased one and one spelled by its parameters.
+    for name in ["e4m3fn", "float(p=4,emin=-6,emax=8,specials=none,underflow=+0)"] {
+        let p = rt.dir.join(format!("v3-{}.psk.d", if name.len() < 8 { name } else { "spelled" }));
+        let w = Value::Tuple(vec![Value::Real(vec![1.0, 2.0, 0.5]), Value::Idx(vec![4, 0])]);
+        presk_data::write_encoded(&p, ty, &layout, &[enc_of(name), presk_data::Enc::F64], [&w]).unwrap();
+        let (e, msg) = open(&p, ty, &cleaves);
+        assert!(msg.contains(&format!("leaf 0 is in {name}, a format this program does not hold")), "{msg}");
+        cases.push(("a leaf in a format not held", 9002, (e, msg)));
+    }
     // Presk-data agrees on the file-level cases it checks.
     for (name, code) in [("short.psk.d", "E9002"), ("magic.psk.d", "E9002"), ("version.psk.d", "E9002"), ("trunc.psk.d", "E9003")] {
         assert_eq!(presk_data::Reader::open(&rt.dir.join(name)).unwrap_err().code, code, "{name}");
@@ -707,5 +747,11 @@ fn quantization_is_presk_rts() {
         }
     }
     assert!(ties > 100_000 && zero_channels > 1_000, "{ties} ties, {zero_channels} zero channels");
-    eprintln!("presk_quantize: {weights} weights in int8 and int4, absmax and pow2, integers and scales bit-identical to QTensor::quantize ({ties} ties at n + ½, {zero_channels} zero channels, subnormals, huge values, NaNs); presk_dequantize: {dequantized} elements into the three types, bit-identical to Buf::of");
+    eprintln!("presk_quantize: {weights} weights in int8 and int4, absmax and pow2, integers and scales bit-identical to QTensor::quantize ({ties} ties at n + ½, {zero_channels} zero channels, subnormals, huge values, NaNs); presk_dequantize: {dequantized} elements into the five real types, bit-identical to Buf::of");
+}
+
+/// The encoding of a format named by its alias or its spelling, through
+/// the realization that stores every value in it.
+fn enc_of(name: &str) -> presk_data::Enc {
+    presk_data::Enc::of(presk_rt::Realization::parse(name).unwrap_or_else(|e| panic!("{name}: {e}")).default.format())
 }

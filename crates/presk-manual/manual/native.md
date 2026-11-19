@@ -87,14 +87,16 @@ record answers both (D34):
   keys integer weights: `"params": { "blocks.ff.up.w": "bf16" }`. Since
   0.18.0 step 5 (D208) any float format narrower than `f64`, which the
   kernel interpreter computes and the native backends refuse but `f32` and
-  `bf16` (`E7005`). Every
+  `bf16` (`E7005`), and on the native backend binary16 and `e8m15` since
+  0.18.2 step 2 (D216), on the LLVM backend since step 3 (D217). Every
   other parameter is stored in `default`. The `precision` chapter's
   *Parameters in their own type* says what is checked and what runs. A
   kernel of a wider type reads such a parameter from an input marked as
   narrower, `presk dump --stage kernel` printing it in its own type
   (`%1 : bf16[4, 4]` in an `f32` `dot`), whose loads widen each element
   exactly, in four lanes at a time for `bf16` into `f32` and two for `f32`
-  into `f64`; it is never copied at the kernel's edge.
+  into `f64`, and lane by lane for binary16 and `e8m15`; it is never
+  copied at the kernel's edge.
 
 A parameter a realization quantises (`precision` chapter) reaches the
 kernels as integers: `presk dump --stage kernel` shows such an input as
@@ -122,10 +124,65 @@ function into groups, which is why a gradient keeps its forward pass's
 groups wherever a realization can see them (D92, D94; the `language`
 chapter, "Residuals"). It halves the traffic of the memory-bound sweeps — `adamw.step`
 is a dozen passes over every parameter — while contractions keep their
-accuracy. The native backends have no `f16`: since 0.18.0 step 3 a
-realization stores a value in binary16 or in any other float format, and
-only the kernel interpreter computes it (below); fast code for them is
-version 0.18.2's.
+accuracy. Since 0.18.0 step 3 a realization stores a value in binary16 or
+in any other float format, which the kernel interpreter computes (below).
+
+Since 0.18.2 step 2 (D216) the native backend runs two of them as it runs
+`bf16`: binary16 (`f16`) and `e8m15`, the float of 16 significand bits
+with `f32`'s exponent. A buffer holds their codes, 2 and 3 bytes an
+element, as a `.psk.d` version 3 file does; a nest computes in `f32`, each
+load widening a code exactly and each store rounding once, ties to even.
+Cranelift has no instruction for binary16 on aarch64, so both conversions
+are integer sequences with one `f32` operation each
+(`presk_cranelift::codes`):
+- binary16's widening moves the magnitude into an `f32`'s fields and
+  multiplies it by 2¹¹², which covers the subnormals; its narrowing is
+  `bf16`'s bias trick at bit 13 with the exponent rebiased, and below
+  2⁻¹⁴ an `f32` addition of 0.5, whose last place is binary16's least
+  subnormal;
+- `e8m15`'s are a shift by 8 and the bias trick at bit 8, a code read and
+  written as 2 bytes and 1.
+
+A NaN stays a NaN of its sign, quiet, with its payload's top bits, as
+`fcvt` keeps them. The sequences give the runtime's conversions' bits on
+every `f32` and every code (statement FC1), and a realization in either
+format gives the kernel interpreter's bits natively, byte for byte
+(FC2's native half): on the conformance suite, the test set's programs
+under each format uniform and beside `f32`, `bf16` and `f64`, training
+runs, and every point of the layout spaces. Natively nothing is counted:
+the kernel interpreter still emulates such a realization and prints its
+counts. A kernel of either type has one lane; a kernel of `f32` or `f64`
+reads a parameter stored in either from its own buffer, widening each
+element, lane by lane where it has lanes. The LLVM backend and the C
+export refused both until step 3 (`E7005`), and run them since (D217):
+the C printer's conversions, below and in the `export_c` chapter.
+
+Since step 4 (D218) a kernel that stores either format makes the overflow
+guard's test at each store: a finite `f32` whose magnitude reaches the
+format's overflow threshold (65 520 for binary16, `(2 − 2⁻¹⁶)·2¹²⁷` for
+`e8m15`), which the store rounds to an infinity, sets the call's flag, one
+subtraction, one comparison and one `or` in a register, and the flag is
+written at the kernel's return to a word the executor passes after the
+scales, which every worker of a divided launch may set. The executor reads
+it once the launch's workers are joined, and the run fails with `E7007`,
+naming the site (the `precision` chapter, "The overflow guard"); the LLVM
+backend's kernels set the same word. `presk bench --calibrate` times the
+kernels in binary16 and `e8m15` beside `f64`, `f32` and `bf16` for a
+profile's other realizations, so that a mixed realization's sites in
+either are priced by their own roofline, and `presk plan` plans a kernel
+of either type at one lane, as a `bf16` one, under a profile whose layout
+model was calibrated in it (`presk bench --calibrate --space calib
+--realize f16`).
+
+What it buys on falicon (D219, `make fc-rows`, ten X925, medians of five
+processes): little. On the LLVM backend the course GPT's AdamW step with
+binary16 where the range rules offer it takes 0.927× all-`f32`'s time and
+its forward pass (B = 16, T = 256) in binary16 0.857×, both over the plan's
+0.85× (statements FC4 and FC5 fail); under the profile's plans the forward
+pass in binary16 takes 1.75× `f32`'s, one lane against four. On this
+backend, whose sequences convert one element at a time, the step takes
+8.4× and the forward pass 6.3×. `e8m15`'s three-byte codes are slower than
+`f32` on both backends (2.14× and 3.40× in the forward pass).
 
 `presk bench` now times each uniform realization, and the first thing it
 shows is that a narrower type is not automatically faster. On
@@ -182,7 +239,8 @@ sum — which is `Interleaved` and is still a different realization.
 Both executors emit it. Cranelift's vector types are 128 bits wide, so the
 lane count is the machine type's: four `f32` or two `f64`, and a request for
 anything else is refused rather than quietly rounded. `bf16` stays scalar,
-since a narrow lane would need a conversion per element. Lanes are **on by
+since a narrow lane would need a conversion per element, and so do
+binary16 and `e8m15`. Lanes are **on by
 default** on the native backend (`run`, `train`, `serve`), each kernel at its
 own type's width: they change no bit, so there is nothing to declare and
 nothing to measure but the time. `presk bench` times every uniform
@@ -335,8 +393,11 @@ every kernel in its formats (`exec::run_emulated`), a native one with its
 native bits, counts what the formats produced, and `presk run` prints the
 counts; under any other it runs as before. The native and LLVM backends,
 whose executors compute in the native types alone, refuse such a
-realization in `prepare`, before anything runs (`E7005`), and so does the C
-export (the `precision` chapter, "What a nest computes in"). Since step 4
+realization in `prepare`, before anything runs (`E7005`), but for one
+that stores values in binary16 and `e8m15`, which the native backend runs
+since 0.18.2 step 2 (D216) and the LLVM backend since step 3 (D217), and
+so does the C export, which runs it since step 3 (the `precision`
+chapter, "What a nest computes in"). Since step 4
 (D207) a kernel also carries the affine format a site's value is stored
 in, written after its formats (`store affine(i8/sat,scale=0.013830043)`),
 and the kernel interpreter reads a scaled operand's integers where a
@@ -430,7 +491,9 @@ it for `erf` only, and Rust's standard library, the system's C library
 differed there in the last bits, by up to 15 % of a measured gap under
 `bf16` sites (D156). Everything else, from the host program to the sampling
 keys, is the kernel backend's, so a native run is the kernel run with the
-launches compiled. Compilation happens in process; there is no object file,
+launches compiled. The normal draws of the initializers, host code that
+every executor shares, call the crate's `log` and `cos` too since D211, so
+that a seed draws the same parameters on every machine. Compilation happens in process; there is no object file,
 no bundle and no cross-compilation yet (spec question 36): an entry that
 must run elsewhere leaves as a C program (below).
 
@@ -550,7 +613,12 @@ lanes change no bit (statement H). The functions are the export's,
 bit-identical to the `libm` crate (D78). Three checks hold:
 - `cargo test -p presk-llvm`: the C export's test set in four realizations,
   with both sets of weights, on one worker and on four, and under
-  `examples/tests/plan`'s plans;
+  `examples/tests/plan`'s plans; and since 0.18.2 step 3 (D217) binary16
+  and `e8m15`, which the printer stores as their codes and computes in
+  `float` (the `export_c` chapter): the native backend's bytes, which are
+  the kernel interpreter's emulation's, on the test set and the native
+  backend's other programs of step 2 under the same eight realizations,
+  each format uniform and beside `f32`, `bf16` and `f64` (160 runs);
 - `out/x1`'s native runs, repeated on LLVM;
 - `make llvm-conformance`: the C export's programs, each checked against the
   LLVM backend's run (`presk export --llvm`), which with `make

@@ -561,8 +561,10 @@ pub fn returns_real(core: &presk_core::Program, f: FuncId) -> bool {
 fn measuring_backend<'p>(on: Measure, core: &'p presk_core::Program, prog: &'p ElabProgram, r: &Realization) -> presk_kernel::KernelBackend<'p> {
     match on {
         // A realization the native backend does not compute is emulated
-        // (plan 0.18.0 step 5, D208).
-        Measure::Native if !r.emulates() => presk_cranelift::native_backend(core, prog, r).unwrap_or_else(|_| presk_kernel::KernelBackend::new(core, prog, r)),
+        // (plan 0.18.0 step 5, D208); one storing values in binary16 and
+        // `e8m15` it computes since plan 0.18.2 step 2, and measures since
+        // step 4 (D218).
+        Measure::Native if r.check_executor("the native backend", true).is_ok() => presk_cranelift::native_backend(core, prog, r).unwrap_or_else(|_| presk_kernel::KernelBackend::new(core, prog, r)),
         Measure::Native | Measure::Kernel => presk_kernel::KernelBackend::new(core, prog, r),
     }
 }

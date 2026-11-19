@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift), C, PyTorch | `--target native,c,pytorch` |
 
-Compiler: presk 0.18.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.18.2. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -52,7 +52,7 @@ Compiler: presk 0.18.1. Each section ends with the commands that print what it s
 | Fusion | 39 launches without it, 27 with it: 12 saved | decision | §7 |
 | Layout plan | 10 nests, 78 points costed, 1 tiled, 0 split; predicted 0.281 µs a call over the nests it prices | decision, estimate | §8 |
 | Kernels | 9 distinct, 27 launches a call | fact | §9 |
-| C program | 9 files, 4456 lines with its runtime | fact | §10 |
+| C program | 9 files, 4893 lines with its runtime | fact | §10 |
 | Memory | 696 bytes a call: the inputs, 504 bytes, and the peak of live bytes, 192 | fact | §13 |
 
 A *fact* is a property of the program or of the compilation; a *decision* is what the compiler chose; a *bound* holds for the inputs its envelope covers and names them; an *estimate* ranks and does not guarantee; a *measurement* was taken in this run, against the exact reference unless it is a time.
@@ -444,7 +444,7 @@ presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2
 | `Block.apply/%8` | `add x, %7` | `f32` | 16 | 2.005e0 | 1.231e0 | 7.120e-8 | 4.700 % |
 | `Block.apply/%5` | `gelu %4` | `f32` | 16 | 1.915e0 | 1.537e0 | 6.707e-8 | 4.428 % |
 | `RMSNorm.apply/%4` | `mean axis model %3` | `f32` | 4 | 1.939e0 | 1.147e0 | 6.577e-8 | 4.342 % |
-| `loss/%7` | `mean %6` | `f64` | 1 | 2.104e0 | 1.000e0 | 7.622e-17 | 0.000 % |
+| `loss/%7` | `mean %6` | `f64` | 1 | 2.104e0 | 1.000e0 | 6.680e-17 | 0.000 % |
 | `RMSNorm.apply/%5` | `real eps` | `f64` | 1 | 1.000e-6 | 1.147e0 | 0.000e0 | 0.000 % |
 | `blocks.norm.γ` | a parameter, by its path | `bf16` | 12 | 1.000e0 | 7.908e-1 | 0.000e0 | 0.000 % |
 | `blocks.proj.b` | a parameter, by its path | `bf16` | 12 | 0.000e0 | 2.521e0 | 0.000e0 | 0.000 % |
@@ -464,9 +464,9 @@ presk solve: `loss` under budget 1.00e-3 relative (2.104e-3 absolute, |output| 2
 - `RMSNorm.apply/%4`: narrowed to `f32` (move 13): saves 6.619e-9 s, adds 6.577e-8 to the estimate, then 5.416e-7.
 - `loss/%7`: not offered: one element, no traffic to save (rule 1).
 - `RMSNorm.apply/%5`: not offered: one element, no traffic to save (rule 1).
-- `blocks.norm.γ`: narrowed to `f32` (move 1): saves 1.986e-8 s, adds 0.000e0 to the estimate, then 2.808e-15; narrowed to `bf16` (move 2): saves 9.928e-9 s, adds 0.000e0 to the estimate, then 2.808e-15.
-- `blocks.proj.b`: narrowed to `f32` (move 3): saves 1.986e-8 s, adds 0.000e0 to the estimate, then 2.808e-15; narrowed to `bf16` (move 4): saves 9.928e-9 s, adds 0.000e0 to the estimate, then 2.808e-15.
-- `final.γ`: narrowed to `f32` (move 5): saves 6.619e-9 s, adds 0.000e0 to the estimate, then 2.808e-15; narrowed to `bf16` (move 6): saves 3.309e-9 s, adds 0.000e0 to the estimate, then 2.808e-15.
+- `blocks.norm.γ`: narrowed to `f32` (move 1): saves 1.986e-8 s, adds 0.000e0 to the estimate, then 2.732e-15; narrowed to `bf16` (move 2): saves 9.928e-9 s, adds 0.000e0 to the estimate, then 2.732e-15.
+- `blocks.proj.b`: narrowed to `f32` (move 3): saves 1.986e-8 s, adds 0.000e0 to the estimate, then 2.732e-15; narrowed to `bf16` (move 4): saves 9.928e-9 s, adds 0.000e0 to the estimate, then 2.732e-15.
+- `final.γ`: narrowed to `f32` (move 5): saves 6.619e-9 s, adds 0.000e0 to the estimate, then 2.732e-15; narrowed to `bf16` (move 6): saves 3.309e-9 s, adds 0.000e0 to the estimate, then 2.732e-15.
 
 **The values rounded elsewhere, or carried.** A follower's type is the narrowest of the types it is rounded to where it is read; a carried value's is its own, never rounded there.
 
@@ -964,8 +964,8 @@ presk export: `loss` at B = 4 in f64+sequential+9sites+4params under the plan $D
 | `model.c` | 167 |
 | `model.h` | 35 |
 | `presk_libm.c` | 2680 |
-| `presk_rt.c` | 804 |
-| `presk_rt.h` | 351 |
+| `presk_rt.c` | 942 |
+| `presk_rt.h` | 650 |
 
 The first contraction, `k5`, as C:
 

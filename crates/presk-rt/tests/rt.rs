@@ -193,7 +193,15 @@ fn types_are_formats() {
         assert_eq!((r.dtype_at("f/%1"), r.dtype_at("f/%2")), (d, Dtype::F32));
         let e = r.check_native("the native backend").unwrap_err();
         assert!(e.code == "E7005" && e.message.starts_with(&format!("the realization stores `f/%1` in {name}: the native backend computes in f64, f32 and bf16")), "{}", e.message);
+        // binary16 and `e8m15` for an executor that holds their codes, the
+        // native backend since plan 0.18.2 step 2 (D216).
+        match r.check_executor("the native backend", true) {
+            Ok(()) => assert!(d.coded(), "{name}"),
+            Err(e) => assert!(!d.coded() && e.code == "E7005" && e.message.contains("the native backend computes in f64, f32, bf16, f16 and e8m15"), "{name}: {}", e.message),
+        }
     }
+    let r = Realization::uniform(Dtype::E8M15);
+    assert!(r.check_native("the C export").is_err() && r.check_executor("the native backend", true).is_ok() && r.emulates());
     assert_eq!(Dtype::of_name("f16").unwrap().arith(), Dtype::F32, "f32 holds f16: an f16 value computes in f32, as bf16 does");
     assert_eq!(Buf::of(Dtype::of_name(e4m3).unwrap(), &[1.0, 3.0, 17.0, 1e6, -0.0]).to_f64(), [1.0, 3.0, 16.0, 480.0, 0.0], "rounded once, saturated, underflowing to +0");
     assert_eq!(Realization::parse("f8").unwrap_err(), "unknown realization `f8`; expected f64, f32, bf16, another float format's name or @FILE");

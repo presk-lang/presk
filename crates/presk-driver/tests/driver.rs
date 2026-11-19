@@ -286,16 +286,45 @@ fn given_params_have_the_drawn_tree() {
 
 /// What a solve's moves decided: a proposal's order and choices, and every
 /// measured move whole. A proposal's `added` and `spent` are the estimate's
-/// sums, which a sweep in binary64 moves in their last bits.
+/// sums, which a sweep in binary64 moves in their last bits; so it may move
+/// the order of proposals whose ratios of saving to error agree to that
+/// rounding. Consecutive proposals whose ratios agree within 10⁻¹², the
+/// tolerance on the sensitivities below, are one run, compared as a set of
+/// choices and a set of ranks (D211: under the draws of the `libm` crate
+/// four moves of the small Llama tie so, their `added` equal in binary64
+/// and 2·10⁻¹⁶ apart in the exact sweep, and the two sweeps order them
+/// differently).
 fn decided(moves: &[presk_precision::solve::Move]) -> Vec<String> {
     use presk_precision::solve::Move;
-    moves
-        .iter()
-        .map(|m| match m {
-            Move::Tried { site, to, saved, taken, rank, .. } => format!("tried {site} {to:?} {saved} {taken} {rank}"),
-            other => format!("{other:?}"),
-        })
-        .collect()
+    let mut out = Vec::new();
+    let mut run: (Option<f64>, Vec<String>, Vec<usize>) = (None, Vec::new(), Vec::new());
+    let flush = |run: &mut (Option<f64>, Vec<String>, Vec<usize>), out: &mut Vec<String>| {
+        if run.0.take().is_some() {
+            run.1.sort();
+            run.2.sort();
+            out.append(&mut run.1);
+            out.push(format!("ranks {:?}", std::mem::take(&mut run.2)));
+        }
+    };
+    for m in moves {
+        match m {
+            Move::Tried { site, to, saved, added, taken, rank, .. } => {
+                let ratio = if *added > 0.0 { saved / added } else { f64::INFINITY };
+                if run.0.is_some_and(|r| r != ratio && !((r - ratio).abs() <= 1e-12 * r.abs())) {
+                    flush(&mut run, &mut out);
+                }
+                run.0.get_or_insert(ratio);
+                run.1.push(format!("tried {site} {to:?} {saved} {taken}"));
+                run.2.push(*rank);
+            }
+            other => {
+                flush(&mut run, &mut out);
+                out.push(format!("{other:?}"));
+            }
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 /// D185 (plan 0.17.1 §4): the sweep in binary64 and the measurements on the

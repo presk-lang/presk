@@ -21,7 +21,13 @@ fn stderr(o: &Output) -> String {
 }
 
 fn frozen_profile() -> PathBuf {
-    let p = std::env::var("RA4_FROZEN").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join("presk-data/ra4-model-0.8.0/profile.json"));
+    // On the measurement machine its profile; elsewhere the explain tests'
+    // copy, the same model without its calibration samples, as CI names it
+    // (D212).
+    let p = std::env::var("RA4_FROZEN").map(PathBuf::from).unwrap_or_else(|_| {
+        let measured = PathBuf::from(std::env::var("HOME").unwrap()).join("presk-data/ra4-model-0.8.0/profile.json");
+        if measured.exists() { measured } else { root().join("crates/presk-explain/tests/data/x925-frozen.json") }
+    });
     assert!(p.exists(), "{}: the frozen profile is absent (RA4_FROZEN names another)", p.display());
     p
 }

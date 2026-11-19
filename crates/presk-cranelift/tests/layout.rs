@@ -4,7 +4,8 @@
 //! its softmax, every point of the space the reference defines (the plan
 //! asked for 64 at random; the whole space takes seconds), each lowered to
 //! kernels of its own, gives the bits of the default layout, on the kernel
-//! interpreter and natively, in `f64`, `f32` and `bf16`. And a thread split
+//! interpreter and natively, in `f64`, `f32` and `bf16`, and since plan
+//! 0.18.2 step 2 (D216) in binary16 and `e8m15`. And a thread split
 //! at depth 0, 1 or 2 over 2 or 4 workers, stated on a sample of the points,
 //! gives them too, natively, wherever the kernel's loop at that depth is
 //! parallel — and is refused (`E7002`, condition 8) wherever it is not. The
@@ -82,7 +83,7 @@ fn every_point_of_a_contractions_layout_space_is_exact() {
                 _ => unreachable!(),
             })
             .collect();
-        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16, Dtype::F16, Dtype::E8M15] {
             let r = Realization::uniform(d);
             let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap().realize(d)).collect();
             let kind = presk_kernel::plan::nest_kind(op, &operands, ReductionOrder::Sequential, d, d.arith().into());
@@ -226,20 +227,30 @@ fn run_point(exec: &mut dyn KernelExec, next: &mut usize, l: &Launch, kernels: &
     let out = match kernels {
         [k] => {
             let mut out = output_buf(k);
-            exec.run(*next, k, &inputs, &mut out).unwrap();
+            ran(exec.run(*next, k, &inputs, &mut out));
             out
         }
         [pack, k] => {
             let mut panel = output_buf(pack);
-            exec.run(*next, pack, &inputs[1..2], &mut panel).unwrap();
+            ran(exec.run(*next, pack, &inputs[1..2], &mut panel));
             let mut out = output_buf(k);
-            exec.run(*next + 1, k, &[inputs[0], &panel], &mut out).unwrap();
+            ran(exec.run(*next + 1, k, &[inputs[0], &panel], &mut out));
             out
         }
         _ => panic!("a point lowers to one kernel or two"),
     };
     *next += kernels.len();
     out.to_f64().into_iter().map(|x| x.to_bits()).collect()
+}
+
+/// A run's result, the overflow guard's error accepted (plan 0.18.2 step
+/// 4, D218): binary16's points are run on operands whose products pass its
+/// range, and the guard's flag does not stop the output's being written,
+/// whose bits are compared.
+fn ran(r: presk_rt::Result<()>) {
+    if let Err(e) = r {
+        assert_eq!(e.code, "E7007", "{}", e.message);
+    }
 }
 
 struct Interp;
@@ -263,7 +274,7 @@ fn every_point_of_a_derivative_nest_is_exact() {
     let mut shapes = std::collections::BTreeSet::new();
     for (file, entry, consts, dims) in GRADIENTS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16, Dtype::F16, Dtype::E8M15] {
             let launches = derivative_launches(&prog, &core, entry, dims, d);
             assert!(launches.len() >= 4, "{entry} ({file}, {d}): {} derivative launches", launches.len());
             for (n, mut l) in launches.into_iter().enumerate() {
@@ -325,7 +336,7 @@ fn a_gradient_with_its_derivatives_planned_is_exact() {
     let mut rounds = 0usize;
     for (file, entry, consts, dims) in GRADIENTS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16, Dtype::F16, Dtype::E8M15] {
             let r = Realization::uniform(d);
             let launches = derivative_launches(&prog, &core, entry, dims, d);
             let (fid, fdims, args) = entry_args(&prog, &core, entry, dims, d);
@@ -366,7 +377,7 @@ fn a_gradient_with_its_derivatives_planned_is_exact() {
             }
         }
     }
-    assert_eq!(rounds, 36);
+    assert_eq!(rounds, 60);
 }
 
 // ----- the epilogue (plan 0.10.0 step 7) ----------------------------------------
@@ -374,7 +385,8 @@ fn a_gradient_with_its_derivatives_planned_is_exact() {
 // A product whose value one `add` alone reads can add the `add`'s operand in
 // its own kernel, once each output element's sum is done. At every point of
 // its layout space, the kernel with its epilogue gives the bits of the
-// product's kernel followed by the `add`'s: in `f64`, `f32` and `bf16`, on
+// product's kernel followed by the `add`'s: in `f64`, `f32` and `bf16`, and
+// in binary16 and `e8m15` (plan 0.18.2 step 2, D216), on
 // the kernel interpreter and natively, under thread splits, on the products
 // of `examples/tests/plan/epilogue.psk` and on the derivative nests of the gradients
 // given an operand to add; and whole programs under plans that state it give
@@ -388,16 +400,16 @@ fn run_with(exec: &mut dyn KernelExec, next: &mut usize, l: &Launch, kernels: &[
     let out = match kernels {
         [k] => {
             let mut out = output_buf(k);
-            exec.run(*next, k, &inputs[..k.inputs.len()], &mut out).unwrap();
+            ran(exec.run(*next, k, &inputs[..k.inputs.len()], &mut out));
             out
         }
         [pack, k] => {
             let mut panel = output_buf(pack);
-            exec.run(*next, pack, &inputs[1..2], &mut panel).unwrap();
+            ran(exec.run(*next, pack, &inputs[1..2], &mut panel));
             let mut out = output_buf(k);
             let mut ins = vec![inputs[0], &panel];
             ins.extend(inputs[2..k.inputs.len()].iter().copied());
-            exec.run(*next + 1, k, &ins, &mut out).unwrap();
+            ran(exec.run(*next + 1, k, &ins, &mut out));
             out
         }
         _ => panic!("a point lowers to one kernel or two"),
@@ -419,7 +431,7 @@ fn product_then_add(exec: &mut dyn KernelExec, next: &mut usize, l: &Launch) -> 
     let (ops, ins) = if at.epilogue.first { (vec![p, at.operand.clone()], vec![&product, &at.input]) } else { (vec![at.operand.clone(), p], vec![&at.input, &product]) };
     let add = presk_kernel::lower::lower(&PrimOp::Add, &ops, l.dtype).unwrap().unwrap().kernel;
     let mut out = output_buf(&add);
-    exec.run(*next, &add, &ins, &mut out).unwrap();
+    ran(exec.run(*next, &add, &ins, &mut out));
     *next += 1;
     bits(&out)
 }
@@ -485,7 +497,7 @@ fn every_point_with_its_epilogue_is_exact() {
     // The three types. A realization accumulating `f32` storage in `f64`,
     // which the kernels do not honour, is refused since 0.10.0 step 8
     // (`a_declared_accumulation_type_the_kernels_do_not_honour_is_refused`).
-    let realizations = [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::BF16)];
+    let realizations = [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::BF16), Realization::uniform(Dtype::F16), Realization::uniform(Dtype::E8M15)];
     for entry in ["linear", "bias_first", "scores", "values", "rows"] {
         for r in &realizations {
             let d = r.default;
@@ -526,7 +538,7 @@ fn every_point_of_a_derivative_nest_with_an_epilogue_is_exact() {
     let mut several = false;
     for (file, entry, consts, dims) in GRADIENTS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16, Dtype::F16, Dtype::E8M15] {
             for (n, mut l) in derivative_launches(&prog, &core, entry, dims, d).into_iter().enumerate() {
                 for (i, b) in l.inputs.iter_mut().enumerate() {
                     *b = Buf::of(d, &drawn(b.to_f64().len(), (n * 3 + i) as u64 + 1));
@@ -613,7 +625,7 @@ fn a_program_with_its_epilogues_planned_is_exact() {
     let mut rounds = 0usize;
     for (file, entry, consts, dims) in PROGRAMS {
         let (prog, core) = prepare_grad(file, consts);
-        for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
+        for d in [Dtype::F64, Dtype::F32, Dtype::BF16, Dtype::F16, Dtype::E8M15] {
             let r = Realization::uniform(d);
             let launches = captured(&prog, &core, entry, dims, &r);
             assert!(launches.iter().any(|l| l.epilogue.is_some()), "{entry} ({file}, {d}): no product takes an epilogue");
@@ -629,7 +641,7 @@ fn a_program_with_its_epilogues_planned_is_exact() {
             }
         }
     }
-    assert_eq!(rounds, 72);
+    assert_eq!(rounds, 120);
 }
 
 /// Mixed realizations of MiniGPT's gradient. Both sites of `Linear.apply`'s

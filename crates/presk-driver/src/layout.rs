@@ -80,6 +80,11 @@ impl KernelExec for NoRun {
     fn emulates(&self) -> bool {
         true
     }
+
+    /// It computes nothing, so no narrowing of its host is checked (D218).
+    fn computes(&self) -> bool {
+        false
+    }
 }
 
 /// An input of [`Capture::Shapes`], built from its shape: a tensor as zeros

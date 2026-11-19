@@ -49,6 +49,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use presk_kernel::Kernel;
+use presk_kernel::ir::Dtype;
 use presk_kernel::record::{Made, Op, Recording, Scalar, Store, Sym, View, leaves};
 
 use crate::structure::{self, EntryIo, Structured};
@@ -89,7 +90,8 @@ pub struct Meta {
     pub dims: Vec<(String, u64)>,
     /// `--const` as given.
     pub consts: Vec<String>,
-    /// The realization, `f64`, `f32` or `bf16`.
+    /// The realization: its default type, `f64`, `f32`, `bf16`, `f16` or
+    /// `e8m15`, or the file it was given as.
     pub realize: String,
     pub seed: u64,
     /// The checkpoint given with `--weights`, when one was.
@@ -243,6 +245,29 @@ fn aligned(bytes: usize) -> usize {
     bytes.div_ceil(ALIGN) * ALIGN
 }
 
+/// A buffer of binary16's or `e8m15`'s codes (plan 0.18.2 step 3, D217):
+/// its element's C type, `uint16_t` or `presk_e8m15` (three bytes), and the
+/// runtime's name of it.
+fn codes(d: Dtype) -> (&'static str, &'static str) {
+    match d {
+        Dtype::F16 => ("uint16_t", "PRESK_F16"),
+        Dtype::E8M15 => ("presk_e8m15", "PRESK_E8M15"),
+        d => unreachable!("{d}: a buffer holds only binary16 and e8m15 as codes"),
+    }
+}
+
+/// A host scalar read from element `e` of a kernel's output of `store`, as
+/// a `double`, exactly.
+pub(crate) fn scalar_read(store: Store, e: String) -> String {
+    match store {
+        Store::F64 => e,
+        Store::F32 | Store::I64 => format!("(double){e}"),
+        Store::Bf16 => format!("(double)presk_bf16_to_f32({e})"),
+        Store::Codes(f) => format!("(double){}({e})", crate::conversions(Dtype::new(f)).expect("a format held as codes computes in float").0),
+        Store::Quant { .. } => unreachable!("a host scalar is read from a kernel's output, never from integer weights"),
+    }
+}
+
 /// The C type of an element; for integer weights, of the leaf, the struct
 /// of its integers and scales (step 7).
 pub(crate) fn ctype(s: Store) -> &'static str {
@@ -250,6 +275,7 @@ pub(crate) fn ctype(s: Store) -> &'static str {
         Store::F64 => "double",
         Store::F32 => "float",
         Store::Bf16 => "uint16_t",
+        Store::Codes(f) => codes(Dtype::new(f)).0,
         Store::I64 => "int64_t",
         Store::Quant { .. } => crate::structure::quant_type(s),
     }
@@ -263,6 +289,7 @@ pub(crate) fn cdtype(s: Store) -> &'static str {
         Store::F64 | Store::Quant { .. } => "PRESK_F64",
         Store::F32 => "PRESK_F32",
         Store::Bf16 => "PRESK_BF16",
+        Store::Codes(f) => codes(Dtype::new(f)).1,
         Store::I64 => "PRESK_I64",
     }
 }
@@ -449,10 +476,14 @@ struct KernelTable {
     name_of: HashMap<usize, usize>,
     hi: HashMap<usize, usize>,
     workers: HashMap<usize, usize>,
+    /// The overflow guard's message of each kernel that stores binary16 or
+    /// `e8m15` (plan 0.18.2 step 4, D218): a program with one tests its
+    /// flags, and its entries return a status.
+    guard: HashMap<usize, String>,
 }
 
 fn kernel_table(kernels: &[Kernel], recs: &[&Recording], threads: usize) -> Result<KernelTable> {
-    let mut t = KernelTable { text: Vec::new(), name_of: HashMap::new(), hi: HashMap::new(), workers: HashMap::new() };
+    let mut t = KernelTable { text: Vec::new(), name_of: HashMap::new(), hi: HashMap::new(), workers: HashMap::new(), guard: HashMap::new() };
     let mut by_text: HashMap<String, usize> = HashMap::new();
     for op in recs.iter().flat_map(|r| &r.ops) {
         if let Op::Launch { kernel, .. } = op {
@@ -473,6 +504,9 @@ fn kernel_table(kernels: &[Kernel], recs: &[&Recording], threads: usize) -> Resu
             t.name_of.insert(*kernel, n);
             t.hi.insert(*kernel, ranged(k).map(|(_, n)| n).unwrap_or(0));
             t.workers.insert(*kernel, workers(k, threads));
+            if k.guarded() {
+                t.guard.insert(*kernel, presk_kernel::host::overflow(k).message);
+            }
         }
     }
     Ok(t)
@@ -510,7 +544,7 @@ pub fn structure(kernels: &[Kernel], rec: &Recording, threads: usize) -> Result<
 /// shared where their recordings' forms are equal, and a root per entry.
 pub fn structure_all(kernels: &[Kernel], recs: &[&Recording], threads: usize) -> Result<Structured> {
     let t = kernel_table(kernels, recs, threads)?;
-    structure::build(recs, &t.name_of, &t.hi, &t.workers, t.text.len())
+    structure::build(recs, &t.name_of, &t.hi, &t.workers, &t.guard, t.text.len())
 }
 
 /// The C program of `rec`, an entry recorded on the kernel backend whose
@@ -760,15 +794,46 @@ fn out_decl(rec: &Recording, outs: &[(String, View)]) -> Vec<String> {
     outs.iter().map(|(f, v)| format!("    const {} *{f}; /* {} */", ctype(rec.bufs[v.buf].store), leaf_type(v))).collect()
 }
 
+/// Whether a recording narrows a value into binary16 or `e8m15` on the
+/// host while the entry runs (plan 0.18.2 step 4, D218): a constant filled,
+/// a scalar made a buffer, an operand converted at a nest's edge, into a
+/// buffer of codes. The entry's arguments are converted by its caller.
+pub fn host_narrows(rec: &Recording) -> bool {
+    let coded = |b: usize| matches!(rec.bufs[b].store, Store::Codes(_));
+    rec.ops.iter().any(|o| match o {
+        Op::Fill { buf, .. } | Op::Scalar { buf, .. } => coded(*buf),
+        Op::Copy { dst, edge: true, .. } => coded(*dst),
+        _ => false,
+    })
+}
+
+/// The statement of a host conversion `call` (`presk_fill(…)`,
+/// `presk_convert(…)`) at indentation `ind`: in a `guarded` program, into a
+/// buffer of binary16 or `e8m15` (`to`), its flag tested and the overflow
+/// guard's message of `site` passed to `presk_overflow` (D218), as the
+/// native backend's host reports it (`presk_kernel::host::host_overflow`).
+pub fn guarded_call(ind: &str, call: &str, guarded: bool, to: Store, site: &str, edge: bool) -> String {
+    match to {
+        Store::Codes(f) if guarded => {
+            let msg = presk_kernel::host::host_overflow(presk_kernel::ir::Dtype::new(f), site, edge).message;
+            format!("{ind}if ({call})\n{ind}    presk_overflow(arena, {});\n", c_string(&msg))
+        }
+        _ => format!("{ind}{call};\n"),
+    }
+}
+
 /// The declaration of an entry's C function: the arena, the entry's `_in`
-/// and `_out` structs, `types` their prefix.
-fn signature(func: &str, types: &str) -> String {
-    format!("void {func}(presk_arena *arena, const {types}_in *in, {types}_out *out)")
+/// and `_out` structs, `types` their prefix. A `guarded` program's entry
+/// returns 1 when the overflow guard stopped its result, else 0 (plan
+/// 0.18.2 step 4, D218).
+fn signature(func: &str, types: &str, guarded: bool) -> String {
+    format!("{} {func}(presk_arena *arena, const {types}_in *in, {types}_out *out)", if guarded { "int" } else { "void" })
 }
 
 /// Step 3's straight-line function of an entry: every operation of `rec`
 /// in order, every buffer bump-allocated.
-fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &KernelTable, placed: Option<&Placement>) -> String {
+#[allow(clippy::too_many_arguments)]
+fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &KernelTable, placed: Option<&Placement>, guarded: bool) -> String {
     let bufnames: Vec<String> = (0..rec.bufs.len()).map(|b| format!("b{b}")).collect();
     // What is read: an input nothing reads is not declared, and a scalar
     // nothing reads is marked so, for -Wall.
@@ -863,18 +928,21 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
                 }
                 a.push(bufnames[*out].clone());
                 a.extend(scales);
-                body.push_str(&launch("    ", &format!("k{}", t.name_of[kernel]), &a, t.hi[kernel], t.workers[kernel]));
+                let guard = t.guard.get(kernel).map(|m| presk_kernel::host::overflow_message(m, &last_site));
+                body.push_str(&launch("    ", &format!("k{}", t.name_of[kernel]), &a, t.hi[kernel], t.workers[kernel], guard.as_deref()));
             }
             Op::Fill { buf, value } => {
                 alloc(*buf, &mut made, &mut body);
                 let rb = &rec.bufs[*buf];
-                let _ = writeln!(body, "    presk_fill({}, {}, {}, {});", bufnames[*buf], cdtype(rb.store), c_real(*value), rb.len);
+                let call = format!("presk_fill({}, {}, {}, {})", bufnames[*buf], cdtype(rb.store), c_real(*value), rb.len);
+                body.push_str(&guarded_call("    ", &call, guarded, rb.store, &last_site, false));
             }
             Op::Scalar { buf, x } => {
                 alloc(*buf, &mut made, &mut body);
-                let _ = writeln!(body, "    presk_fill({}, {}, {}, 1);", bufnames[*buf], cdtype(rec.bufs[*buf].store), c_scalar(*x));
+                let call = format!("presk_fill({}, {}, {}, 1)", bufnames[*buf], cdtype(rec.bufs[*buf].store), c_scalar(*x));
+                body.push_str(&guarded_call("    ", &call, guarded, rec.bufs[*buf].store, &last_site, false));
             }
-            Op::Copy { dst, at, src, n } => {
+            Op::Copy { dst, at, src, n, edge } => {
                 alloc(*dst, &mut made, &mut body);
                 let d = if *at == 0 { bufnames[*dst].clone() } else { format!("{} + {at}", bufnames[*dst]) };
                 match rec.bufs[src.buf].store {
@@ -883,7 +951,8 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
                         let _ = writeln!(body, "    presk_dequantize({d}, {}, {b}.q, {b}.s, {bits}, {k}, {inner}, {}, {n});", cdtype(rec.bufs[*dst].store), src.off);
                     }
                     _ => {
-                        let _ = writeln!(body, "    presk_convert({d}, {}, {}, {}, {n});", cdtype(rec.bufs[*dst].store), view(src, &bufnames), cdtype(rec.bufs[src.buf].store));
+                        let call = format!("presk_convert({d}, {}, {}, {}, {n})", cdtype(rec.bufs[*dst].store), view(src, &bufnames), cdtype(rec.bufs[src.buf].store));
+                        body.push_str(&guarded_call("    ", &call, guarded && *edge, rec.bufs[*dst].store, &last_site, true));
                     }
                 }
             }
@@ -894,13 +963,7 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
                 }
             }
             Op::Read { out, src } => {
-                let e = format!("{}[{}]", bufnames[src.buf], src.off);
-                let e = match rec.bufs[src.buf].store {
-                    Store::F64 => e,
-                    Store::F32 | Store::I64 => format!("(double){e}"),
-                    Store::Bf16 => format!("(double)presk_bf16_to_f32({e})"),
-                    Store::Quant { .. } => unreachable!("a host scalar is read from a kernel's output, never from integer weights"),
-                };
+                let e = scalar_read(rec.bufs[src.buf].store, format!("{}[{}]", bufnames[src.buf], src.off));
                 let _ = writeln!(body, "    double s{out} = {e};");
                 if !read_vars[*out] {
                     let _ = writeln!(body, "    (void)s{out};");
@@ -917,7 +980,8 @@ fn flat_fn(sig: &str, rec: &Recording, f: &Fields, outs: &[(String, View)], t: &
         let _ = writeln!(body, "    out->{fld} = {};", view(v, &bufnames));
     }
     let unread = !f.ins.iter().any(|i| read_bufs[i.buf]) && f.dbls.is_empty() && !samples(rec);
-    format!("{sig}\n{{\n{}{body}}}\n", if unread { "    (void)in;\n" } else { "" })
+    let (reset, status) = if guarded { ("    arena->overflow = NULL;\n", "    return arena->overflow != NULL;\n") } else { ("", "") };
+    format!("{sig}\n{{\n{reset}{}{body}{status}}}\n", if unread { "    (void)in;\n" } else { "" })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -954,7 +1018,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     let mut kernel_lines = Vec::with_capacity(t.text.len());
     for (n, text) in t.text.iter().enumerate() {
         let first = kernels_c.matches('\n').count() + 1;
-        let text = text.replace("static void KERNEL(", &format!("PRESK_KERNEL void k{n}("));
+        let text = text.replace("static void KERNEL(", &format!("PRESK_KERNEL void k{n}(")).replace("static uint32_t KERNEL(", &format!("PRESK_KERNEL uint32_t k{n}("));
         kernel_lines.push((first, first + text.lines().count().max(1) - 1));
         kernels_c.push_str(&text);
         kernels_c.push('\n');
@@ -1029,13 +1093,17 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     } else {
         let _ = writeln!(h, "/* One call of `{}`: every launch of the native backend's host, in order,\n * each buffer bump-allocated from `arena`. */", meta.entry);
     }
-    let _ = writeln!(h, "{};", signature(&func, &func));
+    let guarded = !t.guard.is_empty() || recs.iter().any(|r| host_narrows(r));
+    if guarded {
+        let _ = writeln!(h, "/* It stores binary16 or e8m15, and returns 0, or 1 when a store rounded a\n * finite value to an infinity: the overflow guard (plan 0.18.2 step 4,\n * presk D218), whose message, the first such store's, it prints on stderr\n * and leaves in arena->overflow. Its outputs are then no result. */");
+    }
+    let _ = writeln!(h, "{};", signature(&func, &func, guarded));
     for k in 1..entries.len() {
         let what = match serve {
             Some(s) if entries[k].0 == s.greedy => format!("`{}` with every `sample` an `argmax`, the function `presk serve`\n * calls at temperature 0 (with temperature 1)", entries[0].0),
             _ => "another entry".to_string(),
         };
-        let _ = writeln!(h, "\n/* `{}`: {what}. The same arguments and result. */\n{};", entries[k].0, signature(&funcs[k], &func));
+        let _ = writeln!(h, "\n/* `{}`: {what}. The same arguments and result. */\n{};", entries[k].0, signature(&funcs[k], &func, guarded));
     }
     let _ = writeln!(h, "\n#endif");
 
@@ -1052,7 +1120,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
                 if k > 0 {
                     model_c.push('\n');
                 }
-                model_c.push_str(&flat_fn(&signature(&funcs[k], &func), r, &fields[k], &outs[k], &t, placed));
+                model_c.push_str(&flat_fn(&signature(&funcs[k], &func, guarded), r, &fields[k], &outs[k], &t, placed, guarded));
             }
         }
         Some(s) => {
@@ -1151,7 +1219,11 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
     }
     let _ = writeln!(m, "    double *ms = malloc((size_t)repeat * sizeof *ms);\n    if (!ms) {{\n        fprintf(stderr, \"-r %ld: not that much memory\\n\", repeat);\n        return 1;\n    }}");
     let _ = writeln!(m, "    {func}_out out;\n    size_t mark = presk_mark(&arena);\n    for (long r = 0; r < repeat; r++) {{\n        presk_release(&arena, mark);");
-    let _ = writeln!(m, "        double t0 = now_ms();\n        {func}(&arena, &in, &out);");
+    if guarded {
+        let _ = writeln!(m, "        double t0 = now_ms();\n        if ({func}(&arena, &in, &out))\n            return 1;");
+    } else {
+        let _ = writeln!(m, "        double t0 = now_ms();\n        {func}(&arena, &in, &out);");
+    }
     let _ = writeln!(m, "        ms[r] = now_ms() - t0;\n    }}");
     let _ = writeln!(m, "    if (timed) {{\n        qsort(ms, (size_t)repeat, sizeof *ms, ascending);\n        fprintf(stderr, \"{func}: %ld call%s, median %.3f ms, best %.3f ms\\n\", repeat, repeat == 1 ? \"\" : \"s\", ms[repeat / 2], ms[0]);\n    }}\n    free(ms);");
     let _ = writeln!(m, "    const void *outputs[] = {{{}}};", outs_named.iter().map(|(f, _)| format!("out.{f}")).collect::<Vec<_>>().join(", "));
@@ -1164,7 +1236,7 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         Some(s) => {
             let mut g = String::new();
             tables(&mut g, false);
-            Some(generate_c(meta, s, &funcs, &func, &upper, ins, dbls, keys, &weights, rec, &g)?)
+            Some(generate_c(meta, s, &funcs, &func, &upper, ins, dbls, keys, &weights, rec, &g, guarded)?)
         }
         None => None,
     };
@@ -1220,6 +1292,8 @@ fn export_with(meta: &Meta, kernels: &[Kernel], entries: &[(&str, &Recording)], 
         samples: sampling[0],
         others: others_doc,
         serve,
+        codes: recs.iter().any(|r| r.bufs.iter().any(|b| matches!(b.store, Store::Codes(_)))),
+        guarded,
     };
     let readme = readme(meta, &doc);
 
@@ -1318,7 +1392,8 @@ fn key_c(k: &KeyIn, a: &presk_kernel::record::KeyArg, nargs: usize) -> String {
 /// `generate.c` (step 6): `presk serve`'s loop over the exported entry and
 /// its greedy copy, its output `presk serve`'s, `--json` included.
 #[allow(clippy::too_many_arguments)]
-fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str, ins: &[In], dbls: &[Dbl], keys: &[KeyIn], weights: &[&In], rec: &Recording, tables: &str) -> Result<String> {
+#[allow(clippy::too_many_arguments)]
+fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str, ins: &[In], dbls: &[Dbl], keys: &[KeyIn], weights: &[&In], rec: &Recording, tables: &str, guarded: bool) -> Result<String> {
     let Some(ctx) = ins.iter().find(|i| i.arg == s.ctx && !i.weights) else { return Err("the context is not an input of the entry".into()) };
     if rec.bufs[ctx.buf].len as u64 != s.window || ctx.bound != s.vocab {
         return Err(format!("the context `{}` is not {} tokens below {}", ctx.path, s.window, s.vocab));
@@ -1409,11 +1484,12 @@ fn generate_c(meta: &Meta, s: &Serve, funcs: &[String], types: &str, upper: &str
     if let Some(d) = temp {
         let _ = writeln!(g, "            in.{} = 1.0;", d.field);
     }
-    let _ = writeln!(g, "            {greedy}(&arena, &in, &out);\n        }} else {{");
+    let call = |f: &str| if guarded { format!("if ({f}(&arena, &in, &out))\n                return 1;") } else { format!("{f}(&arena, &in, &out);") };
+    let _ = writeln!(g, "            {}\n        }} else {{", call(greedy));
     if let Some(d) = temp {
         let _ = writeln!(g, "            in.{} = temperature;", d.field);
     }
-    let _ = writeln!(g, "            {sampled}(&arena, &in, &out);\n        }}\n        toks[len++] = (uint64_t)out.{}[0];\n    }}", outs_first(rec)?);
+    let _ = writeln!(g, "            {}\n        }}\n        toks[len++] = (uint64_t)out.{}[0];\n    }}", call(sampled), outs_first(rec)?);
     let _ = writeln!(
         g,
         "    if (json) {{\n        printf(\"{{\\n\");\n        json_list(\"generated\", toks + prompt_len, len - prompt_len, 0);\n        printf(\"  \\\"greedy\\\": %s,\\n\", greedy ? \"true\" : \"false\");\n        printf(\"  \\\"model\\\": %s,\\n\", {model});\n        json_list(\"prompt\", toks, prompt_len, 0);\n        printf(\"  \\\"vocab\\\": %d,\\n  \\\"weights\\\": \", VOCAB);\n        json_string(weights);\n        printf(\",\\n  \\\"window\\\": {window_json}\\n}}\\n\"{window_arg});\n    }} else {{\n        fprintf(stderr, \"generate: {m} from %s, prompt of %zu tokens, %zu generated, %s, {context_word}\\n\", weights, prompt_len, len - prompt_len, greedy ? \"greedy\" : \"sampled\"{window_arg});\n        for (size_t i = prompt_len; i < len; i++)\n            printf(\"%s%llu\", i > prompt_len ? \" \" : \"\", (unsigned long long)toks[i]);\n        printf(\"\\n\");\n    }}\n    free(toks);\n    presk_arena_free(&arena);\n    return 0;\n}}",
@@ -1488,10 +1564,15 @@ struct Doc<'a> {
     /// The other entries: `(Presk name, C function, launches)`.
     others: Vec<(String, String, usize)>,
     serve: Option<&'a Serve>,
+    /// Some buffer holds binary16's or `e8m15`'s codes (plan 0.18.2 step 3).
+    codes: bool,
+    /// Some kernel stores binary16 or `e8m15`, whose launches the overflow
+    /// guard checks (plan 0.18.2 step 4, D218).
+    guarded: bool,
 }
 
 fn readme(meta: &Meta, d: &Doc) -> String {
-    let Doc { func, ins, dbls, fixed, outs, counts: (arena, launches, dead, kernels), split: (split, max_workers), shape, usage, run_args, weights, inputs, outputs, samples, others, serve } = d;
+    let Doc { func, ins, dbls, fixed, outs, counts: (arena, launches, dead, kernels), split: (split, max_workers), shape, usage, run_args, weights, inputs, outputs, samples, others, serve, codes, guarded } = d;
     let (arena, launches, dead, kernels, split, max_workers) = (*arena, *launches, *dead, *kernels, *split, *max_workers);
     let mut r = String::new();
     let _ = writeln!(r, "# `{}` as a C program\n", meta.entry);
@@ -1511,7 +1592,10 @@ fn readme(meta: &Meta, d: &Doc) -> String {
         Some(p) => format!("each nest in the layout the plan `{p}` states, the default layout elsewhere"),
         None => "the default layout of every nest".to_string(),
     };
-    let _ = writeln!(r, "- **Realization:** `{}`, {layout}. Every buffer is stored in that type, indices as `int64_t`, `bf16` as `uint16_t` computed in `float`.", meta.realize);
+    // binary16 and `e8m15` named only where a buffer holds them, so that the
+    // README of a program in the other types is 0.18.1's.
+    let narrow = if *codes { "`bf16` and binary16 as `uint16_t` and `e8m15` as `presk_e8m15` (a code of three bytes), each computed in `float`" } else { "`bf16` as `uint16_t` computed in `float`" };
+    let _ = writeln!(r, "- **Realization:** `{}`, {layout}. Every buffer is stored in that type, indices as `int64_t`, {narrow}.", meta.realize);
     let _ = writeln!(r, "- **Seed:** {} (the inputs `presk run --seed {}` synthesizes, in `conformance/`{}).", meta.seed, meta.seed, if *samples { ", and the keys `sample` draws from" } else { "" });
     if !fixed.is_empty() {
         let _ = writeln!(r, "- **Fixed at export**, as `presk run` synthesizes them: {}. A `.psk.d` holds no scalar, so they are constants of the program, like the dimensions.", fixed.iter().map(|(p, v)| format!("`{p}` = {v}")).collect::<Vec<_>>().join("; "));
@@ -1553,6 +1637,9 @@ fn readme(meta: &Meta, d: &Doc) -> String {
     let _ = writeln!(r, "**The flags that must not change** (`STRICT` in the `Makefile`): `-std=c11 -ffp-contract=off`. The kernels round every product before they add it, as the native backend does; a compiler allowed to contract `a + b*c` into one fused multiply-add changes the bits, and GCC does by default in its GNU modes. Never build with `-ffast-math` or any of its parts. On x86, the program needs SSE arithmetic (any x86-64), not the x87.\n");
     let _ = writeln!(r, "**The kernels are inlined** into the host's functions, always (`PRESK_KERNEL` in `kernels.c`), and on GCC `model.c` is compiled without the scheduling that runs before register allocation (the `#pragma GCC optimize` at its head). A product's inner loop holds about as many values as the machine has vector registers; kept out of line, or scheduled so, it can put one of its sums on the stack, and the product then takes about 30 % longer (presk D97). Neither changes a bit.\n");
     let _ = writeln!(r, "**Timing:** `./model -r R {}` runs the entry `R` times, the arena released between calls, prints the median and the best wall time on standard error, and writes the last call's outputs.\n", run_args.iter().map(|s| s.as_str()).chain(std::iter::once("OUT.psk.d")).collect::<Vec<_>>().join(" "));
+    if *guarded {
+        let _ = writeln!(r, "**The overflow guard** (presk D218): a kernel that stores binary16 or `e8m15` returns a flag, set when one of its stores rounded a finite value to an infinity, as an input off the envelope the realization was certified on may make it. The host's own narrowings into those formats are tested too: a constant filled, a scalar made a buffer, an operand converted at a nest's edge (`presk_fill` and `presk_convert` return the same flag). The entry then prints the guard's message, which names the first such store's site, on standard error, as `presk run` does (`E7007`), and returns 1; `./model` exits with status 1 and writes no outputs. A kernel store's test is one subtraction and one comparison; `-DPRESK_NO_GUARD` in `CFLAGS` builds the kernels without it, which changes no bit where nothing overflows.\n");
+    }
     if *samples {
         let _ = writeln!(r, "## Randomness\n");
         let _ = writeln!(r, "`sample(key, logits)` draws a token per row of its logits from its key, which is an argument of the entry: a `presk_key` of `{func}_in` (`presk_rt.h`), 32 bytes, set by the caller. The row of rank `p` draws the uniform `p` of the key: the 64-bit word `p` of its keystream, ChaCha20 as `rand_chacha`'s `ChaCha20Rng` seeded with the key, its top 53 bits over 2^53 (presk D99). Given the key the native backend is given, the program draws its tokens; a function of its arguments, it computes the same outputs at every call.\n");
@@ -1578,7 +1665,8 @@ fn readme(meta: &Meta, d: &Doc) -> String {
     }
     let _ = writeln!(r, "## Inputs and outputs\n");
     if let Some(w) = weights {
-        let _ = writeln!(r, "The weights, `WEIGHTS.psk.d`, are a checkpoint of type `{}`, as `presk train` writes one: {} leaves, reals stored as `f64` and rounded to `{}` when read, as the native backend rounds them (`bf16` through `f32`).\n", w.ty, w.leaves.len(), meta.realize);
+        let how = if *codes { "`bf16` through `f32`, binary16 and `e8m15` once" } else { "`bf16` through `f32`" };
+        let _ = writeln!(r, "The weights, `WEIGHTS.psk.d`, are a checkpoint of type `{}`, as `presk train` writes one: {} leaves, reals stored as `f64` and rounded to `{}` when read, as the native backend rounds them ({how}).\n", w.ty, w.leaves.len(), meta.realize);
     }
     let quantized: Vec<&(String, String, bool, Option<String>)> = ins.iter().filter(|i| i.3.is_some()).collect();
     if !quantized.is_empty() {

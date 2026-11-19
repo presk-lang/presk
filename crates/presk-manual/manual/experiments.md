@@ -2198,6 +2198,74 @@ The measurements ran on the kernel interpreter, every realization's in a
 few minutes on sixteen jobs; the native backends compute these formats
 in 0.18.2.
 
+## 35. MT6 measured natively (D218)
+
+Plan 0.18.2's FC3, on step 4's binary: `make fc3` runs
+`experiments/fc3.sh`, which runs §34's MT6 again with its solve measured
+on the native backend (`MEASURE=native`) and its rows and decisions on the
+461 windows run there too (`BACKEND=native`), compares each file with
+D209's, then times the solve under each executor and the measurement
+alone, three processes each, into `out/fc3-0.18.2/report.md`.
+- **Byte for byte** (holds): the realization, its measured gap
+  (4.059·10⁻⁵), the 15 chunks of rows and the decisions, 18 files of 18,
+  are D209's; each timed solve wrote the same realization too.
+- **The time** (reported), medians of three processes on falicon:
+
+| | the kernel interpreter | the native backend |
+|---|---|---|
+| the solve | 117.9 s | 110.7 s |
+| its measurement alone (the realization on the envelope's four windows) | 7.18 s | 0.11 s |
+
+The measurement natively is 65 times faster, but this solve measures once,
+its proposal inside the budget, and its time is the exact reference's and
+the reverse sweep's, which neither executor runs: 6 % of it moves. A solve
+that widens, or that measures held-out samples, gains more; the whole MT6,
+its 461 windows run natively on sixteen jobs, took 2 minutes.
+
+## 36. Binary16 and `e8m15` timed on the CPU (D219, D220)
+
+Plan 0.18.2's FC4, FC5, FC6's cost and FC7, on the version's binary, alone
+on falicon: `make fc-rows` runs `experiments/fc_rows.sh`, whose phases are
+`solve` (FC7's solve at the course constants, about three hours on the
+A725 cores), `calib` (binary16's layout groups in a copy of the frozen
+profile, for FC5's plan row), `prep` (the realizations, the plans, the C
+programs built by GCC 16.2 with C1 checked), `time` (29 rows by D126's
+protocol, five processes a row on the ten X925 cores) and `report`
+(`experiments/fc_rows.py`, `out/fc-rows-0.18.2/report.md`). Medians of
+the processes' medians, on the LLVM backend unless said:
+
+| row | all-`f32` | binary16 | ratio | threshold |
+|---|---|---|---|---|
+| FC4, the AdamW step at the course constants, binary16 where the range rules offer it | 14.03 ms | 13.00 ms | 0.927× | 0.85×: **fails** |
+| FC5, the forward pass, B = 16, T = 256, the default layouts | 852.99 ms | 731.15 ms | 0.857× | 0.85×: **fails** |
+| FC5 under the profile's plans | 208.86 ms | 365.83 ms | 1.752× | reported |
+| FC6, the guard's cost, FC5's forward pass in binary16 in C, against `-DPRESK_NO_GUARD` | | 648.63 ms | 1.012× | reported |
+
+The step's bytes halved save 7 %: at this size its time is not its bytes'.
+In C the step takes 0.955× and the forward pass 0.784×. Natively both are
+much slower (8.4× and 6.3×), each element converted by Cranelift's integer
+sequences, and `e8m15`'s three-byte codes are slower than `f32` everywhere
+(2.14× on LLVM, 3.40× natively in the forward pass).
+
+FC7 times two certified realizations of the logits against all-`f32` and
+D170's. FC3's at D = 64 stores 0.893× D170's bytes and takes 5.52× all-`f32`'s
+time on LLVM, 3.30× in C. The solve at the course constants with binary16
+and `e8m15` on the menu (three of the attention's values in `e8m15`,
+measured 1.20·10⁻⁴ inside 4.96·10⁻⁴) stores 0.998× D170's bytes and takes
+1.35× and 1.26×. The solver prices bytes, and chose `e8m15`, whose code is
+slower: fewer bytes buy no time here.
+
+FC4's realization also showed a defect. Its parameters after the step held
+infinities and NaNs (0.84 %): AdamW's ε, which the range rules keep in
+`f32`, was converted to binary16 where the update's binary16 nest reads it,
+and rounded to zero; where the second moment is zero the update divided by
+zero. The guard tests overflows and did not see it (D219). Since D220 a
+nest of elementwise operations reads a constant its storage type does not
+hold in `f32` (`precision`), and FC4's realization gives finite
+parameters. `experiments/fc_rows.sh fc4` takes FC4's rows again, alone, on
+that binary (`out/fc4-0.18.2-step6/report.md`): 12.98 ms against 14.00 on
+the LLVM backend, still 0.927× (fails), natively 8.49×, in C 0.968×.
+
 ## What these experiments do not show
 
 - **Speed against a mature stack, beyond one model on one machine.** §3's

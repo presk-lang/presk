@@ -204,3 +204,189 @@ static void bf16_k1(const uint16_t *restrict in0, const uint16_t *restrict in1, 
         }
     }
 }
+
+// kernel dot (%0 : f16[batch: 2, 4], %1 : f16[4, 8]) -> %2 : f16[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..1 {
+//       s0 = 0
+//       s1 = 0
+//       s2 = 0
+//       s3 = 0
+//       s4 = 0
+//       s5 = 0
+//       s6 = 0
+//       s7 = 0
+//       for i2 in 0..4 {
+//         s8 = %0[i0, i2]
+//         s0 = (s0 + (s8 * %1[i2, ((i1 * 8) + 0)]))
+//         s1 = (s1 + (s8 * %1[i2, ((i1 * 8) + 1)]))
+//         s2 = (s2 + (s8 * %1[i2, ((i1 * 8) + 2)]))
+//         s3 = (s3 + (s8 * %1[i2, ((i1 * 8) + 3)]))
+//         s4 = (s4 + (s8 * %1[i2, ((i1 * 8) + 4)]))
+//         s5 = (s5 + (s8 * %1[i2, ((i1 * 8) + 5)]))
+//         s6 = (s6 + (s8 * %1[i2, ((i1 * 8) + 6)]))
+//         s7 = (s7 + (s8 * %1[i2, ((i1 * 8) + 7)]))
+//       }
+//       %2[i0, ((i1 * 8) + 0)] = s0
+//       %2[i0, ((i1 * 8) + 1)] = s1
+//       %2[i0, ((i1 * 8) + 2)] = s2
+//       %2[i0, ((i1 * 8) + 3)] = s3
+//       %2[i0, ((i1 * 8) + 4)] = s4
+//       %2[i0, ((i1 * 8) + 5)] = s5
+//       %2[i0, ((i1 * 8) + 6)] = s6
+//       %2[i0, ((i1 * 8) + 7)] = s7
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+// returns the overflow guard's flag: a store rounded a finite value to an infinity
+static uint32_t f16_k0(const uint16_t *restrict in0, const uint16_t *restrict in1, uint16_t *restrict out, int64_t lo, int64_t hi) {
+    uint32_t presk_ovf = 0;
+    int64_t i0 = 0, i1 = 0, i2 = 0;
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f, s5 = 0.0f, s6 = 0.0f, s7 = 0.0f, s8 = 0.0f;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 1; i1++) {
+            s0 = 0.0f;
+            s1 = 0.0f;
+            s2 = 0.0f;
+            s3 = 0.0f;
+            s4 = 0.0f;
+            s5 = 0.0f;
+            s6 = 0.0f;
+            s7 = 0.0f;
+            for (i2 = 0; i2 < 4; i2++) {
+                s8 = presk_f16_to_f32(in0[i0 * 4 + i2]);
+                s0 = s0 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8]);
+                s1 = s1 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 1]);
+                s2 = s2 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 2]);
+                s3 = s3 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 3]);
+                s4 = s4 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 4]);
+                s5 = s5 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 5]);
+                s6 = s6 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 6]);
+                s7 = s7 + s8 * presk_f16_to_f32(in1[i2 * 8 + i1 * 8 + 7]);
+            }
+            out[i0 * 8 + i1 * 8] = presk_f32_to_f16_guarded(s0, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 1] = presk_f32_to_f16_guarded(s1, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 2] = presk_f32_to_f16_guarded(s2, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 3] = presk_f32_to_f16_guarded(s3, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 4] = presk_f32_to_f16_guarded(s4, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 5] = presk_f32_to_f16_guarded(s5, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 6] = presk_f32_to_f16_guarded(s6, &presk_ovf);
+            out[i0 * 8 + i1 * 8 + 7] = presk_f32_to_f16_guarded(s7, &presk_ovf);
+        }
+    }
+    return presk_ovf;
+}
+
+// kernel add (%0 : f16[batch: 2, 8], %1 : f16[8]) -> %2 : f16[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..8 {
+//       %2[i0, i1] = (%0[i0, i1] + %1[i1])
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+// returns the overflow guard's flag: a store rounded a finite value to an infinity
+static uint32_t f16_k1(const uint16_t *restrict in0, const uint16_t *restrict in1, uint16_t *restrict out, int64_t lo, int64_t hi) {
+    uint32_t presk_ovf = 0;
+    int64_t i0 = 0, i1 = 0;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 8; i1++) {
+            out[i0 * 8 + i1] = presk_f32_to_f16_guarded(presk_f16_to_f32(in0[i0 * 8 + i1]) + presk_f16_to_f32(in1[i1]), &presk_ovf);
+        }
+    }
+    return presk_ovf;
+}
+
+// kernel dot (%0 : e8m15[batch: 2, 4], %1 : e8m15[4, 8]) -> %2 : e8m15[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..1 {
+//       s0 = 0
+//       s1 = 0
+//       s2 = 0
+//       s3 = 0
+//       s4 = 0
+//       s5 = 0
+//       s6 = 0
+//       s7 = 0
+//       for i2 in 0..4 {
+//         s8 = %0[i0, i2]
+//         s0 = (s0 + (s8 * %1[i2, ((i1 * 8) + 0)]))
+//         s1 = (s1 + (s8 * %1[i2, ((i1 * 8) + 1)]))
+//         s2 = (s2 + (s8 * %1[i2, ((i1 * 8) + 2)]))
+//         s3 = (s3 + (s8 * %1[i2, ((i1 * 8) + 3)]))
+//         s4 = (s4 + (s8 * %1[i2, ((i1 * 8) + 4)]))
+//         s5 = (s5 + (s8 * %1[i2, ((i1 * 8) + 5)]))
+//         s6 = (s6 + (s8 * %1[i2, ((i1 * 8) + 6)]))
+//         s7 = (s7 + (s8 * %1[i2, ((i1 * 8) + 7)]))
+//       }
+//       %2[i0, ((i1 * 8) + 0)] = s0
+//       %2[i0, ((i1 * 8) + 1)] = s1
+//       %2[i0, ((i1 * 8) + 2)] = s2
+//       %2[i0, ((i1 * 8) + 3)] = s3
+//       %2[i0, ((i1 * 8) + 4)] = s4
+//       %2[i0, ((i1 * 8) + 5)] = s5
+//       %2[i0, ((i1 * 8) + 6)] = s6
+//       %2[i0, ((i1 * 8) + 7)] = s7
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+// returns the overflow guard's flag: a store rounded a finite value to an infinity
+static uint32_t e8m15_k0(const presk_e8m15 *restrict in0, const presk_e8m15 *restrict in1, presk_e8m15 *restrict out, int64_t lo, int64_t hi) {
+    uint32_t presk_ovf = 0;
+    int64_t i0 = 0, i1 = 0, i2 = 0;
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f, s5 = 0.0f, s6 = 0.0f, s7 = 0.0f, s8 = 0.0f;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 1; i1++) {
+            s0 = 0.0f;
+            s1 = 0.0f;
+            s2 = 0.0f;
+            s3 = 0.0f;
+            s4 = 0.0f;
+            s5 = 0.0f;
+            s6 = 0.0f;
+            s7 = 0.0f;
+            for (i2 = 0; i2 < 4; i2++) {
+                s8 = PRESK_E8M15_LOAD(in0[i0 * 4 + i2]);
+                s0 = s0 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8]);
+                s1 = s1 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 1]);
+                s2 = s2 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 2]);
+                s3 = s3 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 3]);
+                s4 = s4 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 4]);
+                s5 = s5 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 5]);
+                s6 = s6 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 6]);
+                s7 = s7 + s8 * PRESK_E8M15_LOAD(in1[i2 * 8 + i1 * 8 + 7]);
+            }
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8], s0, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 1], s1, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 2], s2, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 3], s3, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 4], s4, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 5], s5, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 6], s6, &presk_ovf);
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1 * 8 + 7], s7, &presk_ovf);
+        }
+    }
+    return presk_ovf;
+}
+
+// kernel add (%0 : e8m15[batch: 2, 8], %1 : e8m15[8]) -> %2 : e8m15[batch: 2, 8] {
+//   for i0 in 0..2 {
+//     for i1 in 0..8 {
+//       %2[i0, i1] = (%0[i0, i1] + %1[i1])
+//     }
+//   }
+// }
+// lo, hi: the range of i0 in 0..2, the outermost loop, which a thread split divides
+// returns the overflow guard's flag: a store rounded a finite value to an infinity
+static uint32_t e8m15_k1(const presk_e8m15 *restrict in0, const presk_e8m15 *restrict in1, presk_e8m15 *restrict out, int64_t lo, int64_t hi) {
+    uint32_t presk_ovf = 0;
+    int64_t i0 = 0, i1 = 0;
+    for (i0 = lo; i0 < hi; i0++) {
+        for (i1 = 0; i1 < 8; i1++) {
+            PRESK_E8M15_STORE_GUARDED(out[i0 * 8 + i1], PRESK_E8M15_LOAD(in0[i0 * 8 + i1]) + PRESK_E8M15_LOAD(in1[i1]), &presk_ovf);
+        }
+    }
+    return presk_ovf;
+}

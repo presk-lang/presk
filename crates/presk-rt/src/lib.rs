@@ -25,6 +25,7 @@ use presk_types::elab::ElabProgram;
 use presk_types::ty::Shape;
 use rug::Float;
 
+pub mod codes;
 pub mod elems;
 pub mod layout;
 pub mod quant;
@@ -44,7 +45,9 @@ type IValue = presk_interp::Value<Float>;
 /// ([`Dtype::is_native`]) and refuse a realization that names another
 /// (`E7005`, [`Realization::check_native`]), and the kernel interpreter
 /// emulates it. The solver's menu offers the native types until step 5
-/// ([`Dtype::native`], `E7004`).
+/// ([`Dtype::native`], `E7004`). Since plan 0.18.2 step 2 (D216) the native
+/// backend also computes a realization that stores values in binary16 and
+/// `e8m15`, in `f32` ([`Realization::check_executor`]).
 ///
 /// `Bf16` is **storage only**: buffers hold sixteen bits, arithmetic is done
 /// in `f32`, and conversion happens on load and on store with
@@ -58,6 +61,10 @@ impl Dtype {
     pub const F64: Dtype = Dtype(presk_format::F64);
     pub const F32: Dtype = Dtype(presk_format::F32);
     pub const BF16: Dtype = Dtype(presk_format::BF16);
+    /// binary16 and `e8m15`, which a buffer holds as their codes
+    /// ([`Buf::Codes`], plan 0.18.2 step 1, D215).
+    pub const F16: Dtype = Dtype(presk_format::F16);
+    pub const E8M15: Dtype = Dtype(presk_format::E8M15);
     /// The types a backend computes in, the native types, the most precise
     /// first.
     pub const ALL: [Dtype; 3] = [Dtype::F64, Dtype::F32, Dtype::BF16];
@@ -76,9 +83,20 @@ impl Dtype {
         }
     }
 
-    /// Whether the backends compute in this type: `f64`, `f32` or `bf16`.
+    /// Whether every backend computes in this type: `f64`, `f32` or `bf16`,
+    /// the types whose rounding the error analysis states as `u·|x|`. Since
+    /// plan 0.18.2 step 2 (D216) the native backend also stores values in
+    /// binary16 and `e8m15` ([`Dtype::coded`]), computing in `f32`
+    /// ([`Realization::check_executor`]); the analysis bounds them by their
+    /// format's rule, as before.
     pub fn is_native(self) -> bool {
         Dtype::ALL.contains(&self)
+    }
+
+    /// Whether a buffer of this type holds its codes ([`Buf::Codes`]):
+    /// binary16 and `e8m15` (plan 0.18.2 step 1, D215).
+    pub fn coded(self) -> bool {
+        codes::coded(self.0)
     }
 
     /// The type a float format's name denotes; `None` for a name that is
@@ -143,12 +161,12 @@ impl Dtype {
         self.0.unit_roundoff()
     }
 
-    /// What a native backend's match over `f64`, `f32` and `bf16` does with
-    /// any other type: never reached, since a native backend refuses a
+    /// What a native backend's match over the types it computes in does
+    /// with any other type: never reached, since a native backend refuses a
     /// realization that names one before anything runs
-    /// ([`Realization::check_native`]).
+    /// ([`Realization::check_native`], [`Realization::check_executor`]).
     pub fn unreachable(self) -> ! {
-        unreachable!("{self}: a native backend computes in f64, f32 and bf16 only (checked by `Realization::check_native`)")
+        unreachable!("{self}: a native backend computes in f64, f32 and bf16, and in f16 and e8m15 too since plan 0.18.2 (checked by `Realization::check_executor`)")
     }
 }
 
@@ -537,10 +555,21 @@ impl Realization {
     /// naming the first site or member that fails it; the kernel
     /// interpreter emulates any format.
     pub fn check_native(&self, executor: &str) -> Result<()> {
-        let fail = |what: String| err("E7005", format!("the realization {what}: {executor} computes in f64, f32 and bf16, each nest in its storage type's arithmetic type; the kernel interpreter emulates any format (`--backend kernel`)"));
+        self.check_executor(executor, false)
+    }
+
+    /// [`Realization::check_native`] for an executor that, when `codes`,
+    /// also stores values in binary16 and `e8m15`, computing their nests in
+    /// `f32` (plan 0.18.2 step 2, D216): the native backend since step 2,
+    /// the LLVM backend and the C export since step 3 (D217). The kernel
+    /// interpreter still emulates such a realization, and counts
+    /// ([`Realization::emulates`]).
+    pub fn check_executor(&self, executor: &str, codes: bool) -> Result<()> {
+        let types = if codes { "f64, f32, bf16, f16 and e8m15" } else { "f64, f32 and bf16" };
+        let fail = |what: String| err("E7005", format!("the realization {what}: {executor} computes in {types}, each nest in its storage type's arithmetic type; the kernel interpreter emulates any format (`--backend kernel`)"));
         let stored = std::iter::once((String::from("every value"), self.default)).chain(self.storage.iter().map(|(s, d)| (format!("`{s}`"), *d))).chain(self.functions.iter().map(|(f, d)| (format!("the function `{f}`"), *d))).chain(self.params.iter().map(|(p, d)| (format!("the parameter `{p}`"), *d)));
         for (what, d) in stored {
-            if !d.is_native() {
+            if !(d.is_native() || codes && d.coded()) {
                 return fail(format!("stores {what} in {d}"));
             }
         }
@@ -743,9 +772,17 @@ pub enum Buf {
     /// Values of a format no backend computes in natively, each held exactly
     /// as an `f64` ([`presk_format::Format::exact_in_f64`]): what the kernel
     /// interpreter's emulation reads and writes (plan 0.18.0 step 2, D205).
-    /// No realization stores a value in such a format yet, so no other
-    /// backend meets one ([`Buf::unemulated`]).
+    /// A backend that computes only in `f64`, `f32` and `bf16` refuses a
+    /// realization that stores a value in such a format, so it meets none
+    /// ([`Buf::unemulated`]).
     Format(presk_format::Format, Elems<f64>),
+    /// The codes of binary16 or `e8m15`, little-endian, [`Dtype::bytes`]
+    /// bytes each, as a `.psk.d` version 3 file lays them out
+    /// ([`codes`], plan 0.18.2 step 1, D215): what a buffer of either
+    /// format holds, the kernel interpreter's emulation reading and writing
+    /// the codes a native backend will. Arithmetic on them happens in
+    /// `f32`, as on `bf16`.
+    Codes(presk_format::Float, Elems<u8>),
 }
 
 impl Buf {
@@ -758,6 +795,7 @@ impl Buf {
             Buf::I64(v) => v.len(),
             Buf::Quant(q) => q.len(),
             Buf::Format(_, v) => v.len(),
+            Buf::Codes(f, v) => v.len() / codes::width(*f),
         }
     }
 
@@ -778,6 +816,7 @@ impl Buf {
             Buf::I64(v) => v[lo..hi].iter().map(|x| *x as f64).collect(),
             Buf::Quant(q) => (lo..hi).map(|e| q.value(e) as f64).collect(),
             Buf::Format(_, v) => v[lo..hi].to_vec(),
+            Buf::Codes(f, v) => codes::decode(*f, v, lo, hi),
         }
     }
 
@@ -790,6 +829,7 @@ impl Buf {
             Buf::I64(v) => v.iter().map(|x| *x as f64).collect(),
             Buf::Quant(q) => (0..q.len()).map(|e| q.value(e) as f64).collect(),
             Buf::Format(_, v) => v.to_vec(),
+            Buf::Codes(f, v) => codes::decode(*f, v, 0, v.len() / codes::width(*f)),
         }
     }
 
@@ -797,14 +837,22 @@ impl Buf {
     /// as it is when it is a number or a special value of a float format,
     /// −0 included where a conversion never gives it (the code a file or a
     /// machine's memory holds), else rounded once to it, ties to even.
+    /// A format a buffer holds as its codes gives [`Buf::Codes`], which
+    /// keeps every such value as it is and rounds any other once.
     pub fn in_format(f: presk_format::Format, v: &[f64]) -> Buf {
         assert!(f.exact_in_f64(), "a buffer of {f} holds values no f64 holds");
+        if let presk_format::Format::Float(g) = f
+            && codes::coded(g)
+        {
+            return Buf::Codes(g, codes::encode(g, v).into());
+        }
         let held = |x: f64| matches!(f, presk_format::Format::Float(g) if g.holds(x));
         Buf::Format(f, v.iter().map(|x| if held(*x) { *x } else { f.round_noted(*x, presk_format::Tie::Even).0 }).collect())
     }
 
     /// What a backend that computes only in `f64`, `f32` and `bf16` does
-    /// with a [`Buf::Format`]: nothing, since such a backend refuses a
+    /// with a [`Buf::Format`] or a [`Buf::Codes`]: nothing, since such a
+    /// backend refuses a
     /// realization that stores a value in another format before anything
     /// runs ([`Realization::check_native`], plan 0.18.0 step 3).
     pub fn unemulated(&self) -> ! {
@@ -812,14 +860,17 @@ impl Buf {
     }
 
     /// A buffer of `n` reals in the machine type `d`, rounded once from
-    /// `f64`; `bf16` through `f32`, twice (D38). A type other than the
-    /// native ones is a [`Buf::Format`], each value rounded once, ties to
-    /// even (plan 0.18.0 step 3, D206): [`presk_format::Float::store`].
+    /// `f64`; `bf16` through `f32`, twice (D38). binary16 and `e8m15` are
+    /// their codes ([`Buf::Codes`], plan 0.18.2 step 1, D215), each value
+    /// rounded once, directly from the `f64`. Any other type is a
+    /// [`Buf::Format`], each value rounded once, ties to even (plan 0.18.0
+    /// step 3, D206). Both are [`presk_format::Float::store`]'s numbers.
     pub fn of(d: Dtype, v: &[f64]) -> Buf {
         match d {
             Dtype::F64 => Buf::F64(v.to_vec().into()),
             Dtype::F32 => Buf::F32(v.iter().map(|x| *x as f32).collect()),
             Dtype::BF16 => Buf::Bf16(v.iter().map(|x| f32_to_bf16(*x as f32)).collect()),
+            d if d.coded() => Buf::Codes(d.format(), codes::encode(d.format(), v).into()),
             d => Buf::Format(presk_format::Format::Float(d.format()), v.iter().map(|x| d.format().store(*x)).collect()),
         }
     }
@@ -844,6 +895,7 @@ impl Buf {
             Dtype::F64 => Buf::F64(vec![0.0; n].into()),
             Dtype::F32 => Buf::F32(vec![0.0; n].into()),
             Dtype::BF16 => Buf::Bf16(vec![0u16; n].into()),
+            d if d.coded() => Buf::Codes(d.format(), vec![0u8; n * d.bytes()].into()),
             d => Buf::Format(presk_format::Format::Float(d.format()), vec![0.0; n].into()),
         }
     }
@@ -857,6 +909,7 @@ impl Buf {
             Buf::I64(_) => "i64".into(),
             Buf::Quant(q) => q.dtype().into(),
             Buf::Format(f, _) => f.name(),
+            Buf::Codes(f, _) => f.name(),
         }
     }
 }
@@ -974,6 +1027,7 @@ impl Value {
                     Buf::I64(v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
                     Buf::Quant(q) => (0..q.len()).map(|e| Float::with_val(prec, q.value(e))).collect(),
                     Buf::Format(_, v) => v.iter().map(|x| Float::with_val(prec, *x)).collect(),
+                    Buf::Codes(..) => t.data.to_f64().into_iter().map(|x| Float::with_val(prec, x)).collect(),
                 },
             }),
             Value::Idx { bound, t } => IValue::Idx {

@@ -6,12 +6,21 @@
 //! test set under `examples/tests/plan/default.json`; and the attention under
 //! `examples/tests/plan/attention.json`, which states a tile in lanes, a k-block, a
 //! split over ten workers and packing.
+//!
+//! FC2's LLVM half (plan 0.18.2 step 3, D217): binary16 and `e8m15` on the
+//! LLVM backend, by the C printer's conversions, give the native backend's
+//! bytes, which are the kernel interpreter's emulation's (D216), on the
+//! test set and the native test's other programs (the tutorial's loss, the
+//! Llama decoder, the course GPT's loss and gradient at small constants),
+//! each under the native test's eight realizations: either format uniform,
+//! beside `f32`, `bf16` and `f64`, sites stored apart and parameters read
+//! by wider kernels (`BufKind::Wide`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
 use presk_interp::RunOptions;
-use presk_rt::{Backend, Buf, Plan, Realization, Value};
+use presk_rt::{Backend, Buf, Dtype, Plan, Realization, Value};
 use presk_syntax::diag::render_all;
 use presk_syntax::{SourceMap, parse_file};
 use presk_types::check;
@@ -82,6 +91,7 @@ fn leaf_bits(v: &Value, out: &mut Vec<u64>) {
             Buf::F64(x) => out.extend(x.iter().map(|y| y.to_bits())),
             Buf::F32(x) => out.extend(x.iter().map(|y| y.to_bits() as u64)),
             Buf::Bf16(x) => out.extend(x.iter().map(|y| *y as u64)),
+            Buf::Codes(f, x) => out.extend((0..x.len() / presk_rt::codes::width(*f)).map(|e| u64::from(presk_rt::codes::code(*f, x, e)))),
             Buf::I64(x) => out.extend(x.iter().map(|y| *y as u64)),
             other => panic!("an output of kind {other:?}"),
         },
@@ -122,7 +132,9 @@ fn draw_zeros(v: &Value, state: &mut u64) -> Value {
 /// The outputs' bits of `case` on the native backend and on the LLVM
 /// backend, under `plan`, on `threads` workers, the first argument's zeros
 /// drawn or not.
-fn both(case: &Case, prog: &ElabProgram, core: &presk_core::Program, plan: &Plan, threads: usize, drawn: bool) -> (Vec<u64>, Vec<u64>) {
+/// A run the overflow guard stops (plan 0.18.2 step 4, D218) is its message
+/// on both.
+fn both(case: &Case, prog: &ElabProgram, core: &presk_core::Program, plan: &Plan, threads: usize, drawn: bool) -> (Result<Vec<u64>, String>, Result<Vec<u64>, String>) {
     let opts = RunOptions { entry: case.entry.clone(), dims: case.dims.iter().cloned().collect(), seed: 0, bits: 64, digits: 17 };
     let (func, fdims, inputs) = presk_interp::run::prepare_run(core, prog, &opts).unwrap();
     let mut args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
@@ -131,13 +143,17 @@ fn both(case: &Case, prog: &ElabProgram, core: &presk_core::Program, plan: &Plan
     }
     let r = &plan.realization;
     let args = r.realize_args(&args).unwrap();
-    let run = |mut b: presk_kernel::KernelBackend| -> Vec<u64> {
+    let run = |mut b: presk_kernel::KernelBackend| -> Result<Vec<u64>, String> {
         b.set_plan(plan.clone());
         let p = Backend::prepare(&mut b, func, &fdims, r).unwrap();
-        let out = Backend::call(&mut b, &p, args.clone()).unwrap();
+        let out = match Backend::call(&mut b, &p, args.clone()) {
+            Ok(out) => out,
+            Err(e) if e.code == "E7007" => return Err(e.message),
+            Err(e) => panic!("{}", e.message),
+        };
         let mut bits = Vec::new();
         leaf_bits(&out, &mut bits);
-        bits
+        Ok(bits)
     };
     let native = run(presk_cranelift::native_backend_with_threads(core, prog, r, threads).unwrap());
     let llvm = run(presk_llvm::llvm_backend_with_threads(core, prog, r, threads).unwrap());
@@ -162,7 +178,7 @@ fn the_test_set_computes_the_native_backends_bits() {
             for threads in [1, 4] {
                 for drawn in [false, true] {
                     let (native, llvm) = both(&case, &prog, &core, &plan, threads, drawn);
-                    assert!(!native.is_empty(), "{} {realize}: no output", case.entry);
+                    assert!(native.as_ref().is_ok_and(|n| !n.is_empty()), "{} {realize}: no output", case.entry);
                     assert!(native == llvm, "{} {realize}, {threads} workers, zeros drawn {drawn}: the LLVM backend's bits are not the native backend's", case.entry);
                     programs += 1;
                 }
@@ -198,4 +214,97 @@ fn the_plans_of_the_test_directory_compute_the_native_backends_bits() {
         let (native, llvm) = both(&case, &prog, &core, &plan, threads, true);
         assert!(native == llvm, "{} under {spec}, {threads} workers: the LLVM backend's bits are not the native backend's", case.entry);
     }
+}
+
+/// The native test's programs (`presk-cranelift/tests/codes.rs`): the
+/// test set, the tutorial's loss, the Llama decoder at tiny constants and
+/// the course GPT's loss and gradient at `D = 16`.
+fn programs() -> Vec<Case> {
+    let case = |file: &str, entry: &str, args: &str| {
+        let args: Vec<&str> = args.split_whitespace().collect();
+        Case { file: file.into(), entry: entry.into(), consts: pairs(&args, "--const"), dims: pairs(&args, "--dim") }
+    };
+    let mut out = test_set();
+    out.push(case("examples/tutorial/07_train.psk", "loss", "--dim B=4"));
+    let llama = "--const V=100 --const D=32 --const H=2 --const G=2 --const FF=64 --const L=2 --dim B=2 --dim T=16";
+    out.push(case("examples/coverage/llama.psk", "Llama.apply", llama));
+    out.push(case("examples/coverage/llama.psk", "loss", llama));
+    let gpt = "--const V=92 --const D=16 --const H=2 --const L=1 --dim B=2 --dim T=32";
+    out.push(case("examples/experiments/gpt_grad.psk", "loss", gpt));
+    out.push(case("examples/experiments/gpt_grad.psk", "loss_grad", gpt));
+    out
+}
+
+/// The native test's eight realizations: each format uniform; each beside
+/// `f32` and `bf16`, every third of `sites` stored apart and every
+/// parameter in the other format; parameters of `f16`, `e8m15` and `bf16`
+/// read by kernels of `f64`, `e8m15` and `f32`, and of `f32` by kernels of
+/// binary16.
+fn realizations(sites: &[String], params: &[String]) -> Vec<Realization> {
+    let typed = |default: Dtype, every_third: Option<Dtype>, own: Option<Dtype>| {
+        let mut r = Realization::uniform(default);
+        if let Some(d) = every_third {
+            r.storage = sites.iter().step_by(3).map(|s| (s.clone(), d)).collect();
+        }
+        if let Some(d) = own {
+            r.params = params.iter().map(|p| (p.clone(), d)).collect();
+        }
+        r
+    };
+    vec![
+        Realization::uniform(Dtype::F16),
+        Realization::uniform(Dtype::E8M15),
+        typed(Dtype::F32, Some(Dtype::F16), Some(Dtype::E8M15)),
+        typed(Dtype::BF16, Some(Dtype::E8M15), Some(Dtype::F16)),
+        typed(Dtype::F32, Some(Dtype::E8M15), Some(Dtype::BF16)),
+        typed(Dtype::F64, None, Some(Dtype::F16)),
+        typed(Dtype::E8M15, Some(Dtype::F32), Some(Dtype::F16)),
+        typed(Dtype::F16, Some(Dtype::BF16), Some(Dtype::F32)),
+    ]
+}
+
+/// FC2's LLVM half: the native backend's bytes in binary16 and `e8m15`,
+/// uniform and mixed, on four workers.
+#[test]
+fn binary16_and_e8m15_compute_the_native_backends_bits() {
+    if let Err(m) = presk_llvm::available() {
+        eprintln!("skipped: {m}");
+        return;
+    }
+    let (mut runs, mut guarded) = (0, 0);
+    for case in programs() {
+        let (prog, core) = prepare(&case.file, &case.consts);
+        let opts = RunOptions { entry: case.entry.clone(), dims: case.dims.iter().cloned().collect(), seed: 0, bits: 64, digits: 17 };
+        let (func, fdims, inputs) = presk_interp::run::prepare_run(&core, &prog, &opts).unwrap();
+        let args: Vec<Value> = inputs.iter().map(|(_, v)| Value::from_interp(v).unwrap()).collect();
+        let params = match args.first() {
+            Some(theta @ Value::Record(_)) => presk_rt::quant::param_paths(theta),
+            _ => Vec::new(),
+        };
+        let sites: Vec<String> = core.funcs.iter().flat_map(|f| f.body.lets.iter().map(move |l| format!("{}/%{}", f.name, l.var.0))).collect();
+        for r in realizations(&sites, &params) {
+            let what = format!("{} {} under {}", case.file, case.entry, r.label());
+            // A run the overflow guard stops (D218) is its message on both.
+            let run = |mut b: presk_kernel::KernelBackend| -> Result<Vec<u64>, String> {
+                let mut a = args.clone();
+                r.store_params(&mut a).unwrap_or_else(|e| panic!("{what}: {}", e.message));
+                let p = Backend::prepare(&mut b, func, &fdims, &r).unwrap_or_else(|e| panic!("{what}: {}", e.message));
+                let out = match Backend::call(&mut b, &p, a) {
+                    Ok(out) => out,
+                    Err(e) if e.code == "E7007" => return Err(e.message),
+                    Err(e) => panic!("{what}: {}", e.message),
+                };
+                let mut bits = Vec::new();
+                leaf_bits(&out, &mut bits);
+                Ok(bits)
+            };
+            let native = run(presk_cranelift::native_backend_with_threads(&core, &prog, &r, 4).unwrap());
+            let llvm = run(presk_llvm::llvm_backend_with_threads(&core, &prog, &r, 4).unwrap());
+            assert!(native.as_ref().map_or(true, |n| !n.is_empty()) && native == llvm, "{what}: the LLVM backend's bits are not the native backend's: {:?} {:?}", native.as_ref().err(), llvm.as_ref().err());
+            guarded += usize::from(native.is_err());
+            runs += 1;
+        }
+    }
+    eprintln!("{runs} runs in binary16 and e8m15, the same bits on both backends; {guarded} stopped by the overflow guard on both, in the same words");
+    assert!(runs >= 160, "{runs}");
 }

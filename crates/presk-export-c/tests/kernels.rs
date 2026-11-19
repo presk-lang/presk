@@ -3,16 +3,18 @@
 //! the inputs the native backend's kernels get, gives the native backend's
 //! bits on
 //! - the 47 primitive cases of `presk-kernel/tests/conformance.rs`, in
-//!   `f64`, `f32` and `bf16`, scalar and at each type's natural lane width;
+//!   `f64`, `f32` and `bf16`, and since plan 0.18.2 step 3 (D217) in
+//!   binary16 and `e8m15`, stored as their codes and computed in `float`,
+//!   scalar and at each type's natural lane width;
 //! - every layout of the four nests of `presk-cranelift/tests/layout.rs`
-//!   (linear, scores, values, normalize) in the three types, and the thread
+//!   (linear, scores, values, normalize) in the five types, and the thread
 //!   splits that test states (all of them on every point in an `#[ignore]`d
 //!   test);
 //! - kernels written by hand, for the forms the lowering does not produce
 //!   today;
 //! - integer weights (step 7, D84): the primitives with every real operand
 //!   quantized, in `int8` and `int4`, their scales constant along the first
-//!   axis or the last, in the three types, scalar and in lanes; and the four
+//!   axis or the last, in the five types, scalar and in lanes; and the four
 //!   nests' layouts with an operand quantized;
 //!
 //! each kernel whose loop a split may divide run over its whole range, over
@@ -46,7 +48,9 @@ use rug::Float;
 
 type IValue = presk_interp::Value<Float>;
 
-const DTYPES: [Dtype; 3] = [Dtype::F64, Dtype::F32, Dtype::BF16];
+/// The types a CPU executor computes in: the three native ones, and
+/// binary16 and `e8m15` (plan 0.18.2 step 3, D217).
+const DTYPES: [Dtype; 5] = [Dtype::F64, Dtype::F32, Dtype::BF16, Dtype::F16, Dtype::E8M15];
 /// The native runs have four workers, as `layout.rs`'s, so a plan's split
 /// takes 2 or 4 (condition 5); the C executor states the same.
 const WORKERS: usize = 4;
@@ -90,7 +94,7 @@ fn native_backend<'p>(core: &'p presk_core::Program, prog: &'p ElabProgram, r: &
     b
 }
 
-/// The C of a linear layer's kernels in the three types, as the native
+/// The C of a linear layer's kernels in the five types, as the native
 /// backend lowers them (lanes in `f64` and `f32`): the printer's form, for
 /// review.
 #[test]
@@ -204,8 +208,8 @@ fn primitive_cases() -> Vec<(presk_core::PrimOp, Vec<IValue>)> {
 /// transcendental function.
 type PrimRun = (Dtype, Option<usize>, &'static presk_core::PrimOp, Vec<Value>, Vec<u64>, bool);
 
-/// Every primitive case in the three types, scalar and at each type's
-/// natural width (`bf16` has none: one lane), run on the native backend:
+/// Every primitive case in the five types, scalar and at each type's
+/// natural width (`bf16`, binary16 and `e8m15` have none: one lane), run on the native backend:
 /// the runs and their kernels.
 fn primitive_runs(prog: &ElabProgram, core: &presk_core::Program, cases: &'static [(presk_core::PrimOp, Vec<IValue>)]) -> (Vec<PrimRun>, Vec<Kernel>) {
     let widths = [Some(1), None];
@@ -261,7 +265,7 @@ fn the_primitives_are_bit_identical_to_the_native_backend() {
 }
 
 /// The SCoP mode's form (step 8, D85): every primitive case at point zero
-/// (its default layout on one lane and one worker, no pack), in the three
+/// (its default layout on one lane and one worker, no pack), in the five
 /// types, each distinct kernel printed as a nest's file (`scop::nest_file`)
 /// and compiled on its own with the export's flags and `-Werror`, then run
 /// on the inputs the SCoP driver draws, against the native backend on the
@@ -308,6 +312,7 @@ fn the_primitives_as_scops_are_bit_identical_to_the_native_backend() {
             presk_rt::Buf::F64(v) => v.as_ptr() as *mut u8,
             presk_rt::Buf::F32(v) => v.as_ptr() as *mut u8,
             presk_rt::Buf::Bf16(v) => v.as_ptr() as *mut u8,
+            presk_rt::Buf::Codes(_, v) => v.as_ptr() as *mut u8,
             presk_rt::Buf::I64(v) => v.as_ptr() as *mut u8,
             other => panic!("a {} buffer", other.dtype()),
         }
@@ -343,12 +348,14 @@ fn the_primitives_as_scops_are_bit_identical_to_the_native_backend() {
 /// in a GNU mode and without `-ffp-contract=off` (`-std=gnu11 -O2`), where
 /// GCC contracts `a + b*c` into one fused multiply-add. On aarch64, which
 /// has the instruction, bits must move, or the check does not test the
-/// rule; elsewhere it reports what moved.
+/// rule; elsewhere it reports what moved. On Clang the mode is asked for
+/// by `-ffp-contract=fast` ([`cexec::gnu_mode`]).
 #[test]
 fn contraction_moves_bits_in_gccs_gnu_mode() {
     let (prog, core) = prepare("examples/spec/mlp/mlp.psk", &[]);
     let (runs, kernels) = primitive_runs(&prog, &core, cases());
-    let mut flags = vec!["-std=gnu11", "-O2"];
+    let mut flags = cexec::gnu_mode();
+    let mode = flags.join(" ");
     flags.extend_from_slice(presk_export_c::WARNINGS);
     flags.push("-Werror");
     let lib = Arc::new(CLib::build_with("primitives-gnu", &kernels, &flags));
@@ -364,7 +371,7 @@ fn contraction_moves_bits_in_gccs_gnu_mode() {
         }
     }
     eprintln!(
-        "{} {}: built with -std=gnu11 -O2 and no -ffp-contract, {} of {} primitive runs move ({moved_libm} of them through presk_libm.c): {}",
+        "{} {}: built with {mode}, {} of {} primitive runs move ({moved_libm} of them through presk_libm.c): {}",
         cexec::cc(),
         std::env::consts::ARCH,
         moved.len(),
@@ -498,7 +505,7 @@ fn check_layouts_with(tag: &str, stride: usize, every: usize, quant: Option<u8>)
 }
 
 /// The layouts with an operand of integer weights (step 7), in `int8` and
-/// `int4`, the pack of the keys included, in the three types: every third
+/// `int4`, the pack of the keys included, in the five types: every third
 /// point of each space, and the splits of every fifth of those.
 #[test]
 fn the_layouts_on_integer_weights_are_bit_identical_to_the_native_backend() {
@@ -518,7 +525,7 @@ fn every_layout_on_integer_weights_is_bit_identical_to_the_native_backend() {
 /// The primitives with every real operand of rank one or more as integer
 /// weights (step 7): `int8` and `int4`, the scales constant along the first
 /// axis or the last (so that lanes along the last axis read four scales, or
-/// one), in the three types, scalar and at each type's natural width. The
+/// one), in the five types, scalar and at each type's natural width. The
 /// host marks an integer input on every primitive (`tensor_prim_kinds`).
 #[test]
 fn the_primitives_on_integer_weights_are_bit_identical_to_the_native_backend() {

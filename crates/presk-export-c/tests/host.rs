@@ -10,9 +10,9 @@
 //! - **a launch dropped**, each live launch in turn: its buffer keeps what
 //!   the arena held, which the test fills with NaNs (all ones), so that a
 //!   launch whose output is zero is caught as well;
-//! - **two buffers swapped**: two live launches of the same type and size
-//!   write each other's buffer, so every later reader of one reads the
-//!   other;
+//! - **two buffers swapped**: two live launches of the same type and size,
+//!   neither reading the other's output, write each other's buffer, so
+//!   every later reader of one reads the other;
 //! - **a `bf16` input rounded once**: the reader rounds an `f64` straight to
 //!   `bf16`, not through `f32` as the native backend does (`Buf::of`), on an
 //!   input where the two roundings differ.
@@ -37,7 +37,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, Once};
+use std::sync::{Condvar, Mutex, Once, OnceLock, PoisonError};
 
 use presk_export_c::host::{self, Arg, Meta};
 use presk_export_c::structure::{Feed, FoldStmt, Form, Loc, Stmt, Structured};
@@ -141,6 +141,26 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
+/// Whether the C compiler the `Makefile`s build with (`$CC`, else `cc`)
+/// links and runs an OpenMP program. Apple's clang has no `-fopenmp`, and a
+/// clang without libomp compiles one and does not link it. Without OpenMP
+/// every program is built as by `make OPENMP=`, each divided launch one call
+/// over its whole loop, and what needs a team is not run (D212).
+fn links_openmp() -> bool {
+    static LINKS: OnceLock<bool> = OnceLock::new();
+    *LINKS.get_or_init(|| {
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        let dir = scratch("openmp");
+        std::fs::write(dir.join("omp.c"), "#include <omp.h>\n#include <stdio.h>\nint main(void) {\n    int n = 0;\n#pragma omp parallel\n    {\n#pragma omp atomic\n        n++;\n    }\n    printf(\"%d\\n\", n > 0 && omp_get_max_threads() > 0);\n    return 0;\n}\n").unwrap();
+        let built = Command::new(&cc).current_dir(&dir).args([presk_export_c::OPENMP, "-o", "omp", "omp.c"]).output().is_ok_and(|o| o.status.success());
+        let ran = built && Command::new(dir.join("omp")).output().is_ok_and(|o| o.status.success() && o.stdout == b"1\n");
+        if !ran {
+            eprintln!("`{cc} {}` links no OpenMP program: every program built without OpenMP, none run on a team", presk_export_c::OPENMP);
+        }
+        ran
+    })
+}
+
 /// A change to the files of a program, `(name, text)`.
 type Edit<'a> = &'a dyn Fn(&mut Vec<(String, String)>);
 
@@ -233,11 +253,13 @@ fn write_program(r: &Recorded, host: Host, dir: &Path, edit: Edit) -> Result<(ho
 }
 
 /// Builds the program in `dir` by its `Makefile`: with OpenMP or without it
-/// when `openmp` says, else as the `Makefile` has it. A warning is an error
+/// when `openmp` says, else as the `Makefile` has it, or without OpenMP
+/// where the compiler links none ([`links_openmp`]). A warning is an error
 /// (statement C3).
 fn build(dir: &Path, openmp: Option<bool>) -> Result<(), String> {
     let mut make = Command::new("make");
     make.arg("-s").arg("-B").arg("-C").arg(dir);
+    let openmp = openmp.or_else(|| (!links_openmp()).then_some(false));
     if let Some(on) = openmp {
         make.arg(if on { format!("OPENMP={}", presk_export_c::OPENMP) } else { "OPENMP=".into() });
     }
@@ -286,7 +308,37 @@ fn same(r: &Recorded, got: &Result<Vec<u64>, String>) -> bool {
     matches!(got, Ok(b) if *b == r.native)
 }
 
-/// Runs `jobs` on every core.
+/// The jobs [`parallel`] runs at once in this test binary: one per core.
+/// Each test runs its jobs on every core and the tests run side by side,
+/// so without the bound cores² builds and runs would be under way at once,
+/// each holding two pipes here: on a Mac of 12 cores, past the 256 open
+/// files macOS allows a process by default (D213).
+static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// A core's turn, given back when dropped, by a job that panics too.
+struct Turn;
+
+impl Turn {
+    fn take() -> Turn {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let mut running = RUNNING.0.lock().unwrap_or_else(PoisonError::into_inner);
+        while *running >= cores {
+            running = RUNNING.1.wait(running).unwrap_or_else(PoisonError::into_inner);
+        }
+        *running += 1;
+        Turn
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        *RUNNING.0.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        RUNNING.1.notify_one();
+    }
+}
+
+/// Runs `jobs` on every core. A job waits for its [`Turn`]: one per core in
+/// the whole binary.
 fn parallel<T: Send>(jobs: Vec<Box<dyn FnOnce() -> T + Send + '_>>) -> Vec<T> {
     let n = jobs.len();
     let queue = Mutex::new(jobs.into_iter().enumerate().collect::<Vec<_>>());
@@ -297,7 +349,9 @@ fn parallel<T: Send>(jobs: Vec<Box<dyn FnOnce() -> T + Send + '_>>) -> Vec<T> {
             s.spawn(|| {
                 loop {
                     let Some((i, job)) = queue.lock().unwrap().pop() else { break };
+                    let turn = Turn::take();
                     let r = job();
+                    drop(turn);
                     results.lock().unwrap()[i] = Some(r);
                 }
             });
@@ -385,13 +439,20 @@ fn swapping_the_buffers_of_two_launches_changes_the_outputs() {
         // for two that one launch alone reads: it may read them as operands
         // of a product, where exchanging them changes no bit (`mse.bwd`'s
         // `(ŷ - y)` and `mean_vjp`, since the gradient keeps the first as a
-        // residual, 0.10.0 step 4).
+        // residual, 0.10.0 step 4). And but for a launch and one that reads
+        // its output: swapped, the reader writes the buffer it reads, which
+        // the kernels' `restrict` forbids, so C does not say what it
+        // computes. GCC refuses it (`-Wrestrict`) and clang builds it, and
+        // where the reader copies its operand (`mse_grad`'s sum over one
+        // element, and a gradient added to its zeros) the outputs are the
+        // program's own (D212).
+        let reads = |k: usize, b: usize| matches!(&r.rec.ops[k], Op::Launch { inputs, .. } if inputs.iter().any(|v| v.buf == b));
         let mut pairs = Vec::new();
         for (a, &i) in live.iter().enumerate() {
             for &j in &live[a + 1..] {
                 let (bi, bj) = (&r.rec.bufs[out(i)], &r.rec.bufs[out(j)]);
                 let (ri, rj) = (readers.get(&out(i)), readers.get(&out(j)));
-                if bi.store == bj.store && bi.len == bj.len && !(ri == rj && ri.is_some_and(|v| v.len() == 1)) {
+                if bi.store == bj.store && bi.len == bj.len && !(ri == rj && ri.is_some_and(|v| v.len() == 1)) && !reads(j, out(i)) && !reads(i, out(j)) {
                     pairs.push((i, j));
                 }
             }
@@ -906,7 +967,7 @@ fn run_every_way(r: &Recorded, host: Host, dir: &Path, edit: Edit) -> Vec<String
     };
     let mut failed = Vec::new();
     let mut built = None;
-    for (openmp, threads, label) in RUNS {
+    for (openmp, threads, label) in RUNS.iter().filter(|(openmp, _, _)| *openmp != Some(true) || links_openmp()) {
         if built != Some(*openmp) {
             if let Err(e) = build(dir, *openmp) {
                 failed.push(format!("{label}: {e}"));
@@ -1070,7 +1131,12 @@ fn a_split_that_leaves_a_gap_or_overlaps_is_caught() {
     // An overlap computes elements twice, each time with the same bits: the
     // outputs are the native backend's unless two threads race on an output
     // they accumulate in, which is not certain, so they are reported, and
-    // the check of the pieces catches it.
+    // the check of the pieces catches it. The pieces are the OpenMP
+    // region's: built without OpenMP, a launch is one call.
+    if !links_openmp() {
+        eprintln!("no OpenMP: no piece to mutate");
+        return;
+    }
     let subjects = [&folded()[0], &subjects()[2]].map(|r| split_at(r, 0, 4).unwrap());
     type Mutate = fn(&str) -> String;
     let mutations: [(&str, Mutate, bool); 4] = [

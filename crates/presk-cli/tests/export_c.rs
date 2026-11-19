@@ -12,7 +12,8 @@
 //!   (`E8009`). `sample` was refused (`E8005`) until step 6.
 //! - Statements C1 and C2 (§3.8): every entry of `examples/tests/plan/entries.txt`
 //!   (`next_token`, which samples, since step 6), in `f64`, `f32` and
-//!   `bf16`, exported, built by its own
+//!   `bf16`, and in binary16 and `e8m15` since plan 0.18.2 step 3, exported,
+//!   built by its own
 //!   `Makefile` and run by its own `conformance/check.sh` as a subprocess,
 //!   its outputs compared with the native backend's bit for bit (C1). Each
 //!   program is exported twice, with the structured host (step 4) and with
@@ -28,7 +29,9 @@
 //! - Every program is built with GCC with OpenMP and without it (statement
 //!   C3's part on GCC, `-Wall -Wextra`, no warning) and run both ways; a
 //!   program with a launch divided among threads also on one thread
-//!   (`OMP_NUM_THREADS=1`): the same bits each time (step 5).
+//!   (`OMP_NUM_THREADS=1`): the same bits each time (step 5). With a C
+//!   compiler that links no OpenMP program, as Apple's clang, every program
+//!   is built as by `make OPENMP=` alone (D212).
 //! - Threads through the binary (step 5): MiniGPT's forward pass under a
 //!   plan stating splits at three depths (`examples/tests/export_c/minigpt-splits.json`),
 //!   and at a size where the native backend divides kernels by its own rule
@@ -65,8 +68,9 @@
 //!     and under the default layout, where the native backend divides the
 //!     largest by its own rule;
 //!   - every entry of the test set under the plan `presk plan` gives with the
-//!     frozen profile (`~/presk-data/ra4-model-0.8.0/profile.json`, or
-//!     `RA4_FROZEN`), in the three types, MiniGPT's also under the mixed
+//!     frozen profile (`RA4_FROZEN`, else
+//!     `~/presk-data/ra4-model-0.8.0/profile.json`, else the explain tests'
+//!     copy), in the three types, MiniGPT's also under the mixed
 //!     realization, and on integer weights;
 //!   - integer weights on trained checkpoints (step 7): the tiny MiniGPT's
 //!     forward pass, `next_token` and C5, and the course GPT at `T = 256`, in
@@ -75,13 +79,21 @@
 //!     and the x86-64 cross-compiler, both `zig cc` of `.venv-zig` (`make
 //!     zig`), without a warning. On aarch64, Clang's program is linked and
 //!     run, and gives the native bits; the x86-64 program is linked (musl,
-//!     static) and not run, no x86-64 machine or emulator being at hand.
-//!     `zig` ships no OpenMP runtime, so with `-fopenmp` both compile each
-//!     file of the program without linking it, against GCC's `omp.h`.
+//!     static), and since plan 0.18.2 step 3 run under qemu (`make qemu`)
+//!     and gives the native bits, a NaN that an invalid operation generates
+//!     excepted, whose sign x86-64 sets ([`nan_signs`], counted in the log);
+//!     until then it was not run, no x86-64
+//!     machine or emulator being at hand. `zig` ships no OpenMP runtime, so
+//!     with `-fopenmp` both compile each file of the program without linking
+//!     it, against GCC's `omp.h`. And since step 3 (FC2), GCC 16.2 (`.gcc`)
+//!     and clang 23 (`make llvm`) build every program without OpenMP, and
+//!     it gives the native bits.
+//! - binary16 and `e8m15` (plan 0.18.2 step 3, D217): every program above
+//!   in the five types, the course GPT's loss and gradient too.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 fn root() -> PathBuf {
@@ -92,6 +104,48 @@ fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("presk-export-c-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     d
+}
+
+/// Whether the C compiler the `Makefile`s build with (`$CC`, else `cc`)
+/// links and runs an OpenMP program. Apple's clang has no `-fopenmp`, and a
+/// clang without libomp compiles one and does not link it. Without OpenMP
+/// every program is built as by `make OPENMP=`, each divided launch one call
+/// over its whole loop, the same bits, and none is run on a team (D212).
+fn links_openmp() -> bool {
+    static LINKS: OnceLock<bool> = OnceLock::new();
+    *LINKS.get_or_init(|| {
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        let dir = scratch("openmp");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("omp.c"), "#include <omp.h>\n#include <stdio.h>\nint main(void) {\n    int n = 0;\n#pragma omp parallel\n    {\n#pragma omp atomic\n        n++;\n    }\n    printf(\"%d\\n\", n > 0 && omp_get_max_threads() > 0);\n    return 0;\n}\n").unwrap();
+        let built = Command::new(&cc).current_dir(&dir).args([presk_export_c::OPENMP, "-o", "omp", "omp.c"]).output().is_ok_and(|o| o.status.success());
+        let ran = built && Command::new(dir.join("omp")).output().is_ok_and(|o| o.status.success() && o.stdout == b"1\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        if !ran {
+            eprintln!("`{cc} {}` links no OpenMP program: every program built without OpenMP, none run on a team", presk_export_c::OPENMP);
+        }
+        ran
+    })
+}
+
+/// `make`'s arguments that build without OpenMP where the compiler links
+/// none ([`links_openmp`]).
+fn openmp_args() -> &'static [&'static str] {
+    if links_openmp() { &[] } else { &["OPENMP="] }
+}
+
+/// The program's own `conformance/check.sh` in `dir`, without the exact
+/// reference's comparison. Where the compiler links no OpenMP, the program
+/// is built first by `make OPENMP=`, which the script's `make` then finds
+/// up to date.
+fn check_sh(dir: &Path) -> Output {
+    if !links_openmp() {
+        let make = Command::new("make").args(["-s", "-C"]).arg(dir).args(openmp_args()).arg("model").output().unwrap();
+        if !make.status.success() || String::from_utf8_lossy(&make.stderr).contains("warning") {
+            return make;
+        }
+    }
+    Command::new("sh").arg(dir.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap()
 }
 
 fn presk(args: &[&str]) -> Output {
@@ -249,6 +303,10 @@ struct Checked {
     /// units of the band's `ε`.
     worst: f64,
     secs: f64,
+    /// The overflow guard's message where it stopped the native run the
+    /// export records, and the kernel interpreter's run in the same words
+    /// (plan 0.18.2 step 4, D218): no program, C1 vacuous.
+    guarded: Option<String>,
 }
 
 /// How an entry is exported: `--realize R` or `--plan @P`, and the type
@@ -283,8 +341,46 @@ fn rerun(dir: &Path, name: &str, program: &str, threads: Option<usize>) -> Resul
     if !run.status.success() {
         return Err(format!("{line}: {}", String::from_utf8_lossy(&run.stderr)));
     }
-    let same = std::fs::read(dir.join(format!("conformance/{name}.psk.d"))).ok() == std::fs::read(dir.join("conformance/native.psk.d")).ok();
-    if same { Ok(()) } else { Err(format!("{line}: other bits than the native backend's")) }
+    let (ours, native) = (dir.join(format!("conformance/{name}.psk.d")), dir.join("conformance/native.psk.d"));
+    if std::fs::read(&ours).ok() == std::fs::read(&native).ok() {
+        return Ok(());
+    }
+    match (name == "x86_64").then(|| nan_signs(&ours, &native)).flatten() {
+        Some(n) => {
+            println!("C3 on x86-64, {}: the native backend's bits but {n} NaNs of the other sign", dir.display());
+            Ok(())
+        }
+        None => Err(format!("{line}: other bits than the native backend's")),
+    }
+}
+
+/// x86-64's arithmetic gives the NaN an invalid operation generates (∞ − ∞,
+/// 0 · ∞) its sign bit set, where aarch64's leaves it clear: IEEE 754 does
+/// not specify that sign (§6.3), and a program carries the NaN on, stored
+/// in binary16 with its sign. So under qemu a NaN may be the native
+/// backend's of the other sign (D217): how many are, when every other byte
+/// of the two files is the same and each real either the same bits or a
+/// NaN whose sign alone differs; `None` otherwise.
+fn nan_signs(ours: &Path, native: &Path) -> Option<usize> {
+    let (a, b) = (std::fs::read(ours).ok()?, std::fs::read(native).ok()?);
+    if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| x ^ y != 0 && x ^ y != 0x80) {
+        return None;
+    }
+    let (a, b) = (reals(ours), reals(native));
+    if a.len() != b.len() {
+        return None;
+    }
+    let mut n = 0;
+    for (x, y) in a.iter().zip(&b) {
+        if x.to_bits() == y.to_bits() {
+            continue;
+        }
+        if !(x.is_nan() && x.to_bits() ^ y.to_bits() == 1 << 63) {
+            return None;
+        }
+        n += 1;
+    }
+    Some(n)
 }
 
 /// Whether the program's `Makefile` builds it with OpenMP: whether a launch
@@ -298,27 +394,62 @@ fn divided(dir: &Path) -> bool {
 /// ways (step 5): on one thread when it divides a launch; built the other
 /// way by its `Makefile`, without OpenMP or with it, without a warning, and
 /// run; and with `PRESK_C3=1`, statement C3's other compilers ([`c3`]).
-/// The ways it was run, or the first that fails.
+/// Where the compiler links no OpenMP, the program was built without it,
+/// and there is no other way to build it. The ways it was run, or the first
+/// that fails.
 fn other_ways(dir: &Path) -> Result<Vec<&'static str>, String> {
     let mut ways = Vec::new();
-    let omp = divided(dir);
-    if omp {
-        rerun(dir, "one-thread", "./model", Some(1))?;
-        ways.push("one thread");
+    if links_openmp() {
+        let omp = divided(dir);
+        if omp {
+            rerun(dir, "one-thread", "./model", Some(1))?;
+            ways.push("one thread");
+        }
+        let other = if omp { "OPENMP=".to_string() } else { format!("OPENMP={}", presk_export_c::OPENMP) };
+        let make = Command::new("make").args(["-s", "-B", "-C"]).arg(dir).arg(&other).arg("model").output().unwrap();
+        let err = String::from_utf8_lossy(&make.stderr);
+        if !make.status.success() || err.contains("warning") {
+            return Err(format!("make {other}: {err}"));
+        }
+        rerun(dir, "other-build", "./model", None)?;
+        ways.push(if omp { "without OpenMP" } else { "with OpenMP" });
     }
-    let other = if omp { "OPENMP=".to_string() } else { format!("OPENMP={}", presk_export_c::OPENMP) };
-    let make = Command::new("make").args(["-s", "-B", "-C"]).arg(dir).arg(&other).arg("model").output().unwrap();
-    let err = String::from_utf8_lossy(&make.stderr);
-    if !make.status.success() || err.contains("warning") {
-        return Err(format!("make {other}: {err}"));
-    }
-    rerun(dir, "other-build", "./model", None)?;
-    ways.push(if omp { "without OpenMP" } else { "with OpenMP" });
     if std::env::var("PRESK_C3").is_ok_and(|v| v == "1") {
         c3(dir)?;
         ways.push("Clang and x86-64");
+        ways.extend(other_compilers(dir)?);
     }
     Ok(ways)
+}
+
+/// The compilers of the workspace beside the system's (plan 0.18.2 step 3,
+/// FC2): GCC 16.2 (`.gcc`, `experiments/gcc/setup.sh`) and clang 23 (`make
+/// llvm`), each where it is installed, building the program without
+/// OpenMP, which neither installation ships, with the export's flags and
+/// no warning, and running it as `check.sh` does: the native bits.
+fn other_compilers(dir: &Path) -> Result<Vec<&'static str>, String> {
+    let mut ways = Vec::new();
+    let flags: Vec<&str> = presk_export_c::CFLAGS.iter().chain(presk_export_c::WARNINGS).copied().collect();
+    for (tag, cc) in [("GCC 16.2", root().join(".gcc/bin/gcc")), ("clang 23", root().join(".llvm/bin/clang"))] {
+        if !cc.exists() {
+            continue;
+        }
+        let program = format!("model-{}", tag.replace([' ', '.'], ""));
+        let o = Command::new(&cc).args(&flags).args(["-o", &program, "main.c", "model.c", "presk_rt.c", "presk_libm.c", "-lm"]).current_dir(dir).output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        if !o.status.success() || err.contains("warning") {
+            return Err(format!("{tag}: {err}"));
+        }
+        rerun(dir, &program, &format!("./{program}"), None)?;
+        ways.push(tag);
+    }
+    Ok(ways)
+}
+
+/// qemu's x86-64 emulator (`make qemu`), which runs statement C3's x86-64
+/// program where it is installed (plan 0.18.2 step 3).
+fn qemu() -> Option<PathBuf> {
+    Some(root().join(".qemu/bin/qemu-x86_64-static")).filter(|q| q.exists())
 }
 
 /// `zig cc`, the Clang and the x86-64 cross-compiler of statement C3: zig
@@ -356,8 +487,9 @@ static ZIG_WARM: Mutex<bool> = Mutex::new(false);
 
 /// Statement C3 on Clang and x86-64 (`zig cc`), `-Wall -Wextra -std=c11`
 /// and the program's own flags, no warning: on aarch64 linked, run and
-/// compared bit for bit; for x86_64-linux-musl linked; with `-fopenmp`,
-/// the files that print OpenMP regions compiled, not linked.
+/// compared bit for bit; for x86_64-linux-musl linked, and run under qemu
+/// and compared where `make qemu` installed it (plan 0.18.2 step 3); with
+/// `-fopenmp`, the files that print OpenMP regions compiled, not linked.
 fn c3(dir: &Path) -> Result<(), String> {
     let mut warm = ZIG_WARM.lock().unwrap();
     if *warm {
@@ -401,7 +533,11 @@ fn c3_runs(dir: &Path) -> Result<(), String> {
             zig_cc(format!("{tag}, {f} with OpenMP"), [t.clone(), flags.clone(), openmp].concat())?;
         }
     }
-    rerun(dir, "clang", "./model-clang", None)
+    rerun(dir, "clang", "./model-clang", None)?;
+    match qemu() {
+        Some(q) => rerun(dir, "x86_64", &format!("{} ./model-x86_64", q.display()), None),
+        None => Ok(()),
+    }
 }
 
 /// Exports a program into `out` and runs its own script: build, run, `cmp`
@@ -414,6 +550,12 @@ fn export_one(what: &str, file: &str, entry: &str, args: &[String], under: &Unde
 
 /// [`export_one`], and what `presk export` printed.
 fn export_line(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path) -> (bool, String, String) {
+    export_try(what, file, entry, args, under, extra, out).unwrap_or_else(|e| panic!("{what}: presk export failed:\n{e}"))
+}
+
+/// [`export_line`], or the overflow guard's error line where it stopped
+/// the native run the export records (`E7007`, D218).
+fn export_try(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path) -> Result<(bool, String, String), String> {
     let mut all: Vec<String> = ["export", file, "--target", "c", "--entry", entry].iter().map(|s| s.to_string()).collect();
     all.extend(under.flags.iter().cloned());
     all.push("-o".into());
@@ -429,21 +571,44 @@ fn export_line(what: &str, file: &str, entry: &str, args: &[String], under: &Und
     }
     let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
     let r = presk(&refs);
-    assert!(r.status.success(), "{what}: presk export failed:\n{}", stderr(&r));
+    if !r.status.success() {
+        let e = stderr(&r);
+        match e.lines().find(|l| l.starts_with("[E7007] Error:")) {
+            Some(line) => return Err(line.to_string()),
+            None => panic!("{what}: presk export failed:\n{e}"),
+        }
+    }
     let printed = stderr(&r);
-    let check = Command::new("sh").arg(out.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
+    let check = check_sh(&out);
     let c1 = check.status.success() && String::from_utf8_lossy(&check.stdout).contains("C1 holds");
     // Built with -Wall -Wextra by its Makefile: no warning (C3, GCC's part).
     let built = String::from_utf8_lossy(&check.stderr);
     assert!(!built.contains("warning"), "{what}: the build warns:\n{built}");
     let log = format!("{}{}", String::from_utf8_lossy(&check.stdout), built);
     if !c1 {
-        return (false, log, printed);
+        return Ok((false, log, printed));
     }
     match other_ways(out) {
-        Ok(_) => (true, log, printed),
-        Err(e) => (false, format!("{log}{e}\n"), printed),
+        Ok(_) => Ok((true, log, printed)),
+        Err(e) => Ok((false, format!("{log}{e}\n"), printed)),
     }
+}
+
+/// The row of a program the overflow guard stops (D218): its native run
+/// failed with `guard`, so the export refused it, and the kernel
+/// interpreter's run fails with the same line.
+fn guarded_row(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], guard: &str) -> Checked {
+    let mut all: Vec<String> = ["run", file, "--entry", entry, "--backend", "kernel"].iter().map(|s| s.to_string()).collect();
+    all.extend(under.flags.iter().cloned());
+    all.extend(args.iter().cloned());
+    if let Some(i) = extra.iter().position(|a| *a == "--weights") {
+        all.extend(["--weights".to_string(), extra[i + 1].to_string()]);
+    }
+    let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
+    let r = presk(&refs);
+    let e = stderr(&r);
+    assert!(!r.status.success() && e.lines().any(|l| l == guard), "{what}: the native run failed with\n{guard}\nand the kernel interpreter's with\n{e}");
+    Checked { what: what.to_string(), c1: true, flat: true, memory: Ok(()), divided: false, elements: 0, nonzero: 0, outside: None, worst: 0.0, secs: 0.0, guarded: Some(guard.to_string()) }
 }
 
 /// The first number after `key` in `text`.
@@ -493,7 +658,10 @@ fn memory_holds(what: &str, file: &str, entry: &str, args: &[String], under: &Un
 
 fn export_and_check(what: &str, file: &str, entry: &str, args: &[String], under: &Under, extra: &[&str], out: &Path) -> Checked {
     let t0 = Instant::now();
-    let (c1, log, exported) = export_line(what, file, entry, args, under, extra, out);
+    let (c1, log, exported) = match export_try(what, file, entry, args, under, extra, out) {
+        Ok(x) => x,
+        Err(guard) => return guarded_row(what, file, entry, args, under, extra, &guard),
+    };
     // The straight-line host, the structured one's oracle: the same bytes.
     let flat_dir = out.with_extension("flat");
     let straight: Vec<&str> = extra.iter().copied().chain(std::iter::once("--straight-line")).collect();
@@ -509,7 +677,7 @@ fn export_and_check(what: &str, file: &str, entry: &str, args: &[String], under:
     if let Err(e) = &memory {
         eprintln!("{what}: M1 fails: {e}");
     }
-    let mut checked = Checked { what: what.to_string(), c1, flat, memory, divided: divided(out), elements: native.len(), nonzero: native.iter().filter(|x| **x != 0.0).count(), outside: None, worst: 0.0, secs: 0.0 };
+    let mut checked = Checked { what: what.to_string(), c1, flat, memory, divided: divided(out), elements: native.len(), nonzero: native.iter().filter(|x| **x != 0.0).count(), outside: None, worst: 0.0, secs: 0.0, guarded: None };
     if !c1 {
         eprintln!("{what}: C1 fails:\n{log}");
     } else if conf.join("exact.psk.d").exists() {
@@ -543,7 +711,37 @@ fn test_set() -> Vec<Case> {
         .collect()
 }
 
-/// Runs `jobs` on every core, returns their results in order.
+/// The jobs [`parallel`] runs at once in this test binary: one per core.
+/// Each test runs its jobs on every core and the tests run side by side,
+/// so without the bound cores² builds and runs would be under way at once,
+/// each holding two pipes here: on a Mac of 12 cores, past the 256 open
+/// files macOS allows a process by default (D213).
+static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// A core's turn, given back when dropped, by a job that panics too.
+struct Turn;
+
+impl Turn {
+    fn take() -> Turn {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let mut running = RUNNING.0.lock().unwrap_or_else(PoisonError::into_inner);
+        while *running >= cores {
+            running = RUNNING.1.wait(running).unwrap_or_else(PoisonError::into_inner);
+        }
+        *running += 1;
+        Turn
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        *RUNNING.0.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        RUNNING.1.notify_one();
+    }
+}
+
+/// Runs `jobs` on every core, returns their results in order. A job waits
+/// for its [`Turn`]: one per core in the whole binary.
 fn parallel<T: Send>(jobs: Vec<Box<dyn FnOnce() -> T + Send + '_>>) -> Vec<T> {
     let n = jobs.len();
     let queue = Mutex::new(jobs.into_iter().enumerate().collect::<Vec<_>>());
@@ -554,7 +752,9 @@ fn parallel<T: Send>(jobs: Vec<Box<dyn FnOnce() -> T + Send + '_>>) -> Vec<T> {
             s.spawn(|| {
                 loop {
                     let Some((i, job)) = queue.lock().unwrap().pop() else { break };
+                    let turn = Turn::take();
                     let r = job();
+                    drop(turn);
                     results.lock().unwrap()[i] = Some(r);
                 }
             });
@@ -567,6 +767,10 @@ fn report(rows: &[Checked]) {
     eprintln!("{:<52} {:>4} {:>5} {:>4} {:>7} {:>7} {:>7} {:>12} {:>9} {:>6}", "entry", "C1", "flat", "M1", "threads", "reals", "≠ 0", "outside C/N", "worst/ε", "s");
     for r in rows {
         let outside = r.outside.map(|(c, n)| format!("{c}/{n}")).unwrap_or_else(|| "—".into());
+        if let Some(g) = &r.guarded {
+            eprintln!("{:<52} the overflow guard stops it on the native backend and the kernel interpreter: {g}", r.what);
+            continue;
+        }
         eprintln!("{:<52} {:>4} {:>5} {:>4} {:>7} {:>7} {:>7} {:>12} {:>9.3} {:>6.1}", r.what, if r.c1 { "ok" } else { "FAIL" }, if r.flat { "same" } else { "DIFF" }, if r.memory.is_ok() { "ok" } else { "FAIL" }, if r.divided { "split" } else { "one" }, r.elements, r.nonzero, outside, r.worst, r.secs);
     }
 }
@@ -590,9 +794,30 @@ fn assert_c1_c2(rows: &[Checked]) {
 /// edges, where the host converts them.
 const MIXED: &str = "@examples/tests/plan/mixed-realization.json";
 
-/// C1 and C2 on the test set: every entry, three types, on the synthesized
+/// Two more of MiniGPT's (plan 0.18.2 step 3): its sites and some of its
+/// parameters in binary16 and `e8m15` beside `f32`, `bf16` and `f64`, the
+/// default `f32` or binary16, so that buffers of codes meet buffers of the
+/// other types at kernels' edges and in wider kernels' loads.
+const MIXED_CODES: [&str; 2] = ["@examples/tests/plan/mixed-codes-realization.json", "@examples/tests/plan/mixed-f16-realization.json"];
+
+/// The label of a realization in a test's report.
+fn label(realize: &str) -> &str {
+    match realize {
+        MIXED => "mixed",
+        r if r == MIXED_CODES[0] => "mixed-codes",
+        r if r == MIXED_CODES[1] => "mixed-f16",
+        r => r,
+    }
+}
+
+/// The uniform realizations every program is exported under: the three
+/// native types, and binary16 and `e8m15`, stored as their codes and
+/// computed in `float` (plan 0.18.2 step 3, D217).
+const TYPES: [&str; 5] = ["f64", "f32", "bf16", "f16", "e8m15"];
+
+/// C1 and C2 on the test set: every entry, five types, on the synthesized
 /// parameters and with their zeros drawn; MiniGPT's five entries also under
-/// a mixed realization.
+/// a mixed realization, and under two in binary16 and `e8m15`.
 #[test]
 fn every_entry_of_the_test_set_computes_the_native_backends_bits() {
     let t0 = Instant::now();
@@ -600,11 +825,11 @@ fn every_entry_of_the_test_set_computes_the_native_backends_bits() {
     let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
     for case in test_set() {
         let minigpt = case.file.contains("minigpt");
-        for realize in ["f64", "f32", "bf16", MIXED] {
-            if realize == MIXED && !minigpt {
+        for realize in TYPES.into_iter().chain([MIXED]).chain(MIXED_CODES) {
+            if realize.starts_with('@') && !minigpt {
                 continue;
             }
-            let label = if realize == MIXED { "mixed" } else { realize };
+            let label = label(realize);
             let dir = base.join(format!("{}-{}-{label}", Path::new(&case.file).file_stem().unwrap().to_string_lossy(), case.entry.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
             let case = Case { file: case.file.clone(), entry: case.entry.clone(), args: case.args.clone() };
             jobs.push(Box::new(move || both_weights(&format!("{} {label}", case.entry), &case, &realized(realize), &[], &dir)));
@@ -615,7 +840,7 @@ fn every_entry_of_the_test_set_computes_the_native_backends_bits() {
     eprintln!("{} programs in {:.1} s", rows.len(), t0.elapsed().as_secs_f64());
     assert_c1_c2(&rows);
     // With its zeros drawn, no entry's outputs are all zero.
-    for r in rows.iter().filter(|r| r.what.contains("drawn")) {
+    for r in rows.iter().filter(|r| r.what.contains("drawn") && r.guarded.is_none()) {
         assert!(r.nonzero > 0, "{}: every output is zero", r.what);
     }
     let _ = std::fs::remove_dir_all(&base);
@@ -722,7 +947,13 @@ fn a_product_and_its_epilogue_compute_the_native_backends_bits() {
 
 /// The frozen model's profile, which `presk plan` plans with (0.8.0, D71).
 fn frozen_profile() -> PathBuf {
-    let p = std::env::var("RA4_FROZEN").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join("presk-data/ra4-model-0.8.0/profile.json"));
+    // On the measurement machine its profile; elsewhere the explain tests'
+    // copy, the same model without its calibration samples, as CI names it
+    // (D212).
+    let p = std::env::var("RA4_FROZEN").map(PathBuf::from).unwrap_or_else(|_| {
+        let measured = PathBuf::from(std::env::var("HOME").unwrap()).join("presk-data/ra4-model-0.8.0/profile.json");
+        if measured.exists() { measured } else { root().join("crates/presk-explain/tests/data/x925-frozen.json") }
+    });
     assert!(p.exists(), "{}: the frozen profile is absent (RA4_FROZEN names another)", p.display());
     p
 }
@@ -737,7 +968,8 @@ fn frozen_profile() -> PathBuf {
 /// `bf16` program computes inside a group, a residual `LayerNorm.apply.fwd`
 /// shares in `f32`: that layout goes, as each refusal (`E7002`) names it.
 fn plan_of(file: &str, entry: &str, args: &[String], realize: &str, out: &Path) {
-    let planned = if realize == "bf16" { "f32" } else { realize };
+    let narrow = ["bf16", "f16", "e8m15"].contains(&realize);
+    let planned = if narrow { "f32" } else { realize };
     let mut all: Vec<String> = ["plan", file, "--entry", entry, "--realize", planned, "--profile"].iter().map(|s| s.to_string()).collect();
     all.push(frozen_profile().display().to_string());
     all.push("--out".into());
@@ -749,8 +981,8 @@ fn plan_of(file: &str, entry: &str, args: &[String], realize: &str, out: &Path) 
     let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
     let layouts = json["layout"].as_object().map_or(0, |l| l.len());
     assert!(layouts > 0, "presk plan {entry} ({planned}) states no layout");
-    if realize == "bf16" {
-        json["realization"]["default"] = "bf16".into();
+    if narrow {
+        json["realization"]["default"] = realize.into();
         for l in json["layout"].as_object_mut().unwrap().values_mut() {
             let l = l.as_object_mut().unwrap();
             if l.contains_key("lanes") {
@@ -768,8 +1000,8 @@ fn plan_of(file: &str, entry: &str, args: &[String], realize: &str, out: &Path) 
                 break;
             }
             let e = stderr(&r);
-            let nest = e.split("the plan's layout of `").nth(1).and_then(|t| t.split('`').next()).unwrap_or_else(|| panic!("presk dump {entry} (bf16): {e}"));
-            assert!(e.contains("inside the fusion group") && json["layout"].as_object_mut().unwrap().remove(nest).is_some(), "presk dump {entry} (bf16): {e}");
+            let nest = e.split("the plan's layout of `").nth(1).and_then(|t| t.split('`').next()).unwrap_or_else(|| panic!("presk dump {entry} ({realize}): {e}"));
+            assert!(e.contains("inside the fusion group") && json["layout"].as_object_mut().unwrap().remove(nest).is_some(), "presk dump {entry} ({realize}): {e}");
             std::fs::write(out, serde_json::to_string_pretty(&json).unwrap()).unwrap();
         }
     }
@@ -818,7 +1050,7 @@ fn every_entry_under_its_plan_computes_the_native_backends_bits() {
     let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
     for case in test_set() {
         let minigpt = case.file.contains("minigpt");
-        for realize in ["f64", "f32", "bf16", MIXED] {
+        for realize in TYPES.into_iter().chain([MIXED]) {
             if realize == MIXED && !minigpt {
                 continue;
             }
@@ -863,7 +1095,7 @@ fn the_course_gpt_computes_the_native_backends_bits() {
     let wide: Vec<String> = ["--dim", "B=16", "--dim", "T=256"].iter().map(|s| s.to_string()).collect();
     std::fs::create_dir_all(&base).unwrap();
     let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
-    for realize in ["f64", "f32", "bf16"] {
+    for realize in TYPES {
         let (base, small, full, ckpt) = (base.clone(), small.clone(), full.clone(), ckpt.clone());
         jobs.push(Box::new(move || {
             let dir = base.join(format!("gpt-{realize}"));
@@ -885,7 +1117,7 @@ fn the_course_gpt_computes_the_native_backends_bits() {
     // default layout, where the native backend divides the kernels above its
     // threshold of work among every core.
     assert!(ckpt.exists(), "{}: absent (make corpus-gpt writes a checkpoint)", ckpt.display());
-    for realize in ["f64", "f32", "bf16"] {
+    for realize in TYPES {
         let (base, wide, ckpt) = (base.clone(), wide.clone(), ckpt.clone());
         jobs.push(Box::new(move || {
             let dir = base.join(format!("gpt16-{realize}"));
@@ -897,6 +1129,24 @@ fn the_course_gpt_computes_the_native_backends_bits() {
     {
         let (base, wide, ckpt) = (base.clone(), wide.clone(), ckpt.clone());
         jobs.push(Box::new(move || vec![export_and_check("GPT.apply f32, B=16 T=256, trained, the default's", file, "GPT.apply", &wide, &realized("f32"), &["--weights", ckpt.to_str().unwrap(), "--no-exact"], &base.join("gpt16-default"))]));
+    }
+    // The course GPT's loss and gradient at its constants (plan 0.18.2
+    // step 3, FC2's C half) in binary16 and `e8m15`, at B = 1, T = 8, their
+    // zeros drawn, without the exact reference.
+    for realize in ["f16", "e8m15"] {
+        for entry in ["loss", "loss_grad"] {
+            let (base, small) = (base.clone(), small.clone());
+            jobs.push(Box::new(move || {
+                let grad = "examples/experiments/gpt_grad.psk";
+                let args: Vec<String> = ["--const", "V=92", "--const", "D=384", "--const", "H=6", "--const", "L=6"].iter().map(|s| s.to_string()).chain(small).collect();
+                let dir = base.join(format!("gpt-{entry}-{realize}"));
+                let mut rows = vec![export_and_check(&format!("GPT {entry} {realize}, B=1 T=8"), grad, entry, &args, &realized(realize), &["--no-exact"], &dir)];
+                let drawn = dir.with_extension("drawn.psk.d");
+                draw_zeros(&dir.join("conformance/weights.psk.d"), &drawn);
+                rows.push(export_and_check(&format!("GPT {entry} {realize}, B=1 T=8, zeros drawn"), grad, entry, &args, &realized(realize), &["--weights", drawn.to_str().unwrap(), "--no-exact"], &dir.with_extension("drawn")));
+                rows
+            }));
+        }
     }
     let rows: Vec<Checked> = parallel(jobs).into_iter().flatten().collect();
     report(&rows);
@@ -941,7 +1191,7 @@ fn export_serve(realize: &str, weights: Option<&Path>, extra: &[&str], out: &Pat
 }
 
 fn build_generate(dir: &Path) {
-    let make = Command::new("make").args(["-s", "-B", "-C"]).arg(dir).output().unwrap();
+    let make = Command::new("make").args(["-s", "-B", "-C"]).arg(dir).args(openmp_args()).output().unwrap();
     let err = String::from_utf8_lossy(&make.stderr);
     assert!(make.status.success() && !err.contains("warning"), "make in {}: {err}", dir.display());
 }
@@ -1014,8 +1264,9 @@ fn drawn_weights(base: &Path) -> PathBuf {
 }
 
 /// Statement C5 in `make test`, on the example's parameters with their zeros
-/// drawn: in `f64`, `f32` and `bf16`, structured and straight-line, greedy
-/// and sampled, every program's `generate` gives `presk serve`'s document.
+/// drawn: in `f64`, `f32`, `bf16`, binary16 and `e8m15`, structured and
+/// straight-line, greedy and sampled, every program's `generate` gives
+/// `presk serve`'s document.
 /// And each of three mutations of the loop changes the tokens.
 #[test]
 fn generate_gives_presk_serves_tokens() {
@@ -1023,7 +1274,7 @@ fn generate_gives_presk_serves_tokens() {
     let base = scratch("serve");
     std::fs::create_dir_all(&base).unwrap();
     let drawn = drawn_weights(&base);
-    let jobs: Vec<Box<dyn FnOnce() -> Vec<String> + Send>> = ["f64", "f32", "bf16"]
+    let jobs: Vec<Box<dyn FnOnce() -> Vec<String> + Send>> = TYPES
         .into_iter()
         .flat_map(|r| [(r, false), (r, true)])
         .map(|(realize, flat)| {
@@ -1033,7 +1284,7 @@ fn generate_gives_presk_serves_tokens() {
                 let extra: &[&str] = if flat { &["--straight-line"] } else { &[] };
                 export_serve(realize, Some(&drawn), extra, &dir);
                 // C1 on one call too, the conformance script's.
-                let check = Command::new("sh").arg(dir.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
+                let check = check_sh(&dir);
                 assert!(String::from_utf8_lossy(&check.stdout).contains("C1 holds"), "{realize}: {}", String::from_utf8_lossy(&check.stderr));
                 c5(&format!("{realize}{}, zeros drawn", if flat { ", straight-line" } else { "" }), &dir, realize, &drawn)
             }) as Box<dyn FnOnce() -> Vec<String> + Send>
@@ -1095,7 +1346,7 @@ fn the_trained_minigpt_generates_presk_serves_tokens() {
     let base = scratch("serve-trained");
     std::fs::create_dir_all(&base).unwrap();
     let mut jobs: Vec<Box<dyn FnOnce() -> Vec<Checked> + Send>> = Vec::new();
-    for realize in ["f64", "f32", "bf16"] {
+    for realize in TYPES {
         for flat in [false, true] {
             let (base, ckpt) = (base.clone(), ckpt.clone());
             jobs.push(Box::new(move || {
@@ -1322,7 +1573,12 @@ fn a_program_on_integer_weights_that_departs_from_presk_rt_fails_c1() {
                 let text = std::fs::read_to_string(&path).unwrap();
                 assert_eq!(text.matches(from).count(), 1, "{what}: `{from}` is not once in {file}");
                 std::fs::write(&path, text.replace(from, to)).unwrap();
-                let check = Command::new("sh").arg(d.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
+                // The program rebuilt from the mutated source: written within
+                // the second of the build, the source is not newer than
+                // `model` to a make that compares whole seconds, and on the
+                // Mac the three mutations went unseen (D213).
+                std::fs::remove_file(d.join("model")).unwrap();
+                let check = check_sh(&d);
                 let err = String::from_utf8_lossy(&check.stderr);
                 assert!(!check.status.success() && err.contains("C1 fails"), "{what}: the outputs did not change:\n{}{err}", String::from_utf8_lossy(&check.stdout));
                 what
@@ -1550,9 +1806,9 @@ fn a_context_the_parameters_do_not_fix_is_padded() {
         let dir = base.join(realize);
         let o = presk(&[&["export", "examples/coverage/llama3.psk", "--target", "c", "--serve", "--dim", "T=10", "--realize", realize, "-o", dir.to_str().unwrap()][..], &consts[..]].concat());
         assert!(o.status.success(), "{realize}: {}", stderr(&o));
-        let check = Command::new("sh").arg(dir.join("conformance/check.sh")).env("PRESK", "/nonexistent").output().unwrap();
+        let check = check_sh(&dir);
         assert!(String::from_utf8_lossy(&check.stdout).contains("C1 holds"), "{realize}: {}", String::from_utf8_lossy(&check.stderr));
-        let built = Command::new("make").args(["-s", "-C", dir.to_str().unwrap(), "generate"]).output().unwrap();
+        let built = Command::new("make").args(["-s", "-C", dir.to_str().unwrap()]).args(openmp_args()).arg("generate").output().unwrap();
         assert!(built.status.success(), "{realize}: {}", String::from_utf8_lossy(&built.stderr));
         let weights = dir.join("conformance/weights.psk.d");
         for (temperature, tokens) in [("0", "4"), ("0.8", "4"), ("0", "9")] {

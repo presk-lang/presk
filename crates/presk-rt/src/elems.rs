@@ -61,6 +61,9 @@ macro_rules! pooled {
 pooled!(f64, f64::NAN);
 pooled!(f32, f32::NAN);
 pooled!(u16, 0x7fc1);
+// The codes of binary16 and `e8m15` (plan 0.18.2 step 1): all ones, a NaN
+// of either.
+pooled!(u8, 0xff);
 pooled!(i64, i64::MIN);
 
 /// Allocations of at least this many bytes are kept for reuse.

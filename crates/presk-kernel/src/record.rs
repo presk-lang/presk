@@ -82,6 +82,10 @@ pub enum Store {
     F64,
     F32,
     Bf16,
+    /// binary16's or `e8m15`'s codes, [`Dtype::bytes`] bytes each (plan
+    /// 0.18.2 step 1, D215), which the C export holds as `uint16_t` and
+    /// `presk_e8m15` since step 3 (D217).
+    Codes(presk_format::Float),
     I64,
     /// Integer weights of `bits` (8 or 4) and their scales (step 7): the
     /// scales constant along an axis of length `k`, the product of the axes
@@ -96,6 +100,7 @@ impl Store {
             Dtype::F64 => Store::F64,
             Dtype::F32 => Store::F32,
             Dtype::BF16 => Store::Bf16,
+            d if d.coded() => Store::Codes(d.format()),
             d => d.unreachable(),
         }
     }
@@ -107,6 +112,7 @@ impl Store {
             Store::F64 | Store::I64 => 8,
             Store::F32 => 4,
             Store::Bf16 => 2,
+            Store::Codes(f) => Dtype::new(f).bytes(),
             Store::Quant { .. } => 1,
         }
     }
@@ -116,6 +122,7 @@ impl Store {
             Store::F64 => "f64",
             Store::F32 => "f32",
             Store::Bf16 => "bf16",
+            Store::Codes(f) => Dtype::new(f).name(),
             Store::I64 => "i64",
             Store::Quant { bits: 8, .. } => "int8",
             Store::Quant { .. } => "int4",
@@ -124,12 +131,14 @@ impl Store {
 
     /// The type of a buffer the host builds from another's values with
     /// `with_data` (a stack, a slice written back, a scattered slice): `f32`
-    /// stays `f32`, indices stay indices, anything else becomes `f64`, as
+    /// stays `f32`, indices stay indices, binary16's and `e8m15`'s codes
+    /// stay codes (plan 0.18.2 step 1), anything else becomes `f64`, as
     /// `presk-kernel`'s host does. Exact for every value the source holds.
     fn rebuilt(self) -> Store {
         match self {
             Store::F32 => Store::F32,
             Store::I64 => Store::I64,
+            Store::Codes(f) => Store::Codes(f),
             Store::F64 | Store::Bf16 | Store::Quant { .. } => Store::F64,
         }
     }
@@ -249,7 +258,9 @@ pub enum Op {
     Scalar { buf: usize, x: Scalar },
     /// `n` elements of `src` into `dst` from element `at`, converted to
     /// `dst`'s type through `f64`, as `Buf::of(to, b.to_f64())`.
-    Copy { dst: usize, at: usize, src: View, n: usize },
+    /// `edge`: an operand converted to a launch's type at its edge, a
+    /// narrowing the overflow guard checks (plan 0.18.2 step 4, D218).
+    Copy { dst: usize, at: usize, src: View, n: usize, edge: bool },
     /// `out = a op b` in `f64`, the host's arithmetic on hyperparameters.
     Hyper { out: usize, op: HyperOp, a: Scalar, b: Scalar },
     /// `out` = the first element of `src`, as `f64` (`Value::scalar_f64`).
@@ -690,6 +701,7 @@ impl Recorder {
                     Buf::F64(_) => Store::F64,
                     Buf::F32(_) => Store::F32,
                     Buf::Bf16(_) => Store::Bf16,
+                    Buf::Codes(f, _) => Store::Codes(*f),
                     Buf::Quant(q) => Store::Quant { bits: q.bits, k: q.k, inner: q.inner },
                     other => return internal(format!("an input of type {}", other.dtype())),
                 };
@@ -1051,7 +1063,7 @@ impl Recorder {
                 // Converted at the kernel's edge, as the backend converts it.
                 let n = v.numel();
                 let b = self.buf(*want, n, Made::Copy);
-                self.push(Op::Copy { dst: b, at: 0, src: v.clone(), n });
+                self.push(Op::Copy { dst: b, at: 0, src: v.clone(), n, edge: true });
                 ins.push(View { buf: b, off: 0, shape: v.shape.clone(), bound: v.bound });
             }
         }
@@ -1066,6 +1078,28 @@ impl Recorder {
         let b = self.buf(Store::of(dtype), 1, Made::Scalar);
         self.push(Op::Scalar { buf: b, x });
         View { buf: b, off: 0, shape: vec![], bound: None }
+    }
+
+    /// Operand `i` of the next launch's `n`: a host scalar made a buffer of
+    /// the store the kernel reads it from, the arithmetic type's where the
+    /// host keeps a constant the nest's storage type does not hold (plan
+    /// 0.18.2 step 6, D220); any other operand as `as_tensor`.
+    fn operand(&mut self, s: &Sym, dtype: Dtype, i: usize, n: usize) -> R<View> {
+        let want = self.events.front().filter(|e| !e.pack && e.inputs.len() == n).map(|e| e.inputs[i]);
+        let x = match s {
+            Sym::Nat(n) => Scalar::Const(*n as f64),
+            Sym::Int(n) => Scalar::Const(*n as f64),
+            Sym::F64(x) => *x,
+            _ => return self.as_tensor(s, dtype),
+        };
+        match want {
+            Some(w @ (Store::F32 | Store::F64 | Store::Bf16 | Store::Codes(_))) if w != Store::of(dtype) => {
+                let b = self.buf(w, 1, Made::Scalar);
+                self.push(Op::Scalar { buf: b, x });
+                Ok(View { buf: b, off: 0, shape: vec![], bound: None })
+            }
+            _ => self.as_tensor(s, dtype),
+        }
     }
 
     /// The host's `as_tensor`.
@@ -1271,7 +1305,7 @@ impl Recorder {
                         Ok(rebuild(x, &mut mapped.into_iter()))
                     }
                     (x, y) => {
-                        let (tx, ty) = (self.as_tensor(x, dtype)?, self.as_tensor(y, dtype)?);
+                        let (tx, ty) = (self.operand(x, dtype, 0, 2)?, self.operand(y, dtype, 1, 2)?);
                         self.tensor_prim(&[tx, ty])
                     }
                 }
@@ -1301,10 +1335,10 @@ impl Recorder {
                     }
                 }
                 let mut ins = Vec::with_capacity(args.len());
-                for s in args {
+                for (i, s) in args.iter().enumerate() {
                     match s {
                         Sym::Tensor(v) if v.bound.is_some() => ins.push(v.clone()),
-                        other => ins.push(self.as_tensor(other, dtype)?),
+                        other => ins.push(self.operand(other, dtype, i, args.len())?),
                     }
                 }
                 self.tensor_prim(&ins)
@@ -1327,8 +1361,8 @@ impl Recorder {
             return Ok(rebuild(&template, &mut out.into_iter()));
         }
         let mut ins = Vec::with_capacity(vals.len());
-        for v in vals {
-            ins.push(self.as_tensor(v, dtype)?);
+        for (i, v) in vals.iter().enumerate() {
+            ins.push(self.operand(v, dtype, i, vals.len())?);
         }
         Ok(Sym::Tensor(self.consume(&ins, false)?))
     }
@@ -1343,6 +1377,7 @@ impl Recorder {
                     Buf::F64(_) => Store::F64,
                     Buf::F32(_) => Store::F32,
                     Buf::Bf16(_) => Store::Bf16,
+                    Buf::Codes(f, _) => Store::Codes(*f),
                     Buf::I64(_) => Store::I64,
                     other => return internal(format!("a stack of no part of type {}", other.dtype())),
                 };
@@ -1382,7 +1417,7 @@ impl Recorder {
                 let mut at = 0;
                 for v in views {
                     let k = v.numel();
-                    self.push(Op::Copy { dst: b, at, src: v, n: k });
+                    self.push(Op::Copy { dst: b, at, src: v, n: k, edge: false });
                     at += k;
                 }
                 let mut shape = vec![parts.len()];
@@ -1431,8 +1466,8 @@ impl Recorder {
                     let n = t.numel();
                     let chunk = n / t.shape[0];
                     let b = self.buf(self.rec.bufs[t.buf].store.rebuilt(), n, Made::Copy);
-                    self.push(Op::Copy { dst: b, at: 0, src: t.clone(), n });
-                    self.push(Op::Copy { dst: b, at: i * chunk, src: v.clone(), n: chunk.min(v.numel()) });
+                    self.push(Op::Copy { dst: b, at: 0, src: t.clone(), n, edge: false });
+                    self.push(Op::Copy { dst: b, at: i * chunk, src: v.clone(), n: chunk.min(v.numel()), edge: false });
                     Ok(Sym::Tensor(View { buf: b, off: 0, shape: t.shape.clone(), bound: None }))
                 }
                 (leaf, _) => Ok(leaf.clone()),
@@ -1452,7 +1487,7 @@ impl Recorder {
                 (Sym::Tensor(t), Some(Sym::Tensor(c))) if t.bound.is_none() && c.bound.is_none() => {
                     let b = self.fill(self.rec.bufs[t.buf].store.rebuilt(), t.numel(), 0.0);
                     let n = c.numel();
-                    self.push(Op::Copy { dst: b, at: index * n, src: c.clone(), n });
+                    self.push(Op::Copy { dst: b, at: index * n, src: c.clone(), n, edge: false });
                     Ok(Sym::Tensor(View { buf: b, off: 0, shape: t.shape.clone(), bound: None }))
                 }
                 (other, _) => Ok(other.clone()),
@@ -1478,7 +1513,7 @@ impl Recorder {
                     let over = (q.over + v.shape.len()).checked_sub(q.rank);
                     if over == Some(0) || v.shape[0] == 0 || (bits == 4 && chunk % 2 == 1) {
                         let b = self.buf(Store::F64, chunk, Made::Copy);
-                        self.push(Op::Copy { dst: b, at: 0, src: at, n: chunk });
+                        self.push(Op::Copy { dst: b, at: 0, src: at, n: chunk, edge: false });
                         return Ok(Sym::Tensor(View { buf: b, off: 0, shape: v.shape[1..].to_vec(), bound: None }));
                     }
                     if over.is_none() {

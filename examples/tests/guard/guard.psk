@@ -1,0 +1,20 @@
+-- guard.psk — the overflow guard (plan 0.18.2 step 4, D218; statement FC6;
+-- `crates/presk-cli/tests/guard.rs`). `square`'s `x · x` is one nest,
+-- stored in the realization's type. On inputs of magnitude at most 100 it
+-- is at most 10 000, inside binary16's largest finite number, 65 504, with
+-- the range rules' margin: an envelope calibrated on them offers binary16
+-- at the site. On an input of 300, off that envelope, it is 90 000, which a
+-- store into binary16 rounds to an infinity: every executor fails the run
+-- with the guard's error (`E7007`), naming the site, instead of carrying
+-- the infinity to the result (question 87). `edge` keeps `x · x` in the
+-- realization's default type and adds one in another: with the product in
+-- `f32` and the sum in binary16, the product is converted to binary16 at
+-- the sum's edge, a narrowing of the host that the guard checks too.
+dim B
+dim N
+
+fn square(x : ℝ[batch: B, i: N]) -> ℝ[batch: B, i: N] = x * x
+
+fn edge(x : ℝ[batch: B, i: N]) -> (ℝ[batch: B, i: N], ℝ[batch: B, i: N]) =
+  let y = x * x
+  (y, y + (1 : ℝ))

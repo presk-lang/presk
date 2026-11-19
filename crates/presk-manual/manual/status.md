@@ -2138,7 +2138,8 @@ again.
 
 ## Version 0.18.0
 
-Version `0.18.0` (D209), done on 2026-11-14, for the user to tag. Opened
+Version `0.18.0` (D209), done on 2026-11-14, tagged `v0.18.0` on
+2026-11-16 on `aad99c5` and published the same day. Opened
 2026-11-13 (D203): plan
 `presk-specs/implementation/presk-plan-0.18.0.md` (presk-specs !108).
 Every machine type of an accelerator that computes in its own types: a
@@ -2211,7 +2212,8 @@ code for them is version 0.18.2 (0.18.1 is a documentation release).
 ## Version 0.18.1
 
 Version `0.18.1` (D210), done on 2026-11-16: a documentation release, at
-the user's request of the same day. The compiler's code is 0.18.0's, and
+the user's request of the same day, tagged `v0.18.1` the same day on
+`1fa2d88` and published. The compiler's code is 0.18.0's, and
 every output but the version line is 0.18.0's. The version brings to the
 public repository a README written for the compiler's users (what Presk
 is, how to install it, a first program and an error budget with their
@@ -2219,3 +2221,73 @@ outputs, the main commands, where it stands), `CONTRIBUTING.md` without
 its sections on the public repository and on how the code was written,
 and this manual's first page opening with what Presk is. Fast code for the new formats on
 the CPU, which 0.18.0 announced as 0.18.1's, is version 0.18.2's.
+
+## Version 0.18.2
+
+Version `0.18.2` (D219, D220), done on 2026-11-19. Opened 2026-11-17 (D214): plan
+`presk-specs/implementation/presk-plan-0.18.2.md` (presk-specs !118).
+Binary16 (`f16`) and `e8m15` on the CPU: the native backend, the LLVM
+backend and the C export run a realization that stores values in them,
+computed in `f32` as `bf16` is, with the kernel interpreter's bits; a
+narrowing that overflows fails the run instead of storing an infinity.
+The version also carries D211–D213 (the normal draws on the `libm`
+crate's functions, the C tests on Apple's clang and on macOS under GCC).
+
+| Step | Contents | Status |
+|---|---|---|
+| 0 | The version opened (D214): question 87, FC0's baseline | done |
+| 1 | Buffers and conversions (D215): `Buf::Codes`, binary16's and `e8m15`'s codes in 2 and 3 bytes; the conversions (`presk_rt::codes`), every route from `f64` rounding once; the kernel interpreter on the codes; FC1's runtime half on every input, MT1 again on codes | done |
+| 2 | The native backend (D216): Cranelift's integer sequences, kernels in both formats, mixed reads; FC1's native half on every input, FC2's native half | done |
+| 3 | The C export and the LLVM backend (D217): `presk_rt.h`'s conversions (`_Float16`'s casts on aarch64, the integer forms elsewhere), the buffers (`uint16_t`, `presk_e8m15`), the runtime's `.psk.d` version 3, the SCoP driver; FC1's C half on every input under four compilers, FC2's LLVM and C halves (on x86-64, run under qemu, but for a generated NaN's sign); an `e8m15` element read and written in place, for Polly | done |
+| 4 | The profile, plans, the solver and the overflow guard (D218): `presk bench --calibrate` fits both formats, `presk plan` plans them at one lane, `presk solve --measure native` measures them natively; the guard on every executor and in the exported C (`E7007`), a kernel's store and the host's own narrowings; FC3 and FC6 | done |
+| 5 | The rows and version 0.18.2 (D219): FC4, FC5, FC6's cost and FC7 on falicon, alone (`make fc-rows`); FC0 on the version's tree; `make test`, `check-examples`, `coverage`, `plan-check`, `run-examples`, `math-check` and `c-conformance`; the manual, the reference's Status, the report, the slides, the summary, the status note | done (2026-11-18) |
+| 6 | A constant the storage type does not hold (D220, the user's word of 2026-11-19 after step 5): a nest of elementwise operations reads it in its arithmetic type instead of converted at its edge, as the reference's definition says since draft v0.34; FC4's realization finite, its rows again alone (`experiments/fc_rows.sh fc4`); FC0 at the step; `make test`, `c-conformance` | done (2026-11-19) |
+
+| Statement | Content | Expected | Verdict |
+|---|---|---|---|
+| FC0 | Nothing moves: X1, `quant-table`, `step-table` and `tutorial` give the outputs of `c7e8daa` (0.18.1 with D211–D213) byte for byte | holds | holds at every step (D215–D218, D220) and on the version's tree (D219, D220): X1's 29 files of step 3 differ by the version and commit lines, the envelopes' day and the runtime the exports copy, by design; the tables the base's bytes; the tutorial's timed cells alone, statement Q's verdict on `scores/%2` flipping with its measured regret (1.02–1.07) |
+| FC1 | The conversions are the formats', on every input | every bit | holds: the runtime's (D215), the native backend's (D216) and the exported C's under GCC 13.3, GCC 16.2, clang 23 and x86-64 through zig, both binary16 forms (D217), on every input |
+| FC2 | The emulation's bits on the native and LLVM backends and in the exported C under four compilers | every bit | holds (D216–D218): natively, on the LLVM backend, and in the exported C under GCC 13.3, GCC 16.2 and clang 23, the overflow guard stopping three runs on every side in the same words since D218 (FC6); on x86-64 through zig every bit but the sign of a NaN an invalid operation generates, which x86-64 sets and aarch64 clears (the user's call, accepted as built on 2026-11-19, D220): MiniGPT's AdamW step in binary16, whose ε rounds to zero there; D217 counted `attention3` too, whose run the overflow guard stops since D218 |
+| FC3 | D209's MT6 solve measured on the native backend, byte for byte | every byte | holds (D218): the realization, its measured gap, its rows and decisions on the 461 windows, run natively too, D209's, 18 files of 18; the measurement 65× faster natively (0.11 s against 7.18 s), the solve 6 % (110.7 s against 117.9 s), whose time is the exact reference's and the sweep's |
+| FC4 | The course GPT's AdamW step at course scale, `f16` where the range rules offer it: at most 0.85× `f32`'s time on the LLVM backend | holds | **fails** (D219, D220): 0.927× (13.00 ms against 14.03), the range rules read on D = 64's envelope of the step; reported: 0.955× in C, 8.37× natively. That realization gave infinities and NaNs in 0.84 % of the parameters, AdamW's ε, refused binary16 and stored in `f32`, rounding to zero at the edge of the update's binary16 nest, which the guard did not see (D219). Since D220 the nest reads ε in `f32`, the parameters are finite, and FC4 timed again alone is still 0.927× (12.98 ms against 14.00), 0.968× in C, 8.49× natively |
+| FC5 | Its forward pass at course scale in `f16`, default layouts: at most 0.85× `f32`'s time on the LLVM backend | holds | **fails** (D219): 0.857× (731.15 ms against 852.99), over by 0.007; reported: under the profile's plans 1.75× (binary16 planned at one lane), natively 6.27×, in `e8m15` 2.14× on LLVM and 3.40× natively |
+| FC6 | The overflow guard fails a run whose `f16` store overflows, on every executor; no other run trips it | holds | the program holds (D218): its overflowing input fails with `E7007`, naming the kernel, on the kernel interpreter, the native and LLVM backends and in the exported C, and the guard's test is the overflow on every `f32`; no run of FC3, FC4, FC5 or FC7 trips it (D218, D219); three of FC2's 160 runs do, `attention3` wherever its frequencies' site is in binary16, whose host makes RoPE's base of 500 000 a binary16 infinity: the clause fails as written there (the user's call, accepted as built on 2026-11-19, D220); its cost on FC5's forward pass in C +1.22 % (D219) |
+| FC7 | Two certified realizations timed against all-`f32` and D170's | reported | reported (D219): fewer bytes, more time. FC3's at D = 64, 0.893× D170's bytes, takes 5.52× all-`f32`'s time on LLVM and 3.30× in C; the course solve with binary16 and `e8m15` on the menu (three values in `e8m15`, measured 1.20·10⁻⁴ inside 4.96·10⁻⁴), 0.998× D170's bytes, 1.35× and 1.26×. The solver chose `e8m15` and no binary16, and `e8m15`'s three-byte codes are slower than `f32` |
+
+## What 0.18.2 has, and what it does not
+
+**Has.**
+- Binary16 and `e8m15` held as their codes (2 and 3 bytes an element), the
+  conversions one rounding on every route, checked on every input (FC1).
+- Both formats on the native backend (Cranelift's integer sequences), the
+  LLVM backend and the exported C (`_Float16`'s casts on aarch64, integer
+  forms elsewhere), with the kernel interpreter's bits under four
+  compilers and on x86-64 under qemu, but for the sign of a generated NaN
+  there (FC2).
+- Both formats calibrated, planned at one lane and measured natively by
+  the solver, which then gives D209's realizations byte for byte, 65 times
+  faster to measure (FC3).
+- The overflow guard (`E7007`, question 87): a narrowing into either format
+  that rounds a finite value to an infinity fails the run on every executor
+  and in the exported C, for +1.2 % in C (FC6).
+- A constant a nest's storage type does not hold, as AdamW's ε in
+  binary16, read by a nest of elementwise operations in `f32` instead of
+  made zero at its edge, so that the AdamW step the range rules offer
+  binary16 computes the step (D220).
+- The normal draws the same on every machine (D211), and the C tests on
+  macOS under Apple's clang and Homebrew's GCC (D212, D213).
+
+**Does not have.**
+- Speed from the new formats on the CPU: binary16 takes 0.93× `f32`'s time
+  in the AdamW step and 0.86× in the forward pass on the LLVM backend,
+  over the plan's 0.85× (FC4, FC5); it is slower under the plans, which
+  take it at one lane, and on the native backend; `e8m15` is slower
+  everywhere, so a certified realization's fewer bytes buy no time (FC7).
+- A constant that a contraction or a reduction stored in a type that does
+  not hold it reads is converted at its edge, as every operand is: the
+  rule of D220 is for nests of elementwise operations, where a program's
+  constants are read. The guard sees overflows only.
+- The other formats on the CPU: the 8-bit floats, a nest's other
+  formats and affine formats stay emulated by the kernel interpreter.
+- Binary16's products in a wider sum (`fmlal`), and a vector form of the
+  native backend's sequences.

@@ -1,0 +1,14 @@
+{
+  "default": "f32",
+  "order": {"kind": "sequential"},
+  "storage": {
+    "Embedding.apply/%7": "e8m15",
+    "LayerNorm.apply/%10": "f16",
+    "Linear.apply/%3": "f16",
+    "SelfAttention.apply/%14": "e8m15",
+    "SelfAttention.apply/%18": "bf16",
+    "MLP.apply/%4": "f64",
+    "MiniGPT.apply/%11": "e8m15"
+  },
+  "params": {"head": "f16", "blocks.attn.wq.w": "e8m15", "blocks.mlp.l1.w": "bf16", "lnf.γ": "f16"}
+}

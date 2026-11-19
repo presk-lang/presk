@@ -44,7 +44,7 @@
 //!   that the host copies to `f64` (`Feed::Dequant`) is dequantized into
 //!   one buffer before each call.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use presk_kernel::record::{HyperOp, Made, Node, Op, Recording, Scalar, Store, Sym, View, leaves};
@@ -147,7 +147,9 @@ pub enum Stmt {
     Launch { kernel: usize, hi: usize, workers: usize, ins: Vec<Ref>, out: Ref, site: String },
     Fill { dst: Ref, store: Store, value: u64, n: usize, site: String },
     Scalar { dst: Ref, store: Store, x: SRef, site: String },
-    Copy { dst: Ref, to: Store, src: Ref, from: Store, n: usize, site: String },
+    /// `edge`: an operand converted to a launch's type at its edge, which
+    /// the overflow guard checks (D218).
+    Copy { dst: Ref, to: Store, src: Ref, from: Store, n: usize, site: String, edge: bool },
     Hyper { out: usize, op: HyperOp, a: SRef, b: SRef },
     Read { out: usize, src: Ref, store: Store },
     /// `double s<out> = x`.
@@ -331,6 +333,14 @@ pub struct Structured {
     pub others: Vec<Form>,
     /// The kernels' C functions, `k0` to `k<kernels − 1>`.
     pub kernels: usize,
+    /// For each kernel that stores binary16 or `e8m15`, by its function's
+    /// number, the overflow guard's message of its kernel (plan 0.18.2 step
+    /// 4, D218; `presk_kernel::host::overflow`): its launches test its flag.
+    pub guards: BTreeMap<usize, String>,
+    /// Whether the program narrows a value into binary16 or `e8m15`, a
+    /// kernel's store or the host's (a fill, a scalar, an operand at a
+    /// nest's edge): the guard tests each, and the entries return a status.
+    pub guarded: bool,
 }
 
 // ----- building ---------------------------------------------------------------
@@ -695,7 +705,7 @@ impl Builder<'_> {
                 let rb = &rec.bufs[*buf];
                 fr.form.body.push(Stmt::Scalar { dst: Ref { loc, off: Aff::default() }, store: rb.store, x, site: rb.site.clone() });
             }
-            Op::Copy { dst, at, src, n } => {
+            Op::Copy { dst, at, src, n, edge } => {
                 let s = fr.r(src)?;
                 let (to, from) = (rec.bufs[*dst].store, rec.bufs[src.buf].store);
                 let loc = match fr.own(*dst) {
@@ -707,7 +717,7 @@ impl Builder<'_> {
                         fr.define(rec, *dst, hint)?
                     }
                 };
-                fr.form.body.push(Stmt::Copy { dst: Ref { loc, off: Aff::at(*at as i64) }, to, src: s, from, n: *n, site: rec.bufs[*dst].site.clone() });
+                fr.form.body.push(Stmt::Copy { dst: Ref { loc, off: Aff::at(*at as i64) }, to, src: s, from, n: *n, site: rec.bufs[*dst].site.clone(), edge: *edge });
             }
             Op::Hyper { out, op, a, b } => {
                 let (a, b) = (fr.sr(a)?, fr.sr(b)?);
@@ -799,7 +809,7 @@ impl Builder<'_> {
                             // integers, `chunk` reals in `f64`.
                             for (k, (i, _)) in f.iterations.iter().enumerate() {
                                 let Some(Sym::Tensor(a)) = iter_args[k].get(m) else { return Err(format!("iteration {i} of `{site}` has no slice {m}")) };
-                                let made = f.slices.iter().filter(|(j, _)| j == i).any(|(_, op)| matches!(&rec.ops[*op], Op::Copy { dst, at: 0, src, n } if *dst == a.buf && src.buf == v.buf && src.off == v.off + i * chunk && *n == chunk));
+                                let made = f.slices.iter().filter(|(j, _)| j == i).any(|(_, op)| matches!(&rec.ops[*op], Op::Copy { dst, at: 0, src, n, .. } if *dst == a.buf && src.buf == v.buf && src.off == v.off + i * chunk && *n == chunk));
                                 if !made || rec.bufs[a.buf].store != Store::F64 || !matches!(rec.bufs[v.buf].store, Store::Quant { .. }) {
                                     return Err(format!("the slice {m} of iteration {i} of `{site}` is neither a view nor the copy of integer weights"));
                                 }
@@ -885,7 +895,7 @@ impl Builder<'_> {
         // per iteration, of the accumulator before it, at its slot.
         let mut seen = 0;
         for &op in &f.stack {
-            let Op::Copy { dst, at, src, n } = &rec.ops[op] else { return Err("a scan's stack made otherwise than by copies".into()) };
+            let Op::Copy { dst, at, src, n, .. } = &rec.ops[op] else { return Err("a scan's stack made otherwise than by copies".into()) };
             let Some(&k) = stack_bufs.get(dst) else { return Err("a scan's copy into another buffer".into()) };
             let (_, chunk, _) = stacks[k].unwrap();
             let slot = at.checked_div(chunk).unwrap_or(0);
@@ -1161,7 +1171,8 @@ fn strip(mut f: Form) -> Form {
 /// recordings launch to its C function's number, `his` to its range,
 /// `workers` to the workers its launches are divided among. The entries
 /// share the functions whose forms are equal.
-pub fn build(recs: &[&Recording], kname: &HashMap<usize, usize>, his: &HashMap<usize, usize>, workers: &HashMap<usize, usize>, kernels: usize) -> Result<Structured> {
+#[allow(clippy::too_many_arguments)]
+pub fn build(recs: &[&Recording], kname: &HashMap<usize, usize>, his: &HashMap<usize, usize>, workers: &HashMap<usize, usize>, guards: &HashMap<usize, String>, kernels: usize) -> Result<Structured> {
     for rec in recs {
         if rec.calls.is_empty() {
             return Err("the recording has no structure".into());
@@ -1220,7 +1231,9 @@ pub fn build(recs: &[&Recording], kname: &HashMap<usize, usize>, his: &HashMap<u
         names[i] = name;
     }
     let funcs = b.forms.into_iter().zip(names).zip(b.calls).map(|((form, name), calls)| Func { form, name, calls }).collect();
-    Ok(Structured { funcs, root: root.form, others, kernels })
+    let guards: BTreeMap<usize, String> = guards.iter().filter_map(|(k, m)| kname.get(k).map(|n| (*n, m.clone()))).collect();
+    let guarded = !guards.is_empty() || recs.iter().any(|r| crate::host::host_narrows(r));
+    Ok(Structured { funcs, root: root.form, others, kernels, guards, guarded })
 }
 
 // ----- what a function uses, and its frame ------------------------------------------
@@ -1244,6 +1257,11 @@ struct Analysis {
     params: Vec<Vec<bool>>,
     arena: Vec<bool>,
     keys: Vec<bool>,
+    /// The overflow guard's kernels, by number, and whether the program is
+    /// guarded (D218): a launch or a host narrowing it tests passes the
+    /// arena to `presk_overflow`, so its function takes the arena.
+    guards: BTreeSet<usize>,
+    guarded: bool,
 }
 
 fn uses(f: &Form, an: &Analysis) -> Uses {
@@ -1281,18 +1299,24 @@ fn uses(f: &Form, an: &Analysis) -> Uses {
     for st in &f.body {
         match st {
             Stmt::Alloc(_) | Stmt::Release => u.arena = true,
-            Stmt::Launch { ins, out, .. } => {
+            Stmt::Launch { kernel, ins, out, .. } => {
                 ins.iter().for_each(|x| r(&mut u, x));
                 r(&mut u, out);
+                u.arena |= an.guards.contains(kernel);
             }
-            Stmt::Fill { dst, .. } => r(&mut u, dst),
-            Stmt::Scalar { dst, x, .. } => {
+            Stmt::Fill { dst, store, .. } => {
+                r(&mut u, dst);
+                u.arena |= an.guarded && matches!(store, Store::Codes(_));
+            }
+            Stmt::Scalar { dst, x, store, .. } => {
                 r(&mut u, dst);
                 s(&mut u, x);
+                u.arena |= an.guarded && matches!(store, Store::Codes(_));
             }
-            Stmt::Copy { dst, src, .. } => {
+            Stmt::Copy { dst, src, to, edge, .. } => {
                 r(&mut u, dst);
                 r(&mut u, src);
+                u.arena |= an.guarded && *edge && matches!(to, Store::Codes(_));
             }
             Stmt::Hyper { a, b, .. } => {
                 s(&mut u, a);
@@ -1363,7 +1387,7 @@ fn uses(f: &Form, an: &Analysis) -> Uses {
 
 impl Structured {
     fn analysis(&self) -> Analysis {
-        let mut an = Analysis { params: Vec::new(), arena: Vec::new(), keys: Vec::new() };
+        let mut an = Analysis { params: Vec::new(), arena: Vec::new(), keys: Vec::new(), guards: self.guards.keys().copied().collect(), guarded: self.guarded };
         for func in &self.funcs {
             let u = uses(&func.form, &an);
             an.params.push(u.params.iter().zip(&func.form.params).map(|(used, k)| *used || (*k == PKind::Index && u.index)).collect());
@@ -1603,17 +1627,20 @@ impl Printer<'_> {
                 }
                 a.push(self.r(out));
                 a.extend(scales);
-                self.out.push_str(&crate::launch(ind, &format!("k{kernel}"), &a, *hi, *workers));
+                let guard = self.s.guards.get(kernel).map(|m| presk_kernel::host::overflow_message(m, site));
+                self.out.push_str(&crate::launch(ind, &format!("k{kernel}"), &a, *hi, *workers, guard.as_deref()));
             }
             Stmt::Fill { dst, store, value, n, site } => {
                 self.comment(site, ind);
-                let _ = writeln!(self.out, "{ind}presk_fill({}, {}, {}, {n});", self.r(dst), cdtype(*store), c_real(f64::from_bits(*value)));
+                let call = format!("presk_fill({}, {}, {}, {n})", self.r(dst), cdtype(*store), c_real(f64::from_bits(*value)));
+                self.out.push_str(&crate::host::guarded_call(ind, &call, self.s.guarded, *store, site, false));
             }
             Stmt::Scalar { dst, store, x, site } => {
                 self.comment(site, ind);
-                let _ = writeln!(self.out, "{ind}presk_fill({}, {}, {}, 1);", self.r(dst), cdtype(*store), self.sr(x));
+                let call = format!("presk_fill({}, {}, {}, 1)", self.r(dst), cdtype(*store), self.sr(x));
+                self.out.push_str(&crate::host::guarded_call(ind, &call, self.s.guarded, *store, site, false));
             }
-            Stmt::Copy { dst, to, src, from, n, site } => {
+            Stmt::Copy { dst, to, src, from, n, site, edge } => {
                 self.comment(site, ind);
                 match from {
                     Store::Quant { bits, k, inner } => {
@@ -1621,7 +1648,8 @@ impl Printer<'_> {
                         let _ = writeln!(self.out, "{ind}presk_dequantize({}, {}, {base}.q, {base}.s, {bits}, {k}, {inner}, {}, {n});", self.r(dst), cdtype(*to), aff_c(src.off, "i"));
                     }
                     _ => {
-                        let _ = writeln!(self.out, "{ind}presk_convert({}, {}, {}, {}, {n});", self.r(dst), cdtype(*to), self.r(src), cdtype(*from));
+                        let call = format!("presk_convert({}, {}, {}, {}, {n})", self.r(dst), cdtype(*to), self.r(src), cdtype(*from));
+                        self.out.push_str(&crate::host::guarded_call(ind, &call, self.s.guarded && *edge, *to, site, true));
                     }
                 }
             }
@@ -1630,13 +1658,7 @@ impl Printer<'_> {
                 self.unread(*out, ind);
             }
             Stmt::Read { out, src, store } => {
-                let e = self.elem(src);
-                let e = match store {
-                    Store::F64 => e,
-                    Store::F32 | Store::I64 => format!("(double){e}"),
-                    Store::Bf16 => format!("(double)presk_bf16_to_f32({e})"),
-                    Store::Quant { .. } => unreachable!("a host scalar is read from a kernel's output, never from integer weights"),
-                };
+                let e = crate::host::scalar_read(*store, self.elem(src));
                 let _ = writeln!(self.out, "{ind}double s{out} = {e};");
                 self.unread(*out, ind);
             }
@@ -1925,8 +1947,12 @@ impl Structured {
     fn print_entry(&self, f: &Form, io: &EntryIo, an: &Analysis) -> String {
         let mut out = String::new();
         let uses = uses(f, an);
-        let _ = writeln!(out, "void {}(presk_arena *arena, const {}_in *in, {}_out *out)\n{{", io.func, io.types, io.types);
+        let guarded = self.guarded;
+        let _ = writeln!(out, "{} {}(presk_arena *arena, const {}_in *in, {}_out *out)\n{{", if guarded { "int" } else { "void" }, io.func, io.types, io.types);
         let mut body = String::new();
+        if guarded {
+            let _ = writeln!(body, "    arena->overflow = NULL;");
+        }
         if uses.keys {
             // The keys `sample` draws from, by the recording's key arguments;
             // one nothing draws from is no field of `in`.
@@ -1969,6 +1995,9 @@ impl Structured {
             }
         }
         let _ = writeln!(p.out, "    presk_release(arena, mark);");
+        if guarded {
+            let _ = writeln!(p.out, "    return arena->overflow != NULL;");
+        }
         out.push_str(&p.out);
         out.push_str("}\n");
         out

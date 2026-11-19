@@ -8,15 +8,23 @@
  * The .psk.d format is presk-data's (its module comment):
  *
  *   magic     "PSKD"                       4 bytes
- *   version   u16 = 1 or 2                 little-endian
+ *   version   u16 = 1, 2 or 3              little-endian
  *   type_len  u32, then the type, UTF-8    the sample type in Presk syntax
  *   count     u64                          number of samples
- *   leaves    u32, version 2 only          the type's leaves
- *   encodings u8 per leaf, version 2 only  0 f64 (and every idx), 1 f32, 2 bf16
+ *   leaves    u32, versions 2 and 3        the type's leaves
+ *   encodings u8 per leaf, versions 2, 3   0 f64 (and every idx), 1 f32, 2 bf16,
+ *                                          3 (version 3) a float format, the
+ *                                          byte followed by its six: p u8,
+ *                                          emin i16, emax i16, flags u8
  *   data      the samples, back to back: the leaves of the type in order,
  *             idx[N] as the smallest of u8/u16/u32/u64 holding N-1,
  *             reals in their encoding (f64 in version 1), little-endian,
- *             a bf16 as the upper sixteen bits of an f32
+ *             a bf16 as the upper sixteen bits of an f32, a format's codes
+ *             in the fewest whole bytes that hold them
+ *
+ * Of the formats encoding 3 describes, the reader holds binary16 (2 bytes a
+ * code) and e8m15 (3 bytes), the two a buffer can be (plan 0.18.2 step 3,
+ * presk D217), and refuses any other by its name (9002).
  *
  * The writer writes version 1: the program's outputs are f64 leaves.
  *
@@ -67,7 +75,10 @@ size_t presk_dtype_size(presk_dtype d)
     case PRESK_F32:
         return 4;
     case PRESK_BF16:
+    case PRESK_F16:
         return 2;
+    case PRESK_E8M15:
+        return 3;
     }
     return 0;
 }
@@ -82,6 +93,10 @@ static double load_real(const void *src, presk_dtype from, uint64_t i)
         return (double)((const float *)src)[i];
     case PRESK_BF16:
         return (double)presk_bf16_to_f32(((const uint16_t *)src)[i]);
+    case PRESK_F16:
+        return (double)presk_f16_to_f32(((const uint16_t *)src)[i]);
+    case PRESK_E8M15:
+        return (double)presk_e8m15_to_f32(((const presk_e8m15 *)src)[i]);
     case PRESK_I64:
         break;
     }
@@ -101,28 +116,51 @@ static void store_real(void *dst, presk_dtype to, uint64_t i, double x)
     case PRESK_BF16:
         ((uint16_t *)dst)[i] = presk_f64_to_bf16(x);
         return;
+    case PRESK_F16:
+        ((uint16_t *)dst)[i] = presk_f64_to_f16(x);
+        return;
+    case PRESK_E8M15:
+        ((presk_e8m15 *)dst)[i] = presk_f64_to_e8m15(x);
+        return;
     case PRESK_I64:
         break;
     }
     abort();
 }
 
-void presk_convert(void *dst, presk_dtype to, const void *src, presk_dtype from, size_t n)
+/* Whether storing the double x in `to` turns a finite value into an
+ * infinity: binary16's or e8m15's overflow threshold reached, the
+ * midpoint above its largest finite number (presk_rt::codes::overflows). */
+static uint32_t overflows(presk_dtype to, double x)
+{
+    if (to != PRESK_F16 && to != PRESK_E8M15)
+        return 0;
+    double threshold = to == PRESK_F16 ? 65520.0 : ldexp(2.0 - ldexp(1.0, -16), 127);
+    return isfinite(x) && fabs(x) >= threshold;
+}
+
+uint32_t presk_convert(void *dst, presk_dtype to, const void *src, presk_dtype from, size_t n)
 {
     /* A buffer already of the kernel's type is lent as it is, NaNs and all
      * (kernel_input in presk-kernel). */
     if (to == from) {
         memmove(dst, src, n * presk_dtype_size(to));
-        return;
+        return 0;
     }
-    for (size_t i = 0; i < n; i++)
-        store_real(dst, to, i, load_real(src, from, i));
+    uint32_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+        double x = load_real(src, from, i);
+        o |= overflows(to, x);
+        store_real(dst, to, i, x);
+    }
+    return o;
 }
 
-void presk_fill(void *dst, presk_dtype to, double x, size_t n)
+uint32_t presk_fill(void *dst, presk_dtype to, double x, size_t n)
 {
     for (size_t i = 0; i < n; i++)
         store_real(dst, to, i, x);
+    return n > 0 && overflows(to, x);
 }
 
 /* ------------------------------------------------------------------------
@@ -148,12 +186,69 @@ static unsigned leaf_width(const presk_leaf *l)
     return l->bound ? idx_width(l->bound) : 8;
 }
 
+/* The reader's encodings: presk-data's codes 0 to 2, and of its code 3 the
+ * two formats a buffer holds as codes. */
+enum { ENC_F64, ENC_F32, ENC_BF16, ENC_FORMAT, ENC_F16, ENC_E8M15 };
+
 /* A leaf's width under its encoding (enc NULL: version 1, every real f64). */
 static unsigned enc_width(const presk_leaf *l, const unsigned char *enc, size_t i)
 {
     if (l->bound || !enc)
         return leaf_width(l);
-    return enc[i] == 2 ? 2 : enc[i] == 1 ? 4 : 8;
+    switch (enc[i]) {
+    case ENC_F32:
+        return 4;
+    case ENC_BF16:
+    case ENC_F16:
+        return 2;
+    case ENC_E8M15:
+        return 3;
+    default:
+        return 8;
+    }
+}
+
+/* The six bytes of a format's parameters in a version 3 header (presk-data's
+ * Enc::description), of binary16, e8m15, and the formats named for the
+ * message that refuses them; any other is spelled by its parameters, as
+ * presk_format spells it. */
+static const struct {
+    const char *name;
+    unsigned char d[6];
+    unsigned char enc;
+} known_formats[] = {
+    {"f16", {11, 0xf2, 0xff, 15, 0, 0x01}, ENC_F16},
+    {"e8m15", {16, 0x82, 0xff, 127, 0, 0x01}, ENC_E8M15},
+    {"e5m2", {3, 0xf2, 0xff, 15, 0, 0x01}, 0},
+    {"e4m3fn", {4, 0xfa, 0xff, 8, 0, 0x0b}, 0},
+    {"e2m1", {2, 0, 0, 2, 0, 0x15}, 0},
+};
+
+/* A format described by its six bytes, spelled as presk_format::Float::name
+ * spells it, into out. */
+static void format_name(const unsigned char *d, char *out, size_t size)
+{
+    static const char *const specials[] = {"ieee", "nan", "none", "?"};
+    static const char *const overflows[] = {"inf", "nan", "saturate", "?"};
+    unsigned flags = d[5], sp = flags >> 1 & 3u, ov = flags >> 3 & 3u;
+    int emin = (int16_t)(uint16_t)(d[1] | d[2] << 8), emax = (int16_t)(uint16_t)(d[3] | d[4] << 8);
+    size_t n;
+    for (size_t k = 0; k < sizeof known_formats / sizeof known_formats[0]; k++)
+        if (memcmp(d, known_formats[k].d, 6) == 0) {
+            snprintf(out, size, "%s", known_formats[k].name);
+            return;
+        }
+    n = (size_t)snprintf(out, size, "float(p=%u,emin=%d,emax=%d%s", d[0], emin, emax, flags & 1u ? "" : ",subnormals=no");
+    if (n < size && sp != 0)
+        n += (size_t)snprintf(out + n, size - n, ",specials=%s", specials[sp]);
+    if (n < size && ov != sp)
+        n += (size_t)snprintf(out + n, size - n, ",overflow=%s", overflows[ov]);
+    if (n < size && flags & 32u)
+        n += (size_t)snprintf(out + n, size - n, ",underflow=+0");
+    if (n < size && flags & 64u)
+        n += (size_t)snprintf(out + n, size - n, ",nans=default");
+    if (n < size)
+        snprintf(out + n, size - n, ")");
 }
 
 /* Bytes of one sample, or UINT64_MAX when that overflows. */
@@ -230,9 +325,9 @@ int presk_open(presk_reader *r, const char *path, const char *type, const presk_
         return fail(9003, "%s: truncated header", path);
     }
     version = (unsigned)get_le(b, 2);
-    if (version != 1 && version != 2) {
+    if (version < 1 || version > 3) {
         fclose(f);
-        return fail(9002, "%s: .psk.d version %u, this reader reads versions 1 and 2", path, version);
+        return fail(9002, "%s: .psk.d version %u, this reader reads versions 1, 2 and 3", path, version);
     }
     if (fread(b, 1, 4, f) != 4) {
         fclose(f);
@@ -263,7 +358,7 @@ int presk_open(presk_reader *r, const char *path, const char *type, const presk_
     }
     count = get_le(b, 8);
     head = 4 + 2 + 4 + tlen + 8;
-    if (version == 2) {
+    if (version >= 2) {
         uint64_t n;
         if (fread(b, 1, 4, f) != 4) {
             fclose(f);
@@ -279,17 +374,42 @@ int presk_open(presk_reader *r, const char *path, const char *type, const presk_
             fclose(f);
             return fail(9003, "%s: %zu encodings", path, nleaves);
         }
-        if (fread(r->enc, 1, nleaves, f) != nleaves) {
-            presk_close(r);
-            fclose(f);
-            return fail(9003, "%s: truncated header", path);
-        }
+        /* Each encoding's byte, and in version 3 the six of a format
+         * described by its parameters after it. */
         for (size_t i = 0; i < nleaves; i++) {
-            if (r->enc[i] > 2 || (leaves[i].bound && r->enc[i] != 0)) {
-                unsigned c = r->enc[i];
+            unsigned char d[6];
+            unsigned c;
+            if (fread(&r->enc[i], 1, 1, f) != 1) {
                 presk_close(r);
                 fclose(f);
-                return fail(c > 2 ? 9002 : 9005, c > 2 ? "%s: leaf %zu: unknown encoding %u" : "%s: leaf %zu holds indices and has a real encoding %u", path, i, c);
+                return fail(9003, "%s: truncated header", path);
+            }
+            c = r->enc[i];
+            if (c == ENC_FORMAT && version == 3) {
+                char name[128];
+                size_t k;
+                if (fread(d, 1, 6, f) != 6) {
+                    presk_close(r);
+                    fclose(f);
+                    return fail(9003, "%s: truncated header", path);
+                }
+                head += 6;
+                for (k = 0; k < sizeof known_formats / sizeof known_formats[0]; k++)
+                    if (memcmp(d, known_formats[k].d, 6) == 0 && known_formats[k].enc)
+                        break;
+                if (k == sizeof known_formats / sizeof known_formats[0]) {
+                    format_name(d, name, sizeof name);
+                    presk_close(r);
+                    fclose(f);
+                    return fail(9002, "%s: leaf %zu is in %s, a format this program does not hold (it holds f64, f32, bf16, f16 and e8m15)", path, i, name);
+                }
+                r->enc[i] = known_formats[k].enc;
+                c = ENC_F64;
+            }
+            if (c > ENC_BF16 || (leaves[i].bound && r->enc[i] != ENC_F64)) {
+                presk_close(r);
+                fclose(f);
+                return fail(c > ENC_BF16 ? 9002 : 9005, c > ENC_BF16 ? "%s: leaf %zu: unknown encoding %u" : "%s: leaf %zu holds indices and has a real encoding %u", path, i, c);
             }
         }
         head += 4 + nleaves;
@@ -352,6 +472,15 @@ int presk_read(presk_reader *r, void *const *dst, const presk_dtype *dtypes)
                 } else if (w == 8) {
                     double d;
                     memcpy(&d, &x, sizeof d);
+                    store_real(dst[i], dtypes[i], k + j, d);
+                } else if (r->enc[i] == ENC_F16 || r->enc[i] == ENC_E8M15) {
+                    /* A code's number, exact in double, and rounded to the
+                     * buffer's type, which gives a code of the buffer's own
+                     * format back; a NaN code is the NaN of its sign, as
+                     * presk_format::Float::decode reads it, whatever its
+                     * payload. */
+                    float g = r->enc[i] == ENC_F16 ? presk_f16_to_f32((uint16_t)x) : presk_e8m15_to_f32(presk_e8m15_of((uint32_t)x));
+                    double d = g == g ? (double)g : signbit(g) ? -(double)NAN : (double)NAN;
                     store_real(dst[i], dtypes[i], k + j, d);
                 } else {
                     /* f32, or bf16 as an f32's upper half: exact in double. */
@@ -563,11 +692,20 @@ int presk_arena_init(presk_arena *a, size_t size)
     a->size = a->base ? size : 0;
     a->top = 0;
     a->peak = 0;
+    a->overflow = NULL;
     if (!a->base) {
         snprintf(presk_errbuf, sizeof presk_errbuf, "an arena of %zu bytes: not that much memory", size);
         return 1;
     }
     return 0;
+}
+
+void presk_overflow(presk_arena *a, const char *what)
+{
+    if (a->overflow)
+        return;
+    a->overflow = what;
+    fprintf(stderr, "[E7007] Error: %s\n", what);
 }
 
 void presk_arena_free(presk_arena *a)

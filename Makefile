@@ -48,6 +48,8 @@
 #   make weights-width    SR6 of the short runs: the course GPT's trained weights of record rounded to k = 8 … 24 significant bits (the nine matrices, or all twenty-one parameters) and run under all-f32 natively on the Code civil's 461 held-out windows against the exact logits of the unrounded weights, at D = 64 and at the course constants: SR6a's checks, the smallest certified k at 10⁻³, the bytes at rest and the traffic, the Code pénal's rows, into out/weights-width/report.md (D196; needs make margins' and margins_course.sh's outputs of record; nothing timed)
 #   make sr5              SR5 of the short runs, on D200's timers, alone on the machine: D190's five serving rows of Llama 3.2 1B split into compiling, computing and the rest (SR5a, with SR5-0: D190's tokens and its elapsed times within 2 %), and the Llama 2 decoder block at the 7B width in 20 processes of `presk bench --host-profile --launches`, the two modes looked for (SR5b), into out/sr5-0.17.2/report.md (D201; needs D190's outputs and V5's realizations)
 #   make machine-types    MT5 and MT6 of plan 0.18.0: the course GPT's logits at D = 64 solved in a machine's types at ε*(10⁻¹), ε*(10⁻²) and ε*(10⁻³) (TARGET=FILE, a target description; the realization, or the one of smallest gap where none is inside) with its accumulator read three ways on the same contractions, and at ε*(10⁻³) with binary16 and the 16-bit-significand float on the menu against D170's solve, every realization judged on the Code civil's 461 held-out windows on the kernel interpreter, into out/machine-types/report.md (D209; needs make margins' and D170's outputs; nothing timed)
+#   make fc-rows          FC4, FC5, FC6's cost and FC7 of plan 0.18.2: the course GPT's AdamW step and forward pass in binary16 against f32 on the LLVM backend (and natively, in C and in e8m15), the guard's cost in C, two certified realizations timed against all-f32 and D170's, into out/fc-rows-0.18.2/report.md (D219; experiments/fc_rows.sh, its phases solve, calib, prep, time, report; alone on falicon, about half an hour after the solve, three hours on the A725 cores)
+#   make fc3              FC3 of plan 0.18.2: D209's MT6 solve measured on the native backend, byte for byte D209's realization, gap, rows and decisions on the 461 windows (run natively), and its time against the kernel interpreter's, into out/fc3-0.18.2/report.md (D218; needs make machine-types' outputs; a quiet machine, minutes)
 #   make second-corpus    the certificate on a second text: the Code pénal (the course's container) on the Code civil's vocabulary, its first 461 windows of 256 through the Code civil's models, realizations and ε*(10⁻³) unchanged, at D = 64 and at the course constants, every realization of record judged there beside its rows on the Code civil (statements Y1 and Y2), into out/second-corpus/ (D168; needs make margins' and D163's outputs and the course GPT; network once; minutes at D = 64, about three hours at the course constants)
 #   make further-texts    the certificate on a third and a fourth text: the Code du travail and the Code de procédure pénale (the course's container), their typographic characters mapped and the rest outside the Code civil's vocabulary deleted, their first 461 windows of 256 through the Code civil's models at D = 64 and at the course constants, 0.16.1's realizations and 0.16.0's beside them (statement Z3, Y1 and Y2 per text), into out/further-<text>/ (D171; needs D170's and D163's outputs; network once; minutes at D = 64, about three hours a text at the course constants)
 #   make spend            three ways to spend the budget judged out of sample: the logits at D = 64 on the envelopes of the first 4 and 16 held-out windows, seven forms (--rounding unit, the default, --estimate rss, --narrow measured, --narrow heldout and the two with rss) at 4.67e-4 and 1e-6, every realization judged on the windows no form saw, into out/spend/report.md (D161; needs make margins)
@@ -56,6 +58,7 @@
 #   make pytorch-decoder  the Llama 2 decoder block at the 7B width, its forward pass natively and in PyTorch eager, ten X925 cores pinned, into out/pytorch-decoder/report.md (D107; alone, about three and a half hours)
 #   make host-profile     the native host's time by phase on the course GPT's forward pass, gradient and training step, into out/host-profile/report.md (0.10.0 step 5, D95; a quiet machine)
 #   make zig              zig from PyPI in .venv-zig: the Clang and the x86-64 cross-compiler of statement C3 (0.9.0 step 5)
+#   make qemu             Ubuntu's x86-64 emulator in .qemu: C3's x86-64 programs run, and FC1 and FC2 hold their bits there (0.18.2 step 3)
 #   make llvm             LLVM's release for Linux on aarch64 in .llvm: the clang with Polly the SCoP mode's nests are checked with (0.9.0 step 8)
 #   make calibrate-ra4    the layout cost model's calibration on a GEMM and two thin products, pinned to the RA4 cores (0.7.0 step 4, 0.8.0 steps 3–4)
 #   make ra4-small        the RA4 sweep's daily subset on the tutorial's attention, two days back to back, ranked (0.7.0 step 5)
@@ -112,7 +115,7 @@ REMAT ?= store
 # need only parse as their Unicode forms do.
 EXAMPLES = $(shell find examples -name '*.psk' -not -path 'examples/tests/diag/*' -not -path 'examples/tests/ascii/*' -not -path 'examples/tutorial/errors/*' | LC_ALL=C sort)
 
-.PHONY: machine-types llama3 llama3-budget reference-bits bound-depth step-plan opt-measured weights-width sr5 llamacpp venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual manual-quotes gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt snap doc clean
+.PHONY: machine-types fc3 fc-rows llama3 llama3-budget reference-bits bound-depth step-plan opt-measured weights-width sr5 llamacpp venv-hf kernel-shares network-figure math-check margins widening pytorch-gap pytorch-modes precision-tuning solver-rounding off-sample spend second-corpus further-texts gappa-dot explain explain-pdf explain-manual manual-quotes gappa delta-p compile-times c-conformance llvm-conformance c-speed pytorch-baseline pytorch-decoder host-profile zig qemu llvm calibrate-ra4 ra4-small ra4 ra4-day2 ra4-check ra4-20 ra4-dev ra4-dev-frozen ra4-ablation calibrate-ra4-small ra4-f2-dry ra4-f2 ra4-f2-day2 ra4-f2-rank ra4-f2-check ra4-f1-dry ra4-f1 ra4-f1-day2 ra4-f1-rank ra4-f1-check ra4-t3-dry ra4-t3 ra4-t3-day2 ra4-t3-rank ra4-t3-check plan-check foil bert llama step-table j-step step-train curve quant-table gpt-trained precision build test check-examples run-examples export-examples venv conformance tutorial train-examples experiment experiment-gpt coverage bench sched realize opt-examples calibrate corpus corpus-gpt snap doc clean
 
 build:
 	$(CARGO) build --workspace
@@ -995,6 +998,25 @@ zig: .venv-zig/bin/python
 	python3 -m venv .venv-zig
 	.venv-zig/bin/pip install -q ziglang==$(ZIG_VERSION)
 
+# 0.18.2 step 3 (D217): an x86-64 emulator, so that statement C3's x86-64
+# programs run and FC1 and FC2 hold their bits there: Ubuntu's
+# qemu-user-static for aarch64, its version and the package's checksum
+# pinned, fetched by `apt-get download` and unpacked without root; the
+# package is kept in .qemu beside qemu-x86_64-static (presk-tooling.md,
+# `qemu`).
+QEMU_VERSION = 1:8.2.2+ds-0ubuntu1.18
+QEMU_SHA256 = 0565144632acc09b92da93e5ef9a2f44fa092797c5b0949744351b184ad948a8
+qemu: .qemu/bin/qemu-x86_64-static
+.qemu/bin/qemu-x86_64-static:
+	@test "$$(uname -sm)" = "Linux aarch64" || { echo "make qemu: Ubuntu's package for aarch64 only"; exit 1; }
+	mkdir -p .qemu/bin
+	cd .qemu && apt-get download qemu-user-static=$(QEMU_VERSION)
+	echo "$(QEMU_SHA256)  $$(ls .qemu/qemu-user-static_*.deb)" | sha256sum -c -
+	dpkg-deb --fsys-tarfile .qemu/qemu-user-static_*.deb | tar -x -O ./usr/bin/qemu-x86_64-static > .qemu/bin/qemu-x86_64-static.part
+	chmod +x .qemu/bin/qemu-x86_64-static.part
+	mv .qemu/bin/qemu-x86_64-static.part .qemu/bin/qemu-x86_64-static
+	.qemu/bin/qemu-x86_64-static --version | head -1
+
 # 0.9.0 step 5 (D81): statement C4, reported and deciding nothing: the
 # exported course GPT's forward pass at B = 16, T = 256 with the trained
 # checkpoint, under the plan the frozen profile gives, against `presk bench
@@ -1145,6 +1167,22 @@ sr5:
 machine-types:
 	$(CARGO) build --release -p presk
 	TARGET=$(TARGET) experiments/machine_types.sh
+
+# Statement FC3 (plan 0.18.2 step 4, D218): D209's MT6 solve measured on the
+# native backend, its realization, gap, rows and decisions against D209's
+# byte for byte, its rows run there too, and its time against the kernel
+# interpreter's, three processes each (needs make machine-types' outputs;
+# a quiet machine).
+fc3:
+	$(CARGO) build --release -p presk
+	experiments/fc3.sh
+
+# Statements FC4, FC5 and FC7 and FC6's cost (plan 0.18.2 step 5, D219):
+# the version's rows, alone on falicon; experiments/fc_rows.sh says what
+# each row times and how (needs D170's, D178's and FC3's outputs).
+fc-rows:
+	$(CARGO) build --release -p presk
+	experiments/fc_rows.sh all
 
 # Three ways to spend the budget, judged out of sample (plan 0.16.0 step 4,
 # D161): --estimate rss, --narrow measured --margin k and --narrow heldout.

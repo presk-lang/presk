@@ -55,9 +55,13 @@ format; `write_encoded` writes one by its parameters, and `presk data
 info` names it (`float(p=4,emin=-6,emax=8,specials=none,underflow=+0)`).
 Every number of a format is a number of `f64`, so the leaf is read
 exactly. A header that describes no format, or encoding 3 in a version 2
-file, is refused (`E9002`). The C export's and the PyTorch export's
-readers take versions 1 and 2 and refuse version 3 (`E9002`): no program
-they run computes in another format before version 0.18.2.
+file, is refused (`E9002`). The C export's reader takes version 3 since
+0.18.2 step 3 (D217), a leaf in binary16 or `e8m15` read as those
+formats' numbers (a NaN code the NaN of its sign, as `presk-data` reads
+it), and refuses a leaf in any other format by its name (`E9002`: "leaf 0
+is in e4m3fn, a format this program does not hold"), no program it writes
+holding another; the PyTorch export's reader takes versions 1 and 2 and
+refuses version 3 (`E9002`).
 
 A sample is the concatenation of the leaves of its type, in order: for a
 tuple, its elements left to right; for a parameter tree, its fields in

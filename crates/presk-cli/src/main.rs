@@ -2805,7 +2805,9 @@ fn calibrate_profile(core: &presk_core::Program, prog: &elab::ElabProgram, func:
     // Under `--plan-only` the plan's kernels are all that is asked: timing
     // them again under every other realization's default layout takes most
     // of the run on one thread (plan 0.17.0 step 1).
-    let others: &[presk_rt::Dtype] = if plan_only { &[] } else { &[presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::BF16] };
+    // binary16 and `e8m15` too since plan 0.18.2 step 4 (D218), each at
+    // one lane, as `bf16`.
+    let others: &[presk_rt::Dtype] = if plan_only { &[] } else { &[presk_rt::Dtype::F64, presk_rt::Dtype::F32, presk_rt::Dtype::BF16, presk_rt::Dtype::F16, presk_rt::Dtype::E8M15] };
     for &d in others {
         let r = presk_rt::Realization::uniform(d);
         let label = r.label();
@@ -3879,8 +3881,9 @@ fn run(file: &Path, entry: Option<&str>, dims: &[String], consts: &[String], see
 /// and significand fields ([`presk_format::Float::encode`], a NaN the quiet
 /// one of its sign), an integer's, a fixed-point number's units and an
 /// affine format's integer code in two's complement in their width, `f64`,
-/// `f32` and `bf16` by their bits; each code as many hexadecimal digits as
-/// its format's bits take.
+/// `f32` and `bf16` by their bits, binary16 and `e8m15` by the codes their
+/// buffer holds (plan 0.18.2 step 1, a NaN's payload kept as `fcvt` keeps
+/// it); each code as many hexadecimal digits as its format's bits take.
 fn codes_json(v: &presk_rt::Value) -> Result<serde_json::Value, String> {
     use presk_format::Format;
     use presk_rt::{Buf, Value};
@@ -3892,6 +3895,7 @@ fn codes_json(v: &presk_rt::Value) -> Result<serde_json::Value, String> {
                 Buf::F64(e) => ("f64".into(), e.iter().map(|x| hex(x.to_bits(), 64)).collect()),
                 Buf::F32(e) => ("f32".into(), e.iter().map(|x| hex(u64::from(x.to_bits()), 32)).collect()),
                 Buf::Bf16(e) => ("bf16".into(), e.iter().map(|x| hex(u64::from(*x), 16)).collect()),
+                Buf::Codes(f, e) => (f.name().into_owned(), (0..t.data.len()).map(|i| hex(u64::from(presk_rt::codes::code(*f, e, i)), f.bits())).collect()),
                 Buf::I64(e) => ("i64".into(), e.iter().map(|x| hex(*x as u64, 64)).collect()),
                 Buf::Format(f, e) => {
                     let code = |x: f64| -> Option<u64> {

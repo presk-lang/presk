@@ -83,9 +83,10 @@ pub fn export(o: &Options, report: &mut dyn Report) -> Result<()> {
             return Err(Stop(2));
         }
     };
-    // The C program computes in f64, f32 and bf16, each nest in its storage
-    // type's arithmetic type (plan 0.18.0 step 3, D206).
-    if let Err(e) = plan.realization.check_native("the C export") {
+    // The C program computes in f64, f32, bf16, binary16 and e8m15, each
+    // nest in its storage type's arithmetic type (plan 0.18.0 step 3, D206;
+    // the last two since plan 0.18.2 step 3, D217).
+    if let Err(e) = plan.realization.check_executor("the C export", true) {
         report.diagnostics(&[crate::entry::run_diag(e.code, e.message, None)], &sm);
         return Err(Stop(1));
     }
@@ -387,7 +388,7 @@ pub fn export_scop(o: &ScopOptions, report: &mut dyn Report) -> Result<()> {
         report.line(&format!("presk export --mode scop: `{}` quantizes weights, and the SCoP mode prints nests over arrays of reals and indices: a nest reading integer weights loads `f32(q)·s` from packed integers and their scales", o.realize));
         return Err(Stop(2));
     }
-    if let Err(e) = realize.check_native("the C export") {
+    if let Err(e) = realize.check_executor("the C export", true) {
         report.line(&format!("presk: error[{}]: {}", e.code, e.message));
         return Err(Stop(1));
     }
@@ -444,6 +445,8 @@ pub fn export_scop(o: &ScopOptions, report: &mut dyn Report) -> Result<()> {
             Buf::F64(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
             Buf::F32(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
             Buf::Bf16(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
+            // binary16's and e8m15's codes, as the C buffers lay them out.
+            Buf::Codes(_, v) => native.extend_from_slice(v),
             Buf::I64(v) => v.iter().for_each(|x| native.extend(x.to_le_bytes())),
             other => {
                 report.line(&format!("presk: internal error: `{}` gives a {} output", n.nest, other.dtype()));

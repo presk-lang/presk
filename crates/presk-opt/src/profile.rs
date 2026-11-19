@@ -514,7 +514,9 @@ impl Profile {
         // (`presk_rt::Realization::label`). Read as a string rather than
         // through `presk-rt`, which the optimizer does not otherwise need.
         match self.dtype.split('+').next().unwrap_or("") {
-            "bf16" => 2.0,
+            "bf16" | "f16" => 2.0,
+            // Three bytes a code (plan 0.18.2, D215).
+            "e8m15" => 3.0,
             "f32" => 4.0,
             _ => 8.0,
         }

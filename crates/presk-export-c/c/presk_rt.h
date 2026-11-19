@@ -1,6 +1,6 @@
 /* presk_rt.h: what the kernels and the host of Presk's C export need (plan
- * 0.9.0 §3.2-§3.5): the bf16 conversions and the saturating conversion to an
- * integer, inline; the transcendental functions (presk_libm.c); the
+ * 0.9.0 §3.2-§3.5): the conversions of bf16, binary16 and e8m15 (plan 0.18.2)
+ * and the saturating conversion to an integer, inline; the transcendental functions (presk_libm.c); the
  * conversion of a buffer between machine types, the .psk.d reader and
  * writer, integer weights and their quantization, the arena, and the keys
  * `sample` draws from (presk_rt.c).
@@ -77,6 +77,281 @@ static inline PRESK_CONST uint16_t presk_f32_to_bf16(float x)
     return (uint16_t)((bits + 0x7fffu + lsb) >> 16);
 }
 
+/* binary16 (f16) and e8m15 are storage types too (plan 0.18.2, presk D215 to
+ * D217): a buffer holds each element's code, the kernel computes in f32,
+ * and only loads and stores convert, as for bf16. A widening is exact; a
+ * narrowing rounds once, to nearest, ties to even, from a float or directly
+ * from a double; a finite value past the largest finite number becomes an
+ * infinity; a NaN stays a NaN of its sign, made quiet, with the top bits of
+ * its payload, as aarch64's fcvt does. These are presk_rt::codes' functions,
+ * which the kernel interpreter and the native backend share.
+ *
+ * Each binary16 conversion has two forms: a cast of C's _Float16, which on
+ * aarch64 is one instruction, fcvt, whose bits presk_rt::codes' are (D215),
+ * and which GCC 16 and Clang vectorize; and the integer form below, portable
+ * C11, the native backend's sequences. The cast is taken on aarch64 where
+ * the compiler has _Float16 (__FLT16_MANT_DIG__), unless PRESK_F16_INTEGER
+ * is defined; the integer form everywhere else, since a cast is then a
+ * library routine whose bits are its own: x86-64's (compiler-rt, through
+ * zig) keeps a signalling NaN signalling when it widens it (D217). e8m15's
+ * conversions are integer forms on every compiler. */
+
+/* binary16 to float, the integer form: the magnitude moved 13 bits up, into
+ * a float's exponent and fraction fields, is the number times 2^-112, a
+ * subnormal one included, which one multiplication by 2^112 gives exactly;
+ * a field of all ones is the infinity, or the NaN with the code's payload,
+ * made quiet. */
+static inline PRESK_CONST float presk_f16_to_f32_int(uint16_t c)
+{
+    uint32_t sign = (uint32_t)(c & 0x8000u) << 16, mag = c & 0x7fffu, m13 = mag << 13, fin, special, w;
+    float x;
+    memcpy(&x, &m13, sizeof x);
+    x *= 0x1p112f;
+    memcpy(&fin, &x, sizeof fin);
+    special = m13 | 0x7f800000u | (mag > 0x7c00u ? 0x400000u : 0u);
+    w = (mag >= 0x7c00u ? special : fin) | sign;
+    memcpy(&x, &w, sizeof x);
+    return x;
+}
+
+/* A float rounded to the nearest binary16, the integer form, on its
+ * magnitude a: below 2^-14, where the result is subnormal or zero, a + 0.5
+ * in float, whose last place is binary16's least subnormal, so that the
+ * addition rounds, ties to even; from 2^-14, bf16's rounding at bit 13 with
+ * the exponent rebiased from 127 to 15, a carry out of the largest finite
+ * number reaching the infinity's code; from 2^16 the infinity, and past the
+ * float infinity the NaN, quiet, with its payload's top 9 bits. */
+static inline PRESK_CONST uint16_t presk_f32_to_f16_int(float x)
+{
+    uint32_t bits, sign, a, s, sub, n, special, m;
+    float t;
+    memcpy(&bits, &x, sizeof bits);
+    sign = bits & 0x80000000u;
+    a = bits ^ sign;
+    memcpy(&t, &a, sizeof t);
+    t += 0.5f;
+    memcpy(&s, &t, sizeof s);
+    sub = s - 0x3f000000u;
+    n = (a + 0xc8000fffu + ((a >> 13) & 1u)) >> 13;
+    special = a > 0x7f800000u ? (((a >> 13) | 0x7e00u) & 0x7fffu) : 0x7c00u;
+    m = a < 0x38800000u ? sub : n;
+    m = a >= 0x47800000u ? special : m;
+    return (uint16_t)(m | sign >> 16);
+}
+
+/* The code of the IEEE format of t trailing bits and w exponent bits nearest
+ * the double of bits b, ties to even, rounded once; a NaN quiet, with the
+ * top t - 1 bits of its payload (presk_rt::codes' narrow). A subnormal
+ * double is below half of the least subnormal of every such format (w <= 8),
+ * so it rounds to a zero. */
+static inline PRESK_CONST uint32_t presk_narrow_bits(uint64_t b, unsigned t, unsigned w)
+{
+    const uint64_t one = 1;
+    uint64_t sign = (b >> 63) << (t + w), inf = ((one << w) - 1) << t, abs = b & ~(one << 63);
+    uint64_t m, r, code;
+    int field, lead, bias, emin, shift;
+    if (abs > (uint64_t)0x7ff << 52)
+        return (uint32_t)(sign | inf | one << (t - 1) | ((abs >> (52 - t)) & ((one << (t - 1)) - 1)));
+    field = (int)(abs >> 52);
+    if (field == 0)
+        return (uint32_t)sign;
+    /* |x| = m 2^(lead - 52), rounded to a multiple of 2^(lead - t) where it
+     * is normal and of the least subnormal below. */
+    m = (abs & ((one << 52) - 1)) | one << 52;
+    lead = field - 1023;
+    bias = (1 << (w - 1)) - 1;
+    emin = 1 - bias;
+    shift = 52 - (int)t + (emin > lead ? emin - lead : 0);
+    if (shift > 63)
+        r = 0;
+    else {
+        uint64_t q = m >> shift, low = m & ((one << shift) - 1), half = one << (shift - 1);
+        r = q + (low > half || (low == half && (q & 1u)));
+    }
+    /* The exponent field and the significand's leading one add; a carry out
+     * of the significand moves the exponent, and past the largest finite
+     * number it reaches the infinity's code. */
+    code = lead >= emin ? ((uint64_t)(lead + bias - 1) << t) + r : r;
+    return (uint32_t)(sign | (code < inf ? code : inf));
+}
+
+/* A double rounded to the nearest binary16 once, the integer form. */
+static inline PRESK_CONST uint16_t presk_f64_to_f16_int(double x)
+{
+    uint64_t b;
+    memcpy(&b, &x, sizeof b);
+    return (uint16_t)presk_narrow_bits(b, 10, 5);
+}
+
+#if defined(__aarch64__) && defined(__FLT16_MANT_DIG__) && !defined(PRESK_F16_INTEGER)
+/* The forms that convert: _Float16's casts, fcvt s, h, fcvt h, s and
+ * fcvt h, d. */
+#define PRESK_F16_CAST 1
+
+static inline PRESK_CONST float presk_f16_to_f32(uint16_t c)
+{
+    _Float16 h;
+    memcpy(&h, &c, sizeof h);
+    return (float)h;
+}
+
+static inline PRESK_CONST uint16_t presk_f32_to_f16(float x)
+{
+    _Float16 h = (_Float16)x;
+    uint16_t c;
+    memcpy(&c, &h, sizeof c);
+    return c;
+}
+
+static inline PRESK_CONST uint16_t presk_f64_to_f16(double x)
+{
+    _Float16 h = (_Float16)x;
+    uint16_t c;
+    memcpy(&c, &h, sizeof c);
+    return c;
+}
+#else
+#define PRESK_F16_CAST 0
+
+static inline PRESK_CONST float presk_f16_to_f32(uint16_t c)
+{
+    return presk_f16_to_f32_int(c);
+}
+
+static inline PRESK_CONST uint16_t presk_f32_to_f16(float x)
+{
+    return presk_f32_to_f16_int(x);
+}
+
+static inline PRESK_CONST uint16_t presk_f64_to_f16(double x)
+{
+    return presk_f64_to_f16_int(x);
+}
+#endif
+
+/* An e8m15 code: the top 24 bits of the float of equal value, three bytes,
+ * little-endian, so that a buffer of n codes is 3n bytes with no padding and
+ * no byte of slack, a code assembled from its bytes. */
+typedef struct {
+    uint8_t b[3];
+} presk_e8m15;
+
+_Static_assert(sizeof(presk_e8m15) == 3, "an e8m15 code is three bytes");
+
+static inline PRESK_CONST presk_e8m15 presk_e8m15_of(uint32_t c)
+{
+    presk_e8m15 e = {{(uint8_t)c, (uint8_t)(c >> 8), (uint8_t)(c >> 16)}};
+    return e;
+}
+
+static inline PRESK_CONST uint32_t presk_e8m15_code(presk_e8m15 e)
+{
+    return (uint32_t)e.b[0] | (uint32_t)e.b[1] << 8 | (uint32_t)e.b[2] << 16;
+}
+
+/* The float an e8m15 code denotes, exactly: its 24 bits shifted into the top
+ * of a float's, a NaN's bits kept. */
+static inline PRESK_CONST float presk_e8m15_code_to_f32(uint32_t c)
+{
+    uint32_t w = c << 8;
+    float x;
+    memcpy(&x, &w, sizeof x);
+    return x;
+}
+
+static inline PRESK_CONST float presk_e8m15_to_f32(presk_e8m15 e)
+{
+    return presk_e8m15_code_to_f32(presk_e8m15_code(e));
+}
+
+/* A float rounded to the nearest e8m15, ties to even: bf16's rounding at bit
+ * 8; a NaN quiet. */
+static inline PRESK_CONST uint32_t presk_f32_to_e8m15_code(float x)
+{
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return x != x ? (bits >> 8) | 0x4000u : (bits + 0x7fu + ((bits >> 8) & 1u)) >> 8;
+}
+
+static inline PRESK_CONST presk_e8m15 presk_f32_to_e8m15(float x)
+{
+    return presk_e8m15_of(presk_f32_to_e8m15_code(x));
+}
+
+/* A kernel's load and store of an e8m15 element, byte by byte in place
+ * (plan 0.18.2 step 3, D217): the same bits as the functions above. Passed
+ * or returned by value, a three-byte struct goes through the calling
+ * convention's temporaries (on aarch64 a copy into an eight-byte slot, a
+ * return in a register stored and copied), which a polyhedral tool that
+ * runs before inlining (Polly at its early position) does not model: a nest
+ * without loops, or a gather, would be no SCoP of its own. `e` and `d` are
+ * elements (`in0[i0 * 8 + i1]`), each evaluated three times, and the store
+ * is a statement. */
+#define PRESK_E8M15_LOAD(e) \
+    presk_e8m15_code_to_f32((uint32_t)(e).b[0] | (uint32_t)(e).b[1] << 8 | (uint32_t)(e).b[2] << 16)
+#define PRESK_E8M15_STORE(d, x) \
+    { \
+        uint32_t presk_c_ = presk_f32_to_e8m15_code(x); \
+        (d).b[0] = (uint8_t)presk_c_; \
+        (d).b[1] = (uint8_t)(presk_c_ >> 8); \
+        (d).b[2] = (uint8_t)(presk_c_ >> 16); \
+    }
+
+/* The overflow guard (plan 0.18.2 step 4, D218; question 87): a kernel that
+ * stores binary16 or e8m15 returns a flag, set when one of its stores
+ * rounded a finite value to an infinity, and the host stops the entry's
+ * result there (presk_overflow). A store's test is whether the float's
+ * magnitude lies from the format's overflow threshold up to, not including,
+ * the infinity: 65520 for binary16, (2 - 2^-16) * 2^127 for e8m15, above
+ * which the rounding gives an infinity; an infinity or a NaN stored is no
+ * overflow of the store. One subtraction and one comparison, or-ed into a
+ * local the compiler keeps in a register. Built with -DPRESK_NO_GUARD, a
+ * kernel tests nothing and returns 0: the program as it was before the
+ * guard, the same bits where nothing overflows, which times its cost. */
+static inline PRESK_CONST uint32_t presk_overflows(float x, uint32_t threshold)
+{
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return (bits & 0x7fffffffu) - threshold < 0x7f800000u - threshold;
+}
+
+static inline uint16_t presk_f32_to_f16_guarded(float x, uint32_t *ovf)
+{
+#ifndef PRESK_NO_GUARD
+    *ovf |= presk_overflows(x, 0x477ff000u);
+#else
+    (void)ovf;
+#endif
+    return presk_f32_to_f16(x);
+}
+
+static inline uint32_t presk_f32_to_e8m15_code_guarded(float x, uint32_t *ovf)
+{
+#ifndef PRESK_NO_GUARD
+    *ovf |= presk_overflows(x, 0x7f7fff80u);
+#else
+    (void)ovf;
+#endif
+    return presk_f32_to_e8m15_code(x);
+}
+
+/* PRESK_E8M15_STORE with the guard's test, or-ed into *ovf. */
+#define PRESK_E8M15_STORE_GUARDED(d, x, ovf) \
+    { \
+        uint32_t presk_c_ = presk_f32_to_e8m15_code_guarded((x), (ovf)); \
+        (d).b[0] = (uint8_t)presk_c_; \
+        (d).b[1] = (uint8_t)(presk_c_ >> 8); \
+        (d).b[2] = (uint8_t)(presk_c_ >> 16); \
+    }
+
+/* A double rounded to the nearest e8m15 once. */
+static inline PRESK_CONST presk_e8m15 presk_f64_to_e8m15(double x)
+{
+    uint64_t b;
+    memcpy(&b, &x, sizeof b);
+    return presk_e8m15_of(presk_narrow_bits(b, 15, 8));
+}
+
 /* A real converted to an integer, rounded toward zero, saturating, and 0 for
  * a NaN: Cranelift's fcvt_to_sint_sat, where C's own conversion is undefined
  * out of range. */
@@ -124,23 +399,28 @@ float presk_erff(float x);
  * The runtime (presk_rt.c)
  * ------------------------------------------------------------------------ */
 
-/* The machine type of a buffer: the reals of a kernel, or indices. */
-typedef enum { PRESK_F64, PRESK_F32, PRESK_BF16, PRESK_I64 } presk_dtype;
+/* The machine type of a buffer: the reals of a kernel, or indices. The codes
+ * of binary16 and e8m15 since plan 0.18.2 (presk D217), after the others, so
+ * that their numbers do not move. */
+typedef enum { PRESK_F64, PRESK_F32, PRESK_BF16, PRESK_I64, PRESK_F16, PRESK_E8M15 } presk_dtype;
 
 /* Bytes of one element. */
 size_t presk_dtype_size(presk_dtype d);
 
 /* n reals of type `from` at src, stored as type `to` at dst, as the native
  * backend converts a buffer at a kernel's edge (Buf::of(to, b.to_f64())):
- * through f64, where widening is exact, f64 to f32 rounds to nearest, and to
- * bf16 rounds to f32 and then to bf16. Indices are not converted. */
-void presk_convert(void *dst, presk_dtype to, const void *src, presk_dtype from, size_t n);
+ * through f64, where widening is exact, f64 to f32 rounds to nearest, to
+ * bf16 rounds to f32 and then to bf16, and to binary16 or e8m15 rounds once.
+ * Indices are not converted. Returns 1 when `to` is binary16 or e8m15 and a
+ * finite value rounded to an infinity, the overflow guard's test of the
+ * host's own narrowings (plan 0.18.2 step 4, presk D218), else 0. */
+uint32_t presk_convert(void *dst, presk_dtype to, const void *src, presk_dtype from, size_t n);
 
 /* n elements of type `to` at dst, each the real x rounded to it as the
  * native backend rounds it (Buf::of(to, [x; n])): a fill (zeros_like, a
  * dropout mask outside training) or a host scalar made a buffer (plan 0.9.0
- * step 3). */
-void presk_fill(void *dst, presk_dtype to, double x, size_t n);
+ * step 3). Returns the guard's test, as presk_convert. */
+uint32_t presk_fill(void *dst, presk_dtype to, double x, size_t n);
 
 /* The last error of the reader, the writer or the arena, as text. */
 const char *presk_error(void);
@@ -156,28 +436,34 @@ typedef struct {
 
 /* A .psk.d file open for reading, its header checked. The functions below
  * return 0, or the code of presk-data's error, whose text presk_error()
- * gives: 9002 not a .psk.d file of version 1 or 2, 9003 truncated, 9004 an
- * index not below its bound, 9005 another type, or a length that is not the
- * layout's (a model of other dimensions). */
+ * gives: 9002 not a .psk.d file of version 1, 2 or 3, or a leaf in a format
+ * this reader does not hold, 9003 truncated, 9004 an index not below its
+ * bound, 9005 another type, or a length that is not the layout's (a model of
+ * other dimensions). */
 typedef struct {
     FILE *f;
     const presk_leaf *leaves;
     size_t nleaves;
     uint64_t count;     /* samples in the file */
     uint64_t next;      /* the sample presk_read reads */
-    unsigned char *enc; /* version 2: each leaf's encoding, 0 f64, 1 f32,
-                           2 bf16 (plan 0.17.0 step 7); NULL in version 1 */
+    unsigned char *enc; /* versions 2 and 3: each leaf's encoding, 0 f64, 1
+                           f32, 2 bf16 (plan 0.17.0 step 7), and of version
+                           3's encoding 3 the two formats held, 4 binary16
+                           and 5 e8m15 (plan 0.18.2 step 3); NULL in
+                           version 1 */
 } presk_reader;
 
-/* Opens `path` and checks its header: magic, version 1 or 2, the sample
- * type `type` byte for byte, a version 2 file's encodings, one per leaf and
- * none of an index, and a length of exactly `count` samples of the leaves
- * in their encodings. */
+/* Opens `path` and checks its header: magic, version 1, 2 or 3, the sample
+ * type `type` byte for byte, a version 2 or 3 file's encodings, one per leaf
+ * and none of an index, a format described by its parameters (version 3)
+ * binary16 or e8m15 and any other refused by its name, and a length of
+ * exactly `count` samples of the leaves in their encodings. */
 int presk_open(presk_reader *r, const char *path, const char *type, const presk_leaf *leaves, size_t nleaves);
 
 /* Reads the next sample: leaf i into dst[i], as dtypes[i]. A real leaf is
- * read in its encoding, f64 unless a version 2 file says f32 or bf16, each a
- * number of f64 exactly, and converted to dtypes[i] (presk_convert);
+ * read in its encoding, f64 unless the file says f32, bf16, binary16 or
+ * e8m15, each a number of f64 exactly, and converted to dtypes[i]
+ * (presk_convert): a leaf in the buffer's own format is its codes, copied;
  * an index leaf is read into int64_t (PRESK_I64), each checked below its
  * bound. */
 int presk_read(presk_reader *r, void *const *dst, const presk_dtype *dtypes);
@@ -190,8 +476,9 @@ int presk_load(const char *path, const char *type, const presk_leaf *leaves, siz
 
 /* Writes `count` samples of the leaves as a .psk.d file of sample type
  * `type`, as presk-data writes one: leaf i of sample s from
- * src[s * nleaves + i], of type dtypes[i]. Reals are written as f64 (exact),
- * indices in the width their bound gives, each checked below it. */
+ * src[s * nleaves + i], of type dtypes[i]. Reals are written as f64 (exact,
+ * binary16's and e8m15's included), indices in the width their bound gives,
+ * each checked below it. */
 int presk_write(const char *path, const char *type, const presk_leaf *leaves, size_t nleaves, uint64_t count, const void *const *src, const presk_dtype *dtypes);
 
 /* The arena: one block, sized at export time from the recording's peak of
@@ -202,6 +489,11 @@ typedef struct {
     size_t size; /* bytes */
     size_t top;  /* bytes in use */
     size_t peak; /* the most bytes in use so far */
+    /* The overflow guard's message of the call, the first kernel's whose
+     * store rounded a finite value to an infinity, or NULL (plan 0.18.2
+     * step 4, D218): set by presk_overflow, cleared by an entry that stores
+     * binary16 or e8m15 as it starts. */
+    const char *overflow;
 } presk_arena;
 
 /* Every allocation is aligned to this many bytes, a cache line. */
@@ -217,6 +509,13 @@ void *presk_try_alloc(presk_arena *a, size_t bytes);
 /* The same, and the program stops with a message when the arena has not
  * them left, which is a fault of the export that sized it. */
 void *presk_alloc(presk_arena *a, size_t bytes);
+
+/* A guarded kernel's flag set (presk_f32_to_f16_guarded): its message,
+ * `what`, printed on stderr and kept in the arena when it is the call's
+ * first, so that the entry returns 1 and names the first store that
+ * overflowed. The launches after it run, on infinities; their result is no
+ * result. */
+void presk_overflow(presk_arena *a, const char *what);
 
 /* Where the arena is: what presk_release returns to. */
 size_t presk_mark(const presk_arena *a);

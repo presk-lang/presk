@@ -27,8 +27,9 @@ An exported program is the two halves of a native run of the entry:
   the layout already applied, each printed as one C function with its
   PSK-Kernel text as the comment above it (0.9.0 step 1, D77): literal loop
   bounds, offsets multiplied out, lanes as loops over a local array, `bf16`
-  as `uint16_t` computed in `float` and rounded as the runtime rounds, a
-  thread split's `[lo, hi)` on the loop at its depth.
+  as `uint16_t` computed in `float` and rounded as the runtime rounds,
+  binary16 and `e8m15` the same since 0.18.2 (below), a thread split's
+  `[lo, hi)` on the loop at its depth.
 - **The host** is a recording of the native backend's own run of the entry
   (step 3, D79). The kernel backend's values carry no identity (a `let`
   reads a clone of its operand, a slice of a stacked tree is a copy), so the
@@ -166,6 +167,91 @@ body. presk-rt's `pow2` scale, which looped for ever on a channel whose
 largest weight is below about 10⁻³⁰⁶, ends since step 7; its scales are
 otherwise unchanged.
 
+## binary16 and `e8m15`
+
+Since 0.18.2 step 3 (D217) the export takes a realization that stores
+values in binary16 (`f16`) and `e8m15`, each nest computed in `float`, as
+the native backend runs it since step 2 (the `native` chapter); a
+realization that stores a value in any other format, or computes a nest
+otherwise than in its storage type's arithmetic type, is still refused
+before anything is written (`E7005`: "the C export computes in f64, f32,
+bf16, f16 and e8m15").
+
+- **The buffers.** A binary16 buffer is `uint16_t`, each element its code.
+  An `e8m15` one is `presk_e8m15`, a struct of three bytes (the code's,
+  little-endian, the top 24 bits of the `float` of equal value), so that a
+  buffer of n codes is 3n bytes, a pointer moves by whole codes and the
+  arena sizes it as any other; a code is assembled from its three bytes, so
+  no buffer needs a byte past its last element. The course GPT's forward
+  pass at `B = 16`, `T = 256` takes an arena of 108 MB in `f16` against 216
+  MB in `f32`.
+- **The conversions** are `presk_rt.h`'s, the runtime's functions
+  (`presk_rt::codes`, D215): `presk_f16_to_f32`, `presk_f32_to_f16` and
+  `presk_f64_to_f16`, and `e8m15`'s three, a load widening exactly and a
+  store rounding once, to nearest, ties to even, a NaN made quiet with the
+  top bits of its payload. binary16's have two forms: a cast of C's
+  `_Float16`, which on aarch64 is one instruction (`fcvt`), and an integer
+  form, portable C11, the native backend's sequences. The header takes the
+  cast on aarch64 where the compiler has `_Float16` and the integer form
+  everywhere else, or wherever `-DPRESK_F16_INTEGER` asks for it; `e8m15`'s
+  are integer forms on every compiler, and a kernel loads and stores an
+  `e8m15` element byte by byte in place (`PRESK_E8M15_LOAD`,
+  `PRESK_E8M15_STORE`), the same bits: passed or returned by value, a
+  three-byte struct goes through the calling convention's temporaries,
+  which Polly at its early position does not model, so that a nest
+  without loops, or a gather, would be no SCoP of its own. The plan took
+  the cast wherever the compiler has `_Float16`; on x86-64 the cast is a
+  library routine (compiler-rt's, through zig) that keeps a signalling NaN
+  signalling when it widens it, where `fcvt` quiets it: 1 022 codes
+  widened to other bits.
+  Under GCC 13.3, which does not vectorize the casts at `-O2`, the course
+  GPT's forward pass above takes 1.37 s with them and 4.41 s with the
+  integer form, on ten X925 cores, so the casts stay there too.
+- **The runtime.** `presk_dtype` has `PRESK_F16` and `PRESK_E8M15`;
+  `presk_convert` and `presk_fill` round an `f64` to either once, as
+  `Buf::of` does. The reader takes `.psk.d` version 3 (the `data`
+  chapter): a leaf in binary16 or `e8m15` is read as those formats'
+  numbers, a NaN code the NaN of its sign as `presk-data` reads it, and a
+  leaf in any other format is refused by its name (`E9002`). The writer
+  writes `f64` leaves, exact for both.
+- **The SCoP mode** prints a nest of either type over arrays of
+  `uint16_t` or `presk_e8m15`, and its driver draws the inputs rounded once
+  from `f64`, as presk rounds them. Polly takes each static-control nest of
+  the test set in the five types as one SCoP of its loops (2 076), and each
+  gather or scatter (95) as one only when non-affine accesses are allowed,
+  the rule of the other three types.
+- **The LLVM backend**, whose kernels this printer prints, runs both
+  formats since the same step (the `native` chapter).
+- **The overflow guard** (0.18.2 step 4, D218; the `precision` chapter). A
+  kernel that stores binary16 or `e8m15` returns a flag, `uint32_t`, set
+  when one of its stores rounded a finite value to an infinity: each store
+  rounds through `presk_f32_to_f16_guarded` or
+  `PRESK_E8M15_STORE_GUARDED`, whose test, one subtraction and one
+  comparison, is or-ed into a local the compiler keeps in a register. Its
+  launch tests the flag, or-ed over the team's threads where the launch is
+  divided (`reduction(|:presk_ovf)`), and passes the guard's message to
+  `presk_overflow`, which prints it on standard error after `[E7007]
+  Error:`, in `presk run`'s words, and keeps it in the arena
+  (`arena->overflow`) when it is the call's first. The entry of such a
+  program returns `int`, 0 or 1 when the guard tripped, and `./model` then
+  exits with status 1 and writes no outputs; the launches after the first
+  overflow run, on infinities, and their result is no result. A program
+  that stores neither format is printed as before, its entry `void`.
+  The host's narrowings into either format are tested too, as the native
+  backend's host tests them: `presk_fill` and `presk_convert` return the
+  same flag, and a fill, a scalar made a buffer or an operand converted at
+  a nest's edge into binary16 or `e8m15` passes the host's message to
+  `presk_overflow`; the entry's arguments, which `main.c` reads and
+  converts, are its caller's. `-DPRESK_NO_GUARD` in `CFLAGS` builds the
+  kernels without the test, the program as it was before the guard, with
+  the same bits where nothing overflows: what statement FC6's cost is
+  measured against (D219): on the course GPT's forward pass in binary16
+  (B = 16, T = 256, GCC 16.2, ten threads) the guarded program takes
+  1.012× the unguarded one's time, 648.63 ms against 640.82, and binary16
+  takes 0.784× `f32`'s. The SCoP mode prints no guard. The LLVM backend's kernels are this printer's,
+  their flag or-ed into the call's (`__atomic_fetch_or`), which the native
+  backend's host reads.
+
 ## Why the bits are the native backend's
 
 Rule by rule:
@@ -174,8 +260,10 @@ Rule by rule:
 |---|---|---|
 | each kernel | Cranelift's code of the loop nest, every product rounded before it is added | the same loop nest in C, built with `-std=c11 -ffp-contract=off` (never `-ffast-math`), so the compiler contracts nothing (D77) |
 | `exp`, `log`, `tanh`, `sin`, `cos`, `erf` | the `libm` crate | `presk_libm.c`, musl 1.1.22's, bit-identical to the crate (D78) |
-| an input or a weight | the exact value rounded to `f64`, then to the site's type, `bf16` through `f32` | read as `f64` from the `.psk.d` file and rounded the same way (`presk_convert`) |
+| an input or a weight | the exact value rounded to `f64`, then to the site's type, `bf16` through `f32`, binary16 and `e8m15` once | read as `f64` from the `.psk.d` file and rounded the same way (`presk_convert`) |
+| a value stored in binary16 or `e8m15` (0.18.2) | its code, widened exactly by a load and rounded once by a store, by Cranelift's integer sequences | its code, `uint16_t` or `presk_e8m15`, by `presk_rt.h`'s conversions: `_Float16`'s casts on aarch64, the integer forms elsewhere, the same bits on every input |
 | a buffer of another type at a kernel's edge (a mixed realization) | converted through `f64` | the same conversion, into a new buffer |
+| a constant a nest's storage type does not hold (0.18.2, D220: AdamW's ε in binary16) | read by a nest of elementwise operations in its arithmetic type, `f32`, through a widened input, not converted at its edge | the same: a `float` buffer the kernel reads as it is, a literal made in `f32` by `presk_fill` |
 | a weight a realization quantizes | quantized from the checkpoint's reals when loaded; loaded by a kernel as `f32(q)·s`, or converted at a kernel's edge | `presk_quantize` from the same reals, the same arithmetic; `(float)q * s[c]` in the kernel, `presk_dequantize` at an edge |
 | a weight a realization stores in its own type (`params`, 0.12.0) | stored once in its type when loaded; read by a kernel of its type as it is, by a wider one through loads that widen it | the same type in the arena, converted as the `.psk.d` is read; `presk_bf16_to_f32` or a cast to `double` in the kernel's load |
 | a fill (`zeros_like`; a dropout mask outside training until 0.16.0, whose exported programs have none, D160) and a scalar made a tensor | `Buf::of`, rounding from `f64` | `presk_fill`, the same rounding |
@@ -220,6 +308,27 @@ and with the course's trained checkpoint (`B = 1`, `T = 256`). Each
 program is exported twice, structured and straight-line, and the two give
 the same output file.
 
+**binary16 and `e8m15`** (0.18.2 step 3, D217). The kernel printer's
+check takes the two formats beside the three: the 47 primitive cases in
+the five types, scalar and in lanes (1 410 runs), as SCoPs (231 distinct
+kernels) and on integer weights (5 400 runs), and every layout of the four
+nests of attention (1 853 points and 2 062 splits), each the native
+backend's bits. `presk_convert` between every two of the five types is
+`Buf::of`'s, bit for bit, and `.psk.d` version 3 files of binary16 and
+`e8m15` leaves are read as `presk-data` reads them. The conversions
+themselves are checked on every input under each compiler (FC1,
+`presk-export-c/tests/codes.rs`): 12 952 070 144 conversions, every `f32`
+narrowed to each format, every code widened, every midpoint of both
+formats and the doubles beside it narrowed from `f64`, and 2³² random
+doubles, give `presk_rt::codes`' bits under GCC 13.3, GCC 16.2 and clang
+23 in both of binary16's forms and on x86-64 through zig under qemu.
+Through the binary, every entry of the test set in the five types, and
+MiniGPT's five entries under the mixed realization and two more whose
+sites and parameters are in binary16 and `e8m15` beside `f32`, `bf16` and
+`f64` (`examples/tests/plan/mixed-codes-realization.json` and
+`mixed-f16-realization.json`), on both sets of weights: 180 programs in
+`make test`, each the native backend's bits; and C5 in the five types.
+
 **Under plans and on threads.** Every program is built with OpenMP and
 without it, and a program that divides a launch is run on one thread too:
 the same bits every way. MiniGPT under a plan stating splits at three
@@ -228,7 +337,7 @@ depths, and at a size where the native backend's own rule divides kernels
 frozen profile, in the three types, and the course GPT at `B = 16`, `T =
 256` under its plans and under the default layout (`make c-conformance`).
 In `presk-export-c/tests/host.rs`, five recordings with every kernel
-divided at each of its legal depths in turn (40 programs, 4 212 OpenMP
+divided at each of its legal depths in turn (40 programs, 2 964 OpenMP
 regions), run on one thread, three, every thread and without OpenMP. At the
 test set's sizes the plans state tiles, lanes and packs but no split, so
 the course GPT at `B = 16` and those tests are what reach threads.
@@ -302,8 +411,33 @@ c-conformance`, which installs it into `.venv-zig`; `dependencies` chapter),
 `generate.c` of a `--serve` export included, whose Clang build gives `presk
 serve`'s tokens. The Clang program on aarch64 is linked and run and gives
 the native bits; the x86-64 one (`x86_64-linux-musl`, static) is linked,
-not run, no emulator being at hand. zig has no OpenMP runtime, so there the
-OpenMP build is compiled and not linked. No program warns.
+and since 0.18.2 step 3 (D217) run under qemu's x86-64 emulator where `make
+qemu` installed it, and gives the native bits too, but for the sign of a
+NaN that an invalid operation generates (`∞ − ∞`, `0 · ∞`): x86-64's
+arithmetic sets it where aarch64's clears it, IEEE 754 leaving it
+unspecified, and a program carries the NaN on with its sign. A program in
+binary16 can compute one: MiniGPT's AdamW step, whose ε = 10⁻⁸ rounds to
+zero there and leaves a 0/0. The test accepts a NaN of the other sign
+when every other bit is the native backend's, and counts them. (D217
+counted `attention3` too, its outputs NaN in binary16; since step 4 the
+overflow guard refuses that run, whose RoPE base of 500 000 the host made
+an infinity, D218.) Until that step the x86-64 program was not run, no emulator
+being at hand. zig has no OpenMP runtime, so there the
+OpenMP build is compiled and not linked. Since the same step `make
+c-conformance` also builds every program with GCC 16.2 (`.gcc`) and clang
+23 (`make llvm`) where they are installed, without OpenMP, which neither
+installation ships, and runs it: the native bits. No program warns.
+
+Apple's clang, the `cc` of macOS, has no `-fopenmp`: there a program that
+divides a launch is built by `make OPENMP=`, each divided launch one call
+over its whole loop, with the same bits. The tests build with `$CC`, else
+`cc`. Where it links no OpenMP program they build every program that way
+and run none on a team, and on Clang they ask for GCC's GNU mode, whose
+contraction must move bits, with `-ffp-contract=fast`. LLVM 23.1.2's clang
+without libomp passes them so (D212). Homebrew's GCC has OpenMP on macOS:
+`make CC=gcc-16` builds a divided launch as an OpenMP region there, and
+under `CC=gcc-16` the tests build every program both ways and run it on
+teams, as on Linux; CI's macOS job runs them so (D213).
 
 ## The conformance band
 
@@ -499,15 +633,15 @@ between the pragmas, were not run: none was on the machine.
   nests against RA4's ranking of their layouts, with the driver's times;
   pet, PPCG and PLUTO not run; integer weights and the host's own kernels
   (positions, masks) not in that mode.
-- **Formats other than `f64`, `f32` and `bf16`**: since 0.18.0 step 3
-  (D206) a realization may store a value in any float format and compute a
-  nest in any format, which the kernel interpreter emulates; the export,
-  whose C computes in the native types, each nest in its storage type's
-  arithmetic type, refuses such a realization before it writes anything
-  (`E7005`), and so does its SCoP mode (the `precision` chapter, "What a
-  nest computes in"); so is a realization storing a quantized activation
-  in an affine format (step 4, D207). The C for `f16` and the
-  16-bit-significand float is version 0.18.2's.
+- **Formats other than `f64`, `f32`, `bf16`, binary16 and `e8m15`**:
+  since 0.18.0 step 3 (D206) a realization may store a value in any float
+  format and compute a nest in any format, which the kernel interpreter
+  emulates; the export, whose C computes in the native types and stores
+  values in binary16 and `e8m15` too since 0.18.2 step 3 (D217), each nest
+  in its storage type's arithmetic type, refuses any other before it
+  writes anything (`E7005`), and so does its SCoP mode (the `precision`
+  chapter, "What a nest computes in"); so is a realization storing a
+  quantized activation in an affine format (0.18.0 step 4, D207).
 - **A GPU** and the matrix unit, which come after 0.9.0 (plan 0.9.0,
   decision 0).
 - **Where C4's ratios come from**, the code generator or the host, is not

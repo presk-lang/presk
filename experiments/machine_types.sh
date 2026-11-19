@@ -23,7 +23,9 @@
 #   Then margins.py report on every row, and machine_types.py report.
 # Nothing is timed. Every presk process runs in its own scope (MemoryMax=MEM,
 # no swap, oom_score_adj 1000). Outputs present are reused: delete OUT to
-# start again.
+# start again. MEASURE=native measures the solves on the native backend and
+# BACKEND=native runs the rows there (plan 0.18.2 step 4, D218: statement
+# FC3, experiments/fc3.sh); the kernel interpreter by default, D209's.
 #
 #   TARGET=examples/tests/targets/accelerator.json ./experiments/machine_types.sh
 #   ./experiments/machine_types.sh               MT6 alone
@@ -45,6 +47,8 @@ MT6_BUDGET=${MT6_BUDGET:-4.67e-4}      # V6's, ε*(10⁻³) of record (D118, D17
 DELTAS=${DELTAS:-1e-1 1e-2 1e-3}
 READINGS=${READINGS:-f32 fixed(i48,frac=18)}
 OUT=${OUT:-out/machine-types}
+MEASURE=${MEASURE:-kernel}
+BACKEND=${BACKEND:-kernel}
 CHUNK=${CHUNK:-16}
 JOBS=${JOBS:-16}
 MEM=${MEM:-8G}
@@ -78,7 +82,7 @@ solve() { # name budget args…
     [ -s "$OUT/solve/$n.txt" ] && return 0
     say "solve $n at $b"
     scoped /usr/bin/time -v -o "$OUT/solve/$n.time" "$PRESK" solve "$FILE" --precision "$ENV" --budget-abs "$b" --weights "$W" \
-        --sites 60 "$@" > "$OUT/solve/$n.txt" 2> "$OUT/solve/$n.err"
+        --sites 60 --measure "$MEASURE" "$@" > "$OUT/solve/$n.txt" 2> "$OUT/solve/$n.err"
     echo $? > "$OUT/solve/$n.exit"
 }
 if [ -n "$TARGET" ]; then
@@ -116,7 +120,7 @@ native() { # name from count
     local p; p=$OUT/native/$1/$(printf %04d "$2")
     [ -f "$p.tsv" ] && return 0
     scoped "$PRESK" run "$FILE" --entry logits "${DIMS[@]}" --weights "$W" --data "$VAL" --from "$2" --samples "$3" \
-        --backend kernel --realize "@$OUT/solve/$1.json" --json --digits 17 > "$OUT/json/$1_$2.json" 2> "$p.err" \
+        --backend "$BACKEND" --realize "@$OUT/solve/$1.json" --json --digits 17 > "$OUT/json/$1_$2.json" 2> "$p.err" \
         && $PY experiments/margins.py native "$OUT/json/$1_$2.json" "$OUT/exact/$(printf %04d "$2")" "$p" \
         && rm -f "$OUT/json/$1_$2.json" || echo "the $1 run of windows $2.. failed: $p.err"
 }
@@ -124,7 +128,7 @@ decide() { # name from count
     local d; d=$OUT/decisions/$1/$(printf %04d "$2")
     [ -f "$d.txt" ] && return 0
     scoped "$PRESK" run "$FILE" --entry decisions "${DIMS[@]}" --weights "$W" --data "$VAL" --from "$2" --samples "$3" \
-        --backend kernel --realize "@$OUT/solve/$1.json" --json > "$OUT/json/dec_$1_$2.json" 2> "$d.err" \
+        --backend "$BACKEND" --realize "@$OUT/solve/$1.json" --json > "$OUT/json/dec_$1_$2.json" 2> "$d.err" \
         && $PY experiments/margins.py decisions "$OUT/json/dec_$1_$2.json" "$d.txt" && rm -f "$OUT/json/dec_$1_$2.json" \
         || echo "the $1 decisions of windows $2.. failed: $d.err"
 }

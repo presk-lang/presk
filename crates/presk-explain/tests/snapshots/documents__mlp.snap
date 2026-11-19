@@ -24,7 +24,7 @@ subtitle: "What the Presk compiler does to one program: `presk explain`"
 | Optimizer (e-graph) | off | no `--opt` |
 | Targets | native (Cranelift) | `--target native` |
 
-Compiler: presk 0.18.1. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
+Compiler: presk 0.18.2. Each section ends with the commands that print what it shows; `$DOC` is this document's directory, which holds every file it names.
 
 **The artifacts** it was made from or wrote:
 
@@ -339,7 +339,7 @@ presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.
 | `l2.w` | a parameter, by its path | `f32` | 64 | 5.334e-1 | 5.230e0 | 7.493e-8 | 14.634 % |
 | `Linear.apply/%3` | `dot x, w` | `f32` | 32 | 8.739e-1 | 2.360e0 | 4.712e-8 | 9.204 % |
 | `Linear.apply/%5` | `add %3, b` | `f32` | 32 | 8.739e-1 | 2.360e0 | 4.712e-8 | 9.204 % |
-| `mse/%6` | `mean %5` | `f64` | 1 | 9.359e-1 | 1.000e0 | 1.467e-17 | 0.000 % |
+| `mse/%6` | `mean %5` | `f64` | 1 | 9.359e-1 | 1.000e0 | 2.079e-17 | 0.000 % |
 | `l1.b` | a parameter, by its path | `bf16` | 16 | 0.000e0 | 1.778e0 | 0.000e0 | 0.000 % |
 | `l2.b` | a parameter, by its path | `bf16` | 4 | 0.000e0 | 1.291e0 | 0.000e0 | 0.000 % |
 
@@ -352,8 +352,8 @@ presk solve: `mse` under budget 1.00e-3 relative (9.359e-4 absolute, |output| 9.
 - `Linear.apply/%3`: narrowed to `f32` (move 9): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 3.319e-7.
 - `Linear.apply/%5`: narrowed to `f32` (move 7): saves 5.295e-8 s, adds 4.712e-8 to the estimate, then 2.005e-7.
 - `mse/%6`: not offered: one element, no traffic to save (rule 1).
-- `l1.b`: narrowed to `f32` (move 1): saves 2.648e-8 s, adds 0.000e0 to the estimate, then 6.592e-16; narrowed to `bf16` (move 2): saves 1.324e-8 s, adds 0.000e0 to the estimate, then 6.592e-16.
-- `l2.b`: narrowed to `f32` (move 3): saves 6.619e-9 s, adds 0.000e0 to the estimate, then 6.592e-16; narrowed to `bf16` (move 4): saves 3.309e-9 s, adds 0.000e0 to the estimate, then 6.592e-16.
+- `l1.b`: narrowed to `f32` (move 1): saves 2.648e-8 s, adds 0.000e0 to the estimate, then 6.285e-16; narrowed to `bf16` (move 2): saves 1.324e-8 s, adds 0.000e0 to the estimate, then 6.285e-16.
+- `l2.b`: narrowed to `f32` (move 3): saves 6.619e-9 s, adds 0.000e0 to the estimate, then 6.285e-16; narrowed to `bf16` (move 4): saves 3.309e-9 s, adds 0.000e0 to the estimate, then 6.285e-16.
 
 **The values rounded elsewhere, or carried.** A follower's type is the narrowest of the types it is rounded to where it is read; a carried value's is its own, never rounded there.
 

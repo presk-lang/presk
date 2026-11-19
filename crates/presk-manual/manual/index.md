@@ -1,7 +1,7 @@
 # Presk compiler — user manual
 
 <!-- For the manual's maintainers, not shown to its readers (the user,
-2026-11-16). **Version 0.18.1** (plans 0.1.0 to 0.18.0 done, with the patches 0.10.1, 0.14.1, 0.16.1, 0.17.1 and 0.17.2, and 0.18.1, a documentation release; [`status`]). This
+2026-11-16). **Version 0.18.2** (plans 0.1.0 to 0.18.0 and 0.18.2 done, with the patches 0.10.1, 0.14.1, 0.16.1, 0.17.1 and 0.17.2, and 0.18.1, a documentation release; [`status`]). This
 manual describes the `presk` tool as it is implemented, no more: every
 chapter was updated at each step of each plan, and features that exist only
 in the language specification are marked *not implemented*. The reference for the language itself is the

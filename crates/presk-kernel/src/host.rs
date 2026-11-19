@@ -15,7 +15,7 @@ use presk_types::dim::DimExpr;
 use presk_types::elab::ElabProgram;
 use presk_types::ty::{ParamsTree, Shape, Ty};
 
-use crate::exec::{launch_buf, run_kernel};
+use crate::exec::launch_buf;
 use crate::ir::{BufKind, Dtype, Kernel, Threads};
 use crate::lower::{self, Lowered, Operand};
 use crate::profile::{Overhead, Phase, SharedProfile, copied_bytes, freed_bytes, since, value_bytes};
@@ -65,9 +65,29 @@ pub trait KernelExec {
     fn emulates(&self) -> bool {
         false
     }
+    /// For an executor that does not emulate: whether it also computes the
+    /// kernels of a realization that stores values in binary16 and `e8m15`,
+    /// in `f32` (plan 0.18.2 step 2, D216; [`Realization::check_executor`]).
+    /// The native backend does since step 2, and with a compiler in
+    /// Cranelift's place, the LLVM backend, since step 3 (D217).
+    fn codes(&self) -> bool {
+        false
+    }
     /// For an executor that emulates: whether the realization run emulates
     /// some site, so that every kernel is run in its formats and counted.
     fn set_emulating(&mut self, _on: bool) {}
+    /// For an executor that emulates: whether the realization run is one
+    /// the native types run, whose kernels' stores into binary16 and
+    /// `e8m15` the overflow guard checks, as a native executor checks every
+    /// one it runs (plan 0.18.2 step 4, D218).
+    fn set_guarded(&mut self, _on: bool) {}
+    /// Whether the executor computes the entry, so that the overflow guard
+    /// checks the host's own narrowings too (D218): not one that runs no
+    /// kernel, whose launches `presk plan` and `presk dump --stage kernel`
+    /// capture from shapes alone.
+    fn computes(&self) -> bool {
+        true
+    }
     /// What the emulated kernels' formats produced so far, while emulating.
     fn counts(&self) -> Option<presk_format::Counts> {
         None
@@ -82,6 +102,7 @@ pub trait KernelExec {
 #[derive(Default)]
 pub struct InterpExec {
     emulating: bool,
+    guarded: bool,
     counts: presk_format::Counts,
 }
 
@@ -90,12 +111,16 @@ impl KernelExec for InterpExec {
         "kernel"
     }
     fn run(&mut self, _idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<()> {
-        if !self.emulating {
-            run_kernel(k, inputs, out);
-            return Ok(());
+        let overflowed = if !self.emulating {
+            crate::exec::run_guarded(k, inputs, out)
+        } else {
+            let (c, o) = crate::exec::run_emulated_guarded(k, inputs, out).map_err(|m| RtError { code: "E7005", message: m, span: None })?;
+            self.counts.add(c);
+            o
+        };
+        if overflowed && self.guarded {
+            return Err(overflow(k));
         }
-        let c = crate::exec::run_emulated(k, inputs, out).map_err(|m| RtError { code: "E7005", message: m, span: None })?;
-        self.counts.add(c);
         Ok(())
     }
     fn emulates(&self) -> bool {
@@ -104,9 +129,51 @@ impl KernelExec for InterpExec {
     fn set_emulating(&mut self, on: bool) {
         self.emulating = on;
     }
+    fn set_guarded(&mut self, on: bool) {
+        self.guarded = on;
+    }
     fn counts(&self) -> Option<presk_format::Counts> {
         self.emulating.then_some(self.counts)
     }
+}
+
+/// The overflow guard's error (plan 0.18.2 step 4, D218; question 87): a
+/// store of kernel `k` into binary16 or `e8m15` turned a finite value into
+/// an infinity. Every executor returns it from the call whose flag is set,
+/// and the host names the site the kernel computes ([`KernelBackend`]).
+pub fn overflow(k: &Kernel) -> RtError {
+    let f = k.dtype.format();
+    RtError { code: "E7007", message: format!("the kernel `{}` rounded a finite value past {f}'s largest finite number, {}, to an infinity", k.name, presk_rt::codes::largest(f)), span: None }
+}
+
+/// The overflow guard's error for a narrowing of the host at `site` (D218):
+/// a value it made, or, at an `edge`, an operand converted to a nest's type.
+pub fn host_overflow(d: Dtype, site: &str, edge: bool) -> RtError {
+    let f = d.format();
+    let what = if edge {
+        format!("an operand converted to {f} at the nest's edge rounded past {f}'s largest finite number, {}, to an infinity", presk_rt::codes::largest(f))
+    } else {
+        format!("the host rounded a finite value past {f}'s largest finite number, {}, to an infinity", presk_rt::codes::largest(f))
+    };
+    RtError { code: "E7007", message: overflow_message(&what, site), span: None }
+}
+
+/// [`overflow`]'s message with the site of the launch, as every executor
+/// prints it.
+pub fn overflow_at(e: RtError, site: &str) -> RtError {
+    if e.code != "E7007" {
+        return e;
+    }
+    RtError { message: overflow_message(&e.message, site), ..e }
+}
+
+/// The overflow guard's message of a launch at `site` of the kernel whose
+/// [`overflow`] message is `kernel`: what [`overflow_at`] gives and the
+/// exported C prints (`presk_overflow`). A site as the C export's recorder
+/// names it, `Linear.apply/%3 (fused)`, is the launch's site and a note.
+pub fn overflow_message(kernel: &str, site: &str) -> String {
+    let site = site.split(" (").next().unwrap_or(site);
+    format!("the overflow guard: at `{site}`, {kernel}; a realization holds on its envelope, and this run's values leave it (question 87)")
 }
 
 /// One launch of a nest as the planning tools replay it (0.7.0 step 5): what
@@ -152,6 +219,18 @@ pub enum LaunchOp {
     Fused { steps: Vec<presk_realize::Step>, out: Vec<Axis> },
 }
 
+/// Whether `f` rounds the constant `x` to zero or past its largest finite
+/// number: what the range rules' constant rule refuses (D208,
+/// `presk_precision::formats::holds_constant`), and where a nest reads a
+/// constant in its arithmetic type instead (D220).
+fn misses(f: presk_format::Float, x: f64) -> bool {
+    if x == 0.0 || !x.is_finite() {
+        return false;
+    }
+    let (y, overflowed) = f.round_noted(x, presk_format::Tie::Even);
+    overflowed || y == 0.0 || !y.is_finite()
+}
+
 /// An input as a kernel of type `dtype` receives it: converted at the
 /// kernel's edge unless it is an index, exact, integer weights, or, under a
 /// realization that types parameters (`keep_narrow`), reals of a narrower
@@ -168,9 +247,10 @@ fn kernel_input(b: &Buf, dtype: Dtype, keep_quant: bool, keep_narrow: bool) -> B
 
 /// The kind a kernel of type `dtype` reads `b` as when `b` holds reals of a
 /// narrower type: [`BufKind::Wide`], its loads widening it exactly (plan
-/// 0.12.0 step 2, D121). `None` for any other buffer.
+/// 0.12.0 step 2, D121); binary16's and `e8m15`'s codes too since plan
+/// 0.18.2 step 2 (D216). `None` for any other buffer.
 pub fn narrower(b: &Buf, dtype: Dtype) -> Option<BufKind> {
-    BufKind::widened(Dtype::parse(&b.dtype()).filter(|d| d.is_native())?, dtype)
+    BufKind::widened(Dtype::parse(&b.dtype()).filter(|d| d.is_native() || d.coded())?, dtype)
 }
 
 pub struct KernelBackend<'p> {
@@ -266,6 +346,25 @@ pub struct KernelBackend<'p> {
     /// was made ([`presk_rt::quant::typed_counts`]): what the run's own
     /// store adds is the difference.
     typed_base: presk_format::Counts,
+    /// Whether the overflow guard checks the run (plan 0.18.2 step 4,
+    /// D218): a realization the native types run, binary16 and `e8m15`
+    /// among them. Besides its kernels' stores it checks the host's own
+    /// narrowings into either format while the entry runs: a constant it
+    /// fills, a scalar it makes a buffer, an operand converted to a nest's
+    /// type at its edge. The entry's arguments are the caller's, converted
+    /// before it runs, as the exported C receives them.
+    guard: bool,
+    /// The first such narrowing that rounded a finite value to an
+    /// infinity, the guard's error, raised at the next launch or as the
+    /// entry returns.
+    overflowed: std::cell::Cell<Option<RtError>>,
+    /// The constants of each function, its `let`s of a float literal or of
+    /// `real` (the range rules' constants, D208), computed once: a nest
+    /// reads one its storage format does not hold in its arithmetic type
+    /// (plan 0.18.2 step 6, D220, [`KernelBackend::kept`]).
+    constants: HashMap<FuncId, std::rc::Rc<std::collections::HashSet<VarId>>>,
+    /// Which arguments of the primitive being evaluated are such constants.
+    const_args: Vec<bool>,
 }
 
 /// One launch as [`KernelBackend::launch_log`] logs it.
@@ -322,10 +421,12 @@ impl Backend for KernelBackend<'_> {
         if self.exec.emulates() {
             realize.check_scales()?;
             self.exec.set_emulating(realize.emulates());
+            self.exec.set_guarded(realize.check_executor("", true).is_ok());
             self.emulating = realize.emulates();
         } else {
-            realize.check_native(&format!("the {} backend", self.exec.name()))?;
+            realize.check_executor(&format!("the {} backend", self.exec.name()), self.exec.codes())?;
         }
+        self.guard = realize.check_executor("", true).is_ok() && self.exec.computes();
         self.realize = realize.clone();
         self.dtype = realize.default;
         self.arith = crate::ir::Arith::native(self.dtype);
@@ -340,7 +441,13 @@ impl Backend for KernelBackend<'_> {
         if let Some(r) = self.recorder.as_deref_mut() {
             r.entry(&realized);
         }
+        self.overflowed.set(None);
         let result = self.call_fn(p.func, p.dims.clone(), realized);
+        // A host narrowing that overflowed after the last launch.
+        let result = match self.overflowed.take() {
+            Some(e) if result.is_ok() => Err(e),
+            _ => result,
+        };
         // The caller's arguments are freed where they always were, after the
         // call.
         let t = self.tick();
@@ -360,7 +467,7 @@ impl<'p> KernelBackend<'p> {
         let dtype = realize.default;
         let plan = Plan::from_realization(realize.clone());
         let default_layout = Layout { lanes: Some(1), ..Layout::default() };
-        KernelBackend { prog, elab, realize: realize.clone(), dtype, arith: crate::ir::Arith::native(dtype), site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true, lowering: 0.0, emulating: false, noted: std::cell::Cell::new(presk_format::Counts::default()), typed_base: presk_rt::quant::typed_counts() }
+        KernelBackend { prog, elab, realize: realize.clone(), dtype, arith: crate::ir::Arith::native(dtype), site: String::new(), plan, default_layout, kernels: vec![], outs: vec![], cache: HashMap::new(), launches: 0, training: false, fusion: HashMap::new(), fused: 0, exec, capture: None, recorder: None, profile: None, filled: HashMap::new(), epilogues: HashMap::new(), epilogue_stated: false, launch_log: None, epilogue_of: None, calls: Vec::new(), iteration: None, draws: true, lowering: 0.0, emulating: false, noted: std::cell::Cell::new(presk_format::Counts::default()), typed_base: presk_rt::quant::typed_counts(), guard: false, overflowed: std::cell::Cell::new(None), constants: HashMap::new(), const_args: Vec::new() }
     }
 
     /// Runs under `plan`: its realization, and its layout per nest. The plan
@@ -440,14 +547,36 @@ impl<'p> KernelBackend<'p> {
         crate::plan::lowered(&self.layout_at(&self.site), &self.default_layout, kind).map_err(|m| RtError { code: "E7002", message: format!("the plan's layout of `{}`: {m}", self.site), span: None })
     }
 
+    /// The site a launch computes, as the overflow guard names it (D218):
+    /// a product and the `add` its kernel computes as its epilogue,
+    /// `Linear.apply/%3 + Linear.apply/%5`, as the C export's recorder names
+    /// the launch.
+    fn launch_site(&self) -> String {
+        match &self.epilogue_of {
+            Some(add) => format!("{} + {add}", self.site),
+            None => self.site.clone(),
+        }
+    }
+
     // ----- buffers and values ------------------------------------------------
 
     fn buf(&self, data: Vec<f64>) -> Buf {
         self.of(self.dtype, &data)
     }
 
-    /// [`Buf::of`], counted when the run emulates (D209).
+    /// [`Buf::of`], counted when the run emulates (D209), and checked by
+    /// the overflow guard (D218): a value the host makes while the entry
+    /// runs, at the site being executed.
     fn of(&self, d: Dtype, v: &[f64]) -> Buf {
+        if self.guard && d.coded() && v.iter().any(|x| presk_rt::codes::overflows(d.format(), *x)) {
+            let first = self.overflowed.take().or_else(|| Some(host_overflow(d, &self.site, false)));
+            self.overflowed.set(first);
+        }
+        self.of_unguarded(d, v)
+    }
+
+    /// [`KernelBackend::of`] without the guard: the entry's arguments.
+    fn of_unguarded(&self, d: Dtype, v: &[f64]) -> Buf {
         if !self.emulating {
             return Buf::of(d, v);
         }
@@ -527,7 +656,7 @@ impl<'p> KernelBackend<'p> {
             // Integer weights stay integers: the kernels load them (D44).
             Value::Real(t) if matches!(t.data, Buf::Quant(_)) => leaf.clone(),
             Value::Real(t) if t.data.dtype() == d.name() => leaf.clone(),
-            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: self.of(d, &t.data.to_f64()) }),
+            Value::Real(t) => Value::Real(Tensor { axes: t.axes.clone(), data: self.of_unguarded(d, &t.data.to_f64()) }),
             other => other.clone(),
         };
         if arg != 0 || self.realize.params.is_empty() {
@@ -669,8 +798,14 @@ impl<'p> KernelBackend<'p> {
         // per launch of every weight is a cost of the host, not of the
         // realization, and it would be charged to every float row of a
         // benchmark and to none of the integer ones.
+        // A host narrowing that overflowed before this launch (D218).
+        if let Some(e) = self.overflowed.take() {
+            return Err(e);
+        }
         let emulating = self.emulating;
         let mut noted = self.noted.get();
+        let guard = self.guard && k.dtype.coded();
+        let mut edge = false;
         let converted: Vec<std::borrow::Cow<Buf>> = inputs
             .iter()
             .zip(&k.inputs)
@@ -685,11 +820,17 @@ impl<'p> KernelBackend<'p> {
                 b if b.dtype() == k.dtype.name() => std::borrow::Cow::Borrowed(*b),
                 // A narrower parameter the kernel widens as it loads it.
                 b if matches!(spec.kind, BufKind::Wide(d) if b.dtype() == d.name()) => std::borrow::Cow::Borrowed(*b),
-                b if emulating => std::borrow::Cow::Owned(Buf::of_counted(k.dtype, &b.to_f64(), &mut noted)),
-                b => std::borrow::Cow::Owned(Buf::of(k.dtype, &b.to_f64())),
+                b => {
+                    let v = b.to_f64();
+                    edge |= guard && v.iter().any(|x| presk_rt::codes::overflows(k.dtype.format(), *x));
+                    std::borrow::Cow::Owned(if emulating { Buf::of_counted(k.dtype, &v, &mut noted) } else { Buf::of(k.dtype, &v) })
+                }
             })
             .collect();
         self.noted.set(noted);
+        if edge {
+            return Err(host_overflow(k.dtype, &self.launch_site(), true));
+        }
         let refs: Vec<&Buf> = converted.iter().map(|c| c.as_ref()).collect();
         let owned = || converted.iter().filter(|c| matches!(c, std::borrow::Cow::Owned(_))).map(|c| crate::profile::buf_bytes(c)).sum();
         self.tock(Phase::Convert, t, owned);
@@ -698,7 +839,7 @@ impl<'p> KernelBackend<'p> {
         let mut out = launch_buf(k);
         self.tock(Phase::Alloc, t, || crate::profile::buf_bytes(&out));
         let t = self.tick();
-        self.exec.run(idx, &self.kernels[idx], &refs, &mut out)?;
+        self.exec.run(idx, &self.kernels[idx], &refs, &mut out).map_err(|e| overflow_at(e, &self.launch_site()))?;
         if let (Some(p), Some(t)) = (&self.profile, t) {
             let s = since(t);
             let o = self.exec.overhead();
@@ -763,6 +904,7 @@ impl<'p> KernelBackend<'p> {
         // plan serves every shape and every realization (`presk-realize`).
         let t = self.tick();
         let plan = self.fusion.entry(f).or_insert_with(|| presk_realize::plan(func)).clone();
+        let consts = self.constants.entry(f).or_insert_with(|| std::rc::Rc::new(func.body.lets.iter().filter(|l| matches!(l.rhs, Rhs::Lit(Lit::Float(_)) | Rhs::Prim { op: PrimOp::Real, .. })).map(|l| l.var).collect())).clone();
         // The products that can take their `add` as an epilogue (plan 0.10.0
         // step 7), wanted where the plan states one or the launches are
         // captured; and the `add`s whose product launched nothing.
@@ -820,7 +962,8 @@ impl<'p> KernelBackend<'p> {
                 continue;
             }
             if let Some(g) = plan.groups.get(&l.var) {
-                let v = self.fused_group(g, &env).map_err(|e| RtError {
+                let kept: Vec<bool> = g.inputs.iter().map(|v| consts.contains(v)).collect();
+                let v = self.fused_group(g, &env, &kept).map_err(|e| RtError {
                     span: e.span.or(Some(l.span)),
                     message: if e.message.starts_with("in `") { e.message } else { format!("in `{}` (fused group at %{}): {}", func.name, l.var.0, e.message) },
                     code: e.code,
@@ -846,11 +989,18 @@ impl<'p> KernelBackend<'p> {
                     }
                     Value::Nat(0)
                 }
-                rhs => self.rhs(rhs, &l.ty, &dims, &env, &closures).map_err(|e| RtError {
-                    span: e.span.or(Some(l.span)),
-                    message: if e.message.starts_with("in `") { e.message } else { format!("in `{}` ({}): {}", func.name, l.name.clone().unwrap_or_else(|| format!("%{}", l.var.0)), e.message) },
-                    code: e.code,
-                })?,
+                rhs => {
+                    if let Rhs::Prim { args, .. } = rhs {
+                        self.const_args = args.iter().map(|a| consts.contains(a)).collect();
+                    }
+                    let v = self.rhs(rhs, &l.ty, &dims, &env, &closures);
+                    self.const_args.clear();
+                    v.map_err(|e| RtError {
+                        span: e.span.or(Some(l.span)),
+                        message: if e.message.starts_with("in `") { e.message } else { format!("in `{}` ({}): {}", func.name, l.name.clone().unwrap_or_else(|| format!("%{}", l.var.0)), e.message) },
+                        code: e.code,
+                    })?
+                }
             };
             let v = self.retag(v, &l.ty);
             if let Some(r) = self.recorder.as_deref_mut()
@@ -891,7 +1041,7 @@ impl<'p> KernelBackend<'p> {
     /// One launch for a whole fusion group. The result's axes are computed by
     /// replaying the steps' broadcasts, not read off the type, because a type
     /// inside a module function may carry an open prefix.
-    fn fused_group(&mut self, g: &presk_realize::Group, env: &HashMap<VarId, Value>) -> Result<Value> {
+    fn fused_group(&mut self, g: &presk_realize::Group, env: &HashMap<VarId, Value>, consts: &[bool]) -> Result<Value> {
         let t = self.tick();
         let vals: Vec<Value> = g
             .inputs
@@ -899,7 +1049,7 @@ impl<'p> KernelBackend<'p> {
             .map(|v| env.get(v).cloned().ok_or_else(|| RtError { code: "E7001", message: format!("variable %{} undefined", v.0), span: None }))
             .collect::<Result<_>>()?;
         self.tock(Phase::Operands, t, || vals.iter().map(copied_bytes).sum());
-        let r = self.fused_on(g, &vals);
+        let r = self.fused_on(g, &vals, consts);
         let t = self.tick();
         drop(vals);
         self.tock_time(Phase::Operands, t);
@@ -909,7 +1059,8 @@ impl<'p> KernelBackend<'p> {
     /// The group applied to one set of values. A parameter tree maps the whole
     /// group over its leaves — the optimizer's update is one chain over a tree,
     /// and without this it would launch every step again for every leaf.
-    fn fused_on(&mut self, g: &presk_realize::Group, vals: &[Value]) -> Result<Value> {
+    /// `consts`: which inputs are constants of the function ([`KernelBackend::kept`]).
+    fn fused_on(&mut self, g: &presk_realize::Group, vals: &[Value], consts: &[bool]) -> Result<Value> {
         if let Some(template) = vals.iter().find(|v| matches!(v, Value::Record(_) | Value::Tuple(_))) {
             let t = self.tick();
             let template = template.clone();
@@ -933,7 +1084,7 @@ impl<'p> KernelBackend<'p> {
                 let t = self.tick();
                 let args: Vec<Value> = per_input.iter().map(|xs| if xs.len() == 1 { xs[0].clone() } else { xs[i].clone() }).collect();
                 self.tock(Phase::Tuples, t, || args.iter().map(copied_bytes).sum());
-                let leaf = self.fused_on(g, &args);
+                let leaf = self.fused_on(g, &args, consts);
                 let t = self.tick();
                 drop(args);
                 self.tock_time(Phase::Tuples, t);
@@ -948,8 +1099,15 @@ impl<'p> KernelBackend<'p> {
         }
         let t = self.tick();
         let mut ins: Vec<Tensor> = Vec::with_capacity(vals.len());
-        for value in vals {
-            ins.push(self.as_tensor(value)?);
+        let mut kept = vec![false; vals.len()];
+        for (i, value) in vals.iter().enumerate() {
+            match self.kept_if(consts.get(i).copied().unwrap_or(false), value) {
+                Some(t) => {
+                    kept[i] = true;
+                    ins.push(t);
+                }
+                None => ins.push(self.as_tensor(value)?),
+            }
         }
         self.tock(Phase::AsTensor, t, || 0);
         let in_axes: Vec<Vec<Axis>> = ins.iter().map(|t| t.axes.clone()).collect();
@@ -973,17 +1131,21 @@ impl<'p> KernelBackend<'p> {
             shapes.push(axes);
         }
         let out = shapes.pop().expect("a group has at least one step");
-        let operands: Vec<Operand> = in_axes.iter().map(|a| Operand { axes: a.clone(), kind: BufKind::Real }).collect();
+        let operands: Vec<Operand> = in_axes.iter().zip(&kept).map(|(a, k)| Operand { axes: a.clone(), kind: if *k { BufKind::Wide(self.dtype.arith()) } else { BufKind::Real } }).collect();
         let dtype = self.dtype;
         let t = self.tick();
         let layout = self.lowered_layout(&NestKind::Other)?;
         self.tock(Phase::Layout, t, || 0);
         if self.capture.is_some() {
             let accum = self.realize.accum_at(&self.site);
-            self.record(LaunchOp::Fused { steps: g.steps.clone(), out: out.clone() }, &operands, dtype, accum, &ins.iter().map(|t| kernel_input(&t.data, dtype, false, !self.realize.params.is_empty())).collect::<Vec<_>>());
+            self.record(LaunchOp::Fused { steps: g.steps.clone(), out: out.clone() }, &operands, dtype, accum, &ins.iter().zip(&kept).map(|(t, k)| if *k { t.data.clone() } else { kernel_input(&t.data, dtype, false, !self.realize.params.is_empty()) }).collect::<Vec<_>>());
         }
         let t = self.tick();
-        let key = format!("fused|{}|{dtype}|{}|{}|{}", g.signature(), layout.key(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&out));
+        let mut key = format!("fused|{}|{dtype}|{}|{}|{}", g.signature(), layout.key(), operands.iter().map(|o| lower::show(&o.axes)).collect::<Vec<_>>().join(";"), lower::show(&out));
+        // A constant read in the arithmetic type is part of the kernel.
+        if kept.contains(&true) {
+            key.push_str(&format!("|kept{kept:?}"));
+        }
         let steps = g.steps.clone();
         self.tock(Phase::Key, t, || 0);
         let bufs: Vec<&Buf> = ins.iter().map(|t| &t.data).collect();
@@ -1334,6 +1496,10 @@ impl<'p> KernelBackend<'p> {
 
     #[allow(clippy::only_used_in_recursion)]
     fn prim_on(&mut self, op: &PrimOp, args: &[Value], ty: &Ty, dims: &Dims) -> Result<Value> {
+        // Which arguments are constants of the function, for an elementwise
+        // nest (D220): taken, so that a primitive another evaluates reads
+        // none, and set again for each leaf of a tree.
+        let flags = std::mem::take(&mut self.const_args);
         let a = |i: usize| -> Result<&Value> { args.get(i).ok_or_else(|| RtError { code: "E7001", message: format!("`{}`: missing argument {i}", op.name()), span: None }) };
         match op {
             // ----- host: structure -----
@@ -1578,6 +1744,7 @@ impl<'p> KernelBackend<'p> {
                         self.tock(Phase::Tuples, t, || copied_bytes(x));
                         let mut mapped = Vec::new();
                         for leaf in out {
+                            self.const_args = flags.clone();
                             mapped.push(self.prim(op, &[leaf, y.clone()], ty, dims)?);
                         }
                         let t = self.tick();
@@ -1592,6 +1759,7 @@ impl<'p> KernelBackend<'p> {
                         self.tock(Phase::Tuples, t, || copied_bytes(y));
                         let mut mapped = Vec::new();
                         for leaf in out {
+                            self.const_args = flags.clone();
                             mapped.push(self.prim(op, &[x.clone(), leaf], ty, dims)?);
                         }
                         let t = self.tick();
@@ -1610,6 +1778,7 @@ impl<'p> KernelBackend<'p> {
                         }
                         let mut mapped = Vec::new();
                         for (p, q) in lx.into_iter().zip(ly) {
+                            self.const_args = flags.clone();
                             mapped.push(self.prim(op, &[p, q], ty, dims)?);
                         }
                         let t = self.tick();
@@ -1619,9 +1788,22 @@ impl<'p> KernelBackend<'p> {
                     }
                     _ => {
                         let t = self.tick();
-                        let (tx, ty_) = (self.as_tensor(x)?, self.as_tensor(y)?);
+                        let mut kinds = Vec::with_capacity(2);
+                        let mut operand = |this: &Self, i: usize, v: &Value| -> Result<Tensor> {
+                            let (t, kind) = match this.kept_if(flags.get(i).copied().unwrap_or(false), v) {
+                                Some(t) => (t, BufKind::Wide(this.dtype.arith())),
+                                None => {
+                                    let t = this.as_tensor(v)?;
+                                    let kind = if matches!(t.data, Buf::I64(_)) { BufKind::Idx } else { BufKind::Real };
+                                    (t, kind)
+                                }
+                            };
+                            kinds.push(kind);
+                            Ok(t)
+                        };
+                        let (tx, ty_) = (operand(self, 0, x)?, operand(self, 1, y)?);
                         self.tock(Phase::AsTensor, t, || 0);
-                        let r = self.tensor_prim(op, &[&tx, &ty_]);
+                        let r = self.tensor_prim_kinds(op, &[&tx, &ty_], &kinds);
                         let t = self.tick();
                         drop(tx);
                         drop(ty_);
@@ -1649,6 +1831,7 @@ impl<'p> KernelBackend<'p> {
                             self.tock(Phase::Tuples, t, || copied_bytes(x));
                             let mut mapped = Vec::new();
                             for leaf in leaves {
+                                self.const_args = flags.clone();
                                 mapped.push(self.prim(op, &[leaf], ty, dims)?);
                             }
                             let t = self.tick();
@@ -1670,16 +1853,22 @@ impl<'p> KernelBackend<'p> {
                 let t = self.tick();
                 let mut tensors: Vec<Tensor> = Vec::with_capacity(args.len());
                 let mut kinds: Vec<BufKind> = Vec::new();
-                for v in args {
+                for (i, v) in args.iter().enumerate() {
                     match v {
                         Value::Idx { t, .. } => {
                             tensors.push(t.clone());
                             kinds.push(BufKind::Idx);
                         }
-                        other => {
-                            tensors.push(self.as_tensor(other)?);
-                            kinds.push(BufKind::Real);
-                        }
+                        other => match self.kept_if(op.elementwise() && flags.get(i).copied().unwrap_or(false), other) {
+                            Some(t) => {
+                                tensors.push(t);
+                                kinds.push(BufKind::Wide(self.dtype.arith()));
+                            }
+                            None => {
+                                tensors.push(self.as_tensor(other)?);
+                                kinds.push(BufKind::Real);
+                            }
+                        },
                     }
                 }
                 self.tock(Phase::AsTensor, t, || 0);
@@ -1734,6 +1923,37 @@ impl<'p> KernelBackend<'p> {
         });
         drop(pieces);
         out
+    }
+
+    /// A constant operand of the nest being executed that its storage type
+    /// does not hold, rounding it to zero or past its largest finite number,
+    /// in the nest's arithmetic type, which the nest reads it in instead
+    /// (plan 0.18.2 step 6, D220). The range rules refuse such a format to
+    /// the constant (D208), and converting it at the nest's edge undid that:
+    /// AdamW's ε became zero at a binary16 update's edge (D219). `None` for
+    /// any other operand, converted at the edge as before; `is_const`:
+    /// whether it is a constant of the function, a `let` of a float literal
+    /// or of `real`.
+    fn kept_if(&self, is_const: bool, v: &Value) -> Option<Tensor> {
+        let (d, a) = (self.dtype, self.dtype.arith());
+        if !is_const || a == d {
+            return None;
+        }
+        let (axes, xs) = match v {
+            Value::F64(x) => (vec![], vec![*x]),
+            Value::Nat(n) => (vec![], vec![*n as f64]),
+            Value::Int(n) => (vec![], vec![*n as f64]),
+            Value::Real(t) if matches!(t.data, Buf::F64(_) | Buf::F32(_) | Buf::Bf16(_) | Buf::Codes(..) | Buf::Format(presk_format::Format::Float(_), _)) => (t.axes.clone(), t.data.to_f64()),
+            _ => return None,
+        };
+        if !xs.iter().any(|x| misses(d.format(), *x)) {
+            return None;
+        }
+        let data = match v {
+            Value::Real(t) if t.data.dtype() == a.name() => t.data.clone(),
+            _ => self.of(a, &xs),
+        };
+        Some(Tensor { axes, data })
     }
 
     fn as_tensor(&self, v: &Value) -> Result<Tensor> {
@@ -1885,6 +2105,9 @@ fn with_data(t: &Tensor, axes: Vec<Axis>, data: Vec<f64>) -> Tensor {
         // Values of an emulated format keep it: a quantized activation's
         // stay codes for the nests that count them (plan 0.18.0 step 4).
         Buf::Format(f, _) => Buf::Format(*f, data.into()),
+        // binary16's and `e8m15`'s values keep their codes, exactly (plan
+        // 0.18.2 step 1).
+        Buf::Codes(f, _) => Buf::Codes(*f, presk_rt::codes::encode(*f, &data).into()),
         _ => Buf::F64(data.into()),
     };
     Tensor { axes, data: buf }
@@ -1917,6 +2140,10 @@ fn slice_tensor(t: &Tensor, i: usize) -> Tensor {
         Buf::F64(e) => Buf::F64(e.view(lo, chunk)),
         Buf::F32(e) => Buf::F32(e.view(lo, chunk)),
         Buf::Bf16(e) => Buf::Bf16(e.view(lo, chunk)),
+        Buf::Codes(f, e) => {
+            let w = presk_rt::codes::width(*f);
+            Buf::Codes(*f, e.view(lo * w, chunk * w))
+        }
         Buf::I64(e) => Buf::I64(e.view(lo, chunk)),
         other => return with_data(t, axes, other.range_f64(lo, lo + chunk)),
     };
@@ -1981,7 +2208,9 @@ pub fn stack_trees(parts: &[Value]) -> Result<Value> {
 
 /// Tensors stacked along a new leading axis, `axes`. Of the stack's type,
 /// `with_data`'s from the first (`f32` stays `f32`, indices stay indices,
-/// anything else becomes `f64`), the parts laid end to end without a copy
+/// binary16's and `e8m15`'s codes stay codes, an emulated format's values
+/// stay its values, anything else becomes `f64`), the parts laid end to end
+/// without a copy
 /// when every one is of that type (plan 0.10.0 step 6): a scan's results,
 /// which a fold then slices layer by layer; otherwise their values copied
 /// into it, as before.
@@ -1993,6 +2222,12 @@ fn stack_tensors(first: &Tensor, axes: Vec<Axis>, parts: &[&Tensor]) -> Tensor {
         Buf::F32(_) => all(parts, |b| if let Buf::F32(e) = b { Some(e) } else { None }).map(Buf::F32),
         Buf::I64(_) => all(parts, |b| if let Buf::I64(e) = b { Some(e) } else { None }).map(Buf::I64),
         Buf::F64(_) => all(parts, |b| if let Buf::F64(e) = b { Some(e) } else { None }).map(Buf::F64),
+        // Codes of one format, laid end to end (plan 0.18.2 step 1).
+        Buf::Codes(f, _) => all(parts, |b| match b {
+            Buf::Codes(g, e) if g == f => Some(e),
+            _ => None,
+        })
+        .map(|e| Buf::Codes(*f, e)),
         _ => None,
     };
     match data {
@@ -2030,6 +2265,7 @@ fn set_slice(stacked: &Value, i: usize, value: &Value) -> Value {
                     (Buf::F32(s), Buf::F32(x)) => replaced(s, n, i, x).map(Buf::F32),
                     (Buf::F64(s), Buf::F64(x)) => replaced(s, n, i, x).map(Buf::F64),
                     (Buf::I64(s), Buf::I64(x)) => replaced(s, n, i, x).map(Buf::I64),
+                    (Buf::Codes(f, s), Buf::Codes(g, x)) if f == g => replaced(s, n, i, x).map(|e| Buf::Codes(*f, e)),
                     _ => None,
                 };
                 if let Some(data) = data {
@@ -2071,6 +2307,8 @@ fn scatter_params(tmpl: &Value, index: usize, ct: &Value) -> Value {
                     (Buf::F32(_), Buf::F32(x)) => scattered(n, index, x, 0.0).map(Buf::F32),
                     (Buf::F64(_), Buf::F64(x)) => scattered(n, index, x, 0.0).map(Buf::F64),
                     (Buf::I64(_), Buf::I64(x)) => scattered(n, index, x, 0).map(Buf::I64),
+                    // Codes of +0, `n` elements of the format's width.
+                    (Buf::Codes(f, _), Buf::Codes(g, x)) if f == g => scattered(n * presk_rt::codes::width(*f), index, x, 0u8).map(|e| Buf::Codes(*f, e)),
                     _ => None,
                 };
                 if let Some(data) = data {

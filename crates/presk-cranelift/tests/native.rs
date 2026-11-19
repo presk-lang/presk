@@ -1,7 +1,8 @@
 //! The conformance suite of the Cranelift backend (plan 0.3.0 §3.4): every example
 //! entry and every tensor primitive against the reference interpreter at 256
 //! bits, in f64 and in f32, within a stated tolerance per realization
-//! `|x − x̂| ≤ ε·(|x| + a)`.
+//! `|x − x̂| ≤ ε·(|x| + a)`; in `bf16`, and since plan 0.18.2 step 2 (D216)
+//! in binary16 and `e8m15`, `bf16`'s band in their units.
 
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -63,6 +64,11 @@ fn tol(r: &Realization) -> (f64, f64) {
         // worst over the examples: 3.2e-2 (0.7.0 step 2). The programs of
         // tests/ report their bf16 gap without asserting it (D58).
         Dtype::BF16 => (2f64.powi(-4), 2f64.powi(-5)),
+        // binary16 and `e8m15` (plan 0.18.2 step 2, D216): `bf16`'s relative
+        // band in their units (`u = 2⁻¹¹` and `2⁻¹⁶`), with its floor.
+        // Measured worst over the examples: 5.5e-3 and 1.9e-4.
+        Dtype::F16 => (2f64.powi(-7), 2f64.powi(-5)),
+        Dtype::E8M15 => (2f64.powi(-12), 2f64.powi(-5)),
         d => d.unreachable(),
     };
     if r.order.is_exact() { (eps, a) } else { (eps * 8.0, a) }
@@ -117,7 +123,11 @@ fn check_entry(rel: &str, consts: &[(&str, u64)], entry: &str, dims: &[(&str, u6
     // stack_prefix_grad's gradient, where a small result is left over from
     // larger terms cancelling, it crosses the band on some inputs and not
     // others, with 0.6.0's kernels as with these (D58).
-    if rel.starts_with("examples/spec/") || realize.default != Dtype::BF16 {
+    // binary16's AdamW step is reported too: its ε = 10⁻⁸ rounds to zero,
+    // and a second moment of zero divides by it (the `f16` study; D208's
+    // range rules refuse such a site at a solve).
+    let reported = realize.default == Dtype::BF16 && !rel.starts_with("examples/spec/") || realize.default == Dtype::F16 && entry == "adamw.step";
+    if !reported {
         assert!(w.0 <= eps, "{rel} {entry} ({}): gap {:.3e} > {eps:.3e} at {}", realize.label(), w.0, w.1);
     }
     w.0
@@ -150,12 +160,14 @@ fn examples_conform() {
         let g64 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F64));
         let g32 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F32));
         let gbf = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::BF16));
-        report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}  bf16 {gbf:.1e}\n"));
+        let g16 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::F16));
+        let ge8 = check_entry(rel, consts, entry, dims, &Realization::uniform(Dtype::E8M15));
+        report.push_str(&format!("{entry:22} f64 {g64:.1e}  f32 {g32:.1e}  bf16 {gbf:.1e}  f16 {g16:.1e}  e8m15 {ge8:.1e}\n"));
     }
     eprintln!("{report}");
 }
 
-/// Every tensor primitive on random operands, in both realizations.
+/// Every tensor primitive on random operands, in every uniform realization.
 #[test]
 fn primitives_conform() {
     use presk_core::PrimOp;
@@ -242,7 +254,7 @@ fn primitives_conform() {
         (PrimOp::SumSquares, vec![x.clone()]),
         (PrimOp::Real, vec![ids.clone()]),
     ];
-    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::BF16)] {
+    for realize in [Realization::uniform(Dtype::F64), Realization::uniform(Dtype::F32), Realization::uniform(Dtype::BF16), Realization::uniform(Dtype::F16), Realization::uniform(Dtype::E8M15)] {
         let (eps, a) = tol(&realize);
         let mut backend = native_backend(&core, &prog, &realize).unwrap();
         for (op, args) in &cases {

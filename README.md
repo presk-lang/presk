@@ -107,12 +107,17 @@ describes them all.
 
 ## Where it stands
 
-This is version 0.18.1. The compiler runs on CPUs, with a native backend
+This is version 0.18.2. The compiler runs on CPUs, with a native backend
 that has its own code generator and a second one through `clang`; work on
-GPUs has not started. Number formats other than `f64`, `f32` and `bf16`
-(binary16, 8-bit floats, integers with a scale, any format a machine may
-have) run only on the kernel interpreter (`--backend kernel`), which
-computes them bit for bit; the native backends refuse them for now. Serving
+GPUs has not started. Beside `f64`, `f32` and `bf16`, binary16 (`f16`) and
+`e8m15` (`f32`'s exponent with 16 significant bits) are stored in their
+format and computed in `f32` by both native backends and the exported C,
+with the kernel interpreter's bits, and a value that overflows either
+stops the run with an error; on the course GPT they save little time
+against `f32` yet. Other number formats (8-bit floats, integers
+with a scale, any format a machine may have) run only on the kernel
+interpreter (`--backend kernel`), which computes them bit for bit; the
+native backends refuse them for now. Serving
 recomputes the whole context for every new token. `CHANGELOG.md` lists what
 each version brought, and the manual's
 [`status`](https://docs.presk-lang.org/presk_manual/status/index.html)

@@ -561,7 +561,8 @@ fn batch_value_in(ty: &Ty, layout: &Layout, samples: &[&presk_data::Value], dims
             let enc = encs.get(*leaf).copied();
             *leaf += 1;
             Ok(Value::Real(Tensor { axes, data: match enc {
-                Some(presk_data::Enc::Format(f)) => Buf::Format(presk_format::Format::Float(f), data.into()),
+                // binary16 and `e8m15` as their codes (plan 0.18.2 step 1).
+                Some(presk_data::Enc::Format(f)) => Buf::in_format(presk_format::Format::Float(f), &data),
                 _ => Buf::F64(data.into()),
             } }))
         }

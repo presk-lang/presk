@@ -33,6 +33,20 @@ pub fn cc() -> String {
     std::env::var("CC").unwrap_or_else(|_| "cc".into())
 }
 
+/// GCC's GNU mode on the C compiler: `-std=gnu11 -O2`, where GCC contracts
+/// `a + b*c` into one fused multiply-add across statements
+/// (`-ffp-contract=fast`, its default there). Clang contracts only within
+/// an expression by default and obeys `presk_rt.h`'s `FP_CONTRACT OFF`, so
+/// on Clang, Apple's included, the mode adds `-ffp-contract=fast` (D212).
+pub fn gnu_mode() -> Vec<&'static str> {
+    let defined = Command::new(cc()).args(["-dM", "-E", "-x", "c", "/dev/null"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let mut f = vec!["-std=gnu11", "-O2"];
+    if defined.lines().any(|l| l.starts_with("#define __clang__ ")) {
+        f.push("-ffp-contract=fast");
+    }
+    f
+}
+
 /// The flags every file is compiled with: the export's, and warnings as
 /// errors (statement C3).
 pub fn cflags() -> Vec<&'static str> {
@@ -258,6 +272,8 @@ fn ptr(b: &Buf) -> Result<*mut u8, RtError> {
         Buf::F64(v) => v.as_ptr() as *mut u8,
         Buf::F32(v) => v.as_ptr() as *mut u8,
         Buf::Bf16(v) => v.as_ptr() as *mut u8,
+        // binary16's and e8m15's codes (plan 0.18.2 step 3).
+        Buf::Codes(_, v) => v.as_ptr() as *mut u8,
         Buf::I64(v) => v.as_ptr() as *mut u8,
         // Integer weights: their integers here, their scales after the
         // output (`CExec::run`), as the native backend passes them.
@@ -289,6 +305,12 @@ impl KernelExec for CExec {
         Some(self.workers)
     }
 
+    /// binary16 and `e8m15`, by `presk_rt.h`'s conversions (plan 0.18.2
+    /// step 3, D217).
+    fn codes(&self) -> bool {
+        true
+    }
+
     fn run(&mut self, idx: usize, k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> presk_rt::Result<()> {
         if self.cache.len() <= idx {
             self.cache.resize(idx + 1, None);
@@ -302,6 +324,10 @@ impl KernelExec for CExec {
             }
         };
         let mut ptrs: Vec<*mut u8> = inputs.iter().map(|b| ptr(b)).collect::<Result<_, _>>()?;
+        // The overflow guard's flag of a kernel that stores binary16 or
+        // `e8m15`, in the slot after the scales (plan 0.18.2 step 4, D218).
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let flag_ptr = k.guarded().then(|| flag.as_ptr() as *mut u8);
         let ranges = match presk_export_c::ranged(k) {
             Some((_, n)) => self.ranges(k, n),
             None => vec![(0, 0)],
@@ -317,6 +343,7 @@ impl KernelExec for CExec {
                 let mut with = ptrs.clone();
                 with.push(ptr(&probe)?);
                 with.extend(scales(k, inputs));
+                with.extend(flag_ptr);
                 // SAFETY: as below, on a buffer of the output's type and size.
                 unsafe { f(with.as_ptr(), lo, hi) };
                 for e in changed(&probe) {
@@ -329,24 +356,31 @@ impl KernelExec for CExec {
         }
         ptrs.push(ptr(out)?);
         ptrs.extend(scales(k, inputs));
+        flag.store(0, std::sync::atomic::Ordering::Relaxed);
+        ptrs.extend(flag_ptr);
         for (lo, hi) in ranges {
             // SAFETY: the kernel's loop bounds are the buffers' dimensions, as
             // for the native backend, which runs the same loops; the ranges
             // are disjoint pieces of a parallel loop.
             unsafe { f(ptrs.as_ptr(), lo, hi) };
         }
+        if flag.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+            return Err(presk_kernel::host::overflow(k));
+        }
         Ok(())
     }
 }
 
 /// The sentinel of an output's type, as raw bits: a value no kernel stores.
-/// A signalling NaN, which arithmetic makes quiet, as a `bf16` store does;
-/// an index no shape reaches.
+/// A signalling NaN, which arithmetic makes quiet, as a `bf16`, binary16 or
+/// `e8m15` store does; an index no shape reaches.
 fn sentinel(b: &Buf) -> u64 {
     match b {
         Buf::F64(_) => 0x7ff4_dead_beef_0001,
         Buf::F32(_) => 0x7fa0_beef,
         Buf::Bf16(_) => 0x7f81,
+        Buf::Codes(f, _) if presk_rt::codes::width(*f) == 2 => 0x7d01,
+        Buf::Codes(..) => 0x7fa0be,
         Buf::I64(_) => (i64::MIN + 0xbeef) as u64,
         Buf::Exact(_) | Buf::Quant(_) => unreachable!("an output is a machine buffer"),
         Buf::Format(..) => b.unemulated(),
@@ -360,6 +394,10 @@ fn sentinels(b: &Buf) -> Buf {
         Buf::F64(x) => Buf::F64(vec![f64::from_bits(s); x.len()].into()),
         Buf::F32(x) => Buf::F32(vec![f32::from_bits(s as u32); x.len()].into()),
         Buf::Bf16(x) => Buf::Bf16(vec![s as u16; x.len()].into()),
+        Buf::Codes(f, x) => {
+            let w = presk_rt::codes::width(*f);
+            Buf::Codes(*f, (0..x.len()).map(|i| (s >> (8 * (i % w))) as u8).collect::<Vec<u8>>().into())
+        }
         Buf::I64(x) => Buf::I64(vec![s as i64; x.len()].into()),
         Buf::Exact(_) | Buf::Quant(_) => unreachable!("an output is a machine buffer"),
         Buf::Format(..) => b.unemulated(),
@@ -377,6 +415,7 @@ fn raw_buf(b: &Buf) -> Vec<u64> {
         Buf::F64(x) => x.iter().map(|y| y.to_bits()).collect(),
         Buf::F32(x) => x.iter().map(|y| y.to_bits() as u64).collect(),
         Buf::Bf16(x) => x.iter().map(|y| *y as u64).collect(),
+        Buf::Codes(f, x) => (0..x.len() / presk_rt::codes::width(*f)).map(|e| u64::from(presk_rt::codes::code(*f, x, e))).collect(),
         Buf::I64(x) => x.iter().map(|y| *y as u64).collect(),
         Buf::Exact(_) | Buf::Quant(_) => panic!("an exact or integer-weight result"),
         Buf::Format(..) => b.unemulated(),

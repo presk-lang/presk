@@ -88,6 +88,16 @@ pub trait Elem: Copy + PartialOrd + std::fmt::Debug {
     /// The value converted to the format of the buffer it is stored in,
     /// rounded once, ties to even, as an `f64`.
     fn to_format(self, f: Format, c: &Self::Ctx) -> f64;
+    /// Whether storing the value in `f`, binary16 or `e8m15`, turns a
+    /// finite value into an infinity: the overflow guard's test (plan
+    /// 0.18.2 step 4, D218), on the value as it is, with no side effect. A
+    /// realization the native types run computes such a store in `f32`;
+    /// an integer, a fixed-point number or a sum counted in its terms' unit
+    /// is never one, and none is tested.
+    fn overflows(self, f: Float, c: &Self::Ctx) -> bool {
+        let _ = (f, c);
+        false
+    }
 }
 
 impl Elem for f64 {
@@ -98,6 +108,9 @@ impl Elem for f64 {
     }
     fn to_f64(self, _: &()) -> f64 {
         self
+    }
+    fn overflows(self, f: Float, _: &()) -> bool {
+        presk_rt::codes::overflows(f, self)
     }
     fn un(self, op: UnOp, _: &()) -> Self {
         match op {
@@ -138,6 +151,9 @@ impl Elem for f32 {
     }
     fn to_f64(self, _: &()) -> f64 {
         self as f64
+    }
+    fn overflows(self, f: Float, _: &()) -> bool {
+        presk_rt::codes::overflows(f, f64::from(self))
     }
     fn un(self, op: UnOp, _: &()) -> Self {
         match op {
@@ -219,6 +235,9 @@ impl<W: Elem<Ctx = ()>> Elem for Soft<W> {
     }
     fn to_f64(self, _: &SoftCtx) -> f64 {
         self.0.to_f64(&())
+    }
+    fn overflows(self, f: Float, _: &SoftCtx) -> bool {
+        presk_rt::codes::overflows(f, self.0.to_f64(&()))
     }
     fn un(self, op: UnOp, c: &SoftCtx) -> Self {
         let a = self.0.to_f64(&());
@@ -522,6 +541,9 @@ impl Elem for Mixed {
     fn to_f64(self, c: &MixedCtx) -> f64 {
         c.real(self)
     }
+    fn overflows(self, f: Float, _: &MixedCtx) -> bool {
+        self.unit.is_none() && presk_rt::codes::overflows(f, self.x)
+    }
     fn un(self, op: UnOp, c: &MixedCtx) -> Self {
         let a = c.real(self);
         let (y, r) = match op {
@@ -605,6 +627,10 @@ struct Env<'a, E: Elem> {
     /// One register per vector variable, each of `k.lanes` elements.
     vecs: Vec<Vec<E>>,
     c: E::Ctx,
+    /// Whether a store into binary16 or `e8m15` turned a finite value into
+    /// an infinity: the overflow guard's flag of this call (plan 0.18.2
+    /// step 4, D218), which the executor reads after it.
+    overflow: bool,
 }
 
 impl<E: Elem> Env<'_, E> {
@@ -629,6 +655,9 @@ impl<E: Elem> Env<'_, E> {
             // quotient, exact in an `f64` as the value is.
             Buf::Format(Format::Affine(a), v) => E::from_scaled(v[off] / a.scale(), a.scale(), v[off], &self.c),
             Buf::Format(_, v) => E::from_f64(v[off], &self.c),
+            // binary16's or `e8m15`'s code, widened exactly (plan 0.18.2
+            // step 1, D215).
+            Buf::Codes(f, v) => E::from_f64(presk_rt::codes::get(*f, v, off) as f64, &self.c),
         }
     }
 
@@ -739,6 +768,14 @@ impl<E: Elem> Env<'_, E> {
             Buf::Bf16(v) => v[off] = presk_rt::f32_to_bf16(if E::NATIVE { x.to_f64(c) as f32 } else { to(BF16) as f32 }),
             Buf::I64(v) => v[off] = x.to_f64(c) as i64,
             Buf::Format(f, v) => v[off] = x.to_format(*f, c),
+            // The value rounded once to binary16 or `e8m15`, counted when
+            // emulated, and stored as its code (plan 0.18.2 step 1, D215);
+            // a finite value that rounds to an infinity sets the guard's
+            // flag (step 4, D218).
+            Buf::Codes(f, v) => {
+                self.overflow |= x.overflows(*f, c);
+                presk_rt::codes::put(*f, v, off, if E::NATIVE { x.to_f64(c) } else { x.to_format(Format::Float(*f), c) })
+            }
             // Parameters are quantised, results never are.
             Buf::Exact(_) | Buf::Quant(_) => {}
         }
@@ -801,26 +838,34 @@ impl<E: Elem> Env<'_, E> {
 /// Runs `k` on `inputs`, writing the output buffer (allocated by the caller
 /// with the kernel's output spec).
 pub fn run_kernel(k: &Kernel, inputs: &[&Buf], out: &mut Buf) {
+    run_guarded(k, inputs, out);
+}
+
+/// [`run_kernel`], and whether a store into binary16 or `e8m15` turned a
+/// finite value into an infinity, the overflow guard's flag (plan 0.18.2
+/// step 4, D218).
+pub fn run_guarded(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> bool {
     match k.dtype {
-        crate::ir::Dtype::F64 => {
-            exec::<f64>(k, inputs, out, ());
-        }
+        crate::ir::Dtype::F64 => exec::<f64>(k, inputs, out, ()).1,
         // `bf16` is a storage type: the loop nest runs in `f32` and only the
         // buffers are narrow, which is the whole of the idiom (D34).
-        crate::ir::Dtype::F32 | crate::ir::Dtype::BF16 => {
-            exec::<f32>(k, inputs, out, ());
-        }
+        crate::ir::Dtype::F32 | crate::ir::Dtype::BF16 => exec::<f32>(k, inputs, out, ()).1,
+        // So are binary16 and `e8m15`, held as their codes, each load
+        // widened exactly and each store rounded once (plan 0.18.2 step 2,
+        // D216): the emulation's bits, as the native backend's.
+        d if d.coded() => exec::<f32>(k, inputs, out, ()).1,
         d => d.unreachable(),
     }
 }
 
-fn exec<E: Elem>(k: &Kernel, inputs: &[&Buf], out: &mut Buf, c: E::Ctx) -> E::Ctx {
+/// The kernel run, its context and the guard's flag.
+fn exec<E: Elem>(k: &Kernel, inputs: &[&Buf], out: &mut Buf, c: E::Ctx) -> (E::Ctx, bool) {
     let mut strides: Vec<Vec<usize>> = k.inputs.iter().map(|s| s.strides()).collect();
     strides.push(k.output.strides());
     let zero = E::constant(0.0, &c);
-    let mut env = Env::<E> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![zero; k.nreal], ints: vec![0; k.nint], vecs: vec![vec![zero; k.lanes]; k.nvec], c };
+    let mut env = Env::<E> { k, strides, inputs, out, loops: vec![0; k.nloops], reals: vec![zero; k.nreal], ints: vec![0; k.nint], vecs: vec![vec![zero; k.lanes]; k.nvec], c, overflow: false };
     env.run(&k.body);
-    env.c
+    (env.c, env.overflow)
 }
 
 /// The native type a float format's operations are computed in by the
@@ -843,7 +888,8 @@ pub fn emulated_in(f: Float) -> Option<Float> {
 /// Runs `k` emulated in the format `arith` (plan 0.18.0 step 2, D205):
 /// every operation rounded to it, every load, store and constant converted,
 /// rounded once, ties to even; the buffers in any format, a
-/// [`Buf::Format`] holding the values of one. What the run's formats
+/// [`Buf::Format`] holding the values of one, a [`Buf::Codes`] the codes of
+/// binary16 or `e8m15`. What the run's formats
 /// produced besides rounding is counted. `f64` and `f32` give
 /// [`run_kernel`]'s bits for a kernel of that type, counted.
 ///
@@ -851,19 +897,32 @@ pub fn emulated_in(f: Float) -> Option<Float> {
 /// ([`emulated_in`]), and, in an integer or a fixed-point format, a
 /// division or a function, which no such format has.
 pub fn run_kernel_in(k: &Kernel, arith: Format, inputs: &[&Buf], out: &mut Buf) -> Result<Counts, String> {
+    in_guarded(k, arith, inputs, out).map(|(c, _)| c)
+}
+
+/// [`run_kernel_in`] and the guard's flag ([`run_guarded`]).
+fn in_guarded(k: &Kernel, arith: Format, inputs: &[&Buf], out: &mut Buf) -> Result<(Counts, bool), String> {
     Ok(match arith {
         Format::Float(f) => match emulated_in(f) {
-            Some(w) if w == F32 => exec::<Soft<f32>>(k, inputs, out, SoftCtx { f, native: f == F32, counts: Counter::default() }).counts.get(),
-            Some(_) => exec::<Soft<f64>>(k, inputs, out, SoftCtx { f, native: f == F64, counts: Counter::default() }).counts.get(),
+            Some(w) if w == F32 => {
+                let (c, o) = exec::<Soft<f32>>(k, inputs, out, SoftCtx { f, native: f == F32, counts: Counter::default() });
+                (c.counts.get(), o)
+            }
+            Some(_) => {
+                let (c, o) = exec::<Soft<f64>>(k, inputs, out, SoftCtx { f, native: f == F64, counts: Counter::default() });
+                (c.counts.get(), o)
+            }
             None => return Err(format!("no native type holds 2p + 2 = {} bits of {f}, so its operations cannot be emulated rounded once", 2 * f.p + 2)),
         },
         Format::Int(int) => {
             exact_ops(k, arith)?;
-            exec::<IntE>(k, inputs, out, IntCtx { int, counts: Counter::default() }).counts.get()
+            let (c, o) = exec::<IntE>(k, inputs, out, IntCtx { int, counts: Counter::default() });
+            (c.counts.get(), o)
         }
         Format::Fixed(fixed) => {
             exact_ops(k, arith)?;
-            exec::<FixE>(k, inputs, out, FixCtx { fixed, counts: Counter::default() }).counts.get()
+            let (c, o) = exec::<FixE>(k, inputs, out, FixCtx { fixed, counts: Counter::default() });
+            (c.counts.get(), o)
         }
         Format::Affine(_) => return Err(format!("the kernel `{}` computes in {arith}: an affine format is a stored value's, not an operation's", k.name)),
     })
@@ -878,6 +937,7 @@ fn held_format(b: &Buf) -> Option<Format> {
         Buf::F32(_) | Buf::Quant(_) => Format::Float(F32),
         Buf::Bf16(_) => Format::Float(BF16),
         Buf::Format(f, _) => *f,
+        Buf::Codes(f, _) => Format::Float(*f),
         Buf::I64(_) => return None,
     })
 }
@@ -895,6 +955,14 @@ fn held_format(b: &Buf) -> Option<Format> {
 /// it reads a scaled format, it counts their products in their unit
 /// ([`Mixed`]), which needs an accumulation format that counts too.
 pub fn run_emulated(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<Counts, String> {
+    run_emulated_guarded(k, inputs, out).map(|(c, _)| c)
+}
+
+/// [`run_emulated`], and whether a store into binary16 or `e8m15` turned a
+/// finite value into an infinity ([`run_guarded`]), which the kernel
+/// interpreter makes an error of the run where the realization is one the
+/// native types run (plan 0.18.2 step 4, D218).
+pub fn run_emulated_guarded(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<(Counts, bool), String> {
     let a = k.arith;
     if let Some(f) = [a.arith, a.product, a.accum].into_iter().find(|f| matches!(f, Format::Affine(_))) {
         return Err(format!("the kernel `{}` rounds an operation to {f}: an affine format is a stored value's, not an operation's", k.name));
@@ -915,9 +983,9 @@ pub fn run_emulated(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<Counts
     let held = |b: &Buf| held_format(b).is_none_or(|f| a.arith.contains(f));
     // The output matters where the kernel reads it back: a sum kept there.
     if a.product == a.arith && a.accum == a.arith && inputs.iter().all(|b| held(b)) && (!reads_output(k) || held(out)) && !(counts(a.product) && scaled) {
-        return run_kernel_in(k, a.arith, inputs, out);
+        return in_guarded(k, a.arith, inputs, out);
     }
-    run_kernel_mixed(k, inputs, out)
+    mixed_guarded(k, inputs, out)
 }
 
 /// Runs `k` in the formats it carries with every value held exactly as an
@@ -925,6 +993,11 @@ pub fn run_emulated(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<Counts
 /// [`run_emulated`]'s path for a kernel of several formats, on any kernel,
 /// so that the tests can hold it to the one-format path.
 pub fn run_kernel_mixed(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<Counts, String> {
+    mixed_guarded(k, inputs, out).map(|(c, _)| c)
+}
+
+/// [`run_kernel_mixed`] and the guard's flag ([`run_guarded`]).
+fn mixed_guarded(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<(Counts, bool), String> {
     let a = k.arith;
     if let Some(f) = [a.arith, a.product, a.accum].into_iter().find(|f| !f.exact_in_f64()) {
         return Err(format!("the kernel `{}` computes in {} and rounds to {f}, which an f64 does not hold: a nest of several formats is emulated in f64", k.name, a));
@@ -937,11 +1010,11 @@ pub fn run_kernel_mixed(k: &Kernel, inputs: &[&Buf], out: &mut Buf) -> Result<Co
         }
     };
     let units = matches!(a.product, Format::Int(_) | Format::Fixed(_));
-    let c = exec::<Mixed>(k, inputs, out, MixedCtx { arith: a.arith, product: a.product, accum: a.accum, w, units, inexact: Cell::new(false), counts: Counter::default() });
+    let (c, o) = exec::<Mixed>(k, inputs, out, MixedCtx { arith: a.arith, product: a.product, accum: a.accum, w, units, inexact: Cell::new(false), counts: Counter::default() });
     if c.inexact.get() {
         return Err(format!("the kernel `{}` reads a sum counted in its terms' unit before it stores it, and an f64 does not hold its value: such a sum is stored as it ends", k.name));
     }
-    Ok(c.counts.get())
+    Ok((c.counts.get(), o))
 }
 
 /// Whether `k` loads from its output buffer: a running sum kept there, or a
@@ -1027,6 +1100,8 @@ pub fn launch_buf(k: &Kernel) -> Buf {
         (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::F64) => Buf::F64(presk_rt::Elems::fresh(n)),
         (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::F32) => Buf::F32(presk_rt::Elems::fresh(n)),
         (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), crate::ir::Dtype::BF16) => Buf::Bf16(presk_rt::Elems::fresh(n)),
+        // binary16's or `e8m15`'s codes (plan 0.18.2 step 1, D215).
+        (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), d) if d.coded() => Buf::Codes(d.format(), presk_rt::Elems::fresh(n * d.bytes())),
         // A type the kernel interpreter emulates (plan 0.18.0 step 3).
         (BufKind::Real | BufKind::Quant { .. } | BufKind::Wide(_), d) => Buf::Format(Format::Float(d.format()), presk_rt::Elems::fresh(n)),
     }

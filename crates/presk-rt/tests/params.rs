@@ -51,6 +51,8 @@ fn typed_parameters_meet_the_records_conditions() {
     assert!(half.check_params(None).is_ok());
     let e = half.check_native("the native backend").unwrap_err();
     assert!(e.code == "E7005" && e.message.contains("the parameter `head` in f16"), "{}", e.message);
+    // The native backend stores it since plan 0.18.2 step 2 (D216).
+    assert!(half.check_executor("the native backend", true).is_ok());
 
     // Typed or quantised, not both.
     let mut both = r.clone();

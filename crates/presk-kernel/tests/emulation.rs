@@ -9,7 +9,7 @@
 
 use presk_core::PrimOp;
 use presk_format::{Fixed, Float, Format, Int, BF16, E4M3FN, E4M3_SATURATING, F16, F32, F64};
-use presk_kernel::exec::{output_buf, run_kernel, run_kernel_in, Counts};
+use presk_kernel::exec::{launch_buf, output_buf, run_emulated, run_kernel, run_kernel_in, Counts};
 use presk_kernel::lower::{lower, Operand};
 use presk_kernel::{BufKind, Dtype, Kernel};
 use presk_rt::{Axis, Buf};
@@ -59,8 +59,9 @@ fn emulate(k: &Kernel, arith: Format, ins: &[&Buf], out: Format) -> (Vec<f64>, C
 /// of the conformance suite's that reads reals, lowered at `f64`, `f32` and
 /// `bf16`, on random operands, gives `run_kernel`'s bits, and counts
 /// nothing.
-#[test]
-fn f64_and_f32_emulated_are_native() {
+/// Every tensor primitive of the conformance suite's that reads reals,
+/// with operands of small shapes.
+fn suite() -> Vec<(PrimOp, Vec<Operand>)> {
     let x = || real(vec![ax("batch", 2), ax("model", 3)]);
     let row = || real(vec![ax("model", 3)]);
     let w = || real(vec![ax("", 3), ax("", 4)]);
@@ -70,7 +71,7 @@ fn f64_and_f32_emulated_are_native() {
     let sm = || real(vec![ax("batch", 2), ax("seq", 3), ax("model", 4)]);
     let logits = || real(vec![ax("batch", 2), ax("vocab", 5)]);
     let targets = || Operand { axes: vec![ax("batch", 2)], kind: BufKind::Idx };
-    let cases: Vec<(PrimOp, Vec<Operand>)> = vec![
+    vec![
         (PrimOp::Add, vec![x(), x()]),
         (PrimOp::Sub, vec![x(), row()]),
         (PrimOp::Mul, vec![x(), x()]),
@@ -95,7 +96,26 @@ fn f64_and_f32_emulated_are_native() {
         (PrimOp::CrossEntropy, vec![logits(), targets()]),
         (PrimOp::Max, vec![x(), row()]),
         (PrimOp::SumSquares, vec![x()]),
-    ];
+    ]
+}
+
+/// The operands of case `i` in the type `d`, as `Buf::of` rounds them.
+fn operands(i: usize, ins: &[Operand], d: Dtype) -> Vec<Buf> {
+    ins.iter()
+        .enumerate()
+        .map(|(j, o)| {
+            let n = o.axes.iter().map(|a| a.len).product();
+            match o.kind {
+                BufKind::Idx => Buf::I64((0..n as i64).map(|t| (t * 3 + 1) % 5).collect()),
+                _ => Buf::of(d, &values(n, (i * 8 + j) as u64).iter().map(|v| v * 3e4).collect::<Vec<_>>()),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn f64_and_f32_emulated_are_native() {
+    let cases = suite();
     for d in [Dtype::F64, Dtype::F32, Dtype::BF16] {
         for (i, (op, ins)) in cases.iter().enumerate() {
             let k = kernel(op.clone(), ins, d);
@@ -119,6 +139,43 @@ fn f64_and_f32_emulated_are_native() {
             assert!(counts.is_zero(), "{} at {d}: {counts}", op.name());
         }
     }
+}
+
+/// binary16's and `e8m15`'s values held as their codes (plan 0.18.2 step
+/// 1, D215) emulate as they did held as `f64`s ([`Buf::Format`], 0.18.1's
+/// buffers): every case of the suite lowered in either type, on operands
+/// of a range where binary16 overflows, gives the same values and counts
+/// the same infinities and NaNs, the outputs of a launch and of
+/// `output_buf` both codes.
+#[test]
+fn codes_emulate_as_the_values_held_as_f64s_did() {
+    let mut counted = 0;
+    for d in [Dtype::F16, Dtype::E8M15] {
+        let f = Format::Float(d.format());
+        for (i, (op, ins)) in suite().iter().enumerate() {
+            let k = kernel(op.clone(), ins, d);
+            let coded = operands(i, ins, d);
+            assert!(coded.iter().any(|b| matches!(b, Buf::Codes(g, _) if Format::Float(*g) == f)), "{} at {d}", op.name());
+            let held: Vec<Buf> = coded
+                .iter()
+                .map(|b| match b {
+                    Buf::Codes(..) => Buf::Format(f, b.to_f64().into()),
+                    other => other.clone(),
+                })
+                .collect();
+            let mut by_codes = launch_buf(&k);
+            assert!(matches!((&by_codes, output_buf(&k)), (Buf::Codes(..), Buf::Codes(..))), "{} at {d}", op.name());
+            let mut by_values = Buf::Format(f, vec![0.0; k.output.numel()].into());
+            let c = run_emulated(&k, &coded.iter().collect::<Vec<_>>(), &mut by_codes).unwrap();
+            let v = run_emulated(&k, &held.iter().collect::<Vec<_>>(), &mut by_values).unwrap();
+            for (x, y) in by_codes.to_f64().into_iter().zip(by_values.to_f64()) {
+                assert!(if y.is_nan() { x.is_nan() } else { x.to_bits() == y.to_bits() }, "{} at {d}: {x:e} for {y:e}", op.name());
+            }
+            assert_eq!(c, v, "{} at {d}", op.name());
+            counted += usize::from(!c.is_zero());
+        }
+    }
+    assert!(counted > 4, "the operands overflow binary16 in a few cases: {counted}");
 }
 
 /// The pairs kernel: `out[a, b] = x[a, b] op y[b]`, the lowering's own

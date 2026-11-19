@@ -147,7 +147,10 @@ Rules:
 - **Exact values.** The draws are made in double precision and injected
   exactly into ℝ (the same rule as hyperparameters): the initializer denotes
   the real numbers that were drawn, and the interpreter carries them at
-  `--bits`.
+  `--bits`. A normal draw takes its `log` and `cos` from the `libm` crate,
+  as the native backend's kernels do, so that a key draws the same doubles
+  on every machine; until D211 they were Rust's standard library's, the
+  platform's C library, and Apple's gave other last bits than glibc's.
 - **Where they run.** `presk run` calls `M.init` to synthesize a `params M`
   argument; `presk export` maps them to `torch.zeros`, `torch.ones`,
   `nn.init.normal_(std=…)` and `nn.init.xavier_uniform_` (PyTorch swaps

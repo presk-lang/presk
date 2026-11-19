@@ -6,7 +6,7 @@
 //!   is a realization with integer weights; `--mode scop` refused with the
 //!   PyTorch target and the PyTorch modes with this one; nothing written.
 //! - Every nest of every entry of `examples/tests/plan/entries.txt`, in `f64`, `f32`
-//!   and `bf16`: emitted, each file compiled on its own by its `Makefile`
+//!   and `bf16`, and binary16 and `e8m15` since plan 0.18.2 step 3: emitted, each file compiled on its own by its `Makefile`
 //!   with GCC and `-Werror`, and run by the driver, once against the native
 //!   backend's outputs (`make check`, bit for bit) and once timed. The nests
 //!   the rule says are not static control are the gathers and the scatters.
@@ -18,7 +18,7 @@
 //!   the rule says is static control is one SCoP for Polly, the whole
 //!   function, with the kernel's loops, and every other nest is not; allowed
 //!   non-affine accesses, Polly takes those too. The course GPT's nests at
-//!   its constants, at `B = 1` in the three types and at `B = 16` in `f32`,
+//!   its constants, at `B = 1` in the five types and at `B = 16` in `f32`,
 //!   are checked the same way, bits and Polly.
 
 use std::path::{Path, PathBuf};
@@ -46,6 +46,18 @@ fn stderr(o: &Output) -> String {
 
 fn make(dir: &Path, args: &[&str]) -> Output {
     Command::new("make").arg("-s").arg("-C").arg(dir).arg(format!("-j{}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))).args(args).output().expect("running make")
+}
+
+/// `STRICT` as GCC's GNU mode on the compiler the `Makefile` builds with
+/// (`$CC`, else `cc`): `-std=gnu11`, where GCC contracts `a + b*c` across
+/// statements (`-ffp-contract=fast`, its default there). Clang contracts
+/// only within an expression by default and obeys `presk_rt.h`'s
+/// `FP_CONTRACT OFF`, so on Clang, Apple's included, the mode adds
+/// `-ffp-contract=fast` (D212).
+fn gnu_mode() -> String {
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let defined = Command::new(cc).args(["-dM", "-E", "-x", "c", "/dev/null"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    if defined.lines().any(|l| l.starts_with("#define __clang__ ")) { "STRICT=-std=gnu11 -ffp-contract=fast".into() } else { "STRICT=-std=gnu11".into() }
 }
 
 const MLP: &str = "examples/spec/mlp/mlp.psk";
@@ -100,17 +112,30 @@ struct Exported {
 }
 
 fn export(file: &str, entry: &str, args: &[&str], realize: &str, out: &Path) -> Exported {
+    try_export(file, entry, args, realize, out).unwrap_or_else(|e| panic!("{entry} ({realize}): {e}"))
+}
+
+/// [`export`], or the overflow guard's line where it stopped the native
+/// run the SCoP mode's driver is checked against (plan 0.18.2 step 4,
+/// D218): no nest is written.
+fn try_export(file: &str, entry: &str, args: &[&str], realize: &str, out: &Path) -> Result<Exported, String> {
     let what = format!("{entry} ({realize})");
     let mut a = vec!["export", file, "--target", "c", "--mode", "scop", "--entry", entry, "--realize", realize, "-o", out.to_str().unwrap()];
     a.extend_from_slice(args);
     let r = presk(&a);
-    assert!(r.status.success(), "{what}: {}", stderr(&r));
+    if !r.status.success() {
+        let e = stderr(&r);
+        match e.lines().find(|l| l.starts_with("[E7007] Error:")) {
+            Some(line) if !out.exists() => return Err(line.to_string()),
+            _ => panic!("{what}: {e}"),
+        }
+    }
     let nests: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(out.join("nests.json")).unwrap()).unwrap();
     let files = std::fs::read_dir(out.join("nests")).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "c")).count();
     assert_eq!(files, nests.len(), "{what}: a file per nest");
     let summary = stderr(&r);
     assert!(summary.contains(&format!("at {} shapes at point zero", nests.len())), "{what}: {summary}");
-    Exported { what, dir: out.to_path_buf(), nests }
+    Ok(Exported { what, dir: out.to_path_buf(), nests })
 }
 
 /// Builds every nest file on its own with GCC and `-Werror`, runs each once
@@ -143,30 +168,45 @@ fn static_control(n: &serde_json::Value) -> bool {
     n["static_control"].as_bool().unwrap()
 }
 
-/// Every entry of the test set in the three types.
-fn every_entry(tag: &str) -> Vec<Exported> {
+/// The types every entry is exported in: the three native ones, and
+/// binary16 and `e8m15` (plan 0.18.2 step 3, D217).
+const TYPES: [&str; 5] = ["f64", "f32", "bf16", "f16", "e8m15"];
+
+/// Every entry of the test set in the five types, but those the overflow
+/// guard stops (D218), the entries' numbers it stops in some type, and
+/// their messages: `attention3` in binary16, whose RoPE base of 500 000 the
+/// host makes a binary16 scalar.
+fn every_entry(tag: &str) -> (Vec<(usize, Exported)>, Vec<usize>) {
     let base = scratch(tag);
-    let mut out = Vec::new();
+    let (mut out, mut stopped) = (Vec::new(), Vec::new());
     for (i, (file, entry, args)) in test_set().iter().enumerate() {
-        for realize in ["f64", "f32", "bf16"] {
+        for realize in TYPES {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
-            out.push(export(file, entry, &a, realize, &base.join(format!("{i}-{realize}"))));
+            match try_export(file, entry, &a, realize, &base.join(format!("{i}-{realize}"))) {
+                Ok(x) => out.push((i, x)),
+                Err(e) => {
+                    eprintln!("{entry} ({realize}): the overflow guard stops it: {e}");
+                    stopped.push(i);
+                }
+            }
         }
     }
-    out
+    assert!(stopped.len() <= 1, "the guard stops {} of the test set's exports", stopped.len());
+    (out, stopped)
 }
 
 #[test]
 fn every_nest_of_the_test_set_computes_the_native_backends_bits() {
     let started = std::time::Instant::now();
-    let all = every_entry("test-set");
+    let (all, stopped) = every_entry("test-set");
     std::thread::scope(|s| {
-        for x in &all {
+        for (_, x) in &all {
             s.spawn(|| build_and_check(x));
         }
     });
+    // The nests per type, of the entries exported in every type.
     let mut per_type = std::collections::BTreeMap::new();
-    for x in &all {
+    for (_, x) in all.iter().filter(|(i, _)| !stopped.contains(i)) {
         for n in &x.nests {
             let t = per_type.entry(n["type"].as_str().unwrap().to_string()).or_insert((0usize, 0usize));
             t.0 += 1;
@@ -183,9 +223,11 @@ fn every_nest_of_the_test_set_computes_the_native_backends_bits() {
         }
     }
     // The same nests in `f64` and `f32`; `bf16`'s gradients keep the
-    // launches that hold its fusion groups (0.10.0 step 4b, D94).
+    // launches that hold its fusion groups (0.10.0 step 4b, D94), and so do
+    // binary16's and `e8m15`'s, whose nests are `bf16`'s.
     let (f64n, f32n, bf16n) = (per_type["f64"], per_type["f32"], per_type["bf16"]);
     assert!(f64n == f32n && bf16n.0 >= f32n.0, "the same nests in f64 and f32, and bf16's held ones besides: {per_type:?}");
+    assert!(per_type["f16"] == bf16n && per_type["e8m15"] == bf16n, "binary16's and e8m15's nests are bf16's: {per_type:?}");
     eprintln!("the test set's nests at point zero: {per_type:?} (nests, static control), every one built with -Werror and bit-identical to the native backend; {:.1} s", started.elapsed().as_secs_f64());
 }
 
@@ -197,9 +239,9 @@ fn a_nest_that_departs_from_the_native_backend_fails_the_check() {
     build_and_check(&x);
     let check = || Command::new(x.dir.join("scop")).arg("-c").arg(x.dir.join("conformance/native.bin")).output().unwrap();
     // GCC's GNU mode contracts `a + b*c` into one rounding (§3.5, rule 1):
-    // on aarch64, which has the instruction, the dots move.
+    // on aarch64, which has the instruction, the dots move ([`gnu_mode`]).
     let _ = make(&x.dir, &["clean"]);
-    let built = make(&x.dir, &["STRICT=-std=gnu11", "scop"]);
+    let built = make(&x.dir, &[&gnu_mode(), "scop"]);
     assert!(built.status.success(), "{}", stderr(&built));
     let r = check();
     if cfg!(target_arch = "aarch64") {
@@ -269,13 +311,13 @@ fn agree_with_polly(x: &Exported, clang: &Path) -> (usize, usize) {
 #[ignore = "needs a clang with Polly: make llvm (make c-conformance)"]
 fn every_static_control_nest_is_one_scop_for_polly() {
     let clang = polly();
-    let all = every_entry("polly");
+    let (all, _) = every_entry("polly");
     let counts: Vec<(usize, usize)> = std::thread::scope(|s| {
-        let hs: Vec<_> = all.iter().map(|x| s.spawn(|| agree_with_polly(x, &clang))).collect();
+        let hs: Vec<_> = all.iter().map(|(_, x)| s.spawn(|| agree_with_polly(x, &clang))).collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let (st, not): (usize, usize) = counts.iter().fold((0, 0), |a, c| (a.0 + c.0, a.1 + c.1));
-    eprintln!("Polly on the test set's nests in three types: {st} static-control nests each one SCoP of the kernel's loops, {not} gathers and scatters none (one SCoP with non-affine accesses allowed)");
+    eprintln!("Polly on the test set's nests in five types: {st} static-control nests each one SCoP of the kernel's loops, {not} gathers and scatters none (one SCoP with non-affine accesses allowed)");
 }
 
 #[test]
@@ -283,7 +325,7 @@ fn every_static_control_nest_is_one_scop_for_polly() {
 fn the_course_gpts_nests_compute_the_native_backends_bits() {
     let clang = polly();
     let consts = ["--const", "V=92", "--const", "D=384", "--const", "H=6", "--const", "L=6"];
-    let mut runs: Vec<(Vec<&str>, &str)> = ["f64", "f32", "bf16"].iter().map(|t| (vec!["--dim", "B=1", "--dim", "T=256"], *t)).collect();
+    let mut runs: Vec<(Vec<&str>, &str)> = TYPES.iter().map(|t| (vec!["--dim", "B=1", "--dim", "T=256"], *t)).collect();
     runs.push((vec!["--dim", "B=16", "--dim", "T=256"], "f32"));
     let base = scratch("course");
     for (i, (dims, realize)) in runs.iter().enumerate() {

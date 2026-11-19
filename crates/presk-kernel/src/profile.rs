@@ -307,6 +307,7 @@ pub fn buf_bytes(b: &Buf) -> u64 {
         Buf::Quant(q) => std::mem::size_of_val(q.data.as_slice()) + std::mem::size_of_val(q.scales.as_slice()),
         // Emulated values, held as `f64`s.
         Buf::Format(_, v) => v.len() * 8,
+        Buf::Codes(_, v) => v.len(),
     }) as u64
 }
 
@@ -321,6 +322,7 @@ pub fn buf_span(b: &Buf) -> (usize, u64) {
         Buf::I64(v) => v.as_ptr() as usize,
         Buf::Quant(q) => q.data.as_ptr() as usize,
         Buf::Format(_, v) => v.as_ptr() as usize,
+        Buf::Codes(_, v) => v.as_ptr() as usize,
     };
     (at, buf_bytes(b))
 }
@@ -401,6 +403,7 @@ pub fn freed_bytes<'a>(values: impl IntoIterator<Item = &'a Value>) -> u64 {
                     Buf::F64(e) => Some(e.block()),
                     Buf::F32(e) => Some(e.block()),
                     Buf::Bf16(e) => Some(e.block()),
+                    Buf::Codes(_, e) => Some(e.block()),
                     Buf::I64(e) => Some(e.block()),
                     _ => None,
                 };
@@ -540,6 +543,7 @@ pub fn same_bits(a: &Value, b: &Value) -> bool {
             (Buf::F64(x), Buf::F64(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()),
             (Buf::F32(x), Buf::F32(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()),
             (Buf::Bf16(x), Buf::Bf16(y)) => x == y,
+            (Buf::Codes(f, x), Buf::Codes(g, y)) => f == g && x == y,
             (Buf::I64(x), Buf::I64(y)) => x == y,
             (Buf::Exact(x), Buf::Exact(y)) => x == y,
             (Buf::Quant(x), Buf::Quant(y)) => x.data == y.data && x.scales.iter().zip(&y.scales).all(|(p, q)| p.to_bits() == q.to_bits()),

@@ -23291,3 +23291,1513 @@ and `cargo publish --workspace --dry-run` on it.
 **What follows.** The user merges presk !190, this merge request and the
 presk-specs one, then tags `v0.18.1`, exports it with `make publish`,
 pushes the public refs and publishes the 24 crates.
+
+## D211 — The normal draws take the `libm` crate's `log` and `cos`, so that a seed draws the same doubles on every machine; the test of the manual's `explain_loss` chapter failed on macOS (2026-11-17)
+
+**The failure.** The public repository's CI builds and tests every version on
+Ubuntu (x86-64) and macOS (arm64), and its macOS job has failed since 0.17.1's
+publication. The user's log of 0.18.1's run (2026-11-16) names the test:
+`presk`'s `the_manual_holds_the_tutorial_s_document`, which writes `presk
+explain`'s document of the tutorial's `loss` and compares it with the manual's
+`explain_loss` chapter. The user's diff from their Mac (2026-11-17) is four
+lines: `loss/%7`'s term in `f64`, 7.622·10⁻¹⁷ here and 5.342·10⁻¹⁷ there, and
+the all-`f64` estimate, 2.808·10⁻¹⁵ and 2.809·10⁻¹⁵. Every `f32` term, every
+magnitude, sensitivity, saving, layout and type is the same.
+
+**The cause.** A site's term in `f64` is the distance of its 128-bit value to
+the nearest double (D155), so it hangs on the last bits of the program's
+inputs and parameters, which are drawn. `presk_interp::key::normal`, the
+Box–Muller draw of `normal(std)` and of the inputs `presk run` and `presk
+calibrate` synthesize, on every executor, took `f64::ln` and `f64::cos`:
+Rust's standard library's, the platform's C library. glibc gives the same bits
+on x86-64 and on aarch64, and the Ubuntu job and falicon pass; Apple's library
+does not. MPFR, the reference's arithmetic, is the same everywhere. D159 had
+left the draws on the standard library on purpose, since moving them would
+change every initialization, which plan 0.16.0's R2 (iii) forbade; the manual
+said "same seed, same output, on every machine" (`cli.md`, `language.md`,
+`training.md`, `tutorial.md`), which held on glibc alone.
+
+**The choice.** Three ways were put to the user: the `libm` crate's `log` and
+`cos`, which the native backend, the kernel interpreter (D159) and the C export
+(D78) compute with; `log` and `cos` correctly rounded by MPFR; or the draws
+kept, the manual's claim and the test restricted to glibc. Measured on
+falicon: on 10⁷ draws of a ChaCha20 stream, the crate's `log` differs from
+glibc's on 722 530 inputs and its `cos` on 308 948, so 587 935 normal draws
+(5.9 %) differ by a unit in the last place; on 200 000, glibc's `log` is not
+correctly rounded on 178 and its `cos` on 276, the crate's on 14 362 and
+6 311; a draw takes 65 ns with either library and 1 779 ns with MPFR at 53
+bits, on one A725 core. The user chose the `libm` crate (2026-11-17).
+
+**What changes.**
+- `key::normal` computes `√(−2 log u) · cos(2π u′)` with `libm::log` and
+  `libm::cos`; the square root is IEEE's and the products binary64's, as
+  before.
+- A test, `a_key_draws_the_same_normals_on_every_machine`, pins the bits of
+  the first four draws of the key seed 0 names and an FNV-1a fold of the next
+  100 000. Under glibc's functions the first draw is `0x3feac568a525e1d2`,
+  not `…e1d1`: on a machine that draws other doubles, this test fails first,
+  by name.
+- On Linux about 6 draws in 100 move by one unit in the last place, so every
+  initialization and every synthesized input changes there once. In `make
+  test`: explain's documents of the MLP and of the tutorial's `loss` (their
+  `f64` terms, `mse/%6` 1.467·10⁻¹⁷ → 2.079·10⁻¹⁷ and `loss/%7` 7.622·10⁻¹⁷
+  → 6.680·10⁻¹⁷, and the all-`f64` estimates they sum to, 6.592·10⁻¹⁶ →
+  6.285·10⁻¹⁶ and 2.808·10⁻¹⁵ → 2.732·10⁻¹⁵), and the manual's
+  `explain_loss` chapter written again (`make explain-manual`).
+- `presk-driver`'s `the_executors_change_no_decision` (D185) compared the
+  order of a solve's proposals. Under the new draws, four moves of the small
+  Llama (`Attention.apply/%6`, `%7`, `%8` and `rope/%2` to `f32`) add terms
+  that are equal in the binary64 sweep and 2·10⁻¹⁶ apart in the exact one, so
+  the last bit of a subtraction orders them, differently in the two sweeps;
+  the realization, every move's outcome and every measured gap are the same.
+  The test now takes consecutive proposals whose ratios of saving to error
+  agree within 10⁻¹², its tolerance on the sensitivities, as one run, a set
+  of choices and of ranks.
+- The README's outputs are unchanged (the same 12 digits of `presk run`,
+  `2.10375828` and `2.103758267`, a measured gap of 1.320·10⁻⁸).
+- MT0's harness (`out/x1/mt0-0.18.0.sh`) on this tree's release build,
+  against 0.18.0's run of it (`out/x1/version-0.18.0`): 180 of 939 files
+  differ once the version, the commits and the dates are masked, all in
+  their numbers, each text file within 1.4·10⁻¹⁶ of its largest value (the
+  gradients that are 0 differ by their 256-bit noise, 10⁻⁷⁹); in the
+  envelopes the `f64` rounding moves (by up to 37 % on `ln_env.json`'s
+  `%9`), the `f32` rounding by at most 8·10⁻¹⁰ relative; the drawn inputs'
+  and weights' `.psk.d` files differ. The quant and step tables are 0.18.0's
+  byte for byte. Of the numbers the manual's chapters quote, two outputs of
+  the tutorial's step 18 move, the C program's distance to the exact
+  reference (3.477764·10⁻¹⁶ → 2.950458·10⁻¹⁶) and its output printed at 17
+  digits, which the chapter now quotes.
+- The manual's `language`, `native` and `dependencies` chapters say where a
+  normal draw's functions come from; the CHANGELOG's `Unreleased` section.
+
+**What does not change.** The other calls to the standard library's
+transcendental functions compute no value of a program: the cost model's
+`powf`, `ln` and `exp` (`presk-opt/src/profile.rs`), the magnitude bound of
+`exp` (`presk-precision/src/propagate.rs`), and `log10` in a number's
+formatting and a diagram's stroke widths. None shows in the Mac's diff;
+whether a test fails on macOS behind this one is known only from a run there.
+The rows of record keep the bits of their tags: a run from a seed on a version
+from this one on draws 6 % of its values a unit in the last place away from
+0.18.1's, on Linux too, and the next MT0 shows it.
+
+**What follows.** The reference's Status says that a normal draw takes "the
+machine's library", whose last bit may change it
+(`presk-reference.tex`, the Status after definition "Draws"): the next
+version's documents say the `libm` crate's. The macOS job is checked again at
+the next publication, or before by `cargo test --workspace --no-fail-fast` on
+a Mac.
+
+## D212 — The C tests on a compiler without OpenMP and without GCC's contraction, as Apple's clang: built as by `make OPENMP=`, GCC's GNU mode asked for by `-ffp-contract=fast`, a swap C leaves undefined left out, the frozen profile's copy (2026-11-17)
+
+**The run.** The user ran `cargo test --workspace --no-fail-fast` on D211's
+branch on their Mac (2026-11-17). `the_manual_holds_the_tutorial_s_document`
+passes, and 13 tests in five files fail: `presk`'s `export_c` (6),
+`export_scop` (1) and `plan_mode` (1), `presk-export-c`'s `host` (4) and
+`kernels` (1). CI runs `cargo test --workspace`, which stops at the first
+test file that fails, so its log had shown D211's test alone.
+
+**The causes.** LLVM 23.1.2's clang of `.llvm`, which has no libomp, as `CC`
+on falicon gives the same 12 failures of the four C files and no other. None
+is in the compiler or in an exported file:
+- **OpenMP.** Apple's clang has no `-fopenmp`, and a clang without libomp
+  compiles an OpenMP program and does not link it. A program that divides a
+  launch is built with `OPENMP = -fopenmp` by its `Makefile`, and the tests
+  build every program with OpenMP and without it: `export_c`'s six failures
+  and three of `host`'s. Every build without OpenMP gives the native bits
+  (428 runs of a program's `check.sh` under clang, every one "C1 holds").
+- **Contraction.** Two tests check that the check sees a contraction: the
+  kernels and the SCoP nests built in GCC's GNU mode (`-std=gnu11 -O2`),
+  where on aarch64 bits must move (`contraction_moves_bits_in_gccs_gnu_mode`,
+  `a_nest_that_departs_from_the_native_backend_fails_the_check`). GCC
+  contracts across statements there (`-ffp-contract=fast`); Clang contracts
+  only within an expression by default and obeys `presk_rt.h`'s `#pragma
+  STDC FP_CONTRACT OFF`, so no bit moved.
+- **A swap C leaves undefined.** The test
+  `swapping_the_buffers_of_two_launches_changes_the_outputs` mutates the
+  straight-line host: two live launches of one type and size write each
+  other's buffer. Under clang 2 of its 52 swaps
+  left the outputs unchanged, both on `mse_grad` (the MLP, `D = 4`, `B =
+  2`): launches 9 and 10, and 11 and 19. In each pair the second reads the
+  first's output, so swapped it writes the buffer it reads (`k8(b15, b11,
+  b15, 0, 0)`), which the kernels' `restrict` forbids; and it copies its
+  operand (launch 10 sums `%15` over one element, launch 19 adds a gradient
+  to the zeros its accumulator starts from), so the buffer later launches
+  read holds the same values. The outputs are the native backend's under GCC
+  as well: GCC warns (`-Wrestrict`) and the test counts a warning as a
+  failed build, so the two swaps were caught by the warning alone.
+- **The frozen profile.** `plan_mode` plans with
+  `~/presk-data/ra4-model-0.8.0/profile.json`, or `RA4_FROZEN`, which CI sets
+  to the explain tests' copy; the Mac has neither.
+
+**What changes.** Tests only; no file of the compiler or of an exported
+program.
+- `host.rs` and `export_c.rs` ask once whether the C compiler the
+  `Makefile`s build with (`$CC`, else `cc`) links and runs a small OpenMP
+  program with `-fopenmp`. Where it does not, every program is built as by
+  `make OPENMP=` (each divided launch one call over its whole loop, the same
+  bits, as the exported `Makefile` says), none is run on a team or built the
+  other way, and the gap test, whose pieces exist only in the OpenMP region,
+  is not run; a line on stderr says so. Where it does, as with GCC on
+  falicon and on CI's Ubuntu, nothing changes.
+- Where the compiler defines `__clang__`, the two contraction tests add
+  `-ffp-contract=fast`, GCC's default in its GNU modes. Under clang 23.1.2,
+  16 of 282 primitive runs move (14 under GCC 13.3), and 8 of the SCoP
+  test's 28 nests.
+- The swap test leaves out a pair in which one launch reads the other's
+  output: 51 swaps, every one changing the outputs, under GCC and clang.
+- `plan_mode`'s profile, and `export_c`'s for its ignored tests:
+  `RA4_FROZEN`, else the measurement machine's, else the copy CI names,
+  `crates/presk-explain/tests/data/x925-frozen.json`.
+- The manual's `export_c` chapter: a program on Apple's clang is built by
+  `make OPENMP=`; and `host.rs`'s split programs hold 2 964 OpenMP regions
+  on this tree, not 0.9.0's 4 212.
+
+**Checks.** Under clang 23.1.2 as `CC`: the four C files and `plan_mode`
+pass, and `plan_mode` with a home that holds no profile. Under GCC 13.3,
+`make test`.
+
+**What follows.** The user's run on the Mac, on this branch. CI's macOS job
+then tests the exported programs without OpenMP and Ubuntu's with it.
+
+## D213 — The C tests on macOS under Homebrew's GCC, with OpenMP: one job per core in a test binary, and CI's macOS job under GCC (2026-11-17)
+
+**The run.** At the user's word ("try openmp on this mac"), after D212, the
+user ran the C tests on their Mac (12 cores) under Homebrew's GCC 16.2.0,
+`CC=gcc-16`, whose `-fopenmp` links and runs the tests' probe program:
+`presk-export-c`'s files, and `presk`'s `export_c` and `export_scop`. Every
+file passed, the kernels and the SCoP nests in GCC's GNU mode among them,
+but `host` (7 of 12 tests) and `export_c` (3 of 17). All 24 panics are a
+`Command::output().unwrap()` starting `make` or `sh`, each `Os { code: 24,
+kind: TooManyOpenFiles }`. No test reported other bits or a warning.
+
+**The cause.** macOS allows a process 256 open files by default (the Mac's
+`ulimit -n`; 2 666 processes). Each test of `host.rs` and `export_c.rs`
+runs its jobs (a build by `make`, a run of the program, a `check.sh`) on
+every core through its `parallel` helper, and libtest runs a binary's tests
+side by side, one per core. So up to cores² jobs were under way at once,
+each holding its child's two pipes in the test process: 288 files at 12
+cores. Under Apple's clang (D212) the tests had fewer jobs, none built or
+run with OpenMP, and none failed so. On falicon (20 cores) the limit is
+500 000; under `ulimit -n 96`, `host.rs` fails the same way (9 of 12 tests,
+70 panics `TooManyOpenFiles`).
+
+**What changes.** Tests and CI only; no file of the compiler or of an
+exported program.
+- In `host.rs` and `export_c.rs`, a job of `parallel` waits for a turn, one
+  per core in the whole test binary: a counter under a mutex with a
+  condition variable, the turn given back when dropped, by a job that
+  panics too. No `parallel` runs inside another's job, so no wait can
+  deadlock. At 12 cores, at most 12 jobs are under way, besides the tests'
+  own single commands.
+- CI runs `cargo test --workspace --no-fail-fast`, so that a failing test
+  file no longer hides the next (D212's run). On macOS a further step takes
+  the runner's newest Homebrew GCC (`gcc-N`; `brew install gcc` if there is
+  none) and runs `cargo test -p presk-export-c` and `-p presk --test
+  export_c --test export_scop` under it, so that macOS too runs the exported
+  programs with OpenMP and on teams.
+- The manual's `export_c` chapter: Homebrew's GCC has OpenMP on macOS,
+  `make CC=gcc-16`.
+
+**Checks.** On falicon under GCC 13.3. With `ulimit -n 96` on its 20 cores,
+`host.rs` passes in 13.5 s (before the change it failed 9 of 12; 14.5 s in
+`make test`), and one test of `export_c.rs` still runs out, in a `check.sh`
+job: 20 jobs and the tests' own commands. Pinned to 12 cores, the Mac's
+count, with `ulimit -n 128`, half its limit, both pass: `host.rs` in 21.6 s,
+`export_c.rs` (13 tests) in 122.2 s. `make test`: 426 tests in 125 suites,
+14 ignored. The CI file read by a YAML parser; its choice of GCC run under
+`bash -eo pipefail` on a made-up Homebrew prefix holding `gcc-9`, `gcc-12`,
+`gcc-14`, `gcc-ar-14`, `gcc-nm-14` and `g++-14` (it takes `gcc-14`) and on
+an empty one (it takes none, the case where the step installs GCC; the
+installation itself not tried).
+
+**What follows.** The user's run on the Mac under `gcc-16`, on this
+branch. CI's change acts at the next publication, which carries D211–D213.
+
+**The run again (2026-11-17).** On `88466ba`, under `gcc-16`: every file
+passes, `host` 12 of 12, but one test of `export_c`,
+`a_program_on_integer_weights_that_departs_from_presk_rt_fails_c1`: two of
+its three mutations of an exported program on integer weights were not
+caught. The test had failed in the user's first Mac run too, under Apple's
+clang, and passes on falicon under GCC 13.3 and 16.2: so not the compiler.
+The test exports the program, builds it by `check.sh`, writes the mutated
+source and runs `check.sh` again, whose `make -s model` rebuilds only a
+source newer than `model`. Written within the second of the build, the
+source is not newer to a make that compares whole seconds; macOS's make is
+GNU Make 3.81. On falicon, giving the mutated source `model`'s timestamp
+(`touch -r`) gives the Mac's failure, all three mutations "C1 holds". The
+test now removes `model` before the check, and with the timestamps still
+equal catches all three. The other tests that change a built program
+rebuild it (`make -B` in `build_generate` and `host.rs`'s `build`, `make
+clean` in `export_scop`).
+
+## D214 — Version 0.18.2 opened: binary16 and `e8m15` on the CPU, stored in the format and computed in `f32`, with the kernel interpreter's bits; question 87 (plan 0.18.2 step 0, 2026-11-17)
+
+The plan is `presk-specs/implementation/presk-plan-0.18.2.md` (presk-specs
+!118, draft v0.2). Plan 0.18.0's decision 1 (the user, 2026-11-11) gave
+the CPU's executors the new formats right after 0.18.0, and D210 numbered
+that version 0.18.2. On 2026-11-17, after presk !192 (D211–D213) was
+merged, the user declined a patch release for those three decisions and
+started this version ("no, start fast cpu code"). D211–D213 are therefore
+0.18.2's, and GitHub's macOS job should pass from its publication on. The
+user answered the plan's three questions the same day ("Ok for your
+recommendations on 1,2,3").
+
+**What 0.18.2 is for** (the plan's §1 and §3). Since 0.18.0 a realization
+can store a value in any float format, and the solver offers binary16
+(`f16`) and `e8m15`, the 16-bit-significand float with `f32`'s exponent
+(D209's MT6: 10.7 % fewer bytes than D170's realization, five values in
+`e8m15`). Only the kernel interpreter computes them; the native backend,
+the LLVM backend and the C export refuse them (`E7005`). The version makes
+the three executors run both formats as they run `bf16`: values stored in
+the format, arithmetic in `f32`, one rounding at each store, with the
+kernel interpreter's bits.
+- **One buffer kind** for the new formats, the codes of a float format
+  that `f32` holds in `Dtype::bytes` bytes each, as `.psk.d` version 3
+  lays them out (2 bytes for `f16`, 3 for `e8m15`); `bf16` keeps its own,
+  so that nothing moves.
+- **Every route from `f64` rounds once**, as the emulation does:
+  `Buf::of` rounds an `f64` to `bf16` through `f32` (two roundings, the
+  native backend's), but to any other format directly (`Float::store`),
+  so the native `f16` and `e8m15` must round an `f64` directly too.
+- **The native backend** converts by integer sequences, as for `bf16`:
+  Cranelift 0.131.3 can neither convert to or from `f16` on aarch64 nor
+  compute in it.
+- **The C export and the LLVM backend** convert by `_Float16` casts where
+  the compiler defines `__FLT16_MANT_DIG__` (one rounding, ties to even,
+  vectorized by GCC 16 and clang), else by portable integer forms that
+  give the same bits; `e8m15` by integer forms. Checked for the plan on
+  falicon: GCC 13.3, GCC 16.2 and clang 23.1.2 compile `_Float16` under
+  the export's `-std=c11 -Wall -Wextra` without a warning, and each
+  converts an `f64` to `f16` in one `fcvt h0, d0`. The C runtime reads and
+  writes `.psk.d` version 3 for both formats.
+- **The overflow guard.** A narrowing to `f16` or `e8m15` that turns a
+  finite value into an infinity sets a flag of its kernel's call, which
+  the host reads after the call. A flag set fails the run with an error
+  naming the kernel and the format, instead of an infinity reaching the
+  outputs. The kernel interpreter fails the same way on a realization the
+  native types run, and its emulation of the other formats keeps counting
+  its infinities (D205). The flag is the narrowing's own, not the FPSR's
+  overflow flag that the `f16` study proposed: the integer sequences raise
+  no floating-point flag, and the FPSR would also flag an `f32`
+  operation's overflow, which 0.18.1's runs do not report.
+- **The profile** prices both formats, `presk plan` plans their kernels
+  at one lane as it plans `bf16`'s, and the solver measures a realization
+  in them on the native backend.
+
+Not in the version: an operation, a product or a sum rounded to another
+format than its storage type's arithmetic type, affine formats and the
+8-bit floats stay emulated; `fmlal` comes after it.
+
+**The plan's decisions** (§8, the user, 2026-11-17):
+1. the formats are `f16` and `e8m15`; the 8-bit floats stay emulated
+   (nothing measured asks for them: MT5 found the 8-bit operands too
+   coarse for the course GPT's decisions);
+2. Cranelift converts by exact integer sequences, so that the native
+   backend runs every native type and the conformance suite holds the
+   other two executors to it;
+3. the overflow guard is in this version, with question 87.
+
+**The statements** (the plan's §4), fixed before the work:
+- **FC0, nothing moves:** on the version's tree, X1's harness (MT0's),
+  `make quant-table`, `step-table` and `tutorial` give the outputs of
+  `c7e8daa` (0.18.1 with D211–D213) byte for byte, but for the version
+  and commit lines, the envelopes' dates and the tutorial's measurements;
+- **FC1, the conversions are the formats':** between `f32` and each
+  format and from `f64` to each, `presk_format`'s rounding on every `f32`
+  input and every code, and from `f64` on every midpoint of each format
+  and its neighbours and on 2³² random inputs; the native backend's
+  sequences and the exported C's functions under each compiler the same;
+- **FC2, the emulation's bits natively:** on the native and LLVM
+  backends and in the exported C under GCC 13.3, GCC 16.2, clang 23 and
+  x86-64 through zig, on the conformance suite in both formats, uniform
+  and mixed, on the test set's programs and the course GPT's loss,
+  gradient and step, under the default layouts and under plans;
+- **FC3, the solve measured natively:** D209's MT6 solve measured on the
+  native backend gives D209's realization, gap, rows and decisions byte
+  for byte; its time against the kernel interpreter's reported;
+- **FC4 and FC5:** the course GPT's AdamW step at course scale (`f16`
+  where the range rules offer it) and its forward pass at course scale
+  (every value in `f16`, default layouts), each at most 0.85× all-`f32`'s
+  time on the LLVM backend, ten X925, D126's protocol;
+- **FC6, the guard:** a test program whose `f16` store overflows on an
+  input off its envelope fails on every executor, naming the kernel; no
+  run of FC2–FC5 and FC7 trips it; its cost reported;
+- **FC7, reported:** D209's MT6 realization and a solve at ε\*(10⁻³) on
+  the course logits at the course constants with both formats on the
+  menu, timed on the LLVM backend and in the exported C against all-`f32`
+  and D170's realizations.
+
+**This step:**
+- version `0.18.2-dev`: the workspace's version and its 22 pins,
+  `Cargo.lock`'s presk packages, the version line of `presk explain`'s six
+  document snapshots and of the manual's `explain_loss` chapter;
+- question 87 (`docs/spec-questions.md`): an overflow at run time on an
+  input off the envelope, an error of the run;
+- the CHANGELOG's `Unreleased`, which holds D211–D213, is 0.18.2's; the
+  manual's status section "Version 0.18.2 (in progress)", and `CLAUDE.md`;
+- FC0's baseline: the release build of `c7e8daa` run by MT0's script
+  (`out/x1/mt0-0.18.0.sh`, X1's harness as 0.17.2 moved the programs, the
+  quant and step tables, the tutorial) into `out/x1/base-0.18.2` on
+  falicon.
+
+No change to the compiler at this step. The steps that follow: D215,
+buffers and conversions (FC1); D216, the native backend; D217, the C
+export and the LLVM backend (FC2); D218, the profile, plans, the solver
+and the guard (FC3, FC6); D219, the rows and the version (FC4, FC5, FC7,
+FC0 on the version's tree).
+
+## D215 — Buffers and conversions (plan 0.18.2 step 1): binary16 and `e8m15` held as their codes, `Buf::Codes`; the conversions, every route from `f64` one rounding; the kernel interpreter on codes; FC1 holds for the runtime's conversions on every input (2026-11-17)
+
+**One buffer kind for the new formats.** A buffer of binary16 (`f16`) or
+`e8m15` is `Buf::Codes(Float, Elems<u8>)`: each element's code,
+little-endian, in `Dtype::bytes` bytes (2 and 3), as a `.psk.d` version 3
+file lays them out. `e8m15`'s code is the top 24 bits of the `f32` of
+equal value. `Dtype::F16` and `Dtype::E8M15` name the two types, and
+`Dtype::coded` says which types a buffer holds as codes. `bf16` keeps
+`Buf::Bf16`, and every other format `Buf::Format`, each value an `f64`
+(D205). Until this step a buffer of either format was a `Buf::Format`, 8
+bytes an element.
+
+One departure from the plan (§3.2): a buffer is exactly `n · bytes`
+long, without the byte of slack the plan gave it so that a 3-byte element
+could be loaded as four. The native backend's kernels in these formats
+are scalar (one lane, §3.3), and a code of 3 bytes is read by a load of 2
+and a load of 1, which need none. Whether the C program's arena gives each
+buffer a byte of slack is step 3's decision, for the compilers' loads.
+
+**The conversions** (`presk_rt::codes`), beside `f32_to_bf16`:
+- `f32_to_f16` and `f64_to_f16`, `f32_to_e8m15` and `f64_to_e8m15`: one
+  rounding, to nearest, ties to even, from an `f32` or directly from an
+  `f64`. A finite value past the largest finite number becomes an
+  infinity, as IEEE 754 says. A NaN stays a NaN of its sign, made quiet,
+  with the top bits of its payload, as aarch64's `fcvt` does under the
+  default FPCR. `f32_to_e8m15` is `bf16`'s bias trick at bit 8, what the
+  native backend will run; the others are one integer routine on an
+  `f64`'s bits.
+- `f16_to_f32` and `e8m15_to_f32`: exact. A binary16 NaN is made quiet,
+  as `fcvt s, h` does; an `e8m15` code is shifted by 8, which keeps a
+  NaN's bits, as `bf16_to_f32` does.
+
+**Every route from `f64` rounds once.** `Buf::of`, which the host's draws,
+a realization's arguments and parameters (`Value::realize`,
+`quant::typed_leaves`), the conversions at a nest's edge and the solver's
+measured runs build their buffers by, gives the two formats' codes, each
+value rounded once directly from the `f64`: the number
+`presk_format::Float::store` gives, which is what a `Buf::Format` held. So
+do `Buf::zeros`, `Buf::in_format`, and a `.psk.d` version 3 leaf in either
+format (`presk run` and `presk train` read a data file's leaves in their
+format since D209).
+
+**The kernel interpreter computes on the codes.** Its loads widen a code
+exactly, and its stores round once (counted when emulated) and write the
+code. `held_format`, `launch_buf` and `output_buf` take the codes, so the
+emulation of a realization in either format runs on the buffers a native
+executor will hold. The host slices a stacked buffer of codes as a view
+of its bytes, as it slices `f32`'s, and a value it rebuilds from `f64`s
+(a stack copied, a slice written back) keeps its codes. Two things a
+run reports move with the buffers, and no value:
+- a host profile (`--host-profile`) counts a code's bytes, 2 or 3 an
+  element where it counted 8;
+- `presk run --codes` prints the code the buffer holds: a NaN with the
+  top bits of its payload, where 0.18.1 printed the quiet NaN of its sign.
+
+**The executors still refuse.** `Realization::check_native` is unchanged.
+The native backend, the LLVM backend and the C export refuse a
+realization that stores a value in either format before anything runs
+(`E7005`); a buffer of codes that reached the native backend would be an
+error, and the C export's record gains `Store::Codes`, of `Dtype::bytes`
+bytes, which it does not print until step 3.
+
+**FC1 holds at this step on every input** (`cargo test --release -p
+presk-rt --test codes -- --ignored`, falicon, 20 cores, 21 s):
+- every `f32` (2³²) narrowed to binary16 and to `e8m15` is
+  `presk_format`'s rounding (0.18.0's, which MT1 pinned to the machine
+  for binary16), and a NaN the quiet NaN of its sign with its payload's
+  top bits;
+- every binary16 code (2¹⁶) and every `e8m15` code (2²⁴) widened is the
+  code's value exactly (`Float::decode`);
+- from `f64`: each of the 31 744 midpoints between two consecutive
+  binary16 numbers and each of the 8 355 840 of `e8m15`'s (the midpoint
+  between 0 and the least subnormal and the overflow threshold
+  included), the `f64`s on either side of it, of both signs, and 2³²
+  random `f64`s (half of uniform bits, half of an exponent where the
+  formats' numbers lie), narrowed to both formats, rounded once;
+- binary16's conversions are falicon's `fcvt h, s`, `fcvt h, d` and
+  `fcvt s, h` bit for bit, NaNs' payloads included, on every `f32`, every
+  midpoint, the 2³² random `f64`s and every code.
+
+0 wrong. The default `make test` runs the same checks on a sample, and
+planted errors (ties rounded away from zero; `e8m15`'s rounding without
+its tie bit) fail them. FC1's other halves are the native backend's
+sequences (step 2) and the exported C's functions under each compiler
+(step 3).
+
+**The emulation, on codes, as before.**
+- MT1's checks (D205, `cargo test --release -p presk-kernel --test
+  emulation -- --ignored`), whose binary16 buffers are now codes, hold
+  again: every `f32` stored into binary16 is `fcvt h, s`'s code and every
+  code loaded `fcvt s, h`'s value; binary16's +, −, ×, ÷ on all 2³² pairs
+  of codes and √ on all 2¹⁶ are the machine's, with the infinities and
+  NaNs the machine produced counted; `bf16`'s conversions are 0.17.1's
+  functions; 0 wrong, 228 s on `v0.18.2-step1` (261 s at D205).
+- A new test holds the emulation on codes to the emulation on `f64`s:
+  every primitive of the conformance suite (24) lowered in either format,
+  on operands where binary16 overflows, gives the same values and counts
+  the same infinities and NaNs on `Buf::Codes` as on `Buf::Format`.
+
+**FC0 at the step.**
+- X1's harness with MT0's script (`out/x1/mt0-0.18.0.sh`), the quant and
+  step tables and the tutorial under this step's release build, against
+  `out/x1/base-0.18.2` (D214): **holds**. X1's 863 files are the
+  baseline's byte for byte but 19 (38 lines), each line presk's version
+  (`0.18.2-dev` for `0.18.1`) or the export's commit (the C exports'
+  headers, Makefiles and READMEs); the quant and step tables are the
+  same bytes; the tutorial differs in its measurements alone (times, the
+  measured profile, the autotuner's sweep), its shape with every number
+  masked differing in one cell, statement Q's verdict for `scores/%2` (a
+  regret of 1.06 measured under the base, 1.03 under the step).
+- X1 runs no realization in either format. Those the step moves are run
+  apart (`out/x1/emu-0.18.2.sh`), under `c7e8daa`'s build and this
+  step's: U1's 31 entries on the kernel interpreter under `f16` and
+  `e8m15`, printed at 17 digits and as codes (`--codes`); the tile
+  (`examples/tests/formats/tile.psk`) under `f16`, `e8m15`, `e4m3fn` and
+  `e4m3-f16-chunked.json`, as JSON at 40 digits and as codes; and 20
+  steps of the tutorial's training run on the kernel interpreter in each
+  format. All 134 runs exit 0 with the same outputs byte for byte, and
+  the two checkpoints have the same bytes; the training runs' time a step
+  and their checkpoints' paths differ, nothing else. (Under both builds
+  the uniform `f16` run's loss is NaN from step 5 on; the `e8m15` run
+  ends at 1.472351.)
+
+`make test` passes: 434 tests in 126 suites, 18 ignored (the 426 of
+D214, FC1's 7 tests and the emulation's new one; FC1's 4 exhaustive
+checks among the ignored).
+
+## D216 — The native backend (plan 0.18.2 step 2): binary16 and `e8m15` natively, by Cranelift's integer sequences; mixed reads; FC1's native half holds on every input, FC2's native half holds (2026-11-18)
+
+**What runs natively.** The native backend runs a realization that stores
+values in binary16 (`f16`) and `e8m15`, each nest computed in its storage
+type's arithmetic type, `f32` for both, as it runs `bf16`. Which formats an
+executor takes is the executor's: `KernelExec::codes` says whether it also
+computes kernels that store the two formats, and the host checks a
+realization by `Realization::check_executor(executor, codes)` before
+anything runs. The native backend says yes; the LLVM backend, the same
+executor with a compiler in Cranelift's place, says no until step 3, and
+the C export still checks by `check_native`, the three native types. A
+realization one of them cannot run is refused under its name (`E7005`): the
+native backend's message names the five types it computes in (`f64, f32,
+bf16, f16 and e8m15`), the LLVM backend's and the C export's the three, as
+before.
+
+**What does not move.** `Dtype::is_native` and `Dtype::ALL` stay the three
+types every executor computes in: the error analysis bounds a native
+type's rounding by `u·|x|` and any other format's by its own rule (D208),
+so making the two formats native there would have moved every bound of a
+realization in them, and FC3 asks for D209's realization byte for byte.
+`Realization::emulates` is unchanged: the kernel interpreter still
+emulates a realization in either format and prints its counts, and the
+solver still measures such a realization there (D208). The solver's
+measurement on the native backend and the overflow guard, which replaces
+the counts natively, are step 4's.
+
+**The sequences** (`presk_cranelift::codes`). Cranelift 0.131 has no
+instruction that converts to or from binary16 on aarch64 (the `f16`
+study, §6), so the four conversions are integer sequences with one `f32`
+operation each, branch-free, a code held in the low bits of an `i32`:
+- binary16 to `f32`: the magnitude moved 13 bits up, into an `f32`'s
+  exponent and fraction fields, is the number times 2⁻¹¹², a subnormal one
+  included (it is then an `f32` subnormal), and one multiplication by
+  2¹¹² gives it exactly; a field of all ones selects the `f32` infinity,
+  or the NaN with the code's payload and the quiet bit, as `fcvt s, h`
+  does;
+- `f32` to binary16, on the magnitude `a`: below 2⁻¹⁴, `a + 0.5` in `f32`,
+  whose last place is 2⁻²⁴, binary16's least subnormal, so the addition
+  rounds to it, ties to even, and its bits less 0.5's are the code; from
+  2⁻¹⁴, `bf16`'s bias trick at bit 13 with the exponent rebiased from 127
+  to 15, a carry out of the largest finite number reaching the infinity's
+  code; from 2¹⁶ the infinity, and past the `f32` infinity the NaN, quiet,
+  with the payload's top 9 bits; the sign put back;
+- `e8m15`: a shift by 8, and `bf16`'s bias trick at bit 8, a NaN quiet
+  with its top bits (`presk_rt::codes`'s own functions).
+
+An `e8m15` code is read as a 2-byte and a 1-byte load and written as a
+2-byte and a 1-byte store, so a buffer needs no byte past its last
+element (D215's departure from §3.2 holds natively). Before they were
+emitted the binary16 sequences were written in Rust and compared with
+falicon's `fcvt h, s` and `fcvt s, h` on every `f32` and every code: 0
+differ.
+
+**The kernels.** A kernel of either type computes in `f32` (`fty`), calls
+the `f` variants of the `libm` crate's functions, has one lane (as
+`bf16`'s: `Dtype::natural_lanes`), and keeps every store of its output
+inside a loop, as a `bf16` kernel does, since a sum promoted to a
+variable would skip the rounding at each store. A buffer of codes is
+passed to a kernel as a pointer to its bytes. A kernel of `f64`, `f32` or
+`e8m15` reads a buffer of a narrower one of the five types
+through its loads (`BufKind::Wide`, D121): the host's `narrower` now
+takes binary16's and `e8m15`'s codes as it takes `bf16`'s, so a parameter
+stored in either reaches a wider nest without a copy at its edge, on
+every executor; a vector kernel of `f32` or `f64` reads such a buffer
+lane by lane. The kernel interpreter's direct path (`run_kernel`) runs a
+kernel of either type in `f32` on the codes, as it runs `bf16`'s, and an
+epilogue (plan 0.10.0 step 7) is a layout of a nest in either format
+(`Arith::is_native`), stored, read back and added to as `bf16`'s is,
+where it was refused (`E7002`). `TimedExec` passes `codes` through, so
+`presk bench --calibrate --realize f16` times the kernels natively and
+writes a profile; what that profile prices, and `presk plan`, are step 4's.
+
+**What a run shows that moves.** Nothing 0.18.1 ran moves. What does:
+- a command that runs the native backend runs a realization in either
+  format, where it refused it (`E7005`): `presk run`, `train` and `bench`
+  were run so; `presk bench --realize f16` times `native f16` beside the
+  uniform native types;
+- on the kernel interpreter, a parameter stored in either format and read
+  by a wider nest is no longer converted at the nest's edge, which a host
+  profile's `buffers.convert` counted; the widening was exact, so no value
+  and no count moves;
+- an epilogue in either format is no longer refused.
+
+**FC1's native half holds on every input** (`cargo test --release -p
+presk-cranelift --test codes -- --ignored`, 6.5 s on 20 cores): the four
+sequences, compiled alone over arrays by the same functions the kernels
+call (`presk_cranelift::Conversions`), give `presk_rt::codes`' bits, which
+FC1 holds to the formats' rounding (D215), on every `f32` (2³²) narrowed to
+each format, every binary16 code (2¹⁶) and every `e8m15` code (2²⁴)
+widened, NaNs' payloads included: 0 differ. The default `make test` takes
+every binary16 code and a sample of the rest.
+
+**FC2's native half holds** (`presk-cranelift`'s `tests/codes.rs` and
+`tests/layout.rs`, in `make test`): the native backend gives the kernel
+interpreter's emulation's bits, byte for byte, NaNs' payloads included,
+- at the kernel's level, on every primitive of the emulation's suite (26,
+  with a wider `dot` and `softmax`) lowered in either format, and on
+  kernels of `f32`, `f64` and `e8m15` reading binary16, `e8m15` and `bf16`
+  as narrower inputs, scalar and in lanes, on operands where binary16
+  overflows and on operands where it does not: 404 runs, 22 of them with
+  an infinity or a NaN counted by the emulation, 4 kernels in lanes;
+- on the test set's programs (`examples/tests/plan/entries.txt`, the
+  tutorial's loss, the Llama decoder at tiny constants, the course GPT's
+  loss and gradient at D = 16), each under eight realizations: either
+  format uniform; beside `f32` and `bf16` (every third site stored apart,
+  every parameter in the other format); parameters of binary16, `e8m15`
+  and `bf16` read by kernels of `f64`, `e8m15` and `f32`, and of `f32` by
+  kernels of binary16: 21 entries, 168 runs;
+- on training runs in either format: the tutorial's, the regression's
+  and the dropout regression's 20 steps, and the course GPT's first step
+  at D = 16, its parameters and losses (the binary16 runs reach NaN, as
+  AdamW's ε = 10⁻⁸ rounds to zero there, alike on both executors);
+- under plans: `tests/layout.rs` takes the two formats beside the three
+  native types. In each, every point of the four attention nests' spaces
+  (181), of the products with their epilogue (300), and of the 20
+  derivative launches of the three gradients gives the default layout's
+  bits on the kernel interpreter and natively, the two executors agreeing
+  at the default, and so do the gradients with their derivatives planned
+  and whole programs under plans stating epilogues (12 and 24 rounds).
+
+Outside `make test`, on falicon, under this step's release build,
+`out/x1/native-0.18.2.sh` takes each run on both executors, the kernel
+interpreter's line of counts set aside (the one line a native run lacks):
+- U1's 31 entries in either format, at 17 digits and as codes (124
+  runs), the tile at 40 digits and as codes (4), and the course GPT at
+  D = 64 (H = 2, L = 2, B = 2, T = 64), its forward pass, loss and
+  gradient as codes (6): 134 runs, each the same output natively as
+  emulated;
+- `presk train` in either format: the tutorial's run, 20 steps, and the
+  course GPT's at D = 16 on its data (B = 16, T = 256), 3 steps: the same
+  logs and the same checkpoints' bytes (the course GPT's loss 4.521606 in
+  `e8m15`, NaN from step 2 in binary16).
+
+**The conformance suite** (`tests/native.rs`, plan 0.3.0 §3.4) holds the
+two formats to the reference interpreter at 256 bits as it holds `bf16`:
+every primitive (49) and every example entry (12) within `bf16`'s
+relative band in their units, `|x − x̂| ≤ ε·(|x| + 2⁻⁵)` with ε = 2⁻⁷ for
+binary16 and 2⁻¹² for `e8m15`, the floor `bf16`'s. The worst over the
+examples is 5.5·10⁻³ and 1.9·10⁻⁴ (`LayerNorm{8}.apply` and
+`stack_prefix_grad`'s gradient). MiniGPT's `adamw.step` in binary16 is
+reported, not asserted: its gap is infinite, ε = 10⁻⁸ rounding to zero.
+
+The LLVM backend refuses both formats (`E7005`, a test in `presk-llvm`);
+its half of FC2 and the C export's are step 3's.
+
+**FC0 at the step** holds. X1's harness with MT0's script
+(`out/x1/mt0-0.18.0.sh`), the quant and step tables and the tutorial,
+under this step's release build, against `out/x1/base-0.18.2` (D214):
+- 917 of X1's 939 files are the same bytes; the other 22 differ in the
+  version and commit lines of the C exports (19) and in the day three
+  envelopes were measured (`"measured"`, 2026-11-17 for the base), both
+  of which FC0 sets aside;
+- the quant and step tables are identical;
+- the tutorial differs in its measurements alone: with every number
+  masked one cell differs, statement Q's verdict for `scores/%2`, a
+  measured regret of 1.06 for the base and 1.02 here, as at step 1.
+
+The tutorial was first run with the binary's path relative, which the
+exported program's `make check` does not find from its own directory, so
+that two of its comparisons with the exact reference were skipped; it was
+run again with the path absolute, as the base was.
+
+`make test` passes: 439 tests in 127 suites, 20 ignored (D215's 434, the
+4 of `presk-cranelift`'s `tests/codes.rs` and the LLVM backend's refusal;
+FC1's 2 new exhaustive checks among the ignored).
+
+## D217 — The C export and the LLVM backend (plan 0.18.2 step 3): binary16 and `e8m15` in C, `_Float16`'s casts on aarch64 and the integer forms elsewhere; `.psk.d` version 3 in the C runtime; x86-64 run under qemu; an `e8m15` element read and written in place; FC1 holds, FC2 holds but for a generated NaN's sign on x86-64 (2026-11-18)
+
+**What runs.** The C export and the LLVM backend run a realization that
+stores values in binary16 (`f16`) and `e8m15`, each nest computed in
+`float`, as the native backend runs it since step 2 (D216), where they
+refused it (`E7005`). The LLVM backend is the native executor with a
+compiler in Cranelift's place, and its kernels are the C printer's, so
+`NativeExec::codes` is now true whatever the compiler; the C export checks
+a realization by `Realization::check_executor("the C export", true)`, in
+both of its modes. A realization in any other format, or computing a nest
+otherwise than in its storage type's arithmetic type, is still refused by
+each, its message naming the five types it computes in (`the C export
+computes in f64, f32, bf16, f16 and e8m15`).
+
+**The buffers.** A binary16 buffer is `uint16_t`, each element its code,
+as `bf16`'s is. An `e8m15` buffer is `presk_e8m15`, a struct of three
+`uint8_t` (the code's bytes, little-endian; `_Static_assert` that it is
+three bytes), so that `n * sizeof(presk_e8m15)` sizes it, a pointer moves
+by whole codes (a host's view of a stacked buffer, a copy at an offset),
+and the arena takes it as any other buffer. A code is assembled from its
+three bytes, so no buffer needs a byte past its last element: the plan's
+byte of slack (§3.2), which D215 left to this step for the compilers'
+loads, is not given. The record's `Store::Codes` prints as these types
+and as `PRESK_F16` and `PRESK_E8M15`, and a host scalar read from either
+is widened exactly.
+
+**The conversions** (`presk_rt.h`), `presk_rt::codes`' functions:
+`presk_f16_to_f32`, `presk_f32_to_f16`, `presk_f64_to_f16`,
+`presk_e8m15_to_f32`, `presk_f32_to_e8m15` and `presk_f64_to_e8m15`. Each
+of binary16's has two forms: a cast of C's `_Float16`, one `fcvt` on
+aarch64, and an integer form, portable C11, the native backend's sequences
+(the widening's multiplication by 2¹¹², the narrowing's bias trick and its
+`float` addition below 2⁻¹⁴), with `presk_rt::codes`' integer routine on
+an `f64`'s bits for the rounding from `f64`. `e8m15`'s are integer forms
+on every compiler, and a kernel reads and writes an `e8m15` element in
+place, byte by byte (the SCoP mode, below).
+
+One departure from the plan (§3.4), which took the casts wherever the
+compiler defines `__FLT16_MANT_DIG__`: the header takes them on aarch64
+alone, and the integer forms everywhere else (or wherever
+`-DPRESK_F16_INTEGER` asks for them). On x86-64 a cast is a library
+routine, and FC1's check under zig found that compiler-rt's
+`__extendhfsf2` keeps a signalling NaN signalling when it widens it,
+where aarch64's `fcvt s, h`, whose bits the runtime's are (D215), quiets
+it: 1 022 codes, the signalling NaNs, widened to other bits. Its
+narrowings gave the runtime's bits on every input. A rule by the machine
+whose instruction the runtime is pinned to is the one the check supports;
+elsewhere the integer forms are exact by construction.
+
+**GCC 13.3 keeps the casts.** The plan asked for both forms timed under
+GCC 13.3, whose `-O2` does not vectorize the casts, and the integer form
+kept there if faster (`out/fc-time-0.18.2/f16-forms.sh`): the course GPT's
+forward pass at the course constants, `B = 16`, `T = 256`, every value in
+`f16`, the default layouts, the trained checkpoint, built by the
+Makefile's flags, ten X925, five processes a build alternated, ten calls
+each (D126):
+
+| build | median of the 5 medians | best |
+|---|---|---|
+| GCC 13.3, the casts | 1 376.0 ms | 1 372.8 ms |
+| GCC 13.3, the integer form | 4 408.0 ms | 4 405.1 ms |
+| GCC 13.3, `f32` (reported) | 767.1 ms | 764.2 ms |
+| GCC 16.2, the casts (reported) | 629.0 ms | 622.6 ms |
+| GCC 16.2, the integer form (reported) | 4 620.6 ms | 4 617.2 ms |
+
+The integer form is 3.20× slower than the casts under GCC 13.3 and 7.35×
+under GCC 16.2 at the same flags, so the casts stay and the header does
+not single out GCC 13.3. Reported, deciding nothing: GCC 13.3's casts take
+1.79× its `f32` (the study's 1.80×, §2), and GCC 16.2's at `-O2` 0.82× GCC
+13.3's `f32`; what `f16` buys against `f32` is FC5's, at step 5. Every
+build's output is the native backend's (C1), checked before it was timed.
+
+**The runtime** (`presk_rt.c`). `presk_dtype` gains `PRESK_F16` and
+`PRESK_E8M15`, after the four others so that their numbers do not move;
+`presk_dtype_size` gives 2 and 3; `presk_convert` and `presk_fill` round
+an `f64` to either once, as `Buf::of` does, and widen either exactly. The
+reader reads `.psk.d` version 3: of encoding 3, a format by its six bytes,
+binary16 and `e8m15` are held, a leaf in either read as the format's
+numbers and converted to the buffer's type, a NaN code the NaN of its
+sign whatever its payload, as `presk_format::Float::decode` reads it; a
+leaf in any other format is refused by its name, an alias where it has
+one and the parameters' spelling otherwise (`E9002`: "leaf 0 is in
+e4m3fn, a format this program does not hold (it holds f64, f32, bf16, f16
+and e8m15)"). The writer writes version 1, `f64` leaves, exact for both.
+
+**The SCoP mode** prints a nest of either type over arrays of `uint16_t`
+or `presk_e8m15`, and its driver draws a nest's inputs rounded once from
+`f64` (`presk_f64_to_f16`, `presk_f64_to_e8m15`), as presk rounds them for
+`conformance/native.bin`, whose bytes are the codes. A kernel loads and
+stores an `e8m15` element byte by byte in place, by two macros of the
+header (`PRESK_E8M15_LOAD(e)`, the code assembled from `e`'s three bytes
+and widened; `PRESK_E8M15_STORE(d, x)`, a statement writing the rounded
+code's three bytes into `d`), the functions' bits. `make c-conformance`
+found why: with the conversions' functions, which take and return a
+`presk_e8m15` by value, the calling convention's temporaries stood around
+each call before inlining (on aarch64 the three bytes copied into an
+eight-byte slot to be passed, the result returned as an `i24` stored into
+a slot and copied out), which Polly at its early position does not model,
+so that in `e8m15` a nest without loops (a scalar's `neg`, `sub`, `sqrt`)
+was no SCoP, and a gather was none even with non-affine accesses allowed;
+D85's rule, a nest static control exactly when Polly takes it as one SCoP
+of its loops, failed in `e8m15` on 11 of the test set's entries (each
+stopped at its first such nest) and on the course GPT's gather. Byte by
+byte, Polly takes each static-control nest of the test set in the five
+types as one SCoP of its loops (2 076 nests), and each gather and scatter
+(95) as one only with non-affine accesses allowed; the course GPT's 26
+nests at `T = 256` in each type, 24 static control. The functions stay,
+for the host, the runtime and the driver.
+
+**qemu.** `make qemu` installs Ubuntu's `qemu-user-static` 8.2.2 for
+aarch64 into `.qemu` (`apt-get download`, the version and the package's
+SHA-256 pinned, `dpkg-deb`, no root; the manual's `dependencies` chapter,
+`presk-tooling.md`). A static x86-64 program that `zig cc` builds runs
+under it, so statement C3's x86-64 programs, linked and never run since
+0.9.0, now run where it is installed and are compared with the native
+bits: FC1 holds there, and FC2 but for a generated NaN's sign (below).
+
+**FC1's C half holds on every input** (`cargo test --release -p
+presk-export-c --test codes -- --ignored`, 76 s on 20 cores; the log in
+`out/fc1-0.18.2/step3-c-final.log` on falicon, on the step's header).
+`tests/fc1.c`, a program built by each compiler with the export's flags
+and `-Werror`, converts each input of the statement block by block and
+prints a hash of each block's outputs, which the test computes again from
+`presk_rt::codes`: every `f32` (2³²) narrowed to binary16 and to `e8m15`,
+every binary16 code and every `e8m15` code widened, every midpoint between
+two consecutive numbers of each format (the overflow threshold and the
+midpoint above 0 included) with the doubles on either side of it and of
+both signs narrowed from `f64`, and the 2³² random doubles of D215's check
+narrowed to both, 12 952 070 144 conversions in 666 blocks. Under GCC
+13.3, GCC 16.2 (`.gcc`) and clang 23 (`.llvm`), in binary16's cast form
+and its integer form, and on x86-64 (`zig cc -target x86_64-linux-musl`,
+under qemu) in the integer form both builds take there: no block differs.
+The first run, with the casts on x86-64, differed in one block, the
+binary16 codes widened (1 022 codes, the signalling NaNs), which made the
+rule above; its log is kept beside (`step3-c-first.log`). `make test`
+takes every binary16 code and midpoint and every 1009th input of the rest,
+under `cc`, both forms.
+
+**FC2's LLVM half holds** (`presk-llvm/tests/bits.rs`, in `make test`
+where `make llvm` installed the compiler): on the native backend's
+programs of step 2 (the test set, the tutorial's loss, the Llama decoder
+at tiny constants, the course GPT's loss and gradient at `D = 16`), each
+under D216's eight realizations (either format uniform, beside `f32`,
+`bf16` and `f64`, sites stored apart and parameters read by wider
+kernels), the LLVM backend gives the native backend's bytes, on four
+workers: 160 runs, so the kernel interpreter's emulation's bits (D216).
+
+**FC2's C half holds on aarch64 under GCC 13.3, GCC 16.2, clang 23 and
+zig's clang, and on x86-64 on every bit but the sign of a generated NaN**
+(`make c-conformance`, `PRESK_C3=1`, 50 min 47 s on the step's tree, its
+log `out/fc-time-0.18.2/c-conformance-step3-final.log` on falicon, the
+first runs' beside it). The test set in the five types under the default
+layouts (180 programs) and under the frozen profile's plans (160), the
+course GPT at `T = 8` and `T = 256` in the five types, at `B = 16`, `T =
+256` under its plans in each, its loss and gradient in binary16 and
+`e8m15` (29), MiniGPT's splits (4), the products and their epilogues (11),
+typed parameters (64), the integer weights (42, and 12 trained), the
+trained checkpoint (5), C5's documents (10 programs, and 3 on typed
+parameters and 3 on integer weights): each built by GCC 13.3 with OpenMP
+and without, run on one thread where it divides a launch, and built by GCC
+16.2, clang 23 and zig's clang 21.1 on aarch64, gives the native backend's
+bits, so the emulation's (FC2's native half, D216). Built by zig for
+x86-64 and run under qemu, each gives them too, but two programs in
+binary16: `attention3` (`examples/spec/rope/rope.psk`), whose 256 outputs
+are all NaN at the test's weights, its scores overflowing binary16's
+65 504, and MiniGPT's AdamW step, uniform and under
+`mixed-f16-realization.json`, 1 392 of whose 26 304 outputs are NaN, as
+the plan foresaw (§2: its ε = 10⁻⁸ rounds to zero); each under the default
+layouts and the plans, its zeros drawn or not, structured, straight-line
+and placed. In each, every value that differs is a NaN whose sign alone
+differs, every other byte of the outputs the same: x86-64's arithmetic
+(SSE) gives the NaN an invalid operation generates (`∞ − ∞`, `0 · ∞`) its
+sign bit set, aarch64's its sign bit clear, IEEE 754 not specifying it
+(§6.3), and the program carries it on, binary16 storing it with its sign.
+No other program differs on x86-64. The first run failed on these two (two
+tests); the x86-64 comparison now accepts a NaN of the other sign where
+every other byte is the native backend's, and prints how many (`C3 on
+x86-64, …: the native backend's bits but 256 NaNs of the other sign`).
+
+So FC2 as written, every bit under x86-64 through zig, does not hold for
+the NaNs a program generates, and holds for every other value. Making it
+hold would need the emulation to fix a generated NaN's sign, as a format's
+`nans=default` fixes an accelerator's (D209), and each `f32` operation
+that may generate one to set it on x86-64: the user's call; the step
+leaves the arithmetic as each machine does it.
+
+**The C1 tests in the two formats** (in `make test`):
+- the kernel printer's check (`presk-export-c/tests/kernels.rs`) in the
+  five types: the 47 primitive cases scalar and in lanes (1 410 runs, 300
+  through `presk_libm.c`), as SCoPs (231 distinct kernels) and on integer
+  weights (5 400 runs), every layout of the four nests of attention (1 853
+  points and 2 062 splits, each under three partitions of its range), the
+  `int8` and `int4` layouts (624 points and 736 splits each): the native
+  backend's bits;
+- the runtime (`tests/runtime.rs`): `presk_convert` between every two of
+  the five types `Buf::of`'s bit for bit on 200 000 reals, binary16's and
+  `e8m15`'s ties among them; `.psk.d` round trips with `presk-data`, version
+  3 leaves of both formats among them (56); a version 3 leaf in `e4m3fn` and
+  one spelled by its parameters refused by name;
+- through the binary (`presk-cli/tests/export_c.rs`): every entry of the
+  test set in the five types, and MiniGPT's five entries under the mixed
+  realization and two new ones in binary16 and `e8m15` beside `f32`,
+  `bf16` and `f64`, sites and parameters
+  (`examples/tests/plan/mixed-codes-realization.json`,
+  `mixed-f16-realization.json`), on both sets of weights, through both
+  hosts: 180 programs (76 before), each the native backend's bits; C5,
+  `generate` against `presk serve`, in the five types; the SCoP mode's
+  nests of the test set in the five types (`export_scop.rs`); the tile in
+  either format on the LLVM backend and exported (`formats.rs`).
+
+**FC0 at the step** holds. X1's harness with MT0's script
+(`out/x1/mt0-0.18.0.sh`), the quant and step tables and the tutorial,
+under this step's release build (`out/bin/presk-0.18.2-step3`, its path
+absolute), against `out/x1/base-0.18.2` (D214):
+- 910 of X1's 939 files are the same bytes. Of the other 29, step 2's 22
+  differ in the version and commit lines of the C exports and in the day
+  three envelopes were measured, both of which FC0 sets aside, and seven
+  are the runtime the C exports copy, which changes by design:
+  `presk_rt.h` in the four exports (19 lines out, 257 in) and `presk_rt.c`
+  in the three that build a program (16 out, 128 in). Against step 2's
+  tree, only these and the SCoP driver's two new cases differ, the READMEs
+  in their commit line alone; every output of every program is the same
+  bytes.
+- The quant and step tables are identical.
+- The tutorial differs in its measurements alone: with every number
+  masked, one cell differs, statement Q's verdict for `scores/%2`, a
+  measured regret of 1.06 for the base and 1.02 here, as at steps 1 and 2.
+
+`make test` passes: 440 tests in 128 suites, 21 ignored (D216's 439, 127
+and 20), a release build on falicon, 6 min 46 s. The step's: FC1's sample
+(`presk-export-c/tests/codes.rs`, new), FC2's LLVM half
+(`presk-llvm/tests/bits.rs`), the formats through the binary now on the
+LLVM backend and exported, with the refusals
+(`presk-cli/tests/formats.rs`), and the C tests above in five types; the
+exhaustive FC1 check is ignored there (`make c-conformance` does not run
+it either: `cargo test --release -p presk-export-c --test codes --
+--ignored`).
+
+## D218 — The profile, plans, the solver and the overflow guard (plan 0.18.2 step 4): binary16 and `e8m15` calibrated, planned and measured natively; a narrowing into either that overflows fails the run (`E7007`) on every executor and in the exported C, a kernel's store and the host's own; FC3 holds; FC6's program holds and its clause on FC2's runs fails as written on `attention3` in binary16, whose host overflows (2026-11-18)
+
+The plan's step 4 (presk-specs `implementation/presk-plan-0.18.2.md`,
+§3.5): the profile prices both formats, `presk plan` plans their kernels,
+the solver measures them on the native backend, and a narrowing that
+overflows fails the run on every executor (question 87), with FC6's
+program; FC3 on falicon.
+
+**The profile.** `presk bench --calibrate` fits, beside the profile's own
+realization, the kernels timed under every other uniform one, so that the
+solver's roofline (`presk solve --profile`) prices a site by its type
+(0.6.0 step 3). The list was `f64`, `f32` and `bf16`; it takes binary16
+and `e8m15` too, each at one lane as `bf16`, so that a profile written
+from now on prices a site in either by its own fit where it fell back on
+the profile's own constants. `Profile::real_bytes`, the bytes of one real
+in the profile's realization that the e-graph optimizer's cost reads,
+gives 2 and 3 for them, where it gave 8. The layout cost model already
+took them: `presk bench --calibrate --space calib --realize f16` fits
+`f16+lanes1+w…` groups, each kernel's traffic counted in its type's bytes
+(`Dtype::bytes`) since step 1, and `presk plan --realize f16` under such a
+profile plans every nest at one lane, as a `bf16` one; under a profile
+calibrated in other types alone it refuses, naming the types, as it
+refuses `bf16` (D82). A test holds both (`crates/presk-cli/tests/
+calibrate.rs`).
+
+**The solver.** `presk solve --measure native` measured a realization the
+native backend computes there, and emulated every other on the kernel
+interpreter (D208). Since step 2 the native backend computes one that
+stores values in binary16 and `e8m15` and each nest in its storage type's
+arithmetic type, so the solver's measuring backend asks it whether it
+does (`Realization::check_executor(…, true)`), where it asked whether the
+realization emulates nothing. Such a measurement gives the emulation's
+bits (FC2) without its counts: the report's `emulated` line is printed
+only for what is still emulated. The kernel interpreter stays the
+default measure, D209's.
+
+**The overflow guard** (§3.5; question 87). The certificate holds on the
+envelope (D35), and D208's range rules offer a format at a site only where
+the envelope keeps its values under the format's largest finite number
+with a margin; an input off the envelope may still pass it.
+- **The test.** A narrowing into binary16 or `e8m15` overflows when it
+  turns a finite value into an infinity: the value's magnitude reaches the
+  midpoint above the format's largest finite number, which rounds up, the
+  largest's significand being odd — 65 520 for binary16, `(2 − 2⁻¹⁶)·2¹²⁷`
+  for `e8m15` (`presk_rt::codes::overflows`). An infinity or a NaN stored
+  is no overflow of the store. On an `f32`, one subtraction and one
+  unsigned comparison of its magnitude's bits.
+- **A kernel's store.** A kernel that stores either format
+  (`Kernel::guarded`) or-s each store's test into a flag of its call:
+  - natively, an `i32` the code generator keeps in a register, written at
+    the kernel's return, when set, to a word the executor passes in the
+    slot after the scales, by an atomic `or` since several workers of a
+    divided launch may set it; the executor reads it once the workers are
+    joined (`NativeExec::flagged`);
+  - in C, the kernel returns it (`uint32_t`), each store rounding through
+    `presk_f32_to_f16_guarded` or `PRESK_E8M15_STORE_GUARDED`; the LLVM
+    backend's wrapper or-s it into the same word, and the exported host
+    tests it, or-ed over a divided launch's team (`reduction(|:…)`);
+  - the kernel interpreter tests each store into codes (`Elem::overflows`,
+    on the value as it is: an emulated sum counted in its terms' unit is
+    never one), `exec::run_guarded` and `run_emulated_guarded`.
+- **The host's own narrowings.** The plan's mechanism is the kernel's
+  flag. The host narrows values into the formats too while the entry runs:
+  a constant it fills, a scalar it makes a buffer, an operand converted to
+  a nest's type at its edge. These are checked as well, in the shared host
+  (`KernelBackend::of`, the launch's edge conversions, `host_overflow`)
+  and in the exported C (`presk_fill` and `presk_convert` return the same
+  flag; the recorder marks an edge conversion, `Op::Copy`'s `edge`), the
+  first that overflows failing the run at the next launch or as the entry
+  returns. Not checked: the entry's arguments and the parameters at rest,
+  converted by the caller before the entry runs, as the exported C
+  receives them in their types from `main.c`; an argument past the range
+  enters as an infinity, as before. Why the host's: the specification's
+  `attention3` (`examples/spec/rope/rope.psk`), uniform in binary16, takes
+  Llama 3.2's RoPE base, 500 000, as a scalar the host makes a binary16
+  buffer, an infinity; its logarithm made every frequency, and every
+  output, a NaN. With kernels alone the guard let it through; it now fails
+  at `frequencies/%10`. **D217's attribution was wrong**: it read
+  `attention3`'s NaNs in binary16 as its scores overflowing 65 504; no
+  kernel store overflows there, and the infinity is that scalar's.
+- **The error,** `E7007`, the run's, on the kernel interpreter, the native
+  and LLVM backends (`presk run`, `serve`, `bench`, `train`, a solve's
+  measurement, which reads it as an infinite gap):
+
+  ```text
+  [E7007] Error: in `square` (%1): the overflow guard: at `square/%1`, the kernel `mul` rounded a finite value past f16's largest finite number, 65504, to an infinity; a realization holds on its envelope, and this run's values leave it (question 87)
+  ```
+
+  The host's are "the host rounded a finite value past …" and "an operand
+  converted to f16 at the nest's edge rounded past …". In the exported C
+  the entry of a program that narrows into either format returns `int`, 0
+  or 1, and `presk_overflow` prints the same words after `[E7007] Error:`
+  on standard error and keeps the first in the arena (`arena->overflow`);
+  the launches after it run, on infinities, and their result is no
+  result; `./model` exits with status 1 and writes no outputs. A program
+  that narrows into neither is printed as before, its entry `void`, so
+  0.18.1's exports keep their `model.c` and `model.h`; `presk_rt.h` and
+  `presk_rt.c`, which every export copies, change (the guard's functions,
+  the arena's field, two return types). `-DPRESK_NO_GUARD` builds the
+  kernels without the test (the program before the guard, the same bits
+  where nothing overflows), what FC6's cost is measured against (D219);
+  the SCoP mode prints no guard.
+- **Where it applies.** A realization the native types run, binary16 and
+  `e8m15` included: the native executors run no other, and the kernel
+  interpreter checks one (`KernelExec::set_guarded`). Its emulation of a
+  realization the native types do not run counts the infinities, as since
+  D205, and fails nothing.
+- **Not the processor's flag,** as the plan says: Cranelift's and the
+  portable C's conversions are integer operations, and the FPSR would also
+  flag an `f32` operation's overflow.
+
+**The guard's test on every input.** `presk_rt::codes::overflows` holds
+exactly where the rounding gives an infinity on every `f32` and at every
+midpoint of both formats with the doubles on either side, of both signs
+(`cargo test --release -p presk-rt --test codes -- --ignored`, 7 s); the
+native backend's sequence, compiled alone over arrays (`Conversions::
+overflows`), gives it on every `f32` in both formats (9 s, with FC1's
+narrowing); and the C's guarded conversions, job 7 of `tests/fc1.c`, on
+every `f32` in both formats under GCC 13.3, GCC 16.2, clang 23 in both of
+binary16's forms and on x86-64 through zig under qemu: 17 247 037 440
+conversions in 922 blocks, FC1's and 2³² more, no block differing (89 s;
+`out/fc6-0.18.2/guard-exhaustive.log` on falicon). `make test` takes a
+sample of each.
+
+**FC6's program** (`examples/tests/guard/guard.psk`,
+`crates/presk-cli/tests/guard.rs`, in `make test`). `square` stores `x · x`.
+Its envelope, calibrated on eight inputs of magnitude at most 100, offers
+binary16 at the site (the range rules' margin 2: 10 000 against 65 504),
+and the solver, measuring natively, stores it there. On those inputs the
+kernel interpreter, the native and the LLVM backends give the same codes;
+on the input with 300 in it each fails with `E7007` in the words above,
+and the exported C (`B = 1`, C1 holding on its own inputs) exits with
+status 1, the same words on standard error after `[E7007] Error:`, no
+outputs written; built with `-DPRESK_NO_GUARD` it writes 90 000's infinity
+as before the guard; and the kernel interpreter emulating the site
+computed in binary16 (`arith`) counts one infinity and fails nothing.
+`edge`, the product in `f32` and the sum in binary16, fails on every
+executor and in both of the C export's hosts where the host converts
+90 000 at the sum's edge, in the host's words.
+
+**The test set.** Of the 160 runs of FC2's native half and of its LLVM
+half, the guard stops 3 on both executors in the same words, `attention3`
+wherever its frequencies' site is in binary16 (uniform `f16`, and two of
+the mixed realizations); every other run gives the same bits. The C
+export's test of the test set in five types exports 179 programs and
+refuses one, `attention3` in binary16, whose native run the guard stops,
+the kernel interpreter's run failing in the same words (the test now holds
+such a refusal, `guarded_row`); the SCoP mode's tests leave it out.
+
+**FC3 holds** (`make fc3`, `experiments/fc3.sh`, `out/fc3-0.18.2/` on
+falicon, the step's binary `out/bin/presk-0.18.2-step4`, 2026-11-18).
+D209's MT6 solve (the course GPT's logits at D = 64, V6's envelope and weights, `--menu
+f64,f32,bf16,f16,e8m15` at 4.67·10⁻⁴) measured on the native backend
+(`machine_types.sh` with `MEASURE=native`, and `BACKEND=native` for the
+rows): the realization, its measured gap (4.059·10⁻⁵), the 15 chunks of
+rows and the decisions on the Code civil's 461 held-out windows, 18 files
+of 18, are D209's byte for byte, and each of the three timed solves wrote
+the same realization. Reported, medians of three processes, one after the
+other on the quiet machine (a first run, on the tree before the three
+fixes below, gave the same files and times within 0.1 s,
+`out/fc3-0.18.2-wip/`):
+
+| | the kernel interpreter | the native backend |
+|---|---|---|
+| the solve | 117.9 s (117.7–118.3) | 110.7 s (110.7–110.9) |
+| the measurement alone (the realization on the envelope's four windows, `presk run`) | 7.18 s | 0.11 s |
+
+The measurement natively is 65 times faster, the logits the same bytes,
+but this solve measures once, its proposal inside the budget: its time is
+the exact reference's and the reverse sweep's, and 6 % of it moves. The
+whole MT6, the 461 windows' rows and decisions run natively on sixteen
+jobs, took 1 min 56 s.
+
+**What the first `make c-conformance` found**, three defects of the guard,
+each fixed before the run of record (its log kept beside,
+`c-conformance-step4-first.log`):
+- `presk plan` and `presk dump --stage kernel` capture an entry's launches
+  from its shapes, with an executor that runs nothing; the host's check
+  still read `attention3`'s constant and refused the capture. The host's
+  narrowings are checked only where the executor computes the entry
+  (`KernelExec::computes`, false for the shapes' executor).
+- A function of the structured host that allocates nothing takes no arena,
+  and the course GPT's `Linear.apply` under its plans, whose product takes
+  its `add` as an epilogue, wrote into its caller's buffer: its guarded
+  launch named an `arena` it did not have, and the program did not build.
+  In a guarded program a function whose launch or narrowing the guard
+  tests takes the arena (`Analysis::guards`).
+- During an epilogue's launch the native host named the product's site,
+  where the C names the launch `Linear.apply/%3 + Linear.apply/%5`; both
+  now name it so (`KernelBackend::launch_site`), checked on a product of
+  the epilogue program stored in binary16 that overflows, on every
+  executor and in the export's refusal.
+
+**FC6 at the step.** The program holds: its input off the envelope fails
+with `E7007` naming the kernel on the kernel interpreter, the native and
+LLVM backends and in the exported C, and the guard's test is the overflow
+on every input. Of the runs the plan names, FC3's measurement does not
+trip it. Three of FC2's do, `attention3` wherever its frequencies' site is
+in binary16: its host narrows a constant past the range, which is an
+overflow, and the guard stops the run where an infinity made every output
+NaN. The clause "no run of FC2–FC5 and FC7 trips it" therefore fails as
+written on those three. That clause was written on D217's reading, which
+saw no overflow in FC2, and the reading was wrong. The guard is right
+there, so the user decides whether this counts against it. FC4, FC5 and
+FC7 run at step 5, and FC6's cost is measured there on FC5's forward pass.
+On x86-64 the sign of a generated NaN is now left in one program,
+MiniGPT's AdamW step in binary16 (uniform and mixed). It is still FC2's
+exception, the user's call of D217.
+
+**`make c-conformance`** passes on the step's tree, in 70 min 9 s. The
+log is `out/fc-time-0.18.2/c-conformance-step4.log` on falicon. This is
+not a timing: the course GPT's rows in `f64`, which hold no guard, took
+1.4 times step 3's too.
+- It exports the test set in five types: 179 programs under the default
+  layouts and 159 under plans. `attention3` in binary16 is refused in
+  both, its native run stopped by the guard in the kernel interpreter's
+  words.
+- It also exports the course GPT in five types (29, `B = 16`, `T = 256`
+  under its plans among them), the integer weights (42, 12 trained), the
+  typed parameters (64), the epilogues (11) and MiniGPT's splits (4), and
+  checks C5's 50 documents.
+- Every program gives the native bits under GCC 13.3 with and without
+  OpenMP, GCC 16.2, clang 23 and zig's clang on aarch64. On x86-64 under
+  qemu it gives them too, but for the NaNs of the other sign of one
+  program, MiniGPT's AdamW step in binary16.
+- The SCoP mode's five tests pass.
+
+**FC0 holds at the step** (`out/x1/mt0-0.18.0.sh` under
+`out/bin/presk-0.18.2-step4`, `out/x1/step4-0.18.2`, compared with
+`out/x1/base-0.18.2` by `out/x1/compare.sh`).
+- 910 of X1's 939 files are the same bytes. The 29 others are step 3's:
+  - step 2's 22, the version and commit lines and the envelopes' day;
+  - the runtime the exports copy, which changes by design: `presk_rt.h`
+    in four exports and `presk_rt.c` in three.
+- Against step 3's outputs, only those two runtime files and the README's
+  commit line differ. Every `model.c`, `model.h` and `main.c` is step 3's,
+  since none of X1's programs narrows into either format.
+- The quant and step tables are identical.
+- The tutorial, masked as at the earlier steps, is identical. Q's verdict
+  for `scores/%2`, a timed cell that differed at steps 1 to 3, is the
+  base's this time.
+
+`make test` passes: 443 tests in 129 suites, 22 ignored (D217's 440,
+128 and 21), a release build on falicon, 5 min 40 s. The step's tests:
+- FC6's program through the binary (`presk-cli/tests/guard.rs`, new);
+- the guard's test on a sample (`presk-rt/tests/codes.rs`), natively
+  (`presk-cranelift/tests/codes.rs`) and in C (job 7 of `tests/fc1.c`);
+- FC2's native and LLVM halves comparing the guard's flags and errors;
+- the C export's test holding a guarded refusal;
+- the calibration in both formats (`presk-cli/tests/calibrate.rs`).
+The exhaustive checks are ignored there, as FC1's.
+
+## D219 — The rows and version 0.18.2 (plan 0.18.2 step 5): FC4 and FC5 fail on the LLVM backend (0.927× and 0.857× all-`f32` against 0.85×); the guard costs 1.2 % in C; FC7's certified realizations are slower than all-`f32`, their `e8m15` values the cause; FC4's realization gives infinities, ε, kept in `f32` by the range rules, rounding to zero at the update's edge; FC0 holds; version 0.18.2 (2026-11-18)
+
+The plan's step 5 (presk-specs `implementation/presk-plan-0.18.2.md`, §5):
+FC4, FC5, FC6's cost and FC7 on falicon, alone; FC0 on the version's tree;
+the version's checks and documents; version `0.18.2`.
+
+**The rows** (`make fc-rows`, `experiments/fc_rows.sh` and `fc_rows.py`,
+`out/fc-rows-0.18.2/report.md` on falicon, 2026-11-18). The version's
+release binary (`out/bin/presk-0.18.2`, the tree's `target/release/presk`).
+Every timed row on the ten X925 cores by D126's protocol: five processes a
+row, the rows alternated round by round, each process a warm-up call and
+seven timed ones, its median and fastest; per row the median of the
+medians and the fastest. The two backends by `presk bench --native-only
+--plan-only --threads 10`, the C program by its own `-r 7` loop under
+`OMP_NUM_THREADS=10` and `GOMP_SPINCOUNT=8M`, built by GCC 16.2 with the
+export's flags (`-std=c11 -ffp-contract=off -O2 -fopenmp`), C1 holding for
+each of the eleven programs. Inputs: the course probe's checkpoint
+(`out/course_probe_f32/final.psk.d`, the NB rows' and the study's), the
+other arguments drawn from the seed, the same on every side. The 29 rows
+took 15 min 30 s; no row failed, so none tripped the overflow guard.
+
+Three readings the plan did not fix, each the script's and the user's to
+judge:
+- **FC4's offers.** D208's range rules read an envelope. The only envelope
+  of a training step of record is D178's, at D = 64
+  (`out/step5-0.17.0/step_env.json`): an exact envelope of the step at the
+  course constants would take about 3.6 h, and `--reference f64` writes
+  none. The rules (`presk solve --offers`, margin 2) offer binary16 to 360
+  of the step's 361 stored values; the one refused is a constant, AdamW's
+  ε = 10⁻⁸ (`adamw.step/%49`), which binary16 rounds to zero. Of the
+  optimizer's 29 values none is refused as a divisor, so the second moment
+  is offered binary16, where the plan predicted the rules would keep it in
+  `f32`. The realization is `{"default": "f16", "storage":
+  {"adamw.step/%49": "f32"}}`: an entry's arguments after the first take the
+  default type, so the parameters, the gradient and both moments are binary16
+  (`out/fc-rows-0.18.2/fc4/`).
+- **FC5's plan row.** The frozen profile prices `f32` and `f64` only. `f32`'s
+  plan is the frozen profile's. Binary16's comes from a copy of it with
+  binary16's layout groups calibrated by `make calibrate-ra4`'s protocol:
+  the GEMM at N = 256, 512, 1024 and 2048 (two workers at least at 2048),
+  the products I = 16, K = J = 4096 and I = K = 4096, J = 16, `--load-term
+  group --combine pnorm --rules lines,overhead --repeat 5`, 12 min 47 s.
+  Half of each space is ill-formed in binary16 (condition 7: an order that
+  keeps running sums in the output buffer between blocks of K), and the
+  refit moves the model's global parameters, so that profile is not the
+  frozen one. Binary16 is planned at one lane (D218).
+- **FC7's second solve** is measured on the native backend (`presk solve
+  --measure native`, D218), which gives the kernel interpreter's bits
+  (FC2, FC3), where the kernel interpreter is the default measure.
+
+The calibration's first start ran for two minutes beside a search through a
+large file. It was stopped, its files moved aside
+(`out/fc-rows-0.18.2-aside/`), and the calibration and the rows were run
+again; only commands of under a second ran beside them.
+
+**FC4 fails.**
+
+| the AdamW step, course constants | all-`f32` | binary16 where offered | ratio |
+|---|---|---|---|
+| LLVM backend | 14.03 ms (13.13) | 13.00 ms (12.93) | **0.927×** |
+| native backend | 14.45 ms (13.76) | 120.91 ms (120.66) | 8.366× |
+| C, GCC 16.2 | 13.69 ms (13.31) | 13.07 ms (12.99) | 0.955× |
+
+Medians, the fastest in parentheses. The LLVM backend's step in binary16
+takes 0.927× all-`f32`'s, over the statement's 0.85×. Halving the bytes of
+its four arrays of 10.8 million values (the parameters, the gradient, both
+moments) saves 7 % on LLVM and 4.5 % in
+C, so at this size the step's time is not its bytes'; the study's 0.79×
+in C was all-binary16 state with NaN results. Natively the step is 8.4
+times slower: Cranelift's integer sequences convert each element (D216), as
+in FC5's native rows.
+
+**FC4's realization does not compute the step.** Its parameters after the
+step hold 29 513 infinities and 61 056 NaNs, 0.84 % of 10 816 512, where
+all-`f32`'s hold none. Its two moments are finite. The cause is the edge,
+not the store:
+- the range rules refused binary16 to ε, so its constant is stored in
+  `f32`;
+- the nest that reads it, the update `θ − lr·(m̂/(√v̂ + ε) + 0.1·θ)` fused
+  in one kernel (`adamw.step/%58`), stores binary16 and takes its operands
+  in binary16, so the host converts ε at the nest's edge
+  (`presk_convert(…, PRESK_F16, t49, PRESK_F32, 1)` in the exported C, the
+  native host's edge conversion alike), and 10⁻⁸ rounds to zero there;
+- where the second moment after the step is zero, √v̂ + 0 is zero. Every
+  infinity is at an element whose input second moment is under 2.98·10⁻⁸,
+  half binary16's smallest subnormal, which the argument's conversion
+  flushes to zero, and whose clipped gradient's square adds less. Every
+  NaN is at an element whose moments and gradient are all zero, 0/0.
+
+The overflow guard does not see it: no narrowing rounds a finite value past
+the format's largest, since ε rounds to zero and the infinity is the
+division's, in `f32`, then stored as it is. D208's constant rule holds
+where the constant is computed, and D216–D217's edge conversion undoes it.
+The rows time this realization as the statement defines it; the defect is
+not fixed at this step, the user's call. Real training would meet it:
+an embedding row a batch never reads has zero moments and gradient.
+
+**FC5 fails.**
+
+| the forward pass, B = 16, T = 256 | all-`f32` | all-binary16 | all-`e8m15` |
+|---|---|---|---|
+| LLVM, default layouts | 852.99 ms (825.57) | 731.15 ms (726.74), **0.857×** | 1822.07 ms (1811.81), 2.136× |
+| LLVM, the profile's plan | 208.86 ms (207.51) | 365.83 ms (363.90), 1.752× | |
+| native, default layouts | 888.06 ms (849.75) | 5569.13 ms (5566.43), 6.271× | 3020.07 ms (3007.86), 3.401× |
+
+The LLVM backend's forward pass in binary16 under the default layouts takes
+0.857× all-`f32`'s, over the statement's 0.85× by 0.007. The spread of the
+`f32` row (its fastest call 3 % under its median) is larger than the
+margin, but a statement that fails is recorded as failing. Reported: under
+the profile's plans 1.752×, binary16's plan at one lane against `f32`'s at
+four (the plan's prediction: it fails there, the study's 1.40×); natively
+6.27×, Cranelift's scalar sequences; `e8m15`, three-byte codes read and
+written in place (D217), 2.14× on LLVM and 3.40× natively. Binary16's
+logits are finite and within 6.63·10⁻⁶ of `f32`'s on this checkpoint
+(whose largest logit is 4.5·10⁻³).
+
+**FC6.** Its cost, FC5's forward pass in binary16 in the exported C: with
+the guard 648.63 ms (640.26), built with `-DPRESK_NO_GUARD` 640.82 ms
+(628.60), **1.0122×, +1.22 %**, the plan's prediction under 1 %. Binary16
+against `f32` in C, 0.784× (827.27 ms), the study's 0.76×. The clause "no
+run of FC2–FC5 and FC7 trips it": none of FC3's (D218), FC4's, FC5's or
+FC7's runs trips it; three of FC2's do, `attention3` in binary16 (D218), the
+user's call. FC4's infinities are no overflow and do not trip it either,
+so the guard leaves them, as its definition says.
+
+**FC7, reported.** The course GPT's `logits` (`examples/experiments/
+margins.psk`, B = 16, T = 256, the default layouts). The bytes are the
+solver's traffic, the parameters once and one sample's values (D157); at
+rest, the parameters; all-`f32`'s are all-`f64`'s halved:
+
+| scale | realization | bytes | at rest | gap measured | LLVM | vs `f32` | C | vs `f32` |
+|---|---|---|---|---|---|---|---|---|
+| D = 64 | all-`f32` | 3.756·10⁶ | 5.130·10⁵ | | 14.00 ms | 1 | 14.24 ms | 1 |
+| | D170's | 3.832·10⁶ | 5.202·10⁵ | 2.14·10⁻⁶ | 14.43 ms | 1.030× | 14.34 ms | 1.007× |
+| | FC3's (D209's MT6) | 3.422·10⁶ | 5.202·10⁵ | 4.06·10⁻⁵ | 77.35 ms | 5.524× | 47.02 ms | 3.302× |
+| course | all-`f32` | 5.752·10⁷ | 4.327·10⁷ | | 840.73 ms | 1 | 824.16 ms | 1 |
+| | D170's | 5.813·10⁷ | 4.339·10⁷ | 3.02·10⁻⁶ | 871.74 ms | 1.037× | 833.17 ms | 1.011× |
+| | solved with binary16 and `e8m15` | 5.803·10⁷ | 4.339·10⁷ | 1.20·10⁻⁴ | 1138.16 ms | 1.354× | 1037.51 ms | 1.259× |
+
+Against D170's: at D = 64, 0.893× the bytes and 5.36× the time on LLVM,
+3.28× in C; at the course constants 0.998× the bytes, 1.31× and 1.25×. A
+certified realization's fewer bytes buy no time here: the solver chose
+`e8m15` for its values and no binary16, and an `e8m15` value's three-byte
+code is slower to read and write than `f32`'s four, as FC5's `e8m15` row
+shows. D170's own realizations keep sites in `f64`, 1–4 % slower than
+all-`f32`. The plan predicted faster at default layouts; it is slower.
+The solve at the course constants (`out/fc-rows-0.18.2/fc7/course/`), on
+D170's envelope, weights and budget, ε\*(10⁻³) = 4.96·10⁻⁴, `--menu
+f64,f32,bf16,f16,e8m15`, measured natively, on the A725 cores in 2 h 45 min
+(D170's took 1 h 48 min), 3.0 GB at most: three of the attention's values
+in `e8m15` (`SelfAttention.apply/%6`, `%13`, `%17`, D170's `f32`), two in
+`f64` where D170's are `f32` (`Block.apply/%21`, `LayerNorm.apply/%15`),
+the parameters D170's, nine matrices in `f32`; measured 1.197·10⁻⁴, inside,
+with no widening.
+
+**FC0 holds on the version's tree** (`out/x1/mt0-0.18.0.sh` under the
+version's binary, `out/x1/version-0.18.2`, compared with `out/x1/base-0.18.2`
+by `out/x1/compare.sh`, alone after the rows).
+- X1: the same 29 files differ as at step 4, with the same lines but the
+  version's: the version and commit lines, the envelopes' day, and the
+  runtime the exports copy (D218). Against step 4's outputs only the
+  version, `0.18.2-dev` to `0.18.2`, and the commits differ.
+- The quant and step tables are the base's bytes.
+- The tutorial, its numbers, commits and binary's path masked as at the
+  earlier steps, is the base's but for timed cells: the column widths of
+  measured times, and statement Q's verdict for `scores/%2`, which holds
+  (its measured regret 1.04) where the base's fails (1.06), as at steps
+  1–3; step 4's failed (1.07). No pick moves.
+
+**The version's checks**, on the version's tree, falicon, a release build:
+- `make test`: 443 tests in 129 suites, 22 ignored (D218's);
+- `make check-examples` (71 programs), `coverage`, `run-examples`,
+  `plan-check` (15 entries, the same kernels), `math-check` (14
+  documents);
+- `make c-conformance` (`out/version-0.18.2/c-conformance.log`): the C
+  export's 17 tests in 3605 s and the SCoP mode's 5 in 26 s; the test set
+  in five types, 179 programs under the default layouts and 159 under
+  plans, `attention3` in binary16 refused in both by the guard; every
+  program the native bits under GCC 13.3 with and without OpenMP, GCC
+  16.2, clang 23 and zig's clang on aarch64, and on x86-64 under qemu but
+  for the NaNs' sign of MiniGPT's AdamW step in binary16, uniform and
+  mixed (D217's exception).
+
+**Version 0.18.2.** The workspace and its 22 pins at `0.18.2`, the
+snapshots and the manual's `explain_loss.md` with the version line,
+`CITATION.cff`, the CHANGELOG's `## 0.18.2`, the manual (`status`,
+`experiments` §36, `index`, `native`, `export_c`, `precision`), the
+README's "Where it stands".
+
+**For the user:**
+1. FC4's offers read D = 64's envelope of the step.
+2. Binary16's plan comes from the frozen profile extended by a calibration
+   in binary16, which refits the model.
+3. FC4's realization gives infinities and NaNs. A constant the range
+   rules refuse is narrowed at the edge of the nest that reads it, and the
+   guard sees no overflow there. The fix is not this step's: an edge that
+   keeps a refused constant in its type, or a constant rule on the nest
+   that reads it.
+4. FC5 fails by 0.007 against a spread of 3 %, recorded as failing.
+
+## D220 — A constant that a nest's storage type does not hold (plan 0.18.2 step 6): a nest of elementwise operations reads it in its arithmetic type, not converted at its edge; FC4's realization computes the step, its parameters finite; FC4 timed again alone, still 0.927× (fails); the reference's rule changed (draft v0.34); FC0 holds (2026-11-19)
+
+**Why.** D219's rows found that FC4's realization computes no step. Its
+parameters after it held 29 513 infinities and 61 056 NaNs, 0.84 % of
+10 816 512.
+- The range rules refuse binary16 to AdamW's ε = 10⁻⁸, which binary16
+  rounds to zero (D208). The realization stores ε in `f32`.
+- But the update's nest stores binary16. The host converted ε to binary16
+  at that nest's edge, where it became zero.
+- That is what the reference's definition of a realized value says (item
+  2): a nest reads every wider operand converted to its storage type. D219
+  recorded it as the compiler's defect, the definition as stated.
+
+The user, on 2026-11-19, after the status of step 5: "Yes, keep it beside
+the MRs and do step 6". Step 6 is the fix recommended there, before the
+tag: the update reads ε in its own type. The other fix, a constant rule
+refusing binary16 to every nest that reads such a constant, would have put
+the update back in `f32`, and FC4 would have tested no binary16 update.
+
+**The rule.** A *constant* of a function is a `let` of a float literal or
+of `real`, the range rules' constants (D208).
+- A nest of elementwise operations (a fusion group, or one elementwise
+  operation) that reads a constant of its function that its storage type
+  does not hold reads it in the nest's arithmetic type, `Dtype::arith`,
+  and not converted to the storage type at its edge.
+- "Does not hold": the type rounds it to zero or past its largest finite
+  number, `presk_precision::formats::holds_constant` negated (`misses` in
+  the host).
+- The arithmetic type is `f32` for `bf16`, binary16 and `e8m15`; `f64` and
+  `f32` are their own, so nothing changes for them.
+- Every other operand is converted at the edge as before, a contraction's,
+  a reduction's and a pack's included.
+
+**Where it is.**
+- **The host** (`presk-kernel/src/host.rs`).
+  - Each function's constants are computed once, with its fusion plan.
+  - A fusion group's inputs, and an elementwise operation's arguments,
+    carry whether each is a constant (`const_args`). An operation takes
+    them, so that a primitive another one evaluates reads none, and they
+    are set again for each leaf of a parameter tree.
+  - `kept_if` gives such an operand in the arithmetic type, converted once
+    if it was stored in another. The kernel's input is marked
+    `BufKind::Wide(f32)`, D121's mechanism for widened parameters. So every
+    executor reads it as it reads a narrower parameter: the kernel
+    interpreter by its loads, Cranelift's `load_wide` by an `f32` load, the
+    C by a `float` pointer.
+  - The marking is part of the kernel's key.
+- **The exported C's host** (`presk-kernel/src/record.rs`): a host scalar a
+  kernel reads is made a buffer of the store the kernel reads it from
+  (`operand`). A literal kept in `f32` is made in `f32`, as the native host
+  makes it, and not in binary16 and then converted.
+- **What moves:** only a realization in which a nest of elementwise
+  operations stores a type that does not hold a constant it reads.
+  - `bf16` and `e8m15` have `f32`'s exponent range: only a constant under
+    about 10⁻⁴⁰ is one `f32` holds and they do not.
+  - So in practice binary16 alone moves: a constant under 2.98·10⁻⁸, or
+    over 65 504.
+  - Of the records, FC4's realization moves. X1 has no such nest (FC0
+    below), nor FC3's, FC5's and FC7's realizations.
+  - `attention3` in binary16 still stops at `frequencies/%10`. There
+    `real(base)`, at its own site in binary16, makes RoPE's base of
+    500 000 an infinity, which is no edge (D218).
+
+**The test** (in `make test`): `examples/tests/formats/constant.psk`.
+- `update` is AdamW's update in small: `y / (√v + ε)` and `y / ε`, with
+  ε = 10⁻⁸ a `real` of its own site, read by a fusion group and by one
+  division. `y` is the input scaled by 10⁻⁵; `v` is the square of `y`'s
+  positive part, zero where `y` is negative.
+- `literal` divides by a float literal 10⁻⁸, which a fusion group reads.
+- The realization stores the three nests in binary16 and the rest in `f32`
+  (`crates/presk-cli/tests/constant.rs`).
+  - The kernel interpreter, the native backend and the LLVM backend give
+    the same codes, all finite, `y / ε` a thousand times the input.
+  - The exported C, under both hosts, gives the native backend's bits (C1)
+    and finite outputs.
+- The version's binary before the step, `out/bin/presk-0.18.2`, gives an
+  infinity at every zero second moment and every `y / ε`, on the three
+  executors.
+- Its export of `update` succeeded, the infinity being a division by zero.
+  The fixed export's synthesized inputs, of magnitude about 1, give `y / ε`
+  near 10⁸, an overflow the guard refuses; hence the scale.
+
+**FC4 again** (`experiments/fc_rows.sh fc4`, a phase added for this step,
+into `out/fc4-0.18.2-step6/`).
+- The step's binary, `out/bin/presk-0.18.2-step6` at `263956d`, on
+  2026-11-19 at 07:09, alone on falicon.
+- D126's protocol: five processes a row on the ten X925, a warm-up and
+  seven timed calls each. The phase took 1 min 33 s.
+- FC4's offers and realization are D219's files byte for byte, its inputs
+  too; the all-`f32` step's output is D219's byte for byte.
+
+| the AdamW step, course constants | all-`f32` | binary16 where offered | ratio | D219 |
+|---|---|---|---|---|
+| LLVM, default layouts | 14.00 ms (13.10) | 12.98 ms (12.39) | **0.927×** | 0.927× |
+| native | 14.18 ms (13.62) | 120.33 ms (119.92) | 8.485× | 8.366× |
+| C (GCC 16.2) | 13.48 ms (13.04) | 13.05 ms (12.84) | 0.968× | 0.955× |
+
+**FC4 fails again, at D219's ratio to the third digit.** Reading ε in
+`f32` changes one scalar input of the update's kernel.
+
+The realization's result on the export's inputs, natively:
+- 0 infinities and 0 NaNs in the 10 816 512 new parameters, and in all
+  32 449 536 reals of the result (D219: 29 513 and 61 056 in the
+  parameters);
+- m′ and v′ are D219's, bit for bit;
+- of the parameters, 10 725 737 are D219's; the 90 569 that were infinite
+  or NaN are finite; 206 others differ, where √v̂ is near 10⁻⁸ and ε moves
+  the rounding.
+
+**FC0 holds at the step** (`out/x1/step6-0.18.2`, its run script
+`out/x1/step6-0.18.2.run.sh`).
+- X1 differs from `base-0.18.2` in the same 29 files as on the version's
+  tree.
+- Against `version-0.18.2`, 7 files differ: the README's commit line in
+  four exports, the envelopes' day in three.
+- The quant and step tables are the base's bytes.
+- The tutorial with its numbers, commits and binary path masked is the
+  version's line for line (`step6-0.18.2-tutorial.shape.diff`, empty). Its
+  numbers that move are timings and what is computed from them: the
+  on-the-fly profile's rates and costs, and the layouts' measured times.
+  It ran about twice as slow as the version's, unpinned.
+
+**The reference.** Item 2 of definition `def:budget-value` said a nest
+reads each real operand converted to its storage type, and D219's Status
+said the defect was the compiler's. Draft v0.34 (presk-specs, the documents'
+merge request) changes the rule. A nest of elementwise operations reads a
+constant of its function that its storage type does not hold converted to
+its arithmetic format instead. It is a change of the language's
+definition: the user accepted it on 2026-11-19, after its detail (the
+rule, why, what it changes, the alternatives, its limits), "OK I accept".
+The executors' Status sentence on a nest's operands carries the same
+exception.
+
+**The choices of D217–D219, taken.** The user, on 2026-11-19: "I accept
+decisions 2-9", the eight choices those steps left open, each as built:
+- D217: `_Float16`'s casts on aarch64 only, the integer forms elsewhere;
+  FC2 on x86-64 every bit but the sign of a NaN an invalid operation
+  generates;
+- D218: the guard checks the host's own narrowings too; FC6's clause "no
+  run of FC2–FC5 and FC7 trips it", failing as written on `attention3` in
+  binary16, recorded so; `presk_rt.h` and `presk_rt.c` changed in every
+  export, by design;
+- D219: FC4's offers read D178's envelope of the step at D = 64; FC5's
+  plan row prices binary16 by a copy of the frozen profile with binary16's
+  layout groups calibrated; FC5 failing by 0.007 against a spread of 3 %,
+  recorded as failing.
+
+The ninth, D219's defect, is this step.
+
+**The step's checks**, on the step's tree, falicon, a release build:
+- `make test` passes: 444 tests in 130 suites, 22 ignored, the new suite
+  `constant` among them (6 min; `out/step6-0.18.2/make-test.log`);
+- `make check-examples` (72 programs, `constant.psk` the new one),
+  `coverage` and `run-examples` (their outputs step 5's), `plan-check` (15
+  entries, the same kernels) and `math-check` (14 documents);
+- `make c-conformance` (`out/step6-0.18.2/c-conformance.log`): the C
+  export's 17 tests in 3 826 s and the SCoP mode's 5 in 26 s, the same
+  programs as at step 5 (the test set in five types, 179 under the default
+  layouts and 159 under plans); on x86-64 under qemu the same 18 lines of
+  NaNs of the other sign, MiniGPT's AdamW step in binary16, 1 392 each
+  (D217's exception, accepted).
+
+**For the user:**
+1. The rule changes the reference's definition (item 2, draft v0.34),
+   accepted; it is in presk-specs's merge request paired with this one.
+2. It covers nests of elementwise operations, where a program's constants
+   are read. A contraction or a reduction reading such a constant converts
+   it as before.
+3. FC4 still fails, at 0.927×: the fix makes its realization compute the
+   step, and changes no time.
+4. The review, the merges and the tag `v0.18.2`.

@@ -1,0 +1,23 @@
+-- constant.psk — a constant that a nest's storage type does not hold (plan
+-- 0.18.2 step 6, D220; `crates/presk-cli/tests/constant.rs`). `update` is
+-- AdamW's update in small: `y / (√v + ε)`, with ε = 10⁻⁸ a `real` of its
+-- own, which another nest reads too, as the optimizer's is, `y` the input
+-- scaled by 10⁻⁵ and `v` the square of `y`'s positive part, zero where `y`
+-- is negative. The range
+-- rules refuse binary16 to ε, which binary16 rounds to zero (D208). With
+-- the nests in binary16 and ε in `f32`, each nest reads ε in `f32`, its
+-- arithmetic type, instead of converted to binary16 at its edge: where `v`
+-- is zero the update is `y / ε`, 1 000 times the input, and not an
+-- infinity (D219). `literal` divides by a float literal that binary16 does
+-- not hold either.
+dim B
+dim N
+
+fn update(x : ℝ[batch: B, i: N]) -> (ℝ[batch: B, i: N], ℝ[batch: B, i: N]) =
+  let e = real(1e-8)
+  let y = x * (1e-5 : ℝ)
+  let r = max(y, (0 : ℝ))
+  (y / (sqrt(r * r) + e), y / e)
+
+fn literal(x : ℝ[batch: B, i: N]) -> ℝ[batch: B, i: N] =
+  x * (1e-5 : ℝ) / (1e-8 : ℝ)

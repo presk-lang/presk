@@ -9,14 +9,16 @@
 //! and Rust's standard library, the system's C library, for the others.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+pub mod codes;
 mod lanes;
 pub mod pool;
+pub use codes::Conversions;
 pub use pool::Pool;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, SourceLoc, Type, Value as CV, types};
+use cranelift_codegen::ir::{AbiParam, AtomicRmwOp, InstBuilder, MemFlags, SourceLoc, Type, Value as CV, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -108,6 +110,11 @@ pub struct NativeExec {
     /// (plan 0.17.2 step 4, D200), and the kernels compiled by `run`.
     compile_s: f64,
     compiles: u64,
+    /// The overflow guard's flag of a call (plan 0.18.2 step 4, D218): a
+    /// kernel that stores binary16 or `e8m15` gets its address in the slot
+    /// after its scales, and sets it when a store turned a finite value
+    /// into an infinity, on whichever worker.
+    flag: AtomicU32,
 }
 
 /// The machine code of a compiled kernel (plan 0.13.0 step 5, D138): its
@@ -190,7 +197,7 @@ impl NativeExec {
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
             .unwrap_or(1)
             .max(1);
-        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0, external: None, compile_s: 0.0, compiles: 0 })
+        Ok(NativeExec { module, ctx, fbc: FunctionBuilderContext::new(), compiled: vec![], libm: HashMap::new(), compiled_count: 0, threads, threaded: 0, profiling: false, last: Overhead::default(), pool: None, keep: false, kept: Vec::new(), plain: false, plain_kept: Vec::new(), last_size: 0, external: None, compile_s: 0.0, compiles: 0, flag: AtomicU32::new(0) })
     }
 
     /// The executor with `c` compiling its kernels in place of Cranelift.
@@ -241,10 +248,12 @@ impl NativeExec {
         };
         // `bf16` is a *storage* type: the loop nest is generated in `f32` and
         // only the loads and stores narrow (D34). So the arithmetic type and
-        // the element size part company here, and nowhere else.
+        // the element size part company here, and nowhere else. binary16 and
+        // `e8m15` are too, held as their codes (plan 0.18.2 step 2, D216).
         let fty = match k.dtype {
             Dtype::F64 => types::F64,
             Dtype::F32 | Dtype::BF16 => types::F32,
+            d if d.coded() => types::F32,
             d => d.unreachable(),
         };
         let real_bytes = k.dtype.bytes() as i64;
@@ -258,6 +267,7 @@ impl NativeExec {
             let name = match (k.dtype, n) {
                 (Dtype::F64, n) => n.to_string(),
                 (Dtype::F32 | Dtype::BF16, n) => format!("{n}f"),
+                (d, n) if d.coded() => format!("{n}f"),
                 (d, _) => d.unreachable(),
             };
             libm_ids.insert(n, self.libm_fn(&name, fty)?);
@@ -332,7 +342,16 @@ impl NativeExec {
             let nibbles: Vec<bool> = k.inputs.iter().map(|s| matches!(s.kind, BufKind::Quant { bits: 4, .. })).collect();
             let wide: Vec<Option<Dtype>> = k.inputs.iter().map(|s| if let BufKind::Wide(d) = s.kind { Some(d) } else { None }).collect();
             let affine_loops = affine_loops(&k.body, k.nloops);
-            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::BF16, bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, out: k.inputs.len(), depth_of: vec![0; k.nloops], idepth_of: vec![0; k.nint], depth: 0, promo: None, vecs, libm: refs, keep, line: 1, affine_loops, guarded: 0 };
+            // The guard's flag of a kernel that stores codes, and the slot of
+            // the call's flag, after the scales.
+            let ovf = k.guarded().then(|| {
+                let v = b.declare_var(types::I32);
+                let zero = b.ins().iconst(types::I32, 0);
+                b.def_var(v, zero);
+                v
+            });
+            let flag_slot = slot;
+            let mut g = Gen { b, fty, vty, narrow: k.dtype == Dtype::BF16, coded: k.dtype.coded().then_some(k.dtype), bufs, strides, esize, scales, nibbles, wide, loops, reals, ints, out: k.inputs.len(), depth_of: vec![0; k.nloops], idepth_of: vec![0; k.nint], depth: 0, promo: None, vecs, libm: refs, keep, line: 1, affine_loops, guarded: 0, ovf };
             // The loop a split divides — the outermost by default, the one at
             // the depth the plan states (0.7.0 step 3) — runs over the range
             // the caller gives; the loops enclosing it run in full. One
@@ -341,8 +360,22 @@ impl NativeExec {
                 Some(depth) => g.range_at(&k.body, depth, lo, hi),
                 None => g.stmts(&k.body),
             }
-            // The return is the closing brace's, the text's last line.
+            // The return is the closing brace's, the text's last line. A
+            // guarded kernel's flag set is or-ed into the call's, which
+            // several workers may set.
             g.next_line();
+            if let Some(v) = g.ovf {
+                let o = g.b.use_var(v);
+                let (set, done) = (g.b.create_block(), g.b.create_block());
+                g.b.ins().brif(o, set, &[], done, &[]);
+                g.b.switch_to_block(set);
+                g.b.seal_block(set);
+                let p = g.b.ins().load(types::I64, MemFlags::trusted(), bufs_ptr, (8 * flag_slot) as i32);
+                g.b.ins().atomic_rmw(types::I32, MemFlags::trusted(), AtomicRmwOp::Or, p, o);
+                g.b.ins().jump(done, &[]);
+                g.b.switch_to_block(done);
+                g.b.seal_block(done);
+            }
             g.b.ins().return_(&[]);
             g.b.finalize();
         }
@@ -506,6 +539,9 @@ struct Gen<'a> {
     vecs: Vec<Variable>,
     /// Real buffers hold `bf16`: loads widen and stores round.
     narrow: bool,
+    /// Real buffers hold binary16's or `e8m15`'s codes, this type's: loads
+    /// widen and stores round ([`codes`], plan 0.18.2 step 2, D216).
+    coded: Option<Dtype>,
     /// For an integer input, the pointer to its scales and their strides.
     scales: Vec<Option<(CV, Vec<usize>)>>,
     /// Which integer inputs are `int4`, two to a byte (0.6.0 step 5c).
@@ -539,6 +575,10 @@ struct Gen<'a> {
     /// move ([`Gen::input_flags`]).
     affine_loops: Vec<bool>,
     guarded: usize,
+    /// The overflow guard's flag, an `i32` (plan 0.18.2 step 4, D218): for
+    /// a kernel that stores binary16 or `e8m15`, each store's test or-ed
+    /// into it, and written to the call's flag at the return when set.
+    ovf: Option<Variable>,
 }
 
 impl Gen<'_> {
@@ -619,7 +659,8 @@ impl Gen<'_> {
 
     /// Element `ix` of an input of narrower reals, moved `lane` elements
     /// along the last axis, widened exactly to the kernel's type: a `bf16`
-    /// is the top sixteen bits of its `f32`, and an `f32` is an `f64`.
+    /// is the top sixteen bits of its `f32`, binary16's and `e8m15`'s codes
+    /// widen by [`codes::widen`], and an `f32` is an `f64`.
     fn load_wide(&mut self, buf: usize, index: &[Expr], lane: i64) -> CV {
         let d = self.wide(buf).expect("a narrower input");
         let a = self.addr(buf, index);
@@ -629,6 +670,10 @@ impl Gen<'_> {
                 let w = self.b.ins().uextend(types::I32, h);
                 let up = self.b.ins().ishl_imm(w, 16);
                 self.b.ins().bitcast(types::F32, MemFlags::new(), up)
+            }
+            d if d.coded() => {
+                let c = codes::load(&mut self.b, d, a, (d.bytes() as i64 * lane) as i32);
+                codes::widen(&mut self.b, d, c)
             }
             _ => self.b.ins().load(types::F32, MemFlags::trusted(), a, (4 * lane) as i32),
         };
@@ -862,6 +907,9 @@ impl Gen<'_> {
                     let w = self.b.ins().uextend(types::I32, h);
                     let up = self.b.ins().ishl_imm(w, 16);
                     self.b.ins().bitcast(types::F32, MemFlags::new(), up)
+                } else if let Some(d) = self.coded {
+                    let c = codes::load(&mut self.b, d, a, 0);
+                    codes::widen(&mut self.b, d, c)
                 } else {
                     let flags = self.input_flags(*buf, ix, MemFlags::trusted());
                     self.b.ins().load(self.fty, flags, a, 0)
@@ -984,8 +1032,9 @@ impl Gen<'_> {
         // order between (plan 0.17.0 step 2, D175). Cranelift moves no memory
         // access out of a loop, so without this a sum into the output loads
         // and stores it at every step. A `bf16` output rounds at every store,
-        // which the variable would skip, so it keeps its stores.
-        let promote = if self.promo.is_none() && !self.narrow { promotable(var, body, self.out) } else { None };
+        // which the variable would skip, so it keeps its stores, as do
+        // binary16's and `e8m15`'s (plan 0.18.2 step 2, D216).
+        let promote = if self.promo.is_none() && !self.narrow && self.coded.is_none() { promotable(var, body, self.out) } else { None };
         let Some(ix) = promote else {
             return self.loop_with(var, lo, hi, |g| emit(g));
         };
@@ -1157,6 +1206,15 @@ impl Gen<'_> {
                     if self.narrow {
                         let h = self.round_bf16(x);
                         self.b.ins().store(MemFlags::trusted(), h, a, 0);
+                    } else if let Some(d) = self.coded {
+                        let c = codes::narrow(&mut self.b, d, x);
+                        codes::store(&mut self.b, d, c, a, 0);
+                        if let Some(v) = self.ovf {
+                            let t = codes::overflows(&mut self.b, d, x);
+                            let o = self.b.use_var(v);
+                            let o = self.b.ins().bor(o, t);
+                            self.b.def_var(v, o);
+                        }
                     } else {
                         self.b.ins().store(MemFlags::trusted(), x, a, 0);
                     }
@@ -1478,6 +1536,7 @@ fn buf_ptr(b: &Buf) -> Result<*mut u8> {
         Buf::I64(v) => v.as_ptr() as *mut u8,
         Buf::Quant(q) => q.data.as_ptr() as *mut u8,
         Buf::Exact(_) => return err("native backend: an exact buffer reached a kernel"),
+        Buf::Codes(_, v) => v.as_ptr() as *mut u8,
         Buf::Format(f, _) => return err(format!("native backend: a buffer of {f}, which only the kernel interpreter emulates, reached a kernel")),
     })
 }
@@ -1501,6 +1560,13 @@ impl KernelExec for NativeExec {
 
     fn compile_stats(&self) -> (u64, f64) {
         (self.compiles, self.compile_s)
+    }
+
+    /// binary16 and `e8m15`, by Cranelift's sequences ([`codes`], plan
+    /// 0.18.2 step 2, D216), and with a compiler in Cranelift's place, the
+    /// LLVM backend, by the C printer's conversions (step 3, D217).
+    fn codes(&self) -> bool {
+        true
     }
 
     /// The host's own work in pieces (a training dropout mask, plan 0.10.0
@@ -1547,6 +1613,7 @@ impl KernelExec for NativeExec {
             Buf::Bf16(v) => v.as_mut_ptr() as *mut u8,
             Buf::I64(v) => v.as_mut_ptr() as *mut u8,
             Buf::Exact(_) | Buf::Quant(_) => return err("native backend: an exact or integer output buffer"),
+            Buf::Codes(_, v) => v.as_mut_ptr(),
             Buf::Format(f, _) => return err(format!("native backend: an output buffer of {f}, which only the kernel interpreter emulates")),
         });
         // The scales of the integer inputs, after the output (`compile`).
@@ -1554,6 +1621,11 @@ impl KernelExec for NativeExec {
             if let (Buf::Quant(q), BufKind::Quant { .. }) = (b, spec.kind) {
                 ptrs.push(q.scales.as_ptr() as *mut u8);
             }
+        }
+        // The overflow guard's flag, after them (plan 0.18.2 step 4, D218).
+        if k.guarded() {
+            self.flag.store(0, Ordering::Relaxed);
+            ptrs.push(self.flag.as_ptr() as *mut u8);
         }
         // Threads over a parallel loop: by default the outermost, over every
         // worker, when the kernel is big enough to pay for spawning; or the
@@ -1584,7 +1656,7 @@ impl KernelExec for NativeExec {
         if workers <= 1 {
             unsafe { f(ptrs.as_ptr(), 0, total as i64) };
             self.last = Overhead { compile, dispatch, threads: 0.0, workers: 1 };
-            return Ok(());
+            return self.flagged(k);
         }
         let total = total as i64;
         let p = Ptrs(ptrs.as_ptr());
@@ -1613,9 +1685,20 @@ impl KernelExec for NativeExec {
             let elapsed = t_go.elapsed().as_secs_f64();
             let longest = spans.iter().map(|s| s.load(Ordering::Relaxed)).max().unwrap_or(0) as f64 * 1e-9;
             self.last = Overhead { compile, dispatch, threads: (elapsed - longest).max(0.0), workers };
-            return Ok(());
+            return self.flagged(k);
         }
         self.pool().run(workers, &piece);
+        self.flagged(k)
+    }
+}
+
+impl NativeExec {
+    /// The overflow guard's error where kernel `k`'s call set its flag
+    /// (plan 0.18.2 step 4, D218), every worker joined.
+    fn flagged(&self, k: &Kernel) -> Result<()> {
+        if k.guarded() && self.flag.load(Ordering::Relaxed) != 0 {
+            return Err(presk_kernel::host::overflow(k));
+        }
         Ok(())
     }
 }
@@ -1655,7 +1738,8 @@ pub fn native_backend<'p>(prog: &'p Program, elab: &'p ElabProgram, realize: &Re
 /// solved realization against a scalar baseline and under-report it.
 ///
 /// `bf16` stays scalar: a narrow lane needs a conversion per element, which
-/// is a different kernel and a different measurement.
+/// is a different kernel and a different measurement. So do binary16 and
+/// `e8m15` (plan 0.18.2 step 2, D216).
 pub fn natural_lanes(d: Dtype) -> usize {
     d.natural_lanes()
 }

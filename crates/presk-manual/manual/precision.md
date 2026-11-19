@@ -1483,7 +1483,10 @@ inputs; `cargo test --release -p presk-format -- --ignored`, 31 s).
 **What computes.** The native, LLVM and C backends compute in `f64`, `f32`
 and `bf16`, the *native* types, each nest in its storage type's arithmetic
 type, and refuse a realization that says otherwise before anything runs
-(`E7005`). Since step 3 a realization stores a value in any float format
+(`E7005`); since 0.18.2 they also store values in binary16 and `e8m15`,
+computing their nests in `f32` with the emulation's bits: the native
+backend since step 2 (D216, the `native` chapter), the LLVM backend and
+the C export since step 3 (D217, the `export_c` chapter). Since step 3 a realization stores a value in any float format
 and says what each nest computes in ("What a nest computes in", below);
 the kernel interpreter emulates it (step 2, below). The solver's menu
 (`--menu`) offered the native types until step 5, and refused another
@@ -1504,7 +1507,10 @@ with every operation in one format (`presk_kernel::exec::run_kernel_in`):
   or clamped; such a format has no division and no function;
 - every load, store and constant converted, rounded once, ties to even,
   from the buffer's format into the arithmetic or out of it, a buffer
-  holding values of any format (`Buf::Format`).
+  holding values of any format (`Buf::Format`, each value an `f64`), and
+  binary16's and `e8m15`'s their codes, 2 and 3 bytes an element, as a
+  `.psk.d` version 3 file and the native executors hold them (`Buf::Codes`,
+  since 0.18.2 step 1, D215).
 
 An emulated run counts what the formats' overflow rules produced: the
 saturations (a result past the largest finite, an infinity or a NaN in a
@@ -1611,11 +1617,66 @@ by its parameters (`.psk.d` version 3) is read as that format's values,
 and its −0 becomes the format's +0 under an underflow to +0.
 
 The native and LLVM backends and the C export refuse such a realization
-before anything runs (`E7005`):
+before anything runs (`E7005`), but for one that stores values in
+binary16 and `e8m15` and computes each nest in its storage type's
+arithmetic type, which they run since 0.18.2, the native backend since
+step 2 (D216) and the other two since step 3 (D217), giving the
+emulation's bits without its counts:
 
 ```text
-[E7005] Error: the realization stores every value in f16: the native backend computes in f64, f32 and bf16, each nest in its storage type's arithmetic type; the kernel interpreter emulates any format (`--backend kernel`)
+[E7005] Error: the realization stores every value in e4m3fn: the native backend computes in f64, f32, bf16, f16 and e8m15, each nest in its storage type's arithmetic type; the kernel interpreter emulates any format (`--backend kernel`)
 ```
+
+Each names itself and the five types in its message (the C export: "the
+C export computes in f64, f32, bf16, f16 and e8m15"); from step 2 to step
+3 the LLVM backend's and the C export's named the three native types.
+
+**The overflow guard** (0.18.2 step 4, D218; question 87). The certificate
+holds on the envelope (D35), and the range rules offer a format at a site
+only where the envelope keeps its values under the format's largest finite
+number with a margin. An input off the envelope may still pass it, and
+binary16's 65 504 is near enough for an activation to. A store of a
+kernel into binary16 or `e8m15` that rounds a finite value to an infinity
+sets a flag of its call, which the host reads after the call, and the run
+fails with the guard's error, naming the site, the kernel and the format,
+instead of carrying the infinity to the result:
+
+```text
+[E7007] Error: in `square` (%1): the overflow guard: at `square/%1`, the kernel `mul` rounded a finite value past f16's largest finite number, 65504, to an infinity; a realization holds on its envelope, and this run's values leave it (question 87)
+```
+
+The kernel interpreter, the native and LLVM backends and the exported C
+(the `export_c` chapter) fail so on a realization the native types run;
+the kernel interpreter emulating one they do not run counts the infinity,
+as it always has. The test is the narrowing's own, one subtraction and
+one comparison on the `f32` stored, or-ed into a register, and not the
+processor's overflow flag: the native backend's and the portable C's
+conversions are integer operations, which raise no floating-point flag,
+and the flag would also report an `f32` operation's overflow, which no
+run reported before. A store that receives an infinity, or a NaN, is no
+overflow of the store.
+
+The host's own narrowings into either format while the entry runs are
+checked too: a constant it fills, a scalar it makes a buffer, an operand
+converted to a nest's type at its edge. The first one that overflows
+fails the run at the next launch, or as the entry returns, in the host's
+words ("the host rounded a finite value past …", "an operand converted to
+f16 at the nest's edge rounded past …"). The specification's
+`attention3` (`examples/spec/rope/rope.psk`), uniform in binary16, is
+refused so: Llama 3.2's base of 500 000 for its frequencies is a scalar
+the host makes a binary16 buffer, an infinity, whose logarithm made every
+output a NaN until the guard. The entry's arguments are converted by its
+caller, before it runs, as the exported C receives them in their types,
+and are not checked.
+`examples/tests/guard/guard.psk` is statement FC6's program: its one
+product, `x · x`, is stored in binary16 by the solver on an envelope of
+inputs of magnitude 100 at most, and an input of 300 fails the run on
+every executor (`crates/presk-cli/tests/guard.rs`).
+The guard tests overflows only: a value narrowed to zero, and an infinity
+or a NaN an `f32` operation makes from it, pass (D219); a constant a nest's
+storage type would make zero is read in `f32` instead (D220, the range
+rules below). Its cost on the course GPT's forward pass in binary16 in the
+exported C is 1.2 % (D219).
 
 `presk dump --stage kernel` lists the kernels, each with its formats where
 they are not the native ones (`-> %2 : f16[4, 3] arith f16 product f16
@@ -1763,6 +1824,25 @@ a format:
   in binary16, which made the exported step NaN; presk-project's binary16
   study, §5).
 
+They read a nest's arithmetic format, and the host converts an operand to
+the nest's storage format at its edge. A constant they refuse a format
+would be converted to it there all the same, where a nest stored in the
+format reads it, so a nest of elementwise operations (a fusion group, or
+one elementwise operation) reads a constant of its function, a float
+literal or a `real`, that its storage type does not hold, one the type
+rounds to zero or past its largest finite number, in its arithmetic type,
+`f32` for `bf16`, binary16 and `e8m15`, and not converted at its edge
+(D220; the reference's definition of a realized value, item 2, since draft
+v0.34). Every other operand is converted as before. D219's rows found the
+case: AdamW's ε, refused binary16 and stored in `f32`, is read by the
+update's nest, which stores binary16 where the rules offer it the
+parameters; converted there, ε rounded to zero, and the update divided by
+zero where a second moment is zero, infinities and NaNs in 0.84 % of the
+course GPT's parameters, which the overflow guard did not see. Read in
+`f32`, ε stays 10⁻⁸, and the step's parameters are finite
+(`examples/tests/formats/constant.psk` is the case in small,
+`crates/presk-cli/tests/constant.rs`).
+
 An affine format's scale is computed from the envelope, so it spans the
 values seen; what it clips out of sample is its term's. `presk solve
 --offers FILE.json` writes what the rules offer every value the envelope
@@ -1778,7 +1858,12 @@ presk solve: 6 stored values of `LayerNorm{8}.apply`, 4 formats refused by the r
 its parameters among them, its commas inside its parentheses. A
 realization the native backend does not compute is measured on the kernel
 interpreter, `--measure native` or not, and the report says what the
-formats' overflow rules produced in the measurements:
+formats' overflow rules produced in the measurements. One that stores
+values in binary16 and `e8m15` and computes each nest in its storage
+type's arithmetic type the native backend computes since 0.18.2 step 2,
+and since step 4 (D218) `--measure native` measures it there, with the
+emulation's bits and without its counts; statement FC3 holds D209's MT6
+solve to that, byte for byte (`make fc3`):
 
 ```text
   emulated    the realization's run: 1 saturation, 0 infinities, 0 NaNs, 0 wraps; the 1 emulated measurements: 1 saturation, 0 infinities, 0 NaNs, 0 wraps

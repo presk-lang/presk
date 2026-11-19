@@ -29,6 +29,12 @@
 //!   the loops keep the bits.
 //! - `bf16` buffers are `uint16_t`; the kernel computes in `float`, a load
 //!   widens and a store rounds to nearest, ties to even (`presk_rt.h`).
+//!   binary16 and `e8m15` are the same (plan 0.18.2 step 3, D217): a
+//!   binary16 buffer is `uint16_t`, an `e8m15` one `presk_e8m15`, a code of
+//!   three bytes; a kernel of either computes in `float`, and its loads and
+//!   stores convert by `presk_rt.h`'s functions ([`conversions`]), the
+//!   `_Float16` casts where the compiler has them, or the native backend's
+//!   integer sequences.
 //! - The loop a split divides runs over the caller's `[lo, hi)`, the loops
 //!   around it in full, as in the native backend ([`ranged`]). The host
 //!   divides a launch among the workers the native backend would
@@ -62,7 +68,8 @@ pub mod structure;
 
 use presk_kernel::ir::{BinOp, BufKind, BufSpec, CmpOp, Dtype, Expr, Kernel, Stmt, Threads, UnOp};
 
-/// The header the kernels include: the `bf16` conversions, the saturating
+/// The header the kernels include: the conversions of `bf16`, binary16 and
+/// `e8m15`, the saturating
 /// conversion of a real to an integer, and the declarations of the
 /// transcendental functions and of the runtime.
 pub const PRESK_RT_H: &str = include_str!("../c/presk_rt.h");
@@ -136,13 +143,27 @@ pub fn workers(k: &Kernel, threads: usize) -> usize {
 /// without OpenMP, the launch is the one call, with the same bits (§3.5,
 /// rule 4). The region's variables are `t` and `w`, which no name of the host
 /// takes.
-pub fn launch(ind: &str, name: &str, args: &[String], hi: usize, workers: usize) -> String {
+///
+/// A guarded kernel's launch (plan 0.18.2 step 4, D218) tests the flag its
+/// call returns, or-ed over the team's threads, and passes `guard`, the
+/// overflow guard's message of the launch, to `presk_overflow` when it is
+/// set.
+pub fn launch(ind: &str, name: &str, args: &[String], hi: usize, workers: usize, guard: Option<&str>) -> String {
     let args = args.join(", ");
+    let Some(msg) = guard else {
+        if workers <= 1 {
+            return format!("{ind}{name}({args}, 0, {hi});\n");
+        }
+        return format!(
+            "#ifdef _OPENMP\n#pragma omp parallel num_threads(presk_team({workers}))\n{ind}{{\n{ind}    int64_t t = omp_get_thread_num(), w = omp_get_num_threads();\n{ind}    {name}({args}, {hi} * t / w, {hi} * (t + 1) / w);\n{ind}}}\n#else\n{ind}{name}({args}, 0, {hi});\n#endif\n"
+        );
+    };
+    let msg = crate::host::c_string(msg);
     if workers <= 1 {
-        return format!("{ind}{name}({args}, 0, {hi});\n");
+        return format!("{ind}if ({name}({args}, 0, {hi}))\n{ind}    presk_overflow(arena, {msg});\n");
     }
     format!(
-        "#ifdef _OPENMP\n#pragma omp parallel num_threads(presk_team({workers}))\n{ind}{{\n{ind}    int64_t t = omp_get_thread_num(), w = omp_get_num_threads();\n{ind}    {name}({args}, {hi} * t / w, {hi} * (t + 1) / w);\n{ind}}}\n#else\n{ind}{name}({args}, 0, {hi});\n#endif\n"
+        "{ind}{{\n{ind}    uint32_t presk_ovf = 0;\n#ifdef _OPENMP\n#pragma omp parallel num_threads(presk_team({workers})) reduction(|:presk_ovf)\n{ind}    {{\n{ind}        int64_t t = omp_get_thread_num(), w = omp_get_num_threads();\n{ind}        presk_ovf |= {name}({args}, {hi} * t / w, {hi} * (t + 1) / w);\n{ind}    }}\n#else\n{ind}    presk_ovf = {name}({args}, 0, {hi});\n#endif\n{ind}    if (presk_ovf)\n{ind}        presk_overflow(arena, {msg});\n{ind}}}\n"
     )
 }
 
@@ -207,21 +228,47 @@ fn walk_exprs(stmts: &[Stmt], f: &mut impl FnMut(&Expr)) {
     }
 }
 
+/// The C type of an element of a buffer of reals of `d`.
+pub fn real_type(d: Dtype) -> &'static str {
+    match d {
+        Dtype::F64 => "double",
+        Dtype::F32 => "float",
+        Dtype::BF16 | Dtype::F16 => "uint16_t",
+        Dtype::E8M15 => "presk_e8m15",
+        d => d.unreachable(),
+    }
+}
+
+/// The conversions of a type stored narrower than the `float` a kernel of
+/// it computes in: the widening of an element and the rounding of a
+/// `float` to it (`presk_rt.h`); `None` for `f64` and `f32`, which a kernel
+/// computes in as they are stored.
+pub fn conversions(d: Dtype) -> Option<(&'static str, &'static str)> {
+    match d {
+        Dtype::BF16 => Some(("presk_bf16_to_f32", "presk_f32_to_bf16")),
+        Dtype::F16 => Some(("presk_f16_to_f32", "presk_f32_to_f16")),
+        Dtype::E8M15 => Some(("presk_e8m15_to_f32", "presk_f32_to_e8m15")),
+        _ => None,
+    }
+}
+
+/// How a kernel widens an element of `d` it loads: [`conversions`]' widening,
+/// but `e8m15`'s read byte by byte in place (`PRESK_E8M15_LOAD`, D217), so
+/// that no three-byte struct is passed by value; `None` for `f64` and `f32`.
+fn kernel_widen(d: Dtype) -> Option<&'static str> {
+    match d {
+        Dtype::E8M15 => Some("PRESK_E8M15_LOAD"),
+        _ => conversions(d).map(|c| c.0),
+    }
+}
+
 /// The C element type of a buffer of `k`.
 fn elem(k: &Kernel, s: &BufSpec) -> Result<&'static str> {
     Ok(match s.kind {
         BufKind::Idx => "int64_t",
-        BufKind::Real => match k.dtype {
-            Dtype::F64 => "double",
-            Dtype::F32 => "float",
-            Dtype::BF16 => "uint16_t",
-            d => d.unreachable(),
-        },
+        BufKind::Real => real_type(k.dtype),
         // Narrower reals a kernel widens as it loads them (plan 0.12.0).
-        BufKind::Wide(Dtype::F64) => "double",
-        BufKind::Wide(Dtype::F32) => "float",
-        BufKind::Wide(Dtype::BF16) => "uint16_t",
-        BufKind::Wide(d) => d.unreachable(),
+        BufKind::Wide(d) => real_type(d),
         BufKind::Quant { bits: 8, .. } => "int8_t",
         BufKind::Quant { bits: 4, .. } => "uint8_t",
         BufKind::Quant { bits, .. } => return Err(format!("kernel `{}` reads int{bits} weights: only int8 and int4 exist", k.name)),
@@ -237,7 +284,10 @@ pub fn quant_inputs(k: &Kernel) -> Vec<usize> {
 /// A kernel as one C function, `static void name(const T *restrict in0, …,
 /// T *restrict out, [const float *restrict sc<i>, …,] int64_t lo, int64_t
 /// hi)`, with the kernel's textual form as the comment above it: the scales
-/// of each input `i` of integer weights after the output (step 7).
+/// of each input `i` of integer weights after the output (step 7). A kernel
+/// that stores binary16 or `e8m15` returns the overflow guard's flag, an
+/// `uint32_t` set when a store rounded a finite value to an infinity (plan
+/// 0.18.2 step 4, D218; [`Kernel::guarded`]).
 pub fn kernel_fn(k: &Kernel, name: &str) -> Result<String> {
     let mut params = Vec::new();
     for (i, s) in k.inputs.iter().enumerate() {
@@ -258,9 +308,18 @@ pub fn kernel_fn(k: &Kernel, name: &str) -> Result<String> {
         let _ = writeln!(text, "// {line}");
     }
     let _ = writeln!(text, "// {}", range_note(k, range));
-    let _ = writeln!(text, "static void {name}({}) {{", params.join(", "));
+    if k.guarded() {
+        let _ = writeln!(text, "// returns the overflow guard's flag: a store rounded a finite value to an infinity");
+        let _ = writeln!(text, "static uint32_t {name}({}) {{", params.join(", "));
+        text.push_str("    uint32_t presk_ovf = 0;\n");
+    } else {
+        let _ = writeln!(text, "static void {name}({}) {{", params.join(", "));
+    }
     text.push_str(&p.declarations());
     text.push_str(&p.body);
+    if k.guarded() {
+        text.push_str("    return presk_ovf;\n");
+    }
     text.push_str("}\n");
     Ok(text)
 }
@@ -286,15 +345,25 @@ fn range_note(k: &Kernel, range: Option<(usize, usize)>) -> String {
 /// `void name(void *const *bufs, int64_t lo, int64_t hi)`: the inputs' and
 /// the output's pointers in order, then the scales of the integer inputs
 /// (step 7), then the range. What a loader that knows no kernel's signature
-/// calls, as the Cranelift backend calls its own.
+/// calls, as the Cranelift backend calls its own. A guarded kernel's flag
+/// set is or-ed into the `uint32_t` the slot after the scales points to,
+/// which several threads may set (plan 0.18.2 step 4, D218).
 pub fn entry_fn(k: &Kernel, kernel: &str, name: &str) -> Result<String> {
     let mut args = Vec::new();
     for (i, s) in k.inputs.iter().enumerate() {
         args.push(format!("(const {} *)bufs[{i}]", elem(k, s)?));
     }
     args.push(format!("({} *)bufs[{}]", elem(k, &k.output)?, k.inputs.len()));
-    for (j, _) in quant_inputs(k).into_iter().enumerate() {
+    let q = quant_inputs(k).len();
+    for j in 0..q {
         args.push(format!("(const float *)bufs[{}]", k.inputs.len() + 1 + j));
+    }
+    if k.guarded() {
+        let flag = k.inputs.len() + 1 + q;
+        return Ok(format!(
+            "void {name}(void *const *bufs, int64_t lo, int64_t hi) {{\n    uint32_t presk_ovf = {kernel}({}, lo, hi);\n    if (presk_ovf)\n        __atomic_fetch_or((uint32_t *)bufs[{flag}], presk_ovf, __ATOMIC_RELAXED);\n}}\n",
+            args.join(", ")
+        ));
     }
     Ok(format!("void {name}(void *const *bufs, int64_t lo, int64_t hi) {{\n    {kernel}({}, lo, hi);\n}}\n", args.join(", ")))
 }
@@ -366,7 +435,8 @@ pub(crate) struct Printer<'k> {
     /// Conditions a SCoP holds in a variable, `c0`, `c1`, …: one per branch
     /// printed as selections of more than one value.
     conds: usize,
-    /// `double` or `float`: `bf16` computes in `float`.
+    /// `double` or `float`: `bf16`, binary16 and `e8m15` compute in
+    /// `float`.
     real: &'static str,
     strides: Vec<Vec<usize>>,
     body: String,
@@ -539,8 +609,10 @@ impl<'k> Printer<'k> {
         if self.scop { Err(format!("kernel `{}` has vector lanes, and the SCoP mode prints each nest on one lane", self.k.name)) } else { Ok(()) }
     }
 
-    fn narrow(&self) -> bool {
-        self.k.dtype == Dtype::BF16
+    /// The kernel's own widening, when its buffers are narrower than the
+    /// `float` it computes in ([`kernel_widen`]).
+    fn narrow(&self) -> Option<&'static str> {
+        kernel_widen(self.k.dtype)
     }
 
     /// The linear offset of an index: each axis's index times its stride,
@@ -647,12 +719,13 @@ impl<'k> Printer<'k> {
     }
 
     /// An element of narrower reals widened exactly to the kernel's
-    /// arithmetic type, as the native backend's `load_wide`: a `bf16` by its
-    /// bits to `float`, a `float` to `double`.
+    /// arithmetic type, as the native backend's `load_wide`: a `bf16`, a
+    /// binary16 or an `e8m15` by its code to `float`, a `float` to
+    /// `double`.
     fn wide_load(&self, d: Dtype, at: String) -> Text {
-        let x = match d {
-            Dtype::BF16 => call("presk_bf16_to_f32", (at, PRIMARY)),
-            _ => (at, PRIMARY),
+        let x = match kernel_widen(d) {
+            Some(widen) => call(widen, (at, PRIMARY)),
+            None => (at, PRIMARY),
         };
         if self.real == "double" { cast("double", x) } else { x }
     }
@@ -670,7 +743,7 @@ impl<'k> Printer<'k> {
                 }
                 let at = self.access(*b, ix)?;
                 match self.spec(*b).kind {
-                    BufKind::Real if self.narrow() => call("presk_bf16_to_f32", (at, PRIMARY)),
+                    BufKind::Real if let Some(widen) = self.narrow() => call(widen, (at, PRIMARY)),
                     BufKind::Real => (at, PRIMARY),
                     BufKind::Wide(d) => self.wide_load(d, at),
                     BufKind::Idx => return Err(format!("kernel `{}`: a real load from index buffer %{b}", self.k.name)),
@@ -763,7 +836,7 @@ impl<'k> Printer<'k> {
                 let off = self.offset(*b, ix)?;
                 let at = format!("{}[{}]", self.buf_name(*b), if off == "0" { "l".to_string() } else { format!("{off} + l") });
                 match self.spec(*b).kind {
-                    BufKind::Real if self.narrow() => call("presk_bf16_to_f32", (at, PRIMARY)),
+                    BufKind::Real if let Some(widen) = self.narrow() => call(widen, (at, PRIMARY)),
                     BufKind::Real => (at, PRIMARY),
                     BufKind::Wide(d) => self.wide_load(d, at),
                     BufKind::Idx => return Err(format!("kernel `{}`: a vector load from index buffer %{b}", self.k.name)),
@@ -823,9 +896,22 @@ impl<'k> Printer<'k> {
         if ok { Ok(()) } else { Err(format!("kernel `{}`: a {} store to a {} output", self.k.name, if want == BufKind::Idx { "index" } else { "real" }, if kind == BufKind::Idx { "index" } else { "real" })) }
     }
 
-    /// The value stored, rounded to `bf16` when the buffers are.
-    fn stored(&self, x: Text) -> String {
-        if self.narrow() { call("presk_f32_to_bf16", x).0 } else { x.0 }
+    /// The statement storing `x` into element `at`, rounded to `bf16`,
+    /// binary16 or `e8m15` when the buffers are; `e8m15`'s written byte by
+    /// byte in place (`PRESK_E8M15_STORE`, D217). Outside the SCoP mode, a
+    /// store into binary16 or `e8m15` makes the overflow guard's test,
+    /// or-ed into the kernel's flag (plan 0.18.2 step 4, D218).
+    fn stored(&self, at: &str, x: Text) -> String {
+        let guarded = !self.scop && self.k.guarded();
+        match self.k.dtype {
+            Dtype::E8M15 if guarded => format!("PRESK_E8M15_STORE_GUARDED({at}, {}, &presk_ovf);", x.0),
+            Dtype::F16 if guarded => format!("{at} = presk_f32_to_f16_guarded({}, &presk_ovf);", x.0),
+            Dtype::E8M15 => format!("PRESK_E8M15_STORE({at}, {});", x.0),
+            d => match conversions(d) {
+                Some((_, round)) => format!("{at} = {};", call(round, x).0),
+                None => format!("{at} = {};", x.0),
+            },
+        }
     }
 
     fn stmt(&mut self, s: &Stmt, ind: usize) -> Result<()> {
@@ -868,19 +954,19 @@ impl<'k> Printer<'k> {
                     self.line(ind, "{");
                     self.line(ind + 1, &format!("{} t[{lanes}];", self.real));
                     self.line(ind + 1, &format!("for (int l = 0; l < {lanes}; l++) t[l] = {};", x.0));
-                    let t = self.stored(("t[l]".into(), PRIMARY));
-                    self.line(ind + 1, &format!("for (int l = 0; l < {lanes}; l++) {at} = {t};"));
+                    let t = self.stored(&at, ("t[l]".into(), PRIMARY));
+                    self.line(ind + 1, &format!("for (int l = 0; l < {lanes}; l++) {t}"));
                     self.line(ind, "}");
                 } else {
-                    let v = self.stored(x);
-                    self.line(ind, &format!("for (int l = 0; l < {lanes}; l++) {at} = {v};"));
+                    let v = self.stored(&at, x);
+                    self.line(ind, &format!("for (int l = 0; l < {lanes}; l++) {v}"));
                 }
             }
             Stmt::Store { buf, index, value } => {
                 self.store_target(*buf, BufKind::Real)?;
                 let at = self.access(*buf, index)?;
-                let v = self.stored(self.real(value)?);
-                self.line(ind, &format!("{at} = {v};"));
+                let v = self.stored(&at, self.real(value)?);
+                self.line(ind, &v);
             }
             Stmt::StoreI { buf, index, value } => {
                 self.store_target(*buf, BufKind::Idx)?;

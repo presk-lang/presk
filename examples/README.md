@@ -143,7 +143,11 @@ The scripts that run them stay in `../experiments/`.
 - `tests/plan/`: realization plans (`tests/plan/default.json`,
   `tests/plan/attention.json`, `tests/plan/tutorial-typed.json`,
   `tests/plan/two_dots.json`, and `tests/plan/mixed-realization.json`, under
-  which the C export's tests run MiniGPT), the entries `make plan-check`
+  which the C export's tests run MiniGPT, with
+  `tests/plan/mixed-codes-realization.json` and
+  `tests/plan/mixed-f16-realization.json`, its sites and some of its
+  parameters in binary16 and `e8m15` beside `f32`, `bf16` and `f64`, since
+  plan 0.18.2 step 3), the entries `make plan-check`
   and the C export's tests compare (`tests/plan/entries.txt`), and the
   programs they need: `tests/plan/minigpt_grad.psk`,
   `tests/plan/contractions.psk`, `tests/plan/epilogue.psk`,
@@ -177,12 +181,20 @@ The scripts that run them stay in `../experiments/`.
   beside it, a batch of them read from a data file, which `presk run
   --codes` prints as their formats' codes to compare with a machine's
   simulator (`crates/presk-cli/tests/formats.rs`; the comparison itself is
-  kept with the machine's description, outside this tree).
+  kept with the machine's description, outside this tree); and
+  `tests/formats/constant.psk` (plan 0.18.2 step 6), AdamW's update in
+  small, whose binary16 nests read ε = 10⁻⁸, a constant binary16 does not
+  hold, in `f32` instead of converted at their edge
+  (`crates/presk-cli/tests/constant.rs`).
 - `tests/targets/accelerator.json`: a target description of presk's own
   (plan 0.18.0 step 5), a machine whose matrix unit multiplies saturating
   E4M3 values into binary16 sums or 8-bit integer codes into a wrapping
   32-bit sum, in chunks of 32 terms, and whose vector unit computes in
   binary16, for `presk solve --target` (`crates/presk-cli/tests/target.rs`).
+- `tests/guard/guard.psk`: the overflow guard (plan 0.18.2 step 4, statement
+  FC6), one product whose store into binary16 overflows on an input off the
+  envelope it was solved on, which every executor and the exported C refuse
+  with `E7007` (`crates/presk-cli/tests/guard.rs`).
 - `tests/precision/heads.psk`: a parameter per way its readers contract it
   (`crates/presk-precision/tests/menu.rs`; a string in the test before
   D199).

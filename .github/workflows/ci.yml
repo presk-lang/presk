@@ -36,6 +36,23 @@ jobs:
       - name: Build
         run: cargo build --workspace
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       - name: The example programs
         run: make check-examples
+      # Apple's clang has no OpenMP, so on macOS the tests above build every
+      # exported program without it (D212). Homebrew's GCC has it: the C
+      # export's tests run again under the runner's newest GCC, every program
+      # built both ways and run on a team, contraction in GCC's GNU mode
+      # (D213).
+      - name: The C export's tests under GCC, with OpenMP
+        if: runner.os == 'macOS'
+        run: |
+          newest() { ls "$(brew --prefix)/bin" | sed -n -E '/^gcc-[0-9]+$/p' | sort -t- -k2 -n | tail -1; }
+          gcc=$(newest)
+          if [ -z "$gcc" ]; then brew install gcc; gcc=$(newest); fi
+          "$gcc" --version | sed -n 1p
+          export CC="$gcc"
+          failed=0
+          cargo test -p presk-export-c --no-fail-fast || failed=1
+          cargo test -p presk --test export_c --test export_scop --no-fail-fast || failed=1
+          exit $failed

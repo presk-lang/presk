@@ -1,7 +1,9 @@
 //! What a nest computes in, run by the commands (plan 0.18.0 step 3, D206):
 //! the kernel interpreter emulates a realization in any formats and `presk
-//! run` reports what they produced; the native backend and the C export,
-//! which compute in `f64`, `f32` and `bf16`, refuse it before anything runs
+//! run` reports what they produced; the native backend (since plan 0.18.2
+//! step 2, D216), the LLVM backend and the C export (step 3, D217) compute
+//! in `f64`, `f32` and `bf16` and store values in binary16 and `e8m15` too,
+//! with the emulation's bits, and refuse the rest before anything runs
 //! (`E7005`); a tile of E4M3 operands summed in binary16 in chunks of 32 is
 //! the sum written out.
 
@@ -37,14 +39,39 @@ fn the_kernel_interpreter_emulates_and_counts() {
 
 #[test]
 fn the_native_executors_refuse_what_they_cannot_compute() {
-    let (ok, _, err) = presk(&["run", TILE, "--entry", "tile", "--backend", "native", "--realize", "f16"]);
-    assert!(!ok && err.contains("E7005") && err.contains("the realization stores every value in f16: the native backend computes in f64, f32 and bf16"), "{err}");
-    let (ok, _, err) = presk(&["run", TILE, "--entry", "tile", "--backend", "native", "--realize", CHUNKED]);
-    assert!(!ok && err.contains("E7005"), "{err}");
-    let dir = std::env::temp_dir().join(format!("presk-formats-{}", std::process::id()));
-    let (ok, _, err) = presk(&["export", "--target", "c", TILE, "--entry", "tile", "--realize", "f16", "-o", dir.to_str().unwrap()]);
-    assert!(!ok && err.contains("E7005") && err.contains("the C export computes in f64, f32 and bf16"), "{err}");
+    // binary16 and `e8m15` natively (D216) and on the LLVM backend when
+    // `make llvm` installed its compiler (D217), the emulation's codes.
+    let llvm = root().join(".llvm/bin/clang").exists();
+    for realize in ["f16", "e8m15"] {
+        let (ok, emulated, err) = presk(&["run", TILE, "--entry", "tile", "--backend", "kernel", "--realize", realize, "--codes"]);
+        assert!(ok && err.contains("emulated"), "{realize}: {err}");
+        for backend in ["native", "llvm"].into_iter().filter(|b| *b == "native" || llvm) {
+            let (ok, out, err) = presk(&["run", TILE, "--entry", "tile", "--backend", backend, "--realize", realize, "--codes"]);
+            assert!(ok && !err.contains("emulated"), "{realize} on {backend}: {err}");
+            assert_eq!(out, emulated, "{realize} on {backend}: the kernel interpreter's codes");
+        }
+    }
+    for backend in ["native", "llvm"].into_iter().filter(|b| *b == "native" || llvm) {
+        let (ok, _, err) = presk(&["run", TILE, "--entry", "tile", "--backend", backend, "--realize", "e4m3fn"]);
+        assert!(!ok && err.contains("E7005") && err.contains(&format!("the realization stores every value in e4m3fn: the {backend} backend computes in f64, f32, bf16, f16 and e8m15")), "{err}");
+        let (ok, _, err) = presk(&["run", TILE, "--entry", "tile", "--backend", backend, "--realize", CHUNKED]);
+        assert!(!ok && err.contains("E7005"), "{err}");
+    }
+    // The C export: binary16 and `e8m15` exported, and the program's check
+    // passes (C1); any other format refused, nothing written.
+    let base = std::env::temp_dir().join(format!("presk-formats-{}", std::process::id()));
+    for realize in ["f16", "e8m15"] {
+        let dir = base.join(realize);
+        let (ok, _, err) = presk(&["export", "--target", "c", TILE, "--entry", "tile", "--realize", realize, "-o", dir.to_str().unwrap()]);
+        assert!(ok, "{realize}: {err}");
+        let check = Command::new("sh").arg("conformance/check.sh").current_dir(&dir).output().unwrap();
+        assert!(check.status.success() && String::from_utf8_lossy(&check.stdout).contains("C1 holds"), "{realize}: {}{}", String::from_utf8_lossy(&check.stdout), String::from_utf8_lossy(&check.stderr));
+    }
+    let dir = base.join("e4m3fn");
+    let (ok, _, err) = presk(&["export", "--target", "c", TILE, "--entry", "tile", "--realize", "e4m3fn", "-o", dir.to_str().unwrap()]);
+    assert!(!ok && err.contains("E7005") && err.contains("the C export computes in f64, f32, bf16, f16 and e8m15"), "{err}");
     assert!(!dir.exists(), "nothing written");
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The tile under `e4m3-f16-chunked.json`, against the sum written out:

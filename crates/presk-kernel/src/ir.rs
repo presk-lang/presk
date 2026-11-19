@@ -278,10 +278,11 @@ impl Arith {
         Arith::one(presk_format::Format::Float(dtype.arith().format()))
     }
 
-    /// Whether a kernel stored in `dtype` with these formats is one the
-    /// native backends compute: a native type, in its arithmetic type.
+    /// Whether a kernel stored in `dtype` with these formats is one a
+    /// native backend computes: a native type, or binary16 or `e8m15`
+    /// (plan 0.18.2 step 2, D216), in its arithmetic type.
     pub fn is_native(self, dtype: Dtype) -> bool {
-        dtype.is_native() && self == Arith::native(dtype)
+        (dtype.is_native() || dtype.coded()) && self == Arith::native(dtype)
     }
 }
 
@@ -323,6 +324,13 @@ pub struct Kernel {
 impl Kernel {
     pub fn out_buf(&self) -> usize {
         self.inputs.len()
+    }
+
+    /// Whether the kernel stores reals into binary16 or `e8m15`, each store
+    /// a narrowing from `f32` that the overflow guard checks (plan 0.18.2
+    /// step 4, D218): the kernels whose call has a flag.
+    pub fn guarded(&self) -> bool {
+        self.dtype.coded() && self.output.kind == BufKind::Real
     }
 
     /// The bound of the outermost loop when splitting it across threads is

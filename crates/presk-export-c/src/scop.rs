@@ -136,10 +136,7 @@ pub struct Meta {
 fn elem(k: &Kernel, s: &BufSpec) -> Result<&'static str> {
     Ok(match (s.kind, k.dtype) {
         (BufKind::Idx, _) => "int64_t",
-        (BufKind::Real, Dtype::F64) => "double",
-        (BufKind::Real, Dtype::F32) => "float",
-        (BufKind::Real, Dtype::BF16) => "uint16_t",
-        (BufKind::Real, d) => d.unreachable(),
+        (BufKind::Real, d) => crate::real_type(d),
         (BufKind::Quant { .. }, _) => return Err(format!("kernel `{}` reads integer weights, which the SCoP mode does not print", k.name)),
         (BufKind::Wide(_), _) => return Err(format!("kernel `{}` reads reals stored in a narrower type than its own, which the SCoP mode does not print", k.name)),
     })
@@ -426,7 +423,8 @@ impl Draw {
 }
 
 /// An input the driver draws: reals in `f64`, which the driver rounds to the
-/// kernel's type as `Buf::of` does (`bf16` through `f32`), or indices.
+/// kernel's type as `Buf::of` does (`bf16` through `f32`, binary16 and
+/// `e8m15` once), or indices.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Drawn {
     Real(Vec<f64>),
@@ -463,6 +461,8 @@ fn kind_code(k: &Kernel, s: &BufSpec) -> &'static str {
         (_, Dtype::F64) => "PRESK_SCOP_F64",
         (_, Dtype::F32) => "PRESK_SCOP_F32",
         (_, Dtype::BF16) => "PRESK_SCOP_BF16",
+        (_, Dtype::F16) => "PRESK_SCOP_F16",
+        (_, Dtype::E8M15) => "PRESK_SCOP_E8M15",
         (_, d) => d.unreachable(),
     }
 }
@@ -543,7 +543,7 @@ fn driver(meta: &Meta, nests: &[Nest]) -> Result<String> {
 #include "presk_rt.h"
 #include "nests.h"
 
-enum { PRESK_SCOP_F64, PRESK_SCOP_F32, PRESK_SCOP_BF16, PRESK_SCOP_IDX };
+enum { PRESK_SCOP_F64, PRESK_SCOP_F32, PRESK_SCOP_BF16, PRESK_SCOP_IDX, PRESK_SCOP_F16, PRESK_SCOP_E8M15 };
 
 typedef struct {
     size_t n;
@@ -588,12 +588,12 @@ static uint64_t next(uint64_t *s) {
 }
 
 static size_t elem_size(int kind) {
-    return kind == PRESK_SCOP_F32 ? 4 : kind == PRESK_SCOP_BF16 ? 2 : 8;
+    return kind == PRESK_SCOP_F32 ? 4 : kind == PRESK_SCOP_BF16 || kind == PRESK_SCOP_F16 ? 2 : kind == PRESK_SCOP_E8M15 ? 3 : 8;
 }
 
 /* The inputs of nest `i`: a real in [-1, 1), rounded to the kernel's type as
- * presk rounds it (bf16 through float); an index below its bound. The output
- * is zeros, as the native backend allocates it. */
+ * presk rounds it (bf16 through float, binary16 and e8m15 once); an index
+ * below its bound. The output is zeros, as the native backend allocates it. */
 static void **make(const nest_spec *s, size_t i, uint64_t seed) {
     void **b = calloc((size_t)s->nbufs, sizeof *b);
     uint64_t g = seed ^ (UINT64_C(0xd1b54a32d192ed03) * (uint64_t)(i + 1));
@@ -610,6 +610,8 @@ static void **make(const nest_spec *s, size_t i, uint64_t seed) {
             case PRESK_SCOP_F64: ((double *)b[j])[e] = x; break;
             case PRESK_SCOP_F32: ((float *)b[j])[e] = (float)x; break;
             case PRESK_SCOP_BF16: ((uint16_t *)b[j])[e] = presk_f32_to_bf16((float)x); break;
+            case PRESK_SCOP_F16: ((uint16_t *)b[j])[e] = presk_f64_to_f16(x); break;
+            case PRESK_SCOP_E8M15: ((presk_e8m15 *)b[j])[e] = presk_f64_to_e8m15(x); break;
             default: ((int64_t *)b[j])[e] = (int64_t)(u % f->bound); break;
             }
         }
@@ -762,6 +764,16 @@ fn json(nests: &[Nest]) -> String {
 }
 
 fn readme(meta: &Meta, nests: &[Nest]) -> String {
+    // binary16 and `e8m15` named only where a nest is in either (plan
+    // 0.18.2 step 3), so that the README of nests in the other types is
+    // 0.18.1's.
+    let codes = nests.iter().any(|n| n.kernel.dtype.coded());
+    let reals = if codes {
+        "`double`, `float`, `uint16_t` for `bf16` and binary16, or `presk_e8m15` (a code of three bytes) for `e8m15`, the last three computed in `float` (`presk_bf16_to_f32`, `presk_f32_to_bf16`, `presk_f16_to_f32`, … in `presk_rt.h`)"
+    } else {
+        "`double`, `float`, or `uint16_t` for `bf16`, computed in `float` (`presk_bf16_to_f32`, `presk_f32_to_bf16` in `presk_rt.h`)"
+    };
+    let rounded = if codes { "`bf16` through `float`, binary16 and `e8m15` once" } else { "`bf16` through `float`" };
     let mut r = String::new();
     let statics = nests.iter().filter(|n| static_control(&n.kernel).is_ok()).count();
     let names: BTreeSet<&str> = nests.iter().map(|n| n.nest.as_str()).collect();
@@ -771,7 +783,7 @@ fn readme(meta: &Meta, nests: &[Nest]) -> String {
     let _ = writeln!(r, "- **Nests:** {} at {} shapes, a C function each, {} of them static-control parts. A nest is a fusion group or a tensor primitive of a function, `<function>/%<let>`, the unit a realization plan states a layout for and `presk plan` ranks; a nest launched at several shapes, or in several types, is one function per shape and type. The kernels the host launches itself (positions, causal masks, one-hot rows, fills) are not nests, no plan stating their layout, and are not here.", names.len(), nests.len(), statics);
     let _ = writeln!(r, "- **Point zero:** each nest's default layout on one lane and one worker, no pack: 0.6.0's kernel, the one every point of a nest's layout space computes the bits of, before any plan. RA4 (`presk plan`, `presk autotune`) ranks the other points of the same nests.\n");
     let _ = writeln!(r, "## The form\n");
-    let _ = writeln!(r, "- **Arrays of literal dimensions**, one index per axis, as PolyBench/C writes its kernels: `const float in0[restrict 2][8][16]`, accessed `in0[i0][i1][i2]`; a buffer of rank 0 is `[1]`. Inputs are `in0`, `in1`, …, the output `out`, which the nest reads only where it accumulates, from zeros as the native backend allocates it. Reals are `double`, `float`, or `uint16_t` for `bf16`, computed in `float` (`presk_bf16_to_f32`, `presk_f32_to_bf16` in `presk_rt.h`); indices are `int64_t`.");
+    let _ = writeln!(r, "- **Arrays of literal dimensions**, one index per axis, as PolyBench/C writes its kernels: `const float in0[restrict 2][8][16]`, accessed `in0[i0][i1][i2]`; a buffer of rank 0 is `[1]`. Inputs are `in0`, `in1`, …, the output `out`, which the nest reads only where it accumulates, from zeros as the native backend allocates it. Reals are {reals}; indices are `int64_t`.");
     let _ = writeln!(r, "- **Every loop** runs from 0 to a literal bound, its variable an `int64_t` declared with the scalars before `#pragma scop`.");
     let _ = writeln!(r, "- **A branch on a computed value that only assigns scalars is a selection** of each value, `m = x > m ? x : m`: a softmax's running maximum, an argmax. Its condition is computed once, into `c0`, when it selects more than one value. The bits are the branch's.");
     let _ = writeln!(r, "- **The transcendental functions** (`presk_expf`, …, musl 1.1.22's, in `presk_libm.c`) are declared `__attribute__((const))` in each file that calls them: they read and write no memory, so a tool may take a call for an operation of its statement.");
@@ -780,7 +792,7 @@ fn readme(meta: &Meta, nests: &[Nest]) -> String {
     let _ = writeln!(r, "## Static control\n");
     let _ = writeln!(r, "A nest is a static-control part when every loop runs from 0 to a literal bound, which every nest's does; no loop variable is assigned; and every access indexes each axis of its array by an affine function of the loop variables. A gather (an embedding's `table[ids[b][t]][d]`, a cross-entropy's `logits[b][t][y[b][t]]`) or a scatter (an embedding's gradient, `out[ids[b][t]][d] += …`) indexes an axis by a value loaded from an index array, which no affine function describes: a tool that takes such an access over-approximates it by the whole axis. `nests.json` lists every nest with its loops (those of two iterations or more: a loop of one iteration is no loop in a tool's AST) and whether it is static control, and why not.\n");
     let _ = writeln!(r, "## Build, check, time\n\n```sh\nmake          # every nest compiled on its own (nests/*.o), and the driver, scop\nmake check    # ./scop -c conformance/native.bin: each nest's output against the native backend's, bit for bit\nmake time     # ./scop -r 11: each nest called eleven times, the median and the best wall time in µs\n./scop -r 5 NEST...   # some nests, by C name or Presk name\n```\n");
-    let _ = writeln!(r, "**The driver's inputs** are drawn, `splitmix64` seeded per nest by the seed {} and the nest's place in the program, the numbers presk draws for `conformance/native.bin`: a real uniformly in [-1, 1), rounded to the nest's type as presk rounds it (`bf16` through `float`); an index below the least length of an axis it indexes or of a loop it is compared with, so that every gather and scatter stays inside its array, and 0 when it does neither. `-s SEED` draws others (not with `-c`).\n", meta.seed);
+    let _ = writeln!(r, "**The driver's inputs** are drawn, `splitmix64` seeded per nest by the seed {} and the nest's place in the program, the numbers presk draws for `conformance/native.bin`: a real uniformly in [-1, 1), rounded to the nest's type as presk rounds it ({rounded}); an index below the least length of an axis it indexes or of a loop it is compared with, so that every gather and scatter stays inside its array, and 0 when it does neither. `-s SEED` draws others (not with `-c`).\n", meta.seed);
     let _ = writeln!(r, "**`conformance/native.bin`** holds the native backend's outputs of every nest on those inputs at point zero, one after the other in the program's order, little-endian. `make check` compares each nest's output with its own, byte for byte.\n");
     let _ = writeln!(r, "**The flags that must not change** (`STRICT` in the `Makefile`): `-std=c11 -ffp-contract=off`, for the native backend's bits; a polyhedral tool's output is compared the same way.\n");
     let _ = writeln!(r, "## Polly\n");

@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.18.2 — 2026-11-19
+
+Binary16 and `e8m15` on the CPU
+(`presk-specs/implementation/presk-plan-0.18.2.md`, D214–D220; the user's
+choice of 2026-11-17): a realization that stores values in binary16 or in
+`e8m15` (`f32`'s exponent with 16 significant bits) runs on the native
+backend, the LLVM backend and in the exported C, each value held as its
+code and each nest computed in `f32`, with the kernel interpreter's bits;
+a narrowing that overflows fails the run (`E7007`). They buy little time on
+this machine: binary16 takes 0.93× `f32`'s time in the course GPT's AdamW
+step and 0.86× in its forward pass on the LLVM backend, `e8m15` more than
+`f32`'s (FC4 and FC5 fail, D219). The 8-bit floats, a nest's other formats
+and affine formats stay emulated. The version also carries D211–D213.
+- D214, plan 0.18.2 opened (version `0.18.2-dev`): binary16 and `e8m15`
+  on the native backend, the LLVM backend and the C export, computed in
+  `f32` with the kernel interpreter's bits, and an overflow guard;
+  question 87. No change to the compiler at this step. D211–D213
+  below are this version's too.
+- D215, plan 0.18.2 step 1: a buffer of binary16 or `e8m15` holds its
+  codes, 2 and 3 bytes an element, as a `.psk.d` version 3 file does,
+  where it held each value as an `f64`; the conversions to and from
+  `f32` and from `f64` round once, checked on every input (FC1); the
+  kernel interpreter computes on the codes, with the same values and
+  counts. `presk run --codes` prints a NaN of either format with its
+  payload's top bits, as `fcvt` keeps them, where it printed the quiet
+  NaN of its sign. The native backend, the LLVM backend and the C export
+  still refuse both formats (`E7005`).
+- D216, plan 0.18.2 step 2: the native backend runs a realization that
+  stores values in binary16 and `e8m15`, computing each nest in `f32`
+  with the kernel interpreter's bits, where it refused it (`E7005`). Its
+  conversions are integer sequences, checked on every input (FC1); a
+  kernel of `f32`, `f64` or `e8m15` reads a parameter stored in either
+  format without a copy at its edge, on every executor. The kernel
+  interpreter still emulates both formats and prints its counts; the LLVM
+  backend and the C export still refuse them.
+- D217, plan 0.18.2 step 3: the C export and the LLVM backend run a
+  realization that stores values in binary16 and `e8m15`, with the kernel
+  interpreter's bits, where they refused it (`E7005`). A binary16 buffer
+  is `uint16_t`, an `e8m15` one `presk_e8m15`, three bytes a code that a
+  kernel reads and writes in place, so that Polly takes its nests;
+  `presk_rt.h`'s conversions are `_Float16`'s casts on aarch64 and integer
+  forms elsewhere (`-DPRESK_F16_INTEGER` for them everywhere), checked on
+  every input under GCC 13.3, GCC 16.2, clang 23 and x86-64 through zig
+  (FC1). The exported program's reader takes `.psk.d` version 3 and
+  refuses a leaf in another format by its name (`E9002`); the SCoP mode's
+  driver draws in both formats. `make qemu` installs an x86-64 emulator,
+  so that statement C3's x86-64 programs run and give the native bits,
+  but the sign of a NaN that an invalid operation generates, which x86-64
+  sets and aarch64 clears.
+- D218, plan 0.18.2 step 4: the overflow guard. A narrowing into binary16
+  or `e8m15` that rounds a finite value to an infinity fails the run with
+  `E7007`, naming its site, instead of carrying the infinity to the
+  result, on the kernel interpreter, the native and LLVM backends and in
+  the exported C (whose entry then returns 1, its message on standard
+  error, and `./model` exits with status 1): a kernel's store, and the
+  host's own narrowings while the entry runs (a constant filled, a scalar
+  made a buffer, an operand converted at a nest's edge); the entry's
+  arguments are its caller's. A realization the native types do not run
+  is emulated and counted as before. The specification's `attention3` in
+  binary16, whose outputs were all NaN, is refused so. In the exported C,
+  `presk_fill` and `presk_convert` return the guard's flag, a kernel that
+  stores either format returns its own, and `-DPRESK_NO_GUARD` builds the
+  kernels without the test. `presk solve --measure native` measures a
+  realization in binary16 and `e8m15` on the native backend, where it
+  emulated it; `presk bench --calibrate` fits both formats beside `f64`,
+  `f32` and `bf16` for a profile's other realizations.
+- D211: a normal draw takes its `log` and `cos` from the `libm` crate, as
+  the native backend's kernels do, so that a seed draws the same
+  parameters and inputs on every machine. They were Rust's standard
+  library's, the platform's C library: Apple's gave other last bits than
+  glibc's, and the test of the manual's `explain_loss` chapter failed on
+  macOS. On Linux about 6 draws in 100 move by one unit in the last place.
+- D212: the C export's tests pass on a compiler without OpenMP or GCC's
+  contraction, as Apple's clang: such a compiler builds every program
+  without OpenMP, as `make OPENMP=` does, and on Clang the test of
+  contraction asks for it with `-ffp-contract=fast`. A test that swapped
+  two launches' buffers leaves out the swaps whose program C does not
+  define, which only GCC's warning had caught, and `plan_mode` falls back
+  on the frozen profile's copy in the repository.
+- D213: the C export's tests run on macOS under Homebrew's GCC, with
+  OpenMP: a test binary runs one build or run per core at a time, where
+  each test ran one per core, past the 256 open files macOS allows a
+  process. CI runs every test file whatever fails first
+  (`--no-fail-fast`), and its macOS job runs the C tests again under
+  GCC. A test that mutates a built program's source removes the program,
+  which a make that compares whole seconds did not rebuild.
+- D219, plan 0.18.2 step 5: version 0.18.2 and its rows (`make fc-rows`,
+  `experiments/fc_rows.sh`): binary16 and `e8m15` timed on the LLVM and
+  native backends and in C against `f32`, the overflow guard's cost
+  (+1.2 % in C), and two certified realizations against all-`f32` and
+  D170's, slower for their `e8m15` values. The rows found a defect, fixed
+  by D220: a constant the range rules keep in `f32`, as AdamW's ε, was
+  converted to binary16 where a binary16 nest reads it, and ε became zero
+  there, so the binary16 realization the rules offer the AdamW step divided
+  by zero where a second moment is zero; the guard tests overflows only.
+- D220, plan 0.18.2 step 6: a nest of elementwise operations reads a
+  constant of its function (a float literal or a `real`) that its storage
+  type does not hold, one the type rounds to zero or past its largest
+  finite number, in its arithmetic type, `f32`, instead of converted at its
+  edge; the exported C's host makes such a literal in `f32` too. The
+  language reference's rule changes so (draft v0.34). FC4's realization
+  now gives finite parameters; FC4 timed again, alone, still 0.927×
+  (`experiments/fc_rows.sh fc4`). `examples/tests/formats/constant.psk`
+  and `crates/presk-cli/tests/constant.rs` test it on every executor.
+
 ## 0.18.1 — 2026-11-16
 
 A documentation release (D210; the user's request of 2026-11-16): the
